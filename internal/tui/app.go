@@ -1,0 +1,1032 @@
+// Package tui implements the terminal user interface, the Go rewrite of
+// packages/tui: logo home screen with an always-available prompt, the session
+// timeline, leader-key shortcuts, and the session list overlay.
+package tui
+
+import (
+	"context"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/anomalyco/opencode-go/internal/global"
+	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/anomalyco/opencode-go/internal/tui/theme"
+
+	"github.com/charmbracelet/bubbles/textarea"
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+const (
+	viewHome = iota
+	viewChat
+)
+
+const leaderKey = "ctrl+x"
+
+type App struct {
+	client *client.Client
+	theme  theme.Theme
+	ctx    context.Context
+
+	view      int
+	width     int
+	height    int
+	quitting  bool
+	statusMsg string
+
+	sessions     []client.Session
+	active       *client.Session
+	timeline     []client.Message
+	streaming    map[string]*strings.Builder // assistantMessageID -> live text
+	busy         bool
+	input        textarea.Model
+	scrollOffset int // lines kept off the bottom when scrolled up
+
+	leaderArmed  bool
+	spinnerFrame int
+	toast        *toast
+
+	overlay           *overlay
+	sidebar           bool
+	sidebarTodos      []client.Todo
+	timestamps        bool
+	activeModel       string
+	activeAgent       string
+	defaultModelLabel string
+
+	permission       *client.PermissionRequest
+	permissionChoice int // selected option: 0 once, 1 always, 2 reject
+	stats            *client.Stats
+
+	tip           string
+	mcpServers    []client.MCPServer
+	cwd           string
+	homeDir       string
+	gitBranch     string
+	modelNames    map[string]string // "provider/model" -> display name
+	providerNames map[string]string // provider id -> display name
+
+	// animationsEnabled and the fades port util/signal.ts's createFadeIn,
+	// applied to the prompt's agent/model meta segments (see modelMeta).
+	// There is no config toggle wired yet (go-port-gaps.md P0 follow-up), so
+	// this defaults true like the TS kv.get("animations_enabled", true).
+	animationsEnabled bool
+	agentMetaFade     *fadeAnim
+	modelMetaFade     *fadeAnim
+
+	// history ports prompt/history.tsx: up/down at the input's start/end
+	// recall submitted prompts (see historyKey below).
+	history *promptHistory
+
+	// selection is the mouse drag-to-select range (see mouse.go), the port's
+	// stand-in for opentui's renderer-level text selection.
+	selection textSelection
+
+	// windowTitle is the last title sent via tea.SetWindowTitle, so Update
+	// only re-emits it when desiredWindowTitle() actually changes.
+	windowTitle string
+
+	// resumeSessionID, when set by RunOptions, is opened at startup instead
+	// of showing the home screen.
+	resumeSessionID string
+
+	// thinkingMode mirrors context/thinking.ts's ThinkingMode ("show"|"hide",
+	// default "hide" — TS persists this in its KV store; this port keeps it
+	// in-memory for the process lifetime, like timestamps below). "hide"
+	// collapses every reasoning block to its one-line header by default;
+	// "show" always renders the full body.
+	thinkingMode string
+	// expandedReasoning tracks reasoning parts individually toggled open
+	// while thinkingMode is "hide" (ReasoningPart's per-instance `expanded`
+	// signal), keyed by the part's ID.
+	expandedReasoning map[string]bool
+
+	// chatReasoningRows/chatWindowPad/chatWindowStart cache the layout
+	// viewChat() last computed, so handleClick (run on the next Update(),
+	// against the frame viewChat() just produced) can hit-test a reasoning
+	// header row without re-deriving the same scroll/pad arithmetic — see
+	// viewChat's doc comment.
+	chatReasoningRows map[int]string
+	chatWindowPad     int
+	chatWindowStart   int
+}
+
+// placeholders mirrors the Home route's rotating prompt suggestions.
+var placeholders = []string{
+	"Fix a TODO in the codebase",
+	"What is the tech stack of this project?",
+	"Fix broken tests",
+}
+
+func New(ctx context.Context, c *client.Client, themeName string) *App {
+	resolved := theme.Resolve(themeName)
+	input := textarea.New()
+	input.Placeholder = `Ask anything... "` + placeholders[rand.Intn(len(placeholders))] + `"`
+	input.Prompt = " "
+	input.Focus()
+	input.CharLimit = 0
+	input.SetHeight(1)
+	input.ShowLineNumbers = false
+	input.KeyMap.InsertNewline.SetEnabled(false)
+	// The textarea's own styles would paint over the prompt box's
+	// backgroundElement tint: the default cursor line has a solid background
+	// and the viewport pads the row with unstyled spaces. Give the cursor line
+	// the box tint instead and mute the placeholder like the original.
+	element := lipgloss.NewStyle().Background(resolved.BackgroundElement)
+	muted := lipgloss.NewStyle().Foreground(resolved.TextMuted)
+	focused, blurred := textarea.DefaultStyles()
+	focused.CursorLine = element
+	blurred.CursorLine = element
+	focused.Placeholder = muted
+	blurred.Placeholder = muted
+	input.FocusedStyle = focused
+	input.BlurredStyle = blurred
+	cwd, _ := os.Getwd()
+	home, _ := os.UserHomeDir()
+	return &App{
+		ctx:               ctx,
+		client:            c,
+		theme:             resolved,
+		view:              viewHome,
+		sidebar:           true, // the original shows the sidebar by default
+		streaming:         map[string]*strings.Builder{},
+		input:             input,
+		tip:               randomTip(),
+		cwd:               cwd,
+		homeDir:           home,
+		gitBranch:         gitBranch(cwd),
+		animationsEnabled: true,
+		agentMetaFade:     newFadeAnim(false),
+		modelMetaFade:     newFadeAnim(false),
+		history:           loadPromptHistory(filepath.Join(global.Resolve().State, promptHistoryFile)),
+		windowTitle:       "OpenCode",
+		thinkingMode:      "hide",
+		expandedReasoning: map[string]bool{},
+	}
+}
+
+type tickMsg time.Time
+
+type leaderTimeoutMsg struct{}
+
+func (a *App) Init() tea.Cmd {
+	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.tick(), tea.SetWindowTitle(a.desiredWindowTitle())}
+	if a.resumeSessionID != "" {
+		cmds = append(cmds, a.resumeSessionCmd(a.resumeSessionID))
+	}
+	return tea.Batch(cmds...)
+}
+
+// desiredWindowTitle mirrors app.tsx's terminal-title effect: "OpenCode" on
+// the home route or while a session's title is still its creation
+// placeholder, else "OC | <title>" (truncated at 40 chars). TS's default-
+// title check is a regex over its own "New session - <ISO time>" format;
+// this port's placeholder is `filepath.Base(directory)` instead (see
+// internal/session/service.go), so the check is against that.
+func (a *App) desiredWindowTitle() string {
+	if a.view != viewChat || a.active == nil {
+		return "OpenCode"
+	}
+	title := strings.TrimSpace(a.active.Title)
+	if title == "" || title == filepath.Base(a.active.Directory) {
+		return "OpenCode"
+	}
+	if len(title) > 40 {
+		title = title[:37] + "..."
+	}
+	return "OC | " + title
+}
+
+// syncWindowTitle recomputes the title and reports whether it changed since
+// the last sync, so Update only emits tea.SetWindowTitle on real changes.
+func (a *App) syncWindowTitle() (string, bool) {
+	title := a.desiredWindowTitle()
+	if title == a.windowTitle {
+		return title, false
+	}
+	a.windowTitle = title
+	return title, true
+}
+
+func (a *App) tick() tea.Cmd {
+	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+// handleEvent applies an SSE event to the model, reporting whether the
+// timeline should refresh.
+func (a *App) handleEvent(event client.Event) bool {
+	switch event.Type {
+	case "session.next.step.started":
+		a.busy = true
+	case "session.next.text.started", "session.next.text.delta":
+		messageID, _ := event.Data["assistantMessageID"].(string)
+		if messageID == "" {
+			return false
+		}
+		builder := a.streaming[messageID]
+		if builder == nil {
+			builder = &strings.Builder{}
+			a.streaming[messageID] = builder
+		}
+		delta, _ := event.Data["delta"].(string)
+		builder.WriteString(delta)
+	case "session.next.text.ended", "session.next.step.ended", "session.next.step.failed",
+		"session.next.tool.called", "session.next.tool.success", "session.next.tool.failed",
+		"session.next.compaction.ended", "session.next.prompted",
+		"todo.updated":
+		for key := range a.streaming {
+			delete(a.streaming, key)
+		}
+		a.scrollOffset = 0
+		return true
+	}
+	return false
+}
+
+type eventMsg struct{ event client.Event }
+
+type reloadMsg struct{}
+
+type sessionsMsg struct{ sessions []client.Session }
+type messagesMsg struct {
+	sessionID string
+	messages  []client.Message
+}
+type catalogMsg struct {
+	models    []client.Model
+	providers []client.Provider
+}
+type mcpMsg struct{ servers []client.MCPServer }
+type sessionOpenedMsg struct{ session *client.Session }
+type permissionsMsg struct{ pending []client.PermissionRequest }
+type promptSentMsg struct {
+	sessionID string
+	text      string
+}
+type sessionRefreshedMsg struct{ session *client.Session }
+type statusMsg struct{ text string }
+
+// staticMsg turns a ready message into a command.
+func staticMsg(msg tea.Msg) tea.Cmd {
+	return func() tea.Msg { return msg }
+}
+
+// refreshSessionCmd re-fetches a session's server-side state (title, model,
+// timestamps) into a.active — best-effort; a failure just skips the
+// refresh rather than surfacing an error toast.
+func (a *App) refreshSessionCmd(sessionID string) tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		session, err := c.Session(a.ctx, sessionID)
+		if err != nil {
+			return nil
+		}
+		return sessionRefreshedMsg{session: session}
+	}
+}
+
+func (a *App) loadSessionsCmd() tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		sessions, err := c.Sessions(a.ctx)
+		if err != nil {
+			return statusMsg{text: "failed to load sessions: " + err.Error()}
+		}
+		return sessionsMsg{sessions: sessions}
+	}
+}
+
+// loadCatalogCmd fetches display names for the current model's meta row.
+// Both calls are best-effort; the meta row falls back to raw IDs.
+func (a *App) loadCatalogCmd() tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		models, _ := c.Models(a.ctx)
+		providers, _ := c.Providers(a.ctx)
+		return catalogMsg{models: models, providers: providers}
+	}
+}
+
+// loadMCPCmd fetches live MCP server status (GET /api/mcp), the real
+// connected/failed/needs_auth/... state sidebar.tsx's `props.api.state.mcp()`
+// reads — not just the configured server names. Re-run on every tickMsg
+// (see update()'s tickMsg case), not just once at Init, since the backend
+// now reconnects servers in the background after a boot-time failure or a
+// later drop (go-port-gaps.md's MCP reconnect entry): without polling, the
+// TUI would keep showing a server's status as it was at Init forever. On a
+// fetch error, returns nil (no message) rather than an empty server list,
+// so a transient hiccup talking to the local API doesn't blank out the
+// last-known-good status.
+func (a *App) loadMCPCmd() tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		servers, err := c.MCPServers(a.ctx)
+		if err != nil {
+			return nil
+		}
+		return mcpMsg{servers: servers}
+	}
+}
+
+func (a *App) loadMessages(sessionID string) tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		messages, err := c.Messages(a.ctx, sessionID)
+		if err != nil {
+			return statusMsg{text: "failed to load messages: " + err.Error()}
+		}
+		return messagesMsg{sessionID: sessionID, messages: messages}
+	}
+}
+
+func (a *App) loadPermissions(sessionID string) tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		pending, err := c.Permissions(a.ctx, sessionID)
+		if err != nil {
+			return nil
+		}
+		return permissionsMsg{pending: pending}
+	}
+}
+
+// Update dispatches msg then syncs the terminal window title, mirroring
+// app.tsx's createEffect over the current route/session — rather than
+// hooking every place a.view/a.active changes, this just recomputes the
+// desired title every tick and only emits tea.SetWindowTitle when it
+// actually changed.
+func (a *App) Update(msg tea.Msg) tea.Cmd {
+	cmd := a.update(msg)
+	if title, changed := a.syncWindowTitle(); changed {
+		return tea.Batch(cmd, tea.SetWindowTitle(title))
+	}
+	return cmd
+}
+
+func (a *App) update(msg tea.Msg) tea.Cmd {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		a.width, a.height = msg.Width, msg.Height
+		a.input.SetWidth(a.inputWidth())
+		return nil
+	case tickMsg:
+		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd()}
+		if a.active != nil {
+			cmds = append(cmds, a.loadPermissions(a.active.ID))
+			cmds = append(cmds, a.loadStats(a.active.ID))
+			if a.sidebar {
+				cmds = append(cmds, a.loadSidebarTodos())
+			}
+		}
+		return tea.Batch(cmds...)
+	case spinnerTickMsg:
+		if a.busy {
+			a.spinnerFrame++
+			return a.startSpinner()
+		}
+		return nil
+	case toastExpiredMsg:
+		if a.toast != nil && time.Now().After(a.toast.expires) {
+			a.toast = nil
+		}
+		return nil
+	case quitMsg:
+		a.quitting = true
+		return tea.Quit
+	case leaderTimeoutMsg:
+		a.leaderArmed = false
+		return nil
+	case sessionsMsg:
+		a.sessions = msg.sessions
+		return nil
+	case catalogMsg:
+		a.modelNames = map[string]string{}
+		for _, model := range msg.models {
+			a.modelNames[model.ProviderID+"/"+model.ID] = model.Name
+		}
+		a.providerNames = map[string]string{}
+		for _, provider := range msg.providers {
+			a.providerNames[provider.ID] = provider.Name
+		}
+		// The catalog resolving is this port's analogue of TS's
+		// local.agent.current() becoming defined: the prompt's meta row was
+		// unrenderable before this and fades in now, exactly once
+		// (createFadeIn's `revealed` latch means later catalog reloads
+		// never re-animate).
+		return tea.Batch(
+			a.agentMetaFade.Sync(true, a.animationsEnabled),
+			a.modelMetaFade.Sync(true, a.animationsEnabled),
+		)
+	case mcpMsg:
+		a.mcpServers = msg.servers
+		return nil
+	case fadeTickMsg:
+		if cmd := a.agentMetaFade.Advance(msg); cmd != nil {
+			return cmd
+		}
+		return a.modelMetaFade.Advance(msg)
+	case sessionOpenedMsg:
+		a.active = msg.session
+		a.view = viewChat
+		a.timeline = nil
+		a.input.Reset()
+		a.input.Focus()
+		return a.loadMessages(a.active.ID)
+	case openedWithPrompt:
+		a.active = msg.session
+		a.view = viewChat
+		a.timeline = nil
+		a.input.Reset()
+		a.input.Focus()
+		a.busy = true
+		return a.startSpinner()
+	case messagesMsg:
+		if a.active != nil && msg.sessionID == a.active.ID {
+			a.timeline = msg.messages
+			wasBusy := a.busy
+			a.busy = hasUnfinishedAssistant(a.timeline)
+			if a.busy && !wasBusy {
+				return a.startSpinner()
+			}
+		}
+		return nil
+	case permissionsMsg:
+		a.applyPermissions(msg.pending)
+		return nil
+	case promptSentMsg:
+		if msg.sessionID == "" || a.active == nil {
+			return nil
+		}
+		a.busy = true
+		cmds := []tea.Cmd{a.loadPermissions(a.active.ID), a.startSpinner(), a.refreshSessionCmd(a.active.ID)}
+		return tea.Batch(cmds...)
+	case sessionRefreshedMsg:
+		// The server auto-titles a session from its first prompt
+		// (maybeSetTitle, synchronous within the prompt call), but the TUI's
+		// local a.active snapshot is otherwise never refreshed — without
+		// this it would show the directory-derived placeholder title for
+		// the rest of the process's life (see go-port-gaps.md).
+		if a.active != nil && msg.session != nil && msg.session.ID == a.active.ID {
+			*a.active = *msg.session
+		}
+		return nil
+	case reloadMsg:
+		if a.active == nil {
+			return nil
+		}
+		return a.loadMessages(a.active.ID)
+	case sidebarTodosMsg:
+		a.sidebarTodos = msg.todos
+		return nil
+	case statsMsg:
+		a.stats = msg.stats
+		return nil
+	case eventMsg:
+		if a.handleEvent(msg.event) {
+			if a.active != nil {
+				return a.loadMessages(a.active.ID)
+			}
+		}
+		return nil
+	case statusMsg:
+		a.statusMsg = msg.text
+		isError := strings.HasPrefix(msg.text, "failed") ||
+			strings.Contains(msg.text, "failed:") ||
+			strings.Contains(msg.text, "error")
+		return a.showToast(msg.text, isError)
+	case tea.KeyMsg:
+		return a.handleKey(msg)
+	case tea.MouseMsg:
+		return a.handleMouse(msg)
+	}
+	return nil
+}
+
+func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
+	// A pending mouse selection intercepts ctrl+c (copy instead of quit) and
+	// escape (clear instead of whatever escape would otherwise do), ahead of
+	// everything else — mirrors util/selection.ts's handleSelectionKey, which
+	// runs as a global key hook regardless of dialog state.
+	if a.selection.hasRange() {
+		switch msg.String() {
+		case "ctrl+c":
+			return a.copySelectionCmd()
+		case "esc", "escape":
+			a.selection.clear()
+			return nil
+		}
+	}
+	// A dialog owns the keyboard while open (modal mode in the original).
+	if a.overlay != nil {
+		return a.handleOverlayKey(msg.String())
+	}
+	switch msg.String() {
+	case "ctrl+c", "ctrl+d":
+		a.quitting = true
+		return tea.Quit
+	}
+
+	if a.leaderArmed {
+		a.leaderArmed = false
+		switch msg.String() {
+		case "l":
+			drive := a.loadSessionsCmd()
+			a.sessionsOverlay()
+			return drive
+		case "n":
+			return a.newSession()
+		case "m":
+			return a.modelsOverlay()
+		case "a":
+			return a.agentsOverlay()
+		case "t":
+			a.themesOverlay()
+			return nil
+		case "s":
+			a.overlay = &overlay{kind: overlayStatus, title: "Status"}
+			return nil
+		case "g":
+			a.openList("Timeline", a.timelineOverlayItems())
+			return nil
+		case "f":
+			a.openList("Fork from message", a.timelineOverlayItems())
+			return nil
+		case "e":
+			return a.exportToEditor()
+		case "b":
+			a.sidebar = !a.sidebar
+			if a.sidebar {
+				return a.loadSidebarTodos()
+			}
+			return nil
+		case "c":
+			return a.compactNow()
+		case "q":
+			a.quitting = true
+			return tea.Quit
+		}
+		return nil
+	}
+	if msg.String() == leaderKey {
+		a.leaderArmed = true
+		return tea.Tick(time.Second, func(time.Time) tea.Msg { return leaderTimeoutMsg{} })
+	}
+
+	if msg.String() == "ctrl+p" {
+		a.commandPalette()
+		return nil
+	}
+	if msg.String() == "ctrl+r" {
+		if a.active == nil {
+			return staticMsg(statusMsg{text: "open a session first"})
+		}
+		current := sessionTitleOf(*a.active)
+		a.openInput("Rename Session", current, func(value string) tea.Msg {
+			if err := a.client.Rename(a.ctx, a.active.ID, value); err != nil {
+				return statusMsg{text: "rename failed: " + err.Error()}
+			}
+			a.active.Title = value
+			return statusMsg{text: "renamed"}
+		})
+		return nil
+	}
+	if msg.String() == "?" && strings.TrimSpace(a.input.Value()) == "" {
+		a.overlay = &overlay{kind: overlayHelp, title: "Help"}
+		return nil
+	}
+	if msg.String() == "@" {
+		a.input.InsertString("@")
+		a.openFileMentions()
+		return nil
+	}
+
+	if a.permission != nil {
+		return a.handlePermissionKey(msg)
+	}
+
+	if msg.String() == "up" || msg.String() == "down" {
+		if cmd, handled := a.historyKey(msg.String()); handled {
+			return cmd
+		}
+		// Not at the input's boundary: fall through to the textarea's own
+		// multi-line cursor movement below.
+	}
+
+	switch msg.String() {
+	case "esc", "escape":
+		if a.view == viewChat && a.busy && a.active != nil {
+			c := a.client
+			sessionID := a.active.ID
+			return func() tea.Msg {
+				if err := c.Interrupt(a.ctx, sessionID); err != nil {
+					return statusMsg{text: "interrupt failed: " + err.Error()}
+				}
+				return nil
+			}
+		}
+		return nil
+	case "pgup", "pageup":
+		a.scrollOffset += a.viewportHeight() / 2
+		return nil
+	case "pgdown", "pagedown":
+		a.scrollOffset -= a.viewportHeight() / 2
+		if a.scrollOffset < 0 {
+			a.scrollOffset = 0
+		}
+		return nil
+	case "enter":
+		text := strings.TrimSpace(a.input.Value())
+		if text == "" {
+			return nil
+		}
+		a.input.Reset()
+		if strings.HasPrefix(text, "/") {
+			return a.runSlashCommand(strings.TrimPrefix(text, "/"))
+		}
+		a.history.Append(text)
+		if a.view == viewHome {
+			return a.createAndPrompt(text)
+		}
+		return a.sendPrompt(a.active.ID, text)
+	}
+
+	var cmd tea.Cmd
+	a.input, cmd = a.input.Update(msg)
+	return cmd
+}
+
+// historyKey ports prompt/index.tsx's prompt.history.previous/next commands:
+// "up" recalls an older prompt only when the cursor already sits at the very
+// start of the input, "down" recalls a newer one only at the very end;
+// anywhere else the arrow should move the cursor within a wrapped/multi-line
+// draft instead (handled == false, so handleKey falls through to the
+// textarea's own Update).
+func (a *App) historyKey(key string) (tea.Cmd, bool) {
+	direction := -1
+	atBoundary := a.inputAtStart()
+	if key == "down" {
+		direction = 1
+		atBoundary = a.inputAtEnd()
+	}
+	if !atBoundary {
+		return nil, false
+	}
+	text, ok := a.history.Move(direction, a.input.Value())
+	if !ok {
+		return nil, false
+	}
+	a.input.SetValue(text)
+	if direction < 0 {
+		moveCursorToDocumentStart(&a.input)
+	} else {
+		moveCursorToDocumentEnd(&a.input)
+	}
+	return nil, true
+}
+
+// inputAtStart/inputAtEnd check the absolute document boundary (not just the
+// current visual row), matching TS's cursorOffset === 0 /
+// cursorOffset === plainText.length checks.
+func (a *App) inputAtStart() bool {
+	return a.input.Line() == 0 && a.input.LineInfo().CharOffset == 0
+}
+
+func (a *App) inputAtEnd() bool {
+	lines := strings.Split(a.input.Value(), "\n")
+	lastLine := []rune(lines[len(lines)-1])
+	return a.input.Line() == a.input.LineCount()-1 && a.input.LineInfo().CharOffset == len(lastLine)
+}
+
+// moveCursorToDocumentStart/End walk line by line since textarea.Model only
+// exposes per-line CursorStart/CursorEnd.
+func moveCursorToDocumentStart(m *textarea.Model) {
+	for m.Line() > 0 {
+		m.CursorUp()
+	}
+	m.CursorStart()
+}
+
+func moveCursorToDocumentEnd(m *textarea.Model) {
+	for m.Line() < m.LineCount()-1 {
+		m.CursorDown()
+	}
+	m.CursorEnd()
+}
+
+// handlePermissionKey mirrors the PermissionPrompt keybinds: left/right (or
+// h/l) move between the options, enter confirms, escape rejects. The y/a/n
+// quick answers from the earlier port are kept as aliases.
+func (a *App) handlePermissionKey(msg tea.KeyMsg) tea.Cmd {
+	request := a.permission
+	answer := ""
+	switch msg.String() {
+	case "left", "h":
+		a.permissionChoice = (a.permissionChoice + 2) % 3
+		return nil
+	case "right", "l":
+		a.permissionChoice = (a.permissionChoice + 1) % 3
+		return nil
+	case "enter":
+		answer = []string{"once", "always", "reject"}[a.permissionChoice]
+	case "esc", "escape":
+		answer = "reject"
+	case "y":
+		answer = "once"
+	case "a":
+		answer = "always"
+	case "n":
+		answer = "reject"
+	}
+	if answer == "" {
+		return nil
+	}
+	a.permission = nil
+	a.permissionChoice = 0
+	c := a.client
+	sessionID, requestID := request.SessionID, request.ID
+	return func() tea.Msg {
+		if err := c.Reply(a.ctx, sessionID, requestID, answer); err != nil {
+			return statusMsg{text: "reply failed: " + err.Error()}
+		}
+		return nil
+	}
+}
+
+func (a *App) applyPermissions(pending []client.PermissionRequest) {
+	a.permission = nil
+	if a.active == nil {
+		return
+	}
+	for i := range pending {
+		if pending[i].SessionID == a.active.ID {
+			if a.permission == nil || a.permission.ID != pending[i].ID {
+				a.permissionChoice = 0
+			}
+			a.permission = &pending[i]
+			return
+		}
+	}
+}
+
+func (a *App) newSession() tea.Cmd {
+	dir, err := os.Getwd()
+	if err != nil {
+		return staticMsg(statusMsg{text: err.Error()})
+	}
+	c := a.client
+	return func() tea.Msg {
+		session, err := c.CreateSession(a.ctx, client.CreateInput{Directory: dir})
+		if err != nil {
+			return statusMsg{text: "failed to create session: " + err.Error()}
+		}
+		return sessionOpenedMsg{session: session}
+	}
+}
+
+type openedWithPrompt struct {
+	session *client.Session
+	text    string
+}
+
+func (a *App) createAndPrompt(text string) tea.Cmd {
+	dir, err := os.Getwd()
+	if err != nil {
+		return staticMsg(statusMsg{text: err.Error()})
+	}
+	c := a.client
+	return func() tea.Msg {
+		session, err := c.CreateSession(a.ctx, client.CreateInput{Directory: dir})
+		if err != nil {
+			return statusMsg{text: "failed to create session: " + err.Error()}
+		}
+		if _, err := c.Prompt(a.ctx, session.ID, text); err != nil {
+			return statusMsg{text: "prompt failed: " + err.Error()}
+		}
+		return openedWithPrompt{session: session, text: text}
+	}
+}
+
+func (a *App) sendPrompt(sessionID, text string) tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		if _, err := c.Prompt(a.ctx, sessionID, text); err != nil {
+			return statusMsg{text: "prompt failed: " + err.Error()}
+		}
+		return promptSentMsg{sessionID: sessionID, text: text}
+	}
+}
+
+// View renders the active route, mirroring the TS route switch in app.tsx.
+// Dialogs composite over the underlying route like the Dialog backdrop.
+func (a *App) View() string {
+	if a.quitting {
+		return ""
+	}
+	if a.width == 0 {
+		return "loading…"
+	}
+	content := a.currentFrame()
+	if a.selection.hasRange() {
+		content = a.applySelectionHighlight(content)
+	}
+	return content
+}
+
+func hasUnfinishedAssistant(timeline []client.Message) bool {
+	for i := len(timeline) - 1; i >= 0; i-- {
+		if timeline[i].Type != "assistant" {
+			continue
+		}
+		data, err := client.DecodeAssistant(timeline[i].Data)
+		if err != nil {
+			continue
+		}
+		return data.Finish == ""
+	}
+	return false
+}
+
+// program adapts App to bubbletea's immutable Model interface.
+type program struct{ app *App }
+
+func (p program) Init() tea.Cmd { return p.app.Init() }
+
+func (p program) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	return p, p.app.Update(msg)
+}
+
+func (p program) View() string { return p.app.View() }
+
+type quitMsg struct{}
+
+func themeResolve(name string) theme.Theme { return theme.Resolve(name) }
+
+// runSlashCommand executes "/name" from the editor. Names may be the full
+// command ("session.new") or a namespace prefix ("/help" -> "help.show").
+func (a *App) runSlashCommand(name string) tea.Cmd {
+	name = strings.TrimSpace(strings.TrimPrefix(name, "/"))
+	commands := a.commandsRegistry()
+	for _, command := range commands {
+		if command.label == name {
+			return command.action
+		}
+	}
+	for _, command := range commands {
+		if strings.HasPrefix(command.label, name+".") {
+			return command.action
+		}
+	}
+	return staticMsg(statusMsg{text: "unknown command: /" + name})
+}
+
+// openFileMentions shows @-completion for workspace files; selecting inserts
+// the path into the editor.
+func (a *App) openFileMentions() {
+	query := ""
+	items := fileMentions(query)
+	for i := range items {
+		path := items[i].label
+		items[i].action = func() tea.Msg {
+			a.input.InsertString(path + " ")
+			return nil
+		}
+	}
+	a.openList("Files", items)
+}
+
+func (a *App) sessionTitle() string {
+	if a.active == nil {
+		return ""
+	}
+	return sessionTitleOf(*a.active)
+}
+
+// currentModelParts resolves the active provider and model IDs: the session's
+// pinned model, else the user-selected label, else the default.
+func (a *App) currentModelParts() (providerID, modelID string, ok bool) {
+	if a.active != nil && a.active.Model != nil {
+		return a.active.Model.ProviderID, a.active.Model.ID, true
+	}
+	if a.activeModel != "" {
+		if provider, model, found := strings.Cut(a.activeModel, "/"); found {
+			return provider, model, true
+		}
+	}
+	return strings.Cut(a.defaultModelLabel, "/")
+}
+
+func (a *App) modelName(providerID, modelID string) string {
+	if name := a.modelNames[providerID+"/"+modelID]; name != "" {
+		return name
+	}
+	return modelID
+}
+
+func (a *App) providerName(providerID string) string {
+	if name := a.providerNames[providerID]; name != "" {
+		return name
+	}
+	return providerID
+}
+
+// inputWidth keeps the shared editor inside both the home prompt box and the
+// session prompt box: each box's own *declared* width (promptMaxWidth(a.width)-1
+// for home, chatWidth()-1 for the session — see their promptBox call sites)
+// minus promptBox's paddingLeft(2)+paddingRight(2) (the 1-column left border
+// renders outside the declared width, so it isn't subtracted again here).
+func (a *App) inputWidth() int {
+	w := min(promptMaxWidth(a.width)-5, a.chatWidth()-5)
+	if w < 20 {
+		w = 20
+	}
+	return w
+}
+
+func (a *App) currentModelLabel() string {
+	if a.activeModel != "" {
+		return a.activeModel
+	}
+	if a.active != nil && a.active.Model != nil {
+		return a.active.Model.ProviderID + "/" + a.active.Model.ID
+	}
+	return a.defaultModelLabel
+}
+
+// SetDefaultModel sets the model label shown in the sidebar before a session
+// pins its own model.
+func (a *App) SetDefaultModel(label string) { a.defaultModelLabel = label }
+
+// resumeSessionCmd fetches the session RunOptions.SessionID named and opens
+// it exactly like picking it from the sessions overlay would (sessionOpenedMsg
+// switches to the chat view and loads its history). A lookup failure surfaces
+// as a status message rather than aborting startup, so the user still lands
+// on a working home screen instead of a blank program.
+func (a *App) resumeSessionCmd(sessionID string) tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		session, err := c.Session(a.ctx, sessionID)
+		if err != nil || session == nil {
+			return statusMsg{text: "session not found: " + sessionID}
+		}
+		return sessionOpenedMsg{session: session}
+	}
+}
+
+// RunOptions customizes Run.
+type RunOptions struct {
+	DefaultModel string
+	// SessionID, when set, opens directly into that session's chat view
+	// instead of the home screen (the CLI's --session/--continue/--fork).
+	SessionID string
+}
+
+// Run executes the interface until the user quits. A persistent goroutine
+// pumps server events into the program: a tea.Cmd may only return once, so
+// the event stream cannot be a command.
+func Run(ctx context.Context, c *client.Client, themeName string, opts RunOptions) error {
+	app := New(ctx, c, themeName)
+	app.SetDefaultModel(opts.DefaultModel)
+	app.resumeSessionID = opts.SessionID
+	// AllMotion (not just CellMotion) so dialog rows preselect on hover with
+	// no button held, matching dialog-select.tsx's onMouseMove/onMouseOver.
+	program := tea.NewProgram(program{app: app}, tea.WithAltScreen(), tea.WithMouseAllMotion())
+
+	events, err := c.Events(ctx, "")
+	if err != nil {
+		return err
+	}
+	go pumpEvents(program, events)
+
+	_, err = program.Run()
+	return err
+}
+
+// pumpEvents forwards every server event into the running program.
+func pumpEvents(program *tea.Program, events <-chan client.Event) {
+	for event := range events {
+		program.Send(eventMsg{event: event})
+	}
+}
+
+func (a *App) activeModelSet() bool { return a.activeModel != "" }
+
+// loadStats fetches session usage for the sidebar and footer.
+func (a *App) loadStats(sessionID string) tea.Cmd {
+	if sessionID == "" {
+		return nil
+	}
+	c := a.client
+	return func() tea.Msg {
+		stats, err := c.Stats(a.ctx, sessionID)
+		if err != nil {
+			return nil
+		}
+		return statsMsg{stats: stats}
+	}
+}
+
+type statsMsg struct{ stats *client.Stats }

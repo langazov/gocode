@@ -1,0 +1,158 @@
+// Package theme ports the TUI theme surface (packages/tui/src/theme): the
+// resolved color keys used across the interface, with dark/light defaults
+// generated from the terminal palette like the TypeScript generateSystem.
+package theme
+
+import (
+	"fmt"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// Colors mirrors ThemeResolved's core keys.
+type Colors struct {
+	Primary           lipgloss.Color
+	Secondary         lipgloss.Color
+	Accent            lipgloss.Color
+	Error             lipgloss.Color
+	Warning           lipgloss.Color
+	Success           lipgloss.Color
+	Text              lipgloss.Color
+	TextMuted         lipgloss.Color
+	Background        lipgloss.Color
+	BackgroundPanel   lipgloss.Color
+	BackgroundElement lipgloss.Color
+	Border            lipgloss.Color
+	BorderActive      lipgloss.Color
+	BorderSubtle      lipgloss.Color
+}
+
+// Theme is a named palette with the resolved keys the UI reads.
+type Theme struct {
+	Name string
+	Dark bool
+	Colors
+	// ThinkingOpacity mirrors ThemeResolved.thinkingOpacity: the alpha a
+	// reasoning header's warning color fades to once its body is showing
+	// (theme/index.ts defaults this to 0.6 when a theme doesn't set it;
+	// none of the built-in dark/light palettes here do either).
+	ThinkingOpacity float64
+}
+
+func Dark() Theme {
+	return Theme{
+		Name:            "opencode-dark",
+		Dark:            true,
+		ThinkingOpacity: 0.6,
+		Colors: Colors{
+			Primary:           lipgloss.Color("#7aa2f7"),
+			Secondary:         lipgloss.Color("#bb9af7"),
+			Accent:            lipgloss.Color("#9ece6a"),
+			Error:             lipgloss.Color("#f7768e"),
+			Warning:           lipgloss.Color("#e0af68"),
+			Success:           lipgloss.Color("#9ece6a"),
+			Text:              lipgloss.Color("#c0caf5"),
+			TextMuted:         lipgloss.Color("#565f89"),
+			Background:        lipgloss.Color("#1a1b26"),
+			BackgroundPanel:   lipgloss.Color("#16161e"),
+			BackgroundElement: lipgloss.Color("#24283b"),
+			Border:            lipgloss.Color("#2f334d"),
+			BorderActive:      lipgloss.Color("#565f89"),
+			BorderSubtle:      lipgloss.Color("#1f2335"),
+		},
+	}
+}
+
+func Light() Theme {
+	return Theme{
+		Name:            "opencode-light",
+		Dark:            false,
+		ThinkingOpacity: 0.6,
+		Colors: Colors{
+			Primary:           lipgloss.Color("#2d5f9e"),
+			Secondary:         lipgloss.Color("#7c4dbe"),
+			Accent:            lipgloss.Color("#3d9a57"),
+			Error:             lipgloss.Color("#c23a4b"),
+			Warning:           lipgloss.Color("#b26d1b"),
+			Success:           lipgloss.Color("#3d9a57"),
+			Text:              lipgloss.Color("#394052"),
+			TextMuted:         lipgloss.Color("#8b93a7"),
+			Background:        lipgloss.Color("#f7f8fa"),
+			BackgroundPanel:   lipgloss.Color("#eceef2"),
+			BackgroundElement: lipgloss.Color("#e2e5eb"),
+			Border:            lipgloss.Color("#d5d9e0"),
+			BorderActive:      lipgloss.Color("#8b93a7"),
+			BorderSubtle:      lipgloss.Color("#e8eaf0"),
+		},
+	}
+}
+
+// Tint linearly interpolates from base toward overlay by alpha (0..1), ported
+// from theme/index.ts's tint(base, overlay, alpha). Terminal cells have no
+// alpha channel, so this is also how the port renders TS's RGBA-alpha
+// fadeColor(color, alpha): FadeColor blends the color into the surface it
+// sits on (background at alpha 0, full color at alpha 1) to reproduce the
+// same visual fade without real compositing.
+func Tint(base, overlay lipgloss.Color, alpha float64) lipgloss.Color {
+	br, bg, bb := hexToRGB(string(base))
+	or, og, ob := hexToRGB(string(overlay))
+	r := br + (or-br)*alpha
+	g := bg + (og-bg)*alpha
+	b := bb + (ob-bb)*alpha
+	return lipgloss.Color(rgbToHex(round255(r), round255(g), round255(b)))
+}
+
+// FadeColor is the terminal-safe equivalent of signal.ts/prompt's
+// fadeColor(color, alpha): color blended toward background by alpha.
+func FadeColor(background, color lipgloss.Color, alpha float64) lipgloss.Color {
+	return Tint(background, color, alpha)
+}
+
+func hexToRGB(hex string) (r, g, b float64) {
+	hex = trimHash(hex)
+	if len(hex) != 6 {
+		return 0, 0, 0
+	}
+	var ri, gi, bi int
+	fmt.Sscanf(hex, "%02x%02x%02x", &ri, &gi, &bi)
+	return float64(ri), float64(gi), float64(bi)
+}
+
+func trimHash(hex string) string {
+	if len(hex) > 0 && hex[0] == '#' {
+		return hex[1:]
+	}
+	return hex
+}
+
+func rgbToHex(r, g, b int) string {
+	return fmt.Sprintf("#%02x%02x%02x", clamp255(r), clamp255(g), clamp255(b))
+}
+
+func round255(v float64) int {
+	if v < 0 {
+		return 0
+	}
+	return int(v + 0.5)
+}
+
+func clamp255(v int) int {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return v
+}
+
+// Resolve picks a theme by name; unknown names fall back to dark.
+func Resolve(name string) Theme {
+	switch name {
+	case "opencode", "opencode-dark", "dark":
+		return Dark()
+	case "opencode-light", "light":
+		return Light()
+	}
+	return Dark()
+}

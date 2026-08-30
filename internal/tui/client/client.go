@@ -1,0 +1,409 @@
+// Package client is the TUI's API client, the Go equivalent of the
+// TypeScript TUI's SDK usage against the opencode server.
+package client
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"sort"
+	"strings"
+	"time"
+)
+
+type Client struct {
+	BaseURL string
+	HTTP    *http.Client
+}
+
+func New(baseURL string) *Client {
+	return &Client{
+		BaseURL: strings.TrimRight(baseURL, "/"),
+		HTTP:    &http.Client{Timeout: 30 * time.Second},
+	}
+}
+
+type Session struct {
+	ID          string    `json:"id"`
+	ProjectID   string    `json:"projectID"`
+	Title       string    `json:"title"`
+	Directory   string    `json:"directory"`
+	Version     string    `json:"version"`
+	Model       *ModelRef `json:"model,omitempty"`
+	TimeCreated int64     `json:"timeCreated"`
+	TimeUpdated int64     `json:"timeUpdated"`
+}
+
+type ModelRef struct {
+	ProviderID string `json:"providerID"`
+	ID         string `json:"id"`
+	Variant    string `json:"variant,omitempty"`
+}
+
+type Message struct {
+	ID          string          `json:"id"`
+	SessionID   string          `json:"sessionID"`
+	Type        string          `json:"type"`
+	Seq         int             `json:"seq"`
+	TimeCreated int64           `json:"timeCreated"`
+	Data        json.RawMessage `json:"data"`
+}
+
+type PermissionRequest struct {
+	ID        string   `json:"id"`
+	SessionID string   `json:"sessionID"`
+	Action    string   `json:"action"`
+	Resources []string `json:"resources"`
+}
+
+type CreateInput struct {
+	Directory string `json:"directory"`
+	Title     string `json:"title,omitempty"`
+}
+
+func (c *Client) do(ctx context.Context, method, path string, body any, out any) error {
+	var reader io.Reader
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		reader = bytes.NewReader(encoded)
+	} else {
+		reader = nil
+	}
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
+	if err != nil {
+		return err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		data, _ := io.ReadAll(io.LimitReader(res.Body, 4096))
+		return fmt.Errorf("%s %s: %d %s", method, path, res.StatusCode, strings.TrimSpace(string(data)))
+	}
+	if out == nil {
+		return nil
+	}
+	return json.NewDecoder(res.Body).Decode(out)
+}
+
+func (c *Client) Sessions(ctx context.Context) ([]Session, error) {
+	var out []Session
+	err := c.do(ctx, http.MethodGet, "/api/session", nil, &out)
+	return out, err
+}
+
+func (c *Client) Session(ctx context.Context, id string) (*Session, error) {
+	var out Session
+	err := c.do(ctx, http.MethodGet, "/api/session/"+id, nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) CreateSession(ctx context.Context, input CreateInput) (*Session, error) {
+	var out Session
+	err := c.do(ctx, http.MethodPost, "/api/session", input, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) Prompt(ctx context.Context, sessionID, text string) (string, error) {
+	var out struct {
+		MessageID string `json:"messageID"`
+	}
+	err := c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/prompt", map[string]string{"text": text}, &out)
+	return out.MessageID, err
+}
+
+func (c *Client) Interrupt(ctx context.Context, sessionID string) error {
+	return c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/interrupt", map[string]any{}, nil)
+}
+
+func (c *Client) Messages(ctx context.Context, sessionID string) ([]Message, error) {
+	var out []Message
+	err := c.do(ctx, http.MethodGet, "/api/session/"+sessionID+"/message", nil, &out)
+	return out, err
+}
+
+func (c *Client) Permissions(ctx context.Context, sessionID string) ([]PermissionRequest, error) {
+	var out []PermissionRequest
+	err := c.do(ctx, http.MethodGet, "/api/session/"+sessionID+"/permission", nil, &out)
+	return out, err
+}
+
+func (c *Client) Reply(ctx context.Context, sessionID, requestID, reply string) error {
+	return c.do(ctx, http.MethodPost,
+		"/api/session/"+sessionID+"/permission/"+requestID+"/reply",
+		map[string]string{"reply": reply}, nil)
+}
+
+// Event is a committed event from the /api/event SSE stream.
+type Event struct {
+	ID      string         `json:"id"`
+	Type    string         `json:"type"`
+	Data    map[string]any `json:"data,omitempty"`
+	Seq     *int           `json:"seq,omitempty"`
+	Session string         `json:"sessionID,omitempty"`
+}
+
+// Events streams the server's event SSE feed until the context is canceled.
+func (c *Client) Events(ctx context.Context, sessionID string) (<-chan Event, error) {
+	url := c.BaseURL + "/api/event"
+	if sessionID != "" {
+		url += "?sessionID=" + sessionID
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/event-stream")
+	streamClient := &http.Client{Timeout: 0}
+	res, err := streamClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		res.Body.Close()
+		return nil, fmt.Errorf("event stream: %d", res.StatusCode)
+	}
+	out := make(chan Event, 128)
+	go func() {
+		defer res.Body.Close()
+		defer close(out)
+		scanner := bufio.NewScanner(res.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+		for scanner.Scan() {
+			line := strings.TrimSpace(scanner.Text())
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			var event Event
+			if json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &event) == nil {
+				select {
+				case out <- event:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out, nil
+}
+
+// AssistantData mirrors the projected assistant message payload.
+type AssistantData struct {
+	Agent string   `json:"agent"`
+	Model ModelRef `json:"model"`
+	Time  struct {
+		Created   int64 `json:"created"`
+		Completed int64 `json:"completed"`
+	} `json:"time"`
+	Content []struct {
+		Type string `json:"type"`
+		ID   string `json:"id"`
+		Text string `json:"text"`
+		Name string `json:"name"`
+		// Time is only populated for text/reasoning parts (set by
+		// projectContentStarted/Ended); Created marks when the part started
+		// streaming, Completed when it finished — reasoningBlock uses these
+		// for the "done" state and duration label.
+		Time *struct {
+			Created   int64 `json:"created"`
+			Completed int64 `json:"completed"`
+		} `json:"time"`
+		State *struct {
+			Status string         `json:"status"`
+			Input  map[string]any `json:"input"`
+			Output string         `json:"output"`
+			Error  string         `json:"error"`
+		} `json:"state"`
+	} `json:"content"`
+	Finish string `json:"finish"`
+	Error  *struct {
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
+type UserData struct {
+	Text  string           `json:"text"`
+	Files []FileAttachment `json:"files,omitempty"`
+}
+
+// FileAttachment mirrors internal/session.FileAttachment (the subset the
+// TUI renders as a pill: a directory-vs-file badge plus the name).
+type FileAttachment struct {
+	Mime string `json:"mime"`
+	Name string `json:"name,omitempty"`
+}
+
+func DecodeUser(data json.RawMessage) (UserData, error) {
+	var out UserData
+	err := json.Unmarshal(data, &out)
+	return out, err
+}
+
+func DecodeAssistant(data json.RawMessage) (AssistantData, error) {
+	var out AssistantData
+	err := json.Unmarshal(data, &out)
+	return out, err
+}
+
+type Model struct {
+	ProviderID string `json:"providerID"`
+	ID         string `json:"id"`
+	Name       string `json:"name"`
+}
+
+type Provider struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+}
+
+type Agent struct {
+	ID          string `json:"id"`
+	Mode        string `json:"mode"`
+	Description string `json:"description,omitempty"`
+}
+
+type Todo struct {
+	Content  string `json:"content"`
+	Status   string `json:"status"`
+	Priority string `json:"priority"`
+	Position int    `json:"position"`
+}
+
+func (c *Client) Models(ctx context.Context) ([]Model, error) {
+	var out []Model
+	err := c.do(ctx, http.MethodGet, "/api/model", nil, &out)
+	return out, err
+}
+
+func (c *Client) Providers(ctx context.Context) ([]Provider, error) {
+	var out []Provider
+	err := c.do(ctx, http.MethodGet, "/api/provider", nil, &out)
+	return out, err
+}
+
+func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
+	var out []Agent
+	err := c.do(ctx, http.MethodGet, "/api/agent", nil, &out)
+	return out, err
+}
+
+// MCPServer is one entry from GET /api/mcp, mirroring the {name, status,
+// error?} shape TuiPluginApi.state.mcp() exposes to sidebar/footer/status
+// plugins in the original — status is one of "connected", "disabled",
+// "failed", "needs_auth", "needs_client_registration".
+type MCPServer struct {
+	Name   string `json:"name"`
+	Status string `json:"status"`
+	Error  string `json:"error,omitempty"`
+}
+
+// MCPServers fetches live MCP server status, converting the server's
+// name-keyed map into a name-sorted slice (state.mcp()'s shape).
+func (c *Client) MCPServers(ctx context.Context) ([]MCPServer, error) {
+	var raw map[string]struct {
+		Status string `json:"status"`
+		Error  string `json:"error,omitempty"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/mcp", nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]MCPServer, 0, len(raw))
+	for name, status := range raw {
+		out = append(out, MCPServer{Name: name, Status: status.Status, Error: status.Error})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out, nil
+}
+
+func (c *Client) SetModel(ctx context.Context, sessionID, providerID, modelID string) error {
+	return c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/model", map[string]string{
+		"providerID": providerID, "id": modelID,
+	}, nil)
+}
+
+func (c *Client) SetAgent(ctx context.Context, sessionID, agent string) error {
+	return c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/agent", map[string]string{
+		"agent": agent,
+	}, nil)
+}
+
+func (c *Client) Rename(ctx context.Context, sessionID, title string) error {
+	return c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/rename", map[string]string{
+		"title": title,
+	}, nil)
+}
+
+func (c *Client) Delete(ctx context.Context, sessionID string) error {
+	return c.do(ctx, http.MethodDelete, "/api/session/"+sessionID, nil, nil)
+}
+
+func (c *Client) Todos(ctx context.Context, sessionID string) ([]Todo, error) {
+	var out []Todo
+	err := c.do(ctx, http.MethodGet, "/api/session/"+sessionID+"/todo", nil, &out)
+	return out, err
+}
+
+type Stats struct {
+	Cost             float64 `json:"cost"`
+	TokensInput      int     `json:"tokensInput"`
+	TokensOutput     int     `json:"tokensOutput"`
+	TokensReasoning  int     `json:"tokensReasoning"`
+	TokensCacheRead  int     `json:"tokensCacheRead"`
+	TokensCacheWrite int     `json:"tokensCacheWrite"`
+	Messages         int     `json:"messages"`
+}
+
+func (c *Client) Stats(ctx context.Context, sessionID string) (*Stats, error) {
+	var out Stats
+	err := c.do(ctx, http.MethodGet, "/api/session/"+sessionID+"/stats", nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Compact triggers immediate context compaction for a session.
+func (c *Client) Compact(ctx context.Context, sessionID string) (bool, error) {
+	var out struct {
+		Compacted bool `json:"compacted"`
+	}
+	err := c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/compact", map[string]any{}, &out)
+	return out.Compacted, err
+}
+
+// Fork copies the session up to messageID (empty = all) into a child.
+func (c *Client) Fork(ctx context.Context, sessionID, messageID string) (*Session, error) {
+	var out Session
+	err := c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/fork", map[string]string{
+		"messageID": messageID,
+	}, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Children lists sessions forked from the given parent.
+func (c *Client) Children(ctx context.Context, sessionID string) ([]Session, error) {
+	var out []Session
+	err := c.do(ctx, http.MethodGet, "/api/session/"+sessionID+"/children", nil, &out)
+	return out, err
+}
