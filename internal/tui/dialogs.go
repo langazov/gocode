@@ -3,15 +3,16 @@ package tui
 import (
 	"context"
 	"fmt"
+	"image/color"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // Dialog panel sizes mirror ui/dialog.tsx: medium 60, large 88 (xlarge 116
@@ -251,7 +252,7 @@ func (a *App) moveSelectionTo(o *overlay, index int) {
 
 // onPanel styles dialog text: explicit panel background so composed segments
 // keep the tint after each segment's reset sequence.
-func (a *App) onPanel(fg lipgloss.Color, bold bool) lipgloss.Style {
+func (a *App) onPanel(fg color.Color, bold bool) lipgloss.Style {
 	s := lipgloss.NewStyle().Foreground(fg).Background(a.theme.BackgroundPanel)
 	if bold {
 		s = s.Bold(true)
@@ -576,7 +577,7 @@ func (a *App) listRow(o *overlay, item overlayItem, index, width int) string {
 			bg = a.theme.Error
 		}
 	}
-	segment := func(fg lipgloss.Color, bold bool, text string) string {
+	segment := func(fg color.Color, bold bool, text string) string {
 		s := lipgloss.NewStyle().Foreground(fg).Background(bg)
 		if bold {
 			s = s.Bold(true)

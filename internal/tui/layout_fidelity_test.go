@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // These tests guard the additional session-view fidelity fixes: the
@@ -186,8 +187,12 @@ func TestSidebarFooterShowsPathAndVersion(t *testing.T) {
 	app.sidebar = true
 	app.cwd = "/home/tester/project"
 	app.homeDir = "/home/tester"
+	app.gitBranch = "" // isolate from this actual repo's real branch/name length
 
-	view := app.sidebarView()
+	// lipgloss v2's Style.Render always emits real ANSI (v1 no-op'd styling
+	// off-TTY, which is what let these plain-substring checks work
+	// unmodified) — strip it back to plain text for a structural check.
+	view := ansi.Strip(app.sidebarView())
 	if !strings.Contains(view, "~/project") {
 		t.Fatalf("sidebar footer should show the abbreviated path, got:\n%s", view)
 	}
@@ -301,6 +306,7 @@ func TestPromptBoxHasSymmetricLeftRightPadding(t *testing.T) {
 	width := 60
 	box := app.promptBox(width)
 	for i, line := range strings.Split(box, "\n") {
+		line = ansi.Strip(line) // see TestSidebarFooterShowsPathAndVersion's comment
 		if !strings.HasSuffix(line, "  ") {
 			t.Fatalf("line %d should end with the 2-column right padding TS's Prompt has, got %q", i, line)
 		}

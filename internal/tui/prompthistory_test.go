@@ -162,7 +162,7 @@ func TestHistoryArrowsIgnoredMidLine(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.history.Append("earlier prompt")
 	app.input.SetValue("draft text")
-	app.input.SetCursor(3) // mid-line: neither boundary
+	app.input.SetCursorColumn(3) // mid-line: neither boundary
 
 	if app.inputAtStart() || app.inputAtEnd() {
 		t.Fatalf("cursor set mid-line should be at neither boundary")

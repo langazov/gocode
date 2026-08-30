@@ -15,9 +15,9 @@ import (
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/anomalyco/opencode-go/internal/tui/theme"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 const (
@@ -138,13 +138,12 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 	// the box tint instead and mute the placeholder like the original.
 	element := lipgloss.NewStyle().Background(resolved.BackgroundElement)
 	muted := lipgloss.NewStyle().Foreground(resolved.TextMuted)
-	focused, blurred := textarea.DefaultStyles()
-	focused.CursorLine = element
-	blurred.CursorLine = element
-	focused.Placeholder = muted
-	blurred.Placeholder = muted
-	input.FocusedStyle = focused
-	input.BlurredStyle = blurred
+	taStyles := textarea.DefaultStyles(resolved.Dark)
+	taStyles.Focused.CursorLine = element
+	taStyles.Blurred.CursorLine = element
+	taStyles.Focused.Placeholder = muted
+	taStyles.Blurred.Placeholder = muted
+	input.SetStyles(taStyles)
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
 	return &App{
@@ -174,7 +173,8 @@ type tickMsg time.Time
 type leaderTimeoutMsg struct{}
 
 func (a *App) Init() tea.Cmd {
-	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.tick(), tea.SetWindowTitle(a.desiredWindowTitle())}
+	a.windowTitle = a.desiredWindowTitle()
+	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.tick()}
 	if a.resumeSessionID != "" {
 		cmds = append(cmds, a.resumeSessionCmd(a.resumeSessionID))
 	}
@@ -357,13 +357,12 @@ func (a *App) loadPermissions(sessionID string) tea.Cmd {
 // Update dispatches msg then syncs the terminal window title, mirroring
 // app.tsx's createEffect over the current route/session — rather than
 // hooking every place a.view/a.active changes, this just recomputes the
-// desired title every tick and only emits tea.SetWindowTitle when it
-// actually changed.
+// desired title every tick; the program adapter's View() surfaces
+// a.windowTitle in the returned tea.View, which bubbletea v2 applies as the
+// declarative replacement for v1's tea.SetWindowTitle command.
 func (a *App) Update(msg tea.Msg) tea.Cmd {
 	cmd := a.update(msg)
-	if title, changed := a.syncWindowTitle(); changed {
-		return tea.Batch(cmd, tea.SetWindowTitle(title))
-	}
+	a.syncWindowTitle()
 	return cmd
 }
 
@@ -859,7 +858,18 @@ func (p program) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, p.app.Update(msg)
 }
 
-func (p program) View() string { return p.app.View() }
+// View builds the declarative tea.View bubbletea v2 replaced v1's plain
+// string + tea.WithAltScreen()/tea.WithMouseAllMotion() program options
+// with. AllMotion (not just CellMotion) so dialog rows preselect on hover
+// with no button held, matching dialog-select.tsx's onMouseMove/onMouseOver
+// (same rationale as the removed Run() options it replaces).
+func (p program) View() tea.View {
+	v := tea.NewView(p.app.View())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeAllMotion
+	v.WindowTitle = p.app.windowTitle
+	return v
+}
 
 type quitMsg struct{}
 
@@ -991,9 +1001,9 @@ func Run(ctx context.Context, c *client.Client, themeName string, opts RunOption
 	app := New(ctx, c, themeName)
 	app.SetDefaultModel(opts.DefaultModel)
 	app.resumeSessionID = opts.SessionID
-	// AllMotion (not just CellMotion) so dialog rows preselect on hover with
-	// no button held, matching dialog-select.tsx's onMouseMove/onMouseOver.
-	program := tea.NewProgram(program{app: app}, tea.WithAltScreen(), tea.WithMouseAllMotion())
+	// AltScreen/MouseMode are now declared per-frame on the returned tea.View
+	// (see program.View()) rather than as ProgramOptions here.
+	program := tea.NewProgram(program{app: app})
 
 	events, err := c.Events(ctx, "")
 	if err != nil {

@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // These tests guard the session-view fixes made to match

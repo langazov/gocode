@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 // spinnerFrames mirrors the braille spinner used by the TypeScript TUI.

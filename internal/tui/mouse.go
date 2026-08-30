@@ -8,8 +8,8 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // This file ports packages/tui/src mouse support to Bubble Tea's cell-mouse
@@ -63,20 +63,22 @@ func (s *textSelection) ordered() (startRow, startCol, endRow, endCol int) {
 
 // handleMouse dispatches a tea.MouseMsg, mirroring the three opentui handlers
 // this port cares about: wheel scroll, drag-select, and dialog click/hover.
+// bubbletea v2 splits what v1 encoded as a single MouseMsg + Action field
+// into four concrete message types; the message's own type now says what
+// v1's Action field used to.
 func (a *App) handleMouse(msg tea.MouseMsg) tea.Cmd {
 	if a.quitting || a.width == 0 {
 		return nil
 	}
-	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
-		return a.handleWheel(msg)
-	}
-	switch msg.Action {
-	case tea.MouseActionPress:
-		return a.handleMousePress(msg)
-	case tea.MouseActionMotion:
-		return a.handleMouseMotion(msg)
-	case tea.MouseActionRelease:
-		return a.handleMouseRelease(msg)
+	switch msg := msg.(type) {
+	case tea.MouseWheelMsg:
+		return a.handleWheel(msg.Mouse())
+	case tea.MouseClickMsg:
+		return a.handleMousePress(msg.Mouse())
+	case tea.MouseMotionMsg:
+		return a.handleMouseMotion(msg.Mouse())
+	case tea.MouseReleaseMsg:
+		return a.handleMouseRelease(msg.Mouse())
 	}
 	return nil
 }
@@ -86,8 +88,8 @@ func (a *App) handleMouse(msg tea.MouseMsg) tea.Cmd {
 // affordance belongs here since Bubble Tea has no such native scrollbox) or,
 // with no dialog open, the chat timeline (pgup/pgdown's finer-grained mouse
 // equivalent).
-func (a *App) handleWheel(msg tea.MouseMsg) tea.Cmd {
-	up := msg.Button == tea.MouseButtonWheelUp
+func (a *App) handleWheel(msg tea.Mouse) tea.Cmd {
+	up := msg.Button == tea.MouseWheelUp
 	if a.overlay != nil {
 		if len(a.overlay.items) == 0 {
 			return nil
@@ -115,8 +117,8 @@ func (a *App) handleWheel(msg tea.MouseMsg) tea.Cmd {
 
 // handleMousePress starts a drag-selection and, over an open dialog's list,
 // preselects the row under the cursor (dialog-select.tsx's onMouseDown moveTo).
-func (a *App) handleMousePress(msg tea.MouseMsg) tea.Cmd {
-	if msg.Button != tea.MouseButtonLeft {
+func (a *App) handleMousePress(msg tea.Mouse) tea.Cmd {
+	if msg.Button != tea.MouseLeft {
 		return nil
 	}
 	a.selection.begin(msg.Y, msg.X)
@@ -130,7 +132,7 @@ func (a *App) handleMousePress(msg tea.MouseMsg) tea.Cmd {
 
 // handleMouseMotion extends an active drag-selection, or — with no button
 // held — preselects the dialog row under the cursor (onMouseOver moveTo).
-func (a *App) handleMouseMotion(msg tea.MouseMsg) tea.Cmd {
+func (a *App) handleMouseMotion(msg tea.Mouse) tea.Cmd {
 	if a.selection.active {
 		a.selection.extend(msg.Y, msg.X)
 		return nil
@@ -146,7 +148,7 @@ func (a *App) handleMouseMotion(msg tea.MouseMsg) tea.Cmd {
 // handleMouseRelease ends a drag: a real range copies to the clipboard
 // (util/selection.ts's copy) and consumes the click; otherwise it's a plain
 // click, dispatched to whatever is under the cursor.
-func (a *App) handleMouseRelease(msg tea.MouseMsg) tea.Cmd {
+func (a *App) handleMouseRelease(msg tea.Mouse) tea.Cmd {
 	dragged := a.selection.active && a.selection.hasRange()
 	a.selection.active = false
 	if dragged {
@@ -155,7 +157,7 @@ func (a *App) handleMouseRelease(msg tea.MouseMsg) tea.Cmd {
 		return cmd
 	}
 	a.selection.clear()
-	if msg.Button != tea.MouseButtonLeft {
+	if msg.Button != tea.MouseLeft {
 		return nil
 	}
 	return a.handleClick(msg.X, msg.Y)

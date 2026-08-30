@@ -2,12 +2,13 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/anomalyco/opencode-go/internal/tui/theme"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
 func (a *App) frame(content string) string {
@@ -216,12 +217,11 @@ func promptMaxWidth(width int) int {
 }
 
 // sessionPromptBoxWidth is the Width promptBox is given in the chat view.
-// It's chatWidth()-2, not chatWidth()-1: lipgloss renders a 1-char left
-// border *outside* the declared width (verified directly: Width(20)+a
-// 1-char left border renders 21 cells wide), so border(1)+Width(chatWidth()-2)
-// totals chatWidth()-1 — matching every other bordered timeline panel
-// (userBlock, errBlock, blockToolStyle), all sized to the same total as
-// assistantTextBlock's own max reach (indent(3) + renderMarkdown's
+// It's chatWidth()-2, not chatWidth()-1: promptBox's own borderBoxWidth()
+// call adds the 1-char left border's column back on top of this value to
+// reach a total of chatWidth()-1 — matching every other bordered timeline
+// panel (userBlock, errBlock, blockToolStyle), all sized to the same total
+// as assistantTextBlock's own max reach (indent(3) + renderMarkdown's
 // contentWidth()-4 wrap width = contentWidth()-1 = chatWidth()-1), rather
 // than widening the markdown side to fill a wider box.
 func (a *App) sessionPromptBoxWidth() int {
@@ -243,7 +243,7 @@ func (a *App) promptBox(width int) string {
 		PaddingTop(1).
 		PaddingLeft(2).
 		PaddingRight(2).
-		Width(width)
+		Width(borderBoxWidth(width))
 	content := strings.TrimRight(a.input.View(), "\n")
 	// The editor's viewport pads its row with plain unstyled spaces, which
 	// would break the box tint; drop the tail and let Width() refill it.
@@ -447,7 +447,7 @@ func (a *App) permissionBanner() string {
 		PaddingBottom(1).
 		PaddingLeft(1).
 		PaddingRight(3).
-		Width(a.contentWidth() - 2)
+		Width(borderBoxWidth(a.contentWidth() - 2))
 	return style.Render(strings.Join(content, "\n")) + "\n" + barStyle.Render(bar)
 }
 
@@ -522,7 +522,7 @@ func (a *App) permissionBody(request *client.PermissionRequest) string {
 // part of TS's Status union) LoadAsync sets as a placeholder while a
 // server's initial background connect is still in flight, so it never
 // reads as simply missing during startup.
-func mcpDotColor(t theme.Theme, status string) lipgloss.Color {
+func mcpDotColor(t theme.Theme, status string) color.Color {
 	switch status {
 	case "connected":
 		return t.Success
@@ -778,12 +778,12 @@ var logoRight = []string{
 // text+bold, applying the original's character substitution (_ → shadowed
 // space, ^ → ▀, ~ → shadowed ▀, , → ▄).
 func (a *App) renderLogoLine(left, right string, line int) string {
-	renderHalf := func(text string, fg lipgloss.Color, bold bool) string {
+	renderHalf := func(text string, fg color.Color, bold bool) string {
 		style := lipgloss.NewStyle().Foreground(fg)
 		if bold {
 			style = style.Bold(true)
 		}
-		shadow := lipgloss.Color(blend(string(a.theme.Background), string(fg), 0.25))
+		shadow := theme.Tint(a.theme.Background, fg, 0.25)
 		shadowStyle := lipgloss.NewStyle().Foreground(shadow)
 		if bold {
 			shadowStyle = shadowStyle.Bold(true)
@@ -855,23 +855,4 @@ func centerBlock(width int, block string) string {
 		lines[i] = prefix + line
 	}
 	return strings.Join(lines, "\n")
-}
-
-// blend mixes two hex colors, t degrees toward b (used for the logo shadow).
-func blend(aHex, bHex string, t float64) string {
-	parse := func(c string) (float64, float64, float64) {
-		c = strings.TrimPrefix(c, "#")
-		if len(c) == 6 {
-			var r, g, b int
-			fmt.Sscanf(c, "%02x%02x%02x", &r, &g, &b)
-			return float64(r), float64(g), float64(b)
-		}
-		return 0, 0, 0
-	}
-	r1, g1, b1 := parse(aHex)
-	r2, g2, b2 := parse(bHex)
-	mix := func(v1, v2 float64) int {
-		return int(v1 + (v2-v1)*t)
-	}
-	return fmt.Sprintf("#%02x%02x%02x", mix(r1, r2), mix(g1, g2), mix(b1, b2))
 }

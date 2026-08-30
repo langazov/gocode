@@ -8,9 +8,9 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"charm.land/lipgloss/v2"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/anomalyco/opencode-go/internal/tui/theme"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -114,11 +114,11 @@ func (a *App) renderMessage(message client.Message, isLast bool) (string, []reas
 // backgroundPanel block (padding 1/1/2) with the plain message text, plus a
 // muted timestamp when enabled.
 //
-// Width is contentWidth()-2 (not -1): border(1)+Width(contentWidth()-2)
-// totals contentWidth()-1, matching assistantTextBlock's own max reach
-// (indent(3) + renderMarkdown wrap width contentWidth()-4 = contentWidth()-1)
-// — every bordered timeline panel (userBlock, errBlock, blockToolStyle) and
-// the session prompt box shrink to that same total instead of widening the
+// Width is borderBoxWidth(contentWidth()-2) so the rendered total lands at
+// contentWidth()-1, matching assistantTextBlock's own max reach (indent(3) +
+// renderMarkdown wrap width contentWidth()-4 = contentWidth()-1) — every
+// bordered timeline panel (userBlock, errBlock, blockToolStyle) and the
+// session prompt box shrink to that same total instead of widening the
 // markdown side, since renderMarkdown's wrap decisions run on raw source
 // width and need that spare column of margin (see markdown.go's doc
 // comment) rather than being pushed out to fill a wider box.
@@ -139,7 +139,7 @@ func (a *App) userBlock(message client.Message, data client.UserData) string {
 		PaddingTop(1).
 		PaddingBottom(1).
 		PaddingLeft(2).
-		Width(a.contentWidth() - 2)
+		Width(borderBoxWidth(a.contentWidth() - 2))
 	return style.Render(strings.Join(lines, "\n"))
 }
 
@@ -254,7 +254,7 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 			PaddingTop(1).
 			PaddingBottom(1).
 			PaddingLeft(2).
-			Width(a.contentWidth() - 2)
+			Width(borderBoxWidth(a.contentWidth() - 2))
 		appendBlock(errBlock.Render(a.styles().Muted.Render(data.Error.Message)))
 	}
 
@@ -518,7 +518,7 @@ func (a *App) blockToolStyle() lipgloss.Style {
 		PaddingTop(1).
 		PaddingBottom(1).
 		PaddingLeft(2).
-		Width(a.contentWidth() - 2)
+		Width(borderBoxWidth(a.contentWidth() - 2))
 }
 
 // bashBlock mirrors Shell's BlockTool: the command line (spinner while
@@ -805,4 +805,17 @@ func wrapText(value string, width int) string {
 // splitBorder mirrors SplitBorder: the ┃ vertical bar.
 func splitBorder() lipgloss.Border {
 	return lipgloss.Border{Left: "┃"}
+}
+
+// borderBoxWidth converts a "content+padding width, with the single left
+// border column rendered outside it" total — what every single-left-border
+// panel in this file (userBlock, errBlock, blockToolStyle, promptBox) was
+// tuned against under lipgloss v1's Style.Width(), which excluded the
+// border — into what lipgloss v2's Width() needs: v2's Width() is true
+// border-box (the declared value IS the total rendered size, border
+// included), so reaching the same on-screen total now needs the border
+// column added back into the argument instead of left for the border to add
+// on top. One left border column, hence +1.
+func borderBoxWidth(contentAndPadding int) int {
+	return contentAndPadding + 1
 }
