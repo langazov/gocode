@@ -1,2 +1,3 @@
-opencode
-build/
+/opencode
+/go/
+/build/
