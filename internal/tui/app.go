@@ -17,6 +17,7 @@ import (
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
 )
 
@@ -113,6 +114,13 @@ type App struct {
 	chatReasoningRows map[int]string
 	chatWindowPad     int
 	chatWindowStart   int
+
+	// mdRenderer caches the glamour renderer built for the current
+	// theme+width (see markdown.go): constructing one loads chroma's lexer/
+	// style registries, too costly to redo on every streamed delta.
+	mdRenderer      *glamour.TermRenderer
+	mdRendererWidth int
+	mdRendererTheme string
 }
 
 // placeholders mirrors the Home route's rotating prompt suggestions.

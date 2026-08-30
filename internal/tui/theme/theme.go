@@ -125,6 +125,14 @@ func rgbToHex(r, g, b int) string {
 	return fmt.Sprintf("#%02x%02x%02x", clamp255(r), clamp255(g), clamp255(b))
 }
 
+// Hex renders a color.Color back to a "#rrggbb" string, for handing theme
+// colors to libraries (e.g. glamour's ansi.StyleConfig) that want a literal
+// hex string rather than a color.Color.
+func Hex(c color.Color) string {
+	r, g, b := channels(c)
+	return rgbToHex(round255(r), round255(g), round255(b))
+}
+
 func round255(v float64) int {
 	if v < 0 {
 		return 0
