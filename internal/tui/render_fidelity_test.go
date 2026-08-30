@@ -53,7 +53,7 @@ func TestSettlementLineShowsDurationOnlyWhenFinal(t *testing.T) {
 }
 
 func TestToolRowOnlySpinsForBashAndRead(t *testing.T) {
-	app := &App{width: 100, height: 30, spinnerFrame: 0}
+	app := &App{width: 100, height: 30, spinnerFrame: 0, animationsEnabled: true}
 	msg := client.Message{}
 	running := &struct {
 		Status string         `json:"status"`

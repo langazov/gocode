@@ -64,14 +64,6 @@ func (a *App) contentWidth() int {
 	return w
 }
 
-func (a *App) bodyWidth() int {
-	width := a.width - 8
-	if width < 20 {
-		return 20
-	}
-	return width
-}
-
 // viewChat mirrors the Session route: a scrollable message timeline sticky to
 // the bottom inside a column padded 2/2/1 (paddingLeft, paddingRight,
 // paddingBottom, gap 1), the permission prompt above the editor, then the
@@ -134,9 +126,6 @@ func (a *App) viewChat() string {
 		a.indentBlock(a.chatFooter()))
 	main := strings.Join(chat, "\n")
 
-	if toast := a.viewToast(a.bodyWidth() + 6); toast != "" {
-		main = strings.TrimRight(main, "\n") + "\n" + a.indentBlock(toast)
-	}
 	// TS's timeline is a flexGrow scrollbox with stickyScroll="bottom": a
 	// short conversation's messages (and the prompt/footer glued below it)
 	// sit at the bottom of the column, with any unused space above them —

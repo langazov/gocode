@@ -18,6 +18,7 @@ type Colors struct {
 	Primary           color.Color
 	Secondary         color.Color
 	Accent            color.Color
+	Info              color.Color
 	Error             color.Color
 	Warning           color.Color
 	Success           color.Color
@@ -52,6 +53,7 @@ func Dark() Theme {
 			Primary:           lipgloss.Color("#7aa2f7"),
 			Secondary:         lipgloss.Color("#bb9af7"),
 			Accent:            lipgloss.Color("#9ece6a"),
+			Info:              lipgloss.Color("#7dcfff"),
 			Error:             lipgloss.Color("#f7768e"),
 			Warning:           lipgloss.Color("#e0af68"),
 			Success:           lipgloss.Color("#9ece6a"),
@@ -76,6 +78,7 @@ func Light() Theme {
 			Primary:           lipgloss.Color("#2d5f9e"),
 			Secondary:         lipgloss.Color("#7c4dbe"),
 			Accent:            lipgloss.Color("#3d9a57"),
+			Info:              lipgloss.Color("#0e7490"),
 			Error:             lipgloss.Color("#c23a4b"),
 			Warning:           lipgloss.Color("#b26d1b"),
 			Success:           lipgloss.Color("#3d9a57"),

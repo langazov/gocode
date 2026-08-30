@@ -3,6 +3,7 @@ package tui
 import (
 	"encoding/base64"
 	"fmt"
+	"image/color"
 	"os"
 	"os/exec"
 	"strings"
@@ -16,14 +17,20 @@ import (
 // spinnerFrames mirrors the braille spinner used by the TypeScript TUI.
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-const (
-	toastTTL    = 3 * time.Second
-	spinnerTick = 120 * time.Millisecond
-)
+const spinnerTick = 120 * time.Millisecond
+
+// spinnerGlyph ports Spinner's <Show when={kv.get("animations_enabled")}>:
+// the animated frame, or a static "⋯" when animations are disabled — same
+// fallback glyph as the TSX's `fallback={<text>⋯ {children}</text>}`.
+func (a *App) spinnerGlyph() string {
+	if !a.animationsEnabled {
+		return "⋯"
+	}
+	return spinnerFrames[a.spinnerFrame%len(spinnerFrames)]
+}
 
 func (a *App) spinnerLabel() string {
-	frame := spinnerFrames[a.spinnerFrame%len(spinnerFrames)]
-	return a.styles().Warning.Render(frame + " working…")
+	return a.styles().Warning.Render(a.spinnerGlyph() + " working…")
 }
 
 type spinnerTickMsg struct{}
@@ -35,42 +42,165 @@ func (a *App) startSpinner() tea.Cmd {
 	return tea.Tick(spinnerTick, func(time.Time) tea.Msg { return spinnerTickMsg{} })
 }
 
-// toast is a transient notification, mirroring ui/toast.tsx.
+// toastVariant mirrors ToastOptions.variant.
+type toastVariant int
+
+const (
+	toastInfo toastVariant = iota
+	toastSuccess
+	toastWarning
+	toastError
+)
+
+// defaultToastDuration mirrors toast.tsx's `options.duration ?? 5000`.
+const defaultToastDuration = 5 * time.Second
+
+// toast is a transient notification, mirroring ui/toast.tsx's ToastOptions.
 type toast struct {
+	title   string
 	text    string
-	isError bool
+	variant toastVariant
 	expires time.Time
 }
 
+// toastOptions mirrors ToastInput (ToastOptions with an optional duration).
+type toastOptions struct {
+	title    string
+	message  string
+	variant  toastVariant
+	duration time.Duration
+}
+
+// showToastOptions mirrors useToast().show(options): full control over
+// title/variant/duration.
+func (a *App) showToastOptions(opts toastOptions) tea.Cmd {
+	duration := opts.duration
+	if duration <= 0 {
+		duration = defaultToastDuration
+	}
+	a.toast = &toast{title: opts.title, text: opts.message, variant: opts.variant, expires: time.Now().Add(duration)}
+	return tea.Tick(duration, func(time.Time) tea.Msg { return toastExpiredMsg{} })
+}
+
+// showToast is the common case used by statusMsg/copy handlers: a plain
+// message with no title, mirroring the many `toast.show({variant, message})`
+// / `toast.error(err)` call sites that don't need a title or custom
+// duration. isError selects the "error"/"info" variant.
 func (a *App) showToast(text string, isError bool) tea.Cmd {
-	a.toast = &toast{text: text, isError: isError, expires: time.Now().Add(toastTTL)}
-	return tea.Tick(toastTTL, func(time.Time) tea.Msg { return toastExpiredMsg{} })
+	variant := toastInfo
+	if isError {
+		variant = toastError
+	}
+	return a.showToastOptions(toastOptions{message: text, variant: variant})
 }
 
 type toastExpiredMsg struct{}
 
-// viewToast renders the active toast, docked bottom-right like the original.
-func (a *App) viewToast(width int) string {
+// toastBorder mirrors SplitBorder's ┃ accent bars on left AND right
+// (border.ts) — every other split-border panel in this port (userBlock,
+// errBlock, bashBlock, promptBox) is left-only; the toast is the one place
+// TS uses both sides.
+func toastBorder() lipgloss.Border {
+	return lipgloss.Border{Left: "┃", Right: "┃"}
+}
+
+// toastVariantColor mirrors `theme[current().variant]`.
+func (a *App) toastVariantColor(v toastVariant) color.Color {
+	switch v {
+	case toastSuccess:
+		return a.theme.Success
+	case toastWarning:
+		return a.theme.Warning
+	case toastError:
+		return a.theme.Error
+	default:
+		return a.theme.Info
+	}
+}
+
+// viewToastPanel renders the active toast panel and, if its message embeds a
+// bare URL, the (row, col) span of that link within the panel (relative to
+// the panel's own top-left, before compositeToast places it on screen) —
+// the toast-side counterpart of dialogs.go's overlayHits, ported for ui/
+// link.tsx's "click the link text to open it" behavior.
+func (a *App) viewToastPanel() (panel string, link *linkHit) {
 	if a.toast == nil || time.Now().After(a.toast.expires) {
-		return ""
+		return "", nil
 	}
+	totalWidth := min(60, a.width-6)
+	if totalWidth < 12 {
+		totalWidth = 12
+	}
+	const borderCols = 2 // one ┃ each side
+	const paddingCols = 4 // paddingLeft(2) + paddingRight(2)
+	contentWidth := totalWidth - borderCols - paddingCols
+
+	var lines []string
+	msgStart := 0
+	if a.toast.title != "" {
+		lines = append(lines, lipgloss.NewStyle().Bold(true).Foreground(a.theme.Text).Render(wrapText(a.toast.title, contentWidth)))
+		lines = append(lines, "") // marginBottom={1}
+		msgStart = len(lines)
+	}
+	msgLines := strings.Split(wrapText(a.toast.text, contentWidth), "\n")
+	for i, line := range msgLines {
+		if loc := urlPattern.FindStringIndex(line); loc != nil && link == nil {
+			href := line[loc[0]:loc[1]]
+			pre, post := line[:loc[0]], line[loc[1]:]
+			const leftInset = 1 + 2 // ┃ border + paddingLeft(2)
+			link = &linkHit{
+				row:      msgStart + i,
+				colStart: leftInset + len([]rune(pre)),
+				href:     href,
+			}
+			link.colEnd = link.colStart + len([]rune(href))
+			line = a.styles().Text.Render(pre) + renderLink(href, href, a.styles().Text) + a.styles().Text.Render(post)
+		} else {
+			line = a.styles().Text.Render(line)
+		}
+		msgLines[i] = line
+	}
+	lines = append(lines, msgLines...)
+
 	style := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(a.theme.BorderActive).
-		Padding(0, 1)
-	text := a.toast.text
-	if a.toast.isError {
-		style = style.BorderForeground(a.theme.Error)
-		text = a.styles().Error.Render(text)
+		Border(toastBorder(), false, true, false, true).
+		BorderForeground(a.toastVariantColor(a.toast.variant)).
+		Background(a.theme.BackgroundPanel).
+		PaddingTop(1).
+		PaddingBottom(1).
+		PaddingLeft(2).
+		PaddingRight(2).
+		Width(totalWidth)
+	return style.Render(strings.Join(lines, "\n")), link
+}
+
+// compositeToast splices the toast panel into base at top=2, right=2,
+// mirroring ui/toast.tsx's `position="absolute" top={2} right={2}`, and
+// records its link's absolute screen position (if any) for handleClick.
+// Only called with no dialog overlay active — the original nests Toast
+// inside each route's own box rather than the dialog layer.
+//
+// base (viewChat()/viewHome()) has already been through a.frame() once, so
+// this splices directly onto it rather than wrapping the result in a.frame()
+// again — a second Padding(0,1) would shift every cell one column right of
+// where it actually appears on screen, one column off from where linkHits
+// records the link (recorded in this same, unwrapped coordinate space).
+func (a *App) compositeToast(base string) string {
+	panel, link := a.viewToastPanel()
+	if panel == "" {
+		a.linkHits = nil
+		return base
+	}
+	top, left := 2, a.width-lipgloss.Width(panel)-2
+	if left < 0 {
+		left = 0
+	}
+	if link != nil {
+		a.linkHits = []linkHit{{row: top + link.row, colStart: left + link.colStart, colEnd: left + link.colEnd, href: link.href}}
 	} else {
-		text = a.styles().Text.Render(text)
+		a.linkHits = nil
 	}
-	box := style.Render(truncateRunes(text, width/3))
-	pad := width - lipgloss.Width(box)
-	if pad < 0 {
-		pad = 0
-	}
-	return strings.Repeat(" ", pad) + box
+	return a.spliceAt(base, panel, top, left)
 }
 
 // timelineOverlayItems lists user prompts for the timeline dialog

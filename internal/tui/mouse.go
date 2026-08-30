@@ -168,6 +168,10 @@ func (a *App) handleMouseRelease(msg tea.Mouse) tea.Cmd {
 // onMouseUp toggle (see reasoningClickTarget).
 func (a *App) handleClick(x, y int) tea.Cmd {
 	if a.overlay == nil {
+		if href := a.linkAt(y, x); href != "" {
+			_ = openURL(href)
+			return nil
+		}
 		if a.view == viewChat {
 			if id, ok := a.reasoningClickTarget(y); ok {
 				a.expandedReasoning[id] = !a.expandedReasoning[id]
@@ -267,9 +271,9 @@ func (a *App) currentFrame() string {
 		return a.viewOverlay()
 	}
 	if a.view == viewHome {
-		return a.viewHome()
+		return a.compositeToast(a.viewHome())
 	}
-	return a.viewChat()
+	return a.compositeToast(a.viewChat())
 }
 
 // applySelectionHighlight reverse-videos the selected cell range on top of

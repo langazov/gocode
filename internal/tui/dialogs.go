@@ -409,6 +409,14 @@ func (a *App) overlayOrigin(panelW int) (top, left int) {
 // of the original (black at ~59% alpha) has no lipgloss equivalent, so the
 // base stays undimmed around the panel.
 func (a *App) compositeOverlay(base, panel string) string {
+	top, left := a.overlayOrigin(lipgloss.Width(panel))
+	return a.spliceAt(base, panel, top, left)
+}
+
+// spliceAt splices panel into base at the given absolute screen row/col,
+// the shared ANSI-safe technique behind compositeOverlay and the toast
+// panel's top-right placement (feature.go's compositeToast).
+func (a *App) spliceAt(base, panel string, top, left int) string {
 	baseLines := strings.Split(base, "\n")
 	for i, line := range baseLines {
 		baseLines[i] = padPlain(line, a.width)
@@ -418,7 +426,6 @@ func (a *App) compositeOverlay(base, panel string) string {
 	}
 	panelLines := strings.Split(panel, "\n")
 	panelW := lipgloss.Width(panel)
-	top, left := a.overlayOrigin(panelW)
 	for i, pline := range panelLines {
 		row := top + i
 		if row < 0 || row >= len(baseLines) {

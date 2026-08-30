@@ -50,6 +50,7 @@ type App struct {
 	leaderArmed  bool
 	spinnerFrame int
 	toast        *toast
+	linkHits     []linkHit // clickable regions recorded by the last render, see link.go
 
 	overlay           *overlay
 	sidebar           bool

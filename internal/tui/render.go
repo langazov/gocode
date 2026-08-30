@@ -396,7 +396,7 @@ func (a *App) reasoningBlock(id string, running bool, rawText string, partTime *
 
 	var header string
 	if running {
-		frame := spinnerFrames[a.spinnerFrame%len(spinnerFrames)]
+		frame := a.spinnerGlyph()
 		label := "Thinking"
 		if title != "" {
 			label = "Thinking: " + title
@@ -495,7 +495,7 @@ func (a *App) toolRow(message client.Message, name string, state *toolState) str
 		// other tool sits static in the muted icon the whole time, so
 		// running and done render identically for them.
 		if name == "bash" || name == "read" || name == "task" {
-			frame := spinnerFrames[a.spinnerFrame%len(spinnerFrames)]
+			frame := a.spinnerGlyph()
 			return a.styles().Muted.Render("   " + frame + " " + label)
 		}
 		return a.styles().Muted.Render("   " + icon + " " + label)
@@ -531,7 +531,7 @@ func (a *App) bashBlock(state *toolState) string {
 	}
 	var lines []string
 	if state.Status == "running" {
-		frame := spinnerFrames[a.spinnerFrame%len(spinnerFrames)]
+		frame := a.spinnerGlyph()
 		lines = append(lines, a.styles().Text.Render(frame+" "+command))
 	} else {
 		lines = append(lines, a.styles().Text.Render("$ "+command))
