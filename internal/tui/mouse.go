@@ -274,9 +274,15 @@ func (a *App) currentFrame() string {
 
 // applySelectionHighlight reverse-videos the selected cell range on top of
 // an already-rendered frame, standing in for opentui's real text-selection
-// paint. ansi.Cut preserves/reapplies whatever SGR state is active at each
-// cut boundary, so wrapping the middle slice in reverse-video composes with
-// existing colors instead of clobbering them.
+// paint. The middle slice is ANSI-stripped before the reverse-video wrap
+// (rather than left in place, as a naive prefix/wrap/suffix composition
+// would do): glamour's chroma-highlighted code emits a full SGR reset after
+// nearly every token, and any such reset appearing inside the wrapped
+// span — trivially reachable once a selection spans more than one syntax
+// token — cancels the outer reverse-video attribute right there, so only
+// the first token would visibly highlight instead of the whole span.
+// Stripping first guarantees one uniform highlighted block regardless of
+// how many colored runs the original text was made of.
 func (a *App) applySelectionHighlight(content string) string {
 	if !a.selection.hasRange() {
 		return content
@@ -291,7 +297,7 @@ func (a *App) applySelectionHighlight(content string) string {
 			continue
 		}
 		prefix := ansi.Cut(line, 0, colStart)
-		middle := ansi.Cut(line, colStart, colEnd)
+		middle := ansi.Strip(ansi.Cut(line, colStart, colEnd))
 		suffix := ansi.Cut(line, colEnd, width)
 		lines[row] = prefix + "\x1b[7m" + middle + "\x1b[27m" + suffix
 	}

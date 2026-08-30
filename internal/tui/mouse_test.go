@@ -85,6 +85,35 @@ func TestApplySelectionHighlightWrapsExactRange(t *testing.T) {
 	}
 }
 
+// TestApplySelectionHighlightSurvivesEmbeddedResets is the regression for
+// "mouse selection doesn't properly select rendered code blocks": glamour's
+// chroma-highlighted code emits a full SGR reset (\x1b[0m) after nearly
+// every token, and each one previously canceled the outer \x1b[7m
+// reverse-video wrap the moment the selection crossed a second token,
+// leaving only the first token visibly highlighted.
+func TestApplySelectionHighlightSurvivesEmbeddedResets(t *testing.T) {
+	app := &App{width: 80, height: 24}
+	// "fmt.Println" as three separately colored-and-reset chroma tokens,
+	// same shape terminal16m output actually has (see markdown.go).
+	line := "\x1b[38;2;100;100;100mfmt\x1b[0m\x1b[38;2;200;200;200m.\x1b[0m\x1b[38;2;50;150;250mPrintln\x1b[0m"
+	app.selection.begin(0, 0)
+	app.selection.extend(0, 10) // whole "fmt.Println" (11 visible chars)
+	got := app.applySelectionHighlight(line)
+
+	start := strings.Index(got, "\x1b[7m")
+	end := strings.Index(got, "\x1b[27m")
+	if start == -1 || end == -1 || end < start {
+		t.Fatalf("expected a \\x1b[7m..\\x1b[27m wrap, got %q", got)
+	}
+	middle := got[start+len("\x1b[7m") : end]
+	if strings.Contains(middle, "\x1b[0m") {
+		t.Fatalf("an embedded reset inside the highlighted span cancels reverse-video partway through, got middle %q", middle)
+	}
+	if middle != "fmt.Println" {
+		t.Fatalf("highlighted span text = %q, want the full unstyled %q", middle, "fmt.Println")
+	}
+}
+
 func TestApplySelectionHighlightNoRangeIsNoop(t *testing.T) {
 	app := &App{width: 80, height: 24}
 	app.selection.begin(0, 2) // press with no drag: not a range yet
