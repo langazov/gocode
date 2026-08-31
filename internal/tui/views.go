@@ -749,11 +749,13 @@ func (a *App) loadSidebarTodos() tea.Cmd {
 
 type sidebarTodosMsg struct{ todos []client.Todo }
 
+// logoLeft is the "Go" half of the wordmark, using the same glyphs the
+// original's bg-pulse "go" logo does (packages/tui/src/logo.ts).
 var logoLeft = []string{
-	"                   ",
-	"█▀▀█ █▀▀█ █▀▀█ █▀▀▄",
-	"█__█ █__█ █^^^ █__█",
-	"▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀",
+	"         ",
+	"█▀▀▀ █▀▀█",
+	"█_^█ █__█",
+	"▀▀▀▀ ▀▀▀▀",
 }
 
 var logoRight = []string{
