@@ -367,6 +367,14 @@ type modelEntry struct {
 	ProviderID string `json:"providerID"`
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	// ContextLimit is models.dev's `limit.context`, the denominator the TUI
+	// footer's usage segment needs to turn a token total into a percentage
+	// (prompt/index.tsx reads `model.limit.context` off the same catalog).
+	ContextLimit int `json:"contextLimit,omitempty"`
+	// CostInput is models.dev's `cost.input` (dollars per million input
+	// tokens). The sidebar footer's getting-started card keys off exactly
+	// this: it greets users whose only usable models are the free ones.
+	CostInput float64 `json:"costInput,omitempty"`
 }
 
 func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
@@ -395,7 +403,16 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		if name == "" {
 			name = modelID
 		}
-		out = append(out, modelEntry{ProviderID: providerID, ID: modelID, Name: name})
+		entry := modelEntry{
+			ProviderID:   providerID,
+			ID:           modelID,
+			Name:         name,
+			ContextLimit: int(model.Limit.Context),
+		}
+		if model.Cost != nil {
+			entry.CostInput = model.Cost.Input
+		}
+		out = append(out, entry)
 	}
 	for providerID, provider := range catalog {
 		for modelID, model := range provider.Models {

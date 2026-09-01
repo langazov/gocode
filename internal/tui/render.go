@@ -205,9 +205,24 @@ func (a *App) compactionSeparator() string {
 // messageAborted approximates TS's `error?.name === "MessageAbortedError"`:
 // the wire schema this port reads doesn't carry an error name, only a
 // message string, so this matches on the text the TS abort path produces.
+// messageAborted reports whether a settled assistant message was interrupted
+// rather than failed — the port's `error.name === "MessageAbortedError"`.
+//
+// The runner tags this explicitly (session.ErrorTypeAborted). The message
+// probe behind it is a fallback for rows written before that tagging existed;
+// note that it never matched the runner's own wording ("context canceled"),
+// which is why an interrupted turn used to render as a plain error with no
+// "· interrupted" marker at all.
 func messageAborted(data client.AssistantData) bool {
-	return data.Error != nil && (strings.Contains(data.Error.Message, "aborted") ||
-		strings.Contains(data.Error.Message, "interrupted"))
+	if data.Error == nil {
+		return false
+	}
+	if data.Error.Type == "aborted" {
+		return true
+	}
+	return strings.Contains(data.Error.Message, "aborted") ||
+		strings.Contains(data.Error.Message, "interrupted") ||
+		strings.Contains(data.Error.Message, "context canceled")
 }
 
 // renderAssistant mirrors AssistantMessage: reasoning, text, and tool parts,
@@ -248,7 +263,10 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 		}
 	}
 
-	if data.Error != nil && data.Error.Message != "" {
+	// An interruption is not an error to report: upstream guards this block
+	// with `error.name !== "MessageAbortedError"` and lets the settlement
+	// line's "· interrupted" marker carry it instead.
+	if data.Error != nil && data.Error.Message != "" && !messageAborted(data) {
 		errBlock := lipgloss.NewStyle().
 			Border(splitBorder(), false, false, false, true).
 			BorderForeground(a.theme.Error).

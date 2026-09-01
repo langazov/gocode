@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -267,9 +268,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		},
 	}
 	execution := session.NewExecution(&session.DBSessionLookup{DB: database}, runner)
-	execution.ErrorLogger = func(sessionID string, err error) {
-		fmt.Fprintf(os.Stderr, "session %s drain failed: %v\n", sessionID, err)
-	}
+	execution.ErrorLogger = logDrainError
 	catalog.StartBackgroundRefresh(ctx)
 	service := session.NewService(database, bus)
 	// Plan mode needs both the question service and the session service, so it
@@ -333,4 +332,20 @@ func listenAddr(addr string) net.Listener {
 
 func resolveProvider(ctx context.Context, providerID string, cfg *config.Config) (llm.StreamClient, error) {
 	return provider.FromConfig(ctx, providerID, cfg)
+}
+
+// logDrainError reports an advisory drain failure.
+//
+// Two things it deliberately does not do. It does not report a cancellation:
+// an interrupted turn returns the very context error the user's own escape
+// produced, and calling that a failure is wrong. And it never writes to the
+// terminal — this runs on a background goroutine, and while the TUI is up it
+// owns the alternate screen, so a stray write is painted straight over the
+// rendered frame (it is how "drain failed: context canceled" ended up on top
+// of the footer). See internal/global/diag.go.
+func logDrainError(sessionID string, err error) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	global.LogBackground("session %s drain failed: %v", sessionID, err)
 }

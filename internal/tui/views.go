@@ -120,8 +120,18 @@ func (a *App) viewChat() string {
 	for _, line := range lines {
 		chat = append(chat, " "+line)
 	}
-	chat = append(chat, "",
-		a.indentBlock(a.permissionBanner()),
+	// Order matches session/index.tsx's bottom box: the permission prompt,
+	// then the subagent footer for a child session, then the prompt with its
+	// hint row. The permission banner keeps its unconditional slot (an empty
+	// one is the blank separator row this column has always had); the
+	// subagent footer is appended only when it renders, so a root session's
+	// row budget — and with it frame()'s MaxHeight crop of the footer — is
+	// unchanged.
+	chat = append(chat, "", a.indentBlock(a.permissionBanner()))
+	if footer := a.subagentFooter(); footer != "" {
+		chat = append(chat, a.indentBlock(footer))
+	}
+	chat = append(chat,
 		a.indentBlock(a.promptBox(a.sessionPromptBoxWidth())),
 		a.indentBlock(a.chatFooter()))
 	main := strings.Join(chat, "\n")
@@ -277,46 +287,6 @@ func (a *App) homePromptBlock(width int) string {
 	hints := a.styles().Text.Render("tab") + " " + a.styles().Muted.Render("agents") + "  " +
 		a.styles().Text.Render("ctrl+p") + " " + a.styles().Muted.Render("commands")
 	return strings.Join([]string{a.promptBox(width), corner + shadow, hints}, "\n")
-}
-
-// chatFooter mirrors the Prompt hint row: while busy a spinner with the esc
-// interrupt hint; idle, the directory on the left and usage or the shortcut
-// hints on the right.
-func (a *App) chatFooter() string {
-	width := a.chatWidth()
-	if a.busy {
-		right := a.styles().Text.Render("esc") + " " + a.styles().Muted.Render("interrupt")
-		spinner := a.spinnerLabel()
-		gap := width - 8 - lipgloss.Width(spinner) - lipgloss.Width(right)
-		if gap < 1 {
-			// Not enough room for both halves — drop the hint rather than
-			// overflow past the chat column into the sidebar (a long
-			// directory/session path can already fill most of a narrow
-			// column on its own).
-			return truncateRunes(spinner, width)
-		}
-		return spinner + strings.Repeat(" ", gap) + right
-	}
-	// In a session the hint row shows the session directory; on home it
-	// falls back to the working directory with the git branch.
-	directory := a.homeDirectory()
-	if a.active != nil && a.active.Directory != "" {
-		directory = a.active.Directory
-	}
-	left := a.styles().Muted.Render(directory)
-	right := a.styles().Text.Render("tab") + " " + a.styles().Muted.Render("agents") +
-		"  " + a.styles().Text.Render("ctrl+p") + " " + a.styles().Muted.Render("commands")
-	if a.stats != nil {
-		tokens := formatTokens(a.stats.TokensInput + a.stats.TokensOutput)
-		right = a.styles().Muted.Render(
-			fmt.Sprintf("%s (%d%%)", tokens, contextPercent(a.stats.TokensInput))) + "  " + right
-	}
-	// The footer spans the chat column only; the sidebar continues below it.
-	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		return truncateRunes(left, width)
-	}
-	return left + strings.Repeat(" ", gap) + right
 }
 
 // statusBar mirrors the home footer plugin: abbreviated directory with the
@@ -657,6 +627,7 @@ func (a *App) sidebarView() string {
 	// Footer pinned to the bottom, mirroring the sidebar-footer plugin: the
 	// abbreviated directory (+ git branch) with its last segment brighter,
 	// then the "• OpenCode version" line.
+	card := a.gettingStartedCard(width)
 	pathLine := a.sidebarPathLine(width - 4)
 	versionLine := a.onPanel(a.theme.Success, false).Render("•") + " " +
 		a.onPanel(a.theme.Text, true).Render("Open") +
@@ -675,7 +646,14 @@ func (a *App) sidebarView() string {
 	for len(rows) < content {
 		rows = append(rows, "")
 	}
-	rows = append(rows[:content-2], pathLine, versionLine)
+	// The getting-started card sits directly above the path/version lines
+	// (the plugin renders card, path, version inside one gap-1 column), so it
+	// comes out of the same fixed row budget.
+	tail := append(card, pathLine, versionLine)
+	if len(tail) > content {
+		tail = tail[len(tail)-content:]
+	}
+	rows = append(rows[:content-len(tail)], tail...)
 
 	style := lipgloss.NewStyle().
 		Background(a.theme.BackgroundPanel).

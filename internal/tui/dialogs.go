@@ -1079,7 +1079,7 @@ func (a *App) themesOverlay() {
 // with its categories and keybind footers.
 func (a *App) commandsRegistry() []overlayItem {
 	c := a.client
-	return []overlayItem{
+	items := []overlayItem{
 		{label: "session.new", hint: "New session", category: "Session", footer: "ctrl+x n", action: func() tea.Msg { return reloadMsg{} }},
 		{label: "session.list", hint: "List sessions", category: "Session", footer: "ctrl+x l", action: func() tea.Msg {
 			a.sessionsOverlay()
@@ -1162,6 +1162,22 @@ func (a *App) commandsRegistry() []overlayItem {
 		}},
 		{label: "app.exit", hint: "Quit", category: "System", footer: "ctrl+c", action: func() tea.Msg { return quitMsg{} }},
 	}
+	// The sidebar footer's getting-started card is dismissed by clicking its
+	// "✕" upstream. This port has no per-widget mouse targets inside the
+	// sidebar panel (see link.go on why clickable regions have to be recorded
+	// in absolute screen cells, which the panel does not know), so the
+	// dismissal is exposed as a palette command instead — offered only while
+	// the card is actually showing, like the "✕" itself.
+	if !a.paidProviderAvailable() && !a.dismissedGettingStarted {
+		items = append(items, overlayItem{
+			label: "getting_started.dismiss", hint: "Dismiss getting started", category: "System",
+			action: func() tea.Msg {
+				a.dismissedGettingStarted = true
+				return nil
+			},
+		})
+	}
+	return items
 }
 
 // commandPalette opens the ctrl+p dialog.

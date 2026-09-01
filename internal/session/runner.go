@@ -480,7 +480,7 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 			"sessionID":          sessionID,
 			"timestamp":          nowMillis(),
 			"assistantMessageID": assistantMessageID,
-			"error":              map[string]any{"type": "unknown", "message": providerErr.Error()},
+			"error":              stepError(providerErr),
 		}, event.PublishOptions{}); err != nil {
 			return turnResult{}, err
 		}
@@ -624,6 +624,17 @@ func (r *Runner) failInterruptedTools(ctx context.Context, sessionID string) err
 		}
 	}
 	return nil
+}
+
+// stepError classifies a failed step for the settled assistant message. A
+// canceled run context means the user interrupted the turn, which every
+// consumer needs to tell apart from a provider failure — see ErrorTypeAborted.
+func stepError(err error) map[string]any {
+	errType := ErrorTypeUnknown
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		errType = ErrorTypeAborted
+	}
+	return map[string]any{"type": errType, "message": err.Error()}
 }
 
 func nowMillis() int64 {

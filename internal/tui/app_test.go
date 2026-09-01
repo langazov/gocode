@@ -521,9 +521,22 @@ func TestEscapeInterruptsBusySession(t *testing.T) {
 	openSession(t, app)
 	app.busy = true
 
+	// Interrupt is a two-press gesture upstream (prompt/index.tsx's
+	// session.interrupt increments a counter and only aborts at >= 2): the
+	// first escape arms it and repaints the footer hint, the second fires.
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if api.interrupts != 0 {
+		t.Fatalf("the first escape should only arm the interrupt, got %d interrupts", api.interrupts)
+	}
+	if app.interruptArmed != 1 {
+		t.Fatalf("the first escape should arm the interrupt, got %d", app.interruptArmed)
+	}
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
 	if api.interrupts != 1 {
-		t.Fatalf("escape should interrupt a busy session, got %d interrupts", api.interrupts)
+		t.Fatalf("the second escape should interrupt a busy session, got %d interrupts", api.interrupts)
+	}
+	if app.interruptArmed != 0 {
+		t.Fatalf("interrupting should disarm the gesture, got %d", app.interruptArmed)
 	}
 
 	// ctrl+c exits regardless of state.

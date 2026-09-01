@@ -14,10 +14,20 @@ import (
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 )
 
-// spinnerFrames mirrors the braille spinner used by the TypeScript TUI.
+// spinnerFrames is component/spinner.tsx's SPINNER_FRAMES, the inline
+// braille spinner beside a running tool row.
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-const spinnerTick = 120 * time.Millisecond
+// spinnerTick drives both spinners at the finer of their two upstream rates:
+// the hint row's scanner is `interval={40}` (spinner.go), the inline braille
+// spinner is `interval={80}`. This port had one 120ms loop for both, which
+// left the scanner — 54 frames to a full sweep — far too slow to read as an
+// animation at all.
+const spinnerTick = 40 * time.Millisecond
+
+// spinnerBrailleEvery is how many spinnerTicks make up one braille frame,
+// reproducing <Spinner>'s own 80ms interval off the shared 40ms loop.
+const spinnerBrailleEvery = 2
 
 // spinnerGlyph ports Spinner's <Show when={kv.get("animations_enabled")}>:
 // the animated frame, or a static "⋯" when animations are disabled — same
@@ -26,7 +36,7 @@ func (a *App) spinnerGlyph() string {
 	if !a.animationsEnabled {
 		return "⋯"
 	}
-	return spinnerFrames[a.spinnerFrame%len(spinnerFrames)]
+	return spinnerFrames[(a.spinnerFrame/spinnerBrailleEvery)%len(spinnerFrames)]
 }
 
 func (a *App) spinnerLabel() string {
@@ -35,10 +45,20 @@ func (a *App) spinnerLabel() string {
 
 type spinnerTickMsg struct{}
 
+// startSpinner keeps exactly one tick loop alive while a turn is running.
+//
+// The guard is load-bearing in both directions. Without `a.spinning` the
+// several places that set a.busy each start their own loop, and the frames
+// advance once per loop per tick — a spinner running at 2-3x speed. And
+// because a loop only ever restarts from inside its own tick, every place
+// that can set a.busy must call this: applySnapshot (the aggregator path) is
+// the one that actually reports a live turn, and when it set a.busy without
+// starting a loop the spinner sat frozen on frame 0 for the whole turn.
 func (a *App) startSpinner() tea.Cmd {
-	if !a.busy {
+	if !a.busy || a.spinning {
 		return nil
 	}
+	a.spinning = true
 	return tea.Tick(spinnerTick, func(time.Time) tea.Msg { return spinnerTickMsg{} })
 }
 

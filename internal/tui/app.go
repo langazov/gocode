@@ -57,8 +57,12 @@ type App struct {
 
 	leaderArmed  bool
 	spinnerFrame int
-	toast        *toast
-	linkHits     []linkHit // clickable regions recorded by the last render, see link.go
+	// spinning reports whether a spinnerTickMsg loop is in flight, so the
+	// several call sites that set busy can all call startSpinner without
+	// stacking duplicate loops. See startSpinner.
+	spinning bool
+	toast    *toast
+	linkHits []linkHit // clickable regions recorded by the last render, see link.go
 
 	overlay           *overlay
 	sidebar           bool
@@ -72,6 +76,23 @@ type App struct {
 	permissionChoice int // selected option: 0 once, 1 always, 2 reject
 	stats            *client.Stats
 
+	// interruptArmed ports the prompt's `store.interrupt` counter: the
+	// session.interrupt command is a two-press gesture, and the footer's hint
+	// row reads this to switch between "esc interrupt" and "esc again to
+	// interrupt". A press that is not followed up within
+	// interruptArmWindow decays back to 0 (setTimeout(..., 5000) upstream).
+	interruptArmed   int
+	interruptExpires time.Time
+
+	// contextLimits maps "provider/model" to the catalog's limit.context, the
+	// denominator behind the footer usage segment's percentage.
+	contextLimits map[string]int
+
+	// subagentSiblings holds the children of the open session's parent, which
+	// is what the subagent footer counts to render "(2 of 5)". Loaded when a
+	// session with a parent is opened.
+	subagentSiblings []client.Session
+
 	tip           string
 	mcpServers    []client.MCPServer
 	cwd           string
@@ -79,6 +100,16 @@ type App struct {
 	gitBranch     string
 	modelNames    map[string]string // "provider/model" -> display name
 	providerNames map[string]string // provider id -> display name
+	// providers is the raw catalog list, kept because the sidebar footer's
+	// getting-started card asks whether any provider beyond the bundled free
+	// one is reachable.
+	providers []client.Provider
+	// modelCosts maps "provider/model" to the catalog's cost.input, the other
+	// half of that same question.
+	modelCosts map[string]float64
+	// dismissedGettingStarted is the in-memory stand-in for the original's
+	// `kv.get("dismissed_getting_started")`.
+	dismissedGettingStarted bool
 
 	// animationsEnabled and the fades port util/signal.ts's createFadeIn,
 	// applied to the prompt's agent/model meta segments (see modelMeta).
@@ -178,6 +209,8 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 		animationsEnabled: true,
 		agentMetaFade:     newFadeAnim(false),
 		modelMetaFade:     newFadeAnim(false),
+		contextLimits:     map[string]int{},
+		modelCosts:        map[string]float64{},
 		history:           loadPromptHistory(filepath.Join(global.Resolve().State, promptHistoryFile)),
 		windowTitle:       "OpenCode",
 		thinkingMode:      "hide",
@@ -293,6 +326,14 @@ type catalogMsg struct {
 	providers []client.Provider
 }
 type mcpMsg struct{ servers []client.MCPServer }
+
+// subagentSiblingsMsg carries the children of the open session's parent, the
+// list the subagent footer counts for its "(2 of 5)" position.
+type subagentSiblingsMsg struct {
+	parentID string
+	siblings []client.Session
+}
+
 type sessionOpenedMsg struct{ session *client.Session }
 type permissionsMsg struct{ pending []client.PermissionRequest }
 type promptSentMsg struct {
@@ -415,6 +456,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		}
 		return tea.Batch(cmds...)
 	case spinnerTickMsg:
+		a.spinning = false
 		if a.busy {
 			a.spinnerFrame++
 			return a.startSpinner()
@@ -436,10 +478,15 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return nil
 	case catalogMsg:
 		a.modelNames = map[string]string{}
+		a.contextLimits = map[string]int{}
+		a.modelCosts = map[string]float64{}
 		for _, model := range msg.models {
 			a.modelNames[model.ProviderID+"/"+model.ID] = model.Name
+			a.contextLimits[model.ProviderID+"/"+model.ID] = model.ContextLimit
+			a.modelCosts[model.ProviderID+"/"+model.ID] = model.CostInput
 		}
 		a.providerNames = map[string]string{}
+		a.providers = msg.providers
 		for _, provider := range msg.providers {
 			a.providerNames[provider.ID] = provider.Name
 		}
@@ -464,9 +511,15 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.active = msg.session
 		a.view = viewChat
 		a.timeline = nil
+		a.subagentSiblings = nil
 		a.input.Reset()
 		a.input.Focus()
-		return a.loadMessages(a.active.ID)
+		return tea.Batch(a.loadMessages(a.active.ID), a.loadSubagentSiblings())
+	case subagentSiblingsMsg:
+		if a.active != nil && a.active.ParentID == msg.parentID {
+			a.subagentSiblings = msg.siblings
+		}
+		return nil
 	case openedWithPrompt:
 		a.active = msg.session
 		a.view = viewChat
@@ -517,10 +570,15 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.stats = msg.stats
 		return nil
 	case snapshotMsg:
-		if a.applySnapshot(msg.snapshot) && a.active != nil {
-			return a.loadMessages(a.active.ID)
+		// applySnapshot is where a live turn's busy state actually lands (the
+		// aggregator is the only thing watching the event stream), so this is
+		// the path that has to keep the spinner running.
+		dirty := a.applySnapshot(msg.snapshot)
+		cmds := []tea.Cmd{a.startSpinner()}
+		if dirty && a.active != nil {
+			cmds = append(cmds, a.loadMessages(a.active.ID))
 		}
-		return nil
+		return tea.Batch(cmds...)
 	case statusMsg:
 		a.statusMsg = msg.text
 		isError := strings.HasPrefix(msg.text, "failed") ||
@@ -645,17 +703,33 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// multi-line cursor movement below.
 	}
 
+	// Subagent navigation (session_parent / session_child_cycle_reverse /
+	// session_child_cycle: up / left / right in config/keybind.ts). These are
+	// the commands the subagent footer's Parent/Prev/Next buttons dispatch.
+	// Upstream binds them on the session route and lets the focused textarea
+	// win; this port has no focus tree, so they only fire on an empty prompt
+	// and otherwise fall through to the textarea's own cursor movement.
+	if strings.TrimSpace(a.input.Value()) == "" {
+		switch msg.String() {
+		case "up":
+			if cmd, handled := a.openParentSession(); handled {
+				return cmd
+			}
+		case "left":
+			if cmd, handled := a.cycleSubagentSibling(-1); handled {
+				return cmd
+			}
+		case "right":
+			if cmd, handled := a.cycleSubagentSibling(1); handled {
+				return cmd
+			}
+		}
+	}
+
 	switch msg.String() {
 	case "esc", "escape":
 		if a.view == viewChat && a.busy && a.active != nil {
-			c := a.client
-			sessionID := a.active.ID
-			return func() tea.Msg {
-				if err := c.Interrupt(a.ctx, sessionID); err != nil {
-					return statusMsg{text: "interrupt failed: " + err.Error()}
-				}
-				return nil
-			}
+			return a.armInterrupt()
 		}
 		return nil
 	case "pgup", "pageup":
@@ -865,6 +939,18 @@ func (a *App) View() string {
 	return content
 }
 
+// hasUnfinishedAssistant reports whether the last assistant message is still
+// streaming, which is how this port infers `busy` from a message refetch (TS
+// syncs an explicit `session_status` projection instead; there is no Go
+// equivalent yet).
+//
+// A finish reason is not the only way a turn settles, and keying on it alone
+// was a real bug: projectStepFailed — the settlement for an *interrupted* or
+// provider-failed turn — records `error` and `time.completed` but never a
+// `finish`. So after a double-escape interrupt the aggregator correctly
+// cleared busy, the dirty snapshot refetched the messages, and this said the
+// turn was still running, turning busy straight back on. The spinner never
+// stopped. All three of these mark a settled turn.
 func hasUnfinishedAssistant(timeline []client.Message) bool {
 	for i := len(timeline) - 1; i >= 0; i-- {
 		if timeline[i].Type != "assistant" {
@@ -874,7 +960,7 @@ func hasUnfinishedAssistant(timeline []client.Message) bool {
 		if err != nil {
 			continue
 		}
-		return data.Finish == ""
+		return data.Finish == "" && data.Time.Completed == 0 && data.Error == nil
 	}
 	return false
 }

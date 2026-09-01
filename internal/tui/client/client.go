@@ -28,8 +28,12 @@ func New(baseURL string) *Client {
 }
 
 type Session struct {
-	ID          string    `json:"id"`
-	ProjectID   string    `json:"projectID"`
+	ID        string `json:"id"`
+	ProjectID string `json:"projectID"`
+	// ParentID links a subagent/forked session to the session that spawned
+	// it. The subagent footer (routes/session/subagent-footer.tsx) keys off
+	// exactly this: it renders only when the open session has a parent.
+	ParentID    string    `json:"parentID,omitempty"`
 	Title       string    `json:"title"`
 	Directory   string    `json:"directory"`
 	Version     string    `json:"version"`
@@ -235,9 +239,40 @@ type AssistantData struct {
 		} `json:"state"`
 	} `json:"content"`
 	Finish string `json:"finish"`
-	Error  *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	// Tokens and Cost back the footer's usage segment (prompt/index.tsx's
+	// usage() memo reads them off the last assistant message).
+	Tokens *AssistantTokens `json:"tokens,omitempty"`
+	Cost   *float64         `json:"cost,omitempty"`
+	Error  *AssistantError  `json:"error"`
+}
+
+// AssistantError is a settled assistant message's error. Type distinguishes a
+// user-ordered interruption ("aborted") from a real failure ("unknown") — the
+// port's stand-in for the TypeScript schema's named MessageAbortedError, which
+// the original's UI branches on in several places.
+type AssistantError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// AssistantTokens mirrors internal/session.AssistantTokens.
+type AssistantTokens struct {
+	Input     int `json:"input"`
+	Output    int `json:"output"`
+	Reasoning int `json:"reasoning"`
+	Cache     struct {
+		Read  int `json:"read"`
+		Write int `json:"write"`
+	} `json:"cache"`
+}
+
+// Total sums every token bucket the original adds up for the usage row:
+// input + output + reasoning + cache read + cache write.
+func (t *AssistantTokens) Total() int {
+	if t == nil {
+		return 0
+	}
+	return t.Input + t.Output + t.Reasoning + t.Cache.Read + t.Cache.Write
 }
 
 type UserData struct {
@@ -268,6 +303,14 @@ type Model struct {
 	ProviderID string `json:"providerID"`
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	// ContextLimit is models.dev's `limit.context`. The prompt hint row's
+	// usage segment divides the running token total by it to produce the
+	// "(16%)" share; zero means unknown, and the original then renders the
+	// token count with no percentage at all.
+	ContextLimit int `json:"contextLimit,omitempty"`
+	// CostInput is models.dev's `cost.input`. Zero across every model of a
+	// provider is what marks that provider as free.
+	CostInput float64 `json:"costInput,omitempty"`
 }
 
 type Provider struct {

@@ -106,7 +106,11 @@ func (s *Service) populate(ctx context.Context) (Catalog, error) {
 		// Offline or unreachable source: degrade to an empty catalog so the
 		// app still boots (keys still resolve via env/auth), matching the
 		// resilience of the TypeScript background refresh.
-		fmt.Fprintf(os.Stderr, "modelsdev: fetch failed, continuing without catalog: %v\n", err)
+		//
+		// Not stderr: Get() is reached from HTTP handlers, so this can fire
+		// while the TUI owns the terminal, where a stray write is painted on
+		// top of the rendered frame. See internal/global/diag.go.
+		global.LogBackground("modelsdev: fetch failed, continuing without catalog: %v", err)
 		return Catalog{}, nil
 	}
 	return decode(text)
@@ -211,7 +215,9 @@ func (s *Service) StartBackgroundRefresh(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				s.Refresh(ctx, false)
+				if err := s.Refresh(ctx, false); err != nil && !errors.Is(err, context.Canceled) {
+					global.LogBackground("modelsdev: background refresh failed: %v", err)
+				}
 			}
 		}
 	}()

@@ -17,7 +17,10 @@ import (
 // render plus click-to-open behavior.
 
 func TestSpinnerGlyphRespectsAnimationsEnabled(t *testing.T) {
-	app := &App{spinnerFrame: 2, animationsEnabled: true}
+	// The shared tick loop runs at the scanner's 40ms; the inline braille
+	// spinner is 80ms upstream, so it advances every spinnerBrailleEvery
+	// ticks (see feature.go).
+	app := &App{spinnerFrame: 2 * spinnerBrailleEvery, animationsEnabled: true}
 	if got, want := app.spinnerGlyph(), spinnerFrames[2]; got != want {
 		t.Fatalf("animated glyph = %q, want %q", got, want)
 	}
