@@ -238,9 +238,9 @@ func TestSettledAssistantMessagesAreNotRunning(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			got := hasUnfinishedAssistant([]client.Message{{ID: "m1", Type: "assistant", Data: raw}})
+			got := sessionBusy([]client.Message{{ID: "m1", Type: "assistant", Data: raw}})
 			if got != tc.want {
-				t.Fatalf("hasUnfinishedAssistant = %v, want %v", got, tc.want)
+				t.Fatalf("sessionBusy = %v, want %v", got, tc.want)
 			}
 		})
 	}
@@ -305,5 +305,79 @@ func TestInterruptStopsTheFooterAnimation(t *testing.T) {
 	}
 	if !strings.Contains(footer, "interrupted") {
 		t.Fatalf("the footer should report that the turn was interrupted, got %q", footer)
+	}
+}
+
+// --- the delay between enter and the spinner --------------------------------
+
+// context/sync.tsx's status() returns "working" as soon as the last message is
+// the *user's*. This port only ever inspected the last assistant message, so
+// for the whole of the model's time-to-first-token — the runner publishes
+// step.started lazily, when the first token arrives — the timeline ended with
+// the user's own message and the port reported idle.
+func TestAUserMessageAloneMeansWorking(t *testing.T) {
+	user := client.Message{ID: "u1", Type: "user", Data: []byte(`{"text":"hello"}`)}
+	if !sessionBusy([]client.Message{user}) {
+		t.Fatal("a prompt awaiting its first token is working, not idle")
+	}
+	if sessionBusy(nil) {
+		t.Fatal("an empty timeline is idle")
+	}
+}
+
+// End to end over the sequence a keypress produces: the prompt POST returns,
+// then the admitted-prompt event drives a refetch whose timeline still ends
+// with the user message. That refetch used to turn busy back off and kill the
+// spinner until the model answered.
+func TestSpinnerSurvivesTheRefetchAfterSending(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.width, app.height = 120, 40
+	app.view = viewChat
+	app.active = &client.Session{ID: "ses_1", Directory: "/tmp"}
+
+	drive(t, app, promptSentMsg{sessionID: "ses_1", text: "hello"})
+	if !app.busy || !app.spinning {
+		t.Fatal("sending a prompt should start the spinner immediately")
+	}
+
+	// session.next.prompted lands: the aggregator has no step yet, and the
+	// refetched timeline ends with the user's message.
+	idle := newSessionNode("ses_1")
+	drive(t, app, snapshotMsg{snapshot: Snapshot{
+		Sessions: map[string]*SessionNode{"ses_1": idle},
+		Dirty:    map[string]bool{"ses_1": true},
+	}})
+	app.Update(messagesMsg{
+		sessionID: "ses_1",
+		messages:  []client.Message{{ID: "u1", Type: "user", Data: []byte(`{"text":"hello"}`)}},
+	})
+	if !app.busy {
+		t.Fatal("the turn is still running while it waits for the model's first token")
+	}
+
+	// And it goes idle once the assistant message settles.
+	app.Update(messagesMsg{
+		sessionID: "ses_1",
+		messages: []client.Message{
+			{ID: "u1", Type: "user", Data: []byte(`{"text":"hello"}`)},
+			settledAssistant(t, "a1", "done"),
+		},
+	})
+	if app.busy {
+		t.Fatal("a settled assistant message ends the turn")
+	}
+}
+
+// A snapshot arriving before the first step event must not clear busy either.
+func TestSnapshotDoesNotClearBusyBeforeTheFirstStep(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.active = &client.Session{ID: "ses_1"}
+	app.timeline = []client.Message{{ID: "u1", Type: "user", Data: []byte(`{"text":"hello"}`)}}
+	app.busy = true
+
+	idle := newSessionNode("ses_1") // Busy false: no step.started yet
+	drive(t, app, snapshotMsg{snapshot: Snapshot{Sessions: map[string]*SessionNode{"ses_1": idle}}})
+	if !app.busy {
+		t.Fatal("node.Busy is false before step.started; the timeline still says working")
 	}
 }

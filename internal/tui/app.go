@@ -307,8 +307,11 @@ func (a *App) applySnapshot(snapshot Snapshot) bool {
 		// Only subagent sessions reported activity this frame.
 		return false
 	}
-	a.busy = node.Busy
 	a.streaming = node.Text
+	// node.Busy alone is not the status: the aggregator only learns a turn
+	// started once the runner publishes step.started, which it does lazily,
+	// when the model's first token arrives. See sessionBusy.
+	a.busy = node.Busy || sessionBusy(a.timeline)
 	if snapshot.Dirty[a.active.ID] {
 		a.scrollOffset = 0
 		return true
@@ -563,7 +566,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		if a.active != nil && msg.sessionID == a.active.ID {
 			a.timeline = msg.messages
 			wasBusy := a.busy
-			a.busy = hasUnfinishedAssistant(a.timeline)
+			a.busy = a.recomputeBusy()
 			// The sidebar's "spent" total is server-side state that only the
 			// stats endpoint reports, so it has to be refetched alongside the
 			// timeline. Without this it moved only on the 10-second
@@ -1058,30 +1061,55 @@ func (a *App) View() string {
 	return content
 }
 
-// hasUnfinishedAssistant reports whether the last assistant message is still
-// streaming, which is how this port infers `busy` from a message refetch (TS
-// syncs an explicit `session_status` projection instead; there is no Go
-// equivalent yet).
+// sessionBusy ports context/sync.tsx's status():
 //
-// A finish reason is not the only way a turn settles, and keying on it alone
-// was a real bug: projectStepFailed — the settlement for an *interrupted* or
-// provider-failed turn — records `error` and `time.completed` but never a
-// `finish`. So after a double-escape interrupt the aggregator correctly
-// cleared busy, the dirty snapshot refetched the messages, and this said the
-// turn was still running, turning busy straight back on. The spinner never
-// stopped. All three of these mark a settled turn.
-func hasUnfinishedAssistant(timeline []client.Message) bool {
-	for i := len(timeline) - 1; i >= 0; i-- {
-		if timeline[i].Type != "assistant" {
-			continue
-		}
-		data, err := client.DecodeAssistant(timeline[i].Data)
+//	const last = messages.at(-1)
+//	if (!last) return "idle"
+//	if (last.role === "user") return "working"
+//	return last.time.completed ? "idle" : "working"
+//
+// The user arm is the load-bearing one and this port did not have it: it only
+// ever inspected the last *assistant* message, so in the window between a
+// prompt being admitted and the model producing its first token -- the whole
+// time-to-first-token, commonly a second or more -- the timeline ended with
+// the user's own message and this reported idle. That is what put a visible
+// delay between pressing enter and the spinner appearing.
+//
+// A settled turn is `time.completed` upstream. The finish and error checks
+// alongside it are this port's own belt-and-braces: projectStepEnded and
+// projectStepFailed both stamp time.completed, but an interrupted turn records
+// no finish at all (see messageAborted), and rows written before that stamping
+// existed have neither.
+func sessionBusy(timeline []client.Message) bool {
+	if len(timeline) == 0 {
+		return false
+	}
+	last := timeline[len(timeline)-1]
+	switch last.Type {
+	case "user":
+		return true
+	case "assistant":
+		data, err := client.DecodeAssistant(last.Data)
 		if err != nil {
-			continue
+			return false
 		}
 		return data.Finish == "" && data.Time.Completed == 0 && data.Error == nil
 	}
 	return false
+}
+
+// recomputeBusy combines the two signals this port has for a running turn: the
+// aggregator's live step tracking, and the timeline-derived status upstream
+// uses. They agree once a turn is underway; the timeline covers the gap before
+// the first step event, and the aggregator covers events arriving faster than
+// the timeline is refetched.
+func (a *App) recomputeBusy() bool {
+	if a.active != nil {
+		if node := a.agents.Sessions[a.active.ID]; node != nil && node.Busy {
+			return true
+		}
+	}
+	return sessionBusy(a.timeline)
 }
 
 // program adapts App to bubbletea's immutable Model interface.
