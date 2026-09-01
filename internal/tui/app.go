@@ -154,6 +154,11 @@ type App struct {
 	chatReasoningRows map[int]string
 	chatWindowPad     int
 	chatWindowStart   int
+	// chatColumnEnd is the screen column where the chat column stops and the
+	// docked sidebar begins, recorded by the same render that laid them out.
+	// A drag-selection is held inside whichever of the two it started in —
+	// see selectionColumnBounds.
+	chatColumnEnd int
 
 	// agents is the agent roster, cached so agent_cycle (tab) can step
 	// through it without a fetch.

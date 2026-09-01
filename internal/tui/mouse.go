@@ -1,9 +1,6 @@
 package tui
 
 import (
-	"encoding/base64"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
@@ -312,11 +309,13 @@ func (a *App) applySelectionHighlight(content string) string {
 		return content
 	}
 	startRow, startCol, endRow, endCol := a.selection.ordered()
+	minCol, maxCol := a.selectionColumnBounds()
 	lines := strings.Split(content, "\n")
 	for row := max(startRow, 0); row <= endRow && row < len(lines); row++ {
 		line := lines[row]
-		width := ansi.StringWidth(line)
+		width := min(ansi.StringWidth(line), maxCol)
 		colStart, colEnd := selectionCols(row, startRow, startCol, endRow, endCol, width)
+		colStart = max(colStart, minCol)
 		if colStart >= colEnd {
 			continue
 		}
@@ -335,19 +334,44 @@ func (a *App) selectedText() string {
 	if !a.selection.hasRange() {
 		return ""
 	}
-	return extractSelection(a.currentFrame(), a.selection)
+	minCol, maxCol := a.selectionColumnBounds()
+	return extractSelection(a.currentFrame(), a.selection, minCol, maxCol)
+}
+
+// selectionColumnBounds keeps a drag inside the column it started in.
+//
+// opentui's selection is per-renderable: dragging through the message list
+// selects the message list's text, not a rectangle of the screen. This port
+// works on the rendered frame instead, and without a bound a selection
+// spanning more than one row took the *whole screen width* for every row
+// between its ends — so copying a couple of lines of an answer came back
+// holding the sidebar's "$0.00 spent" and "LSP" and none of the answer.
+//
+// Splitting at the chat/sidebar boundary recovers the useful half of what
+// opentui does: those two are the only side-by-side regions this port has.
+func (a *App) selectionColumnBounds() (minCol, maxCol int) {
+	boundary := a.chatColumnEnd
+	if boundary <= 0 || boundary >= a.width {
+		return 0, a.width
+	}
+	// The drag's anchor decides which side owns it.
+	if a.selection.anchorCol < boundary {
+		return 0, boundary
+	}
+	return boundary, a.width
 }
 
 // extractSelection is selectedText's pure half, split out so the extraction
 // math is testable without rendering a full frame.
-func extractSelection(content string, sel textSelection) string {
+func extractSelection(content string, sel textSelection, minCol, maxCol int) string {
 	lines := strings.Split(content, "\n")
 	startRow, startCol, endRow, endCol := sel.ordered()
 	var out []string
 	for row := max(startRow, 0); row <= endRow && row < len(lines); row++ {
 		line := lines[row]
-		width := ansi.StringWidth(line)
+		width := min(ansi.StringWidth(line), maxCol)
 		colStart, colEnd := selectionCols(row, startRow, startCol, endRow, endCol, width)
+		colStart = max(colStart, minCol)
 		if colStart >= colEnd {
 			out = append(out, "")
 			continue
@@ -377,15 +401,20 @@ func selectionCols(row, startRow, startCol, endRow, endCol, width int) (colStart
 	return colStart, colEnd
 }
 
-// copySelectionCmd writes the selected text to the terminal clipboard via
-// OSC52 (the same mechanism as feature.go's copyTranscript) and toasts,
-// mirroring util/selection.ts's copy().
+// copySelectionCmd copies the selected text and toasts, mirroring
+// util/selection.ts's copy().
+//
+// The clipboard write goes through tea.SetClipboard, which emits the OSC52
+// through Bubble Tea's own renderer, in band with the frame. This used to
+// write the escape straight to os.Stdout while the program owned the terminal
+// — the same mistake as the background log line that ended up painted over the
+// footer, except here the casualty is the escape sequence itself: interleaved
+// into the middle of a frame's output it is no longer a well-formed OSC52, so
+// the terminal discards it and nothing reaches the clipboard.
 func (a *App) copySelectionCmd() tea.Cmd {
 	text := a.selectedText()
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	encoded := base64.StdEncoding.EncodeToString([]byte(text))
-	fmt.Fprintf(os.Stdout, "\033]52;c;%s\a", encoded)
-	return a.showToast("Copied to clipboard", false)
+	return copyToClipboard(a, text, "Copied to clipboard")
 }

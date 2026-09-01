@@ -38,6 +38,12 @@ type Service struct {
 	loaded bool
 }
 
+// NewWithCatalog returns a service pre-populated with a fixed catalog and no
+// source to fetch from, for callers (and tests) that already have one.
+func NewWithCatalog(catalog Catalog) *Service {
+	return &Service{cached: catalog, loaded: true}
+}
+
 func New() *Service {
 	source := flag.ModelsUrl()
 	if source == "" {

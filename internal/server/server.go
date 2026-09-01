@@ -385,18 +385,16 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	}
 	out := []modelEntry{}
 	seen := map[string]bool{}
+	// Only providers the user can actually reach — see available.go. The
+	// catalog is the database, not the list.
+	availability := newProviderAvailability(s.Config)
 	appendModel := func(providerID string, provider config.Provider, modelID string, model modelsdev.Model) {
 		key := providerID + "/" + modelID
 		if seen[key] {
 			return
 		}
-		if s.Config != nil {
-			if s.Config.ProviderDisabled(providerID) {
-				return
-			}
-			if s.Config.EnabledProviders != nil && len(s.Config.EnabledProviders) > 0 && !s.Config.ProviderEnabled(providerID) {
-				return
-			}
+		if !availability.available(providerID, catalog[providerID]) {
+			return
 		}
 		seen[key] = true
 		name := model.Name
@@ -447,8 +445,25 @@ func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
 		Name string `json:"name"`
 	}
 	out := []providerEntry{}
+	availability := newProviderAvailability(s.Config)
 	for id, provider := range catalog {
+		if !availability.available(id, provider) {
+			continue
+		}
 		out = append(out, providerEntry{ID: id, Name: provider.Name})
+	}
+	// A config-declared provider need not exist in the catalog at all.
+	if s.Config != nil {
+		for id, provider := range s.Config.Provider {
+			if _, inCatalog := catalog[id]; inCatalog || !availability.allowed(id) {
+				continue
+			}
+			name := provider.Name
+			if name == "" {
+				name = id
+			}
+			out = append(out, providerEntry{ID: id, Name: name})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	writeJSON(w, http.StatusOK, out)

@@ -127,7 +127,7 @@ func TestExtractSelectionSingleLine(t *testing.T) {
 	var s textSelection
 	s.begin(0, 2)
 	s.extend(0, 4)
-	if got := extractSelection("abcdef", s); got != "cde" {
+	if got := extractSelection("abcdef", s, 0, 1<<30); got != "cde" {
 		t.Fatalf("extractSelection = %q, want %q", got, "cde")
 	}
 }
@@ -137,7 +137,7 @@ func TestExtractSelectionMultiLineTrimsTrailingSpace(t *testing.T) {
 	s.begin(0, 2)
 	s.extend(1, 1)
 	content := "hello world  \ngoodbye"
-	got := extractSelection(content, s)
+	got := extractSelection(content, s, 0, 1<<30)
 	want := "llo world\ngo"
 	if got != want {
 		t.Fatalf("extractSelection = %q, want %q", got, want)

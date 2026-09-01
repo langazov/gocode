@@ -164,12 +164,19 @@ func (a *App) viewChat() string {
 	if pad > 0 {
 		main = strings.Repeat("\n", pad) + main
 	}
+	a.chatColumnEnd = a.width
 	if sidebar := a.sidebarView(); sidebar != "" {
 		if a.wide() {
 			// The chat column is already sized to the chat width; no
 			// per-line truncation here — cutting styled lines corrupts ANSI
 			// sequences.
-			return a.frame(lipgloss.JoinHorizontal(lipgloss.Top, main, sidebar))
+			joined := lipgloss.JoinHorizontal(lipgloss.Top, main, sidebar)
+			// Record where the chat column stops so a drag-selection can be
+			// held inside it (see selectionColumnBounds). JoinHorizontal pads
+			// every line to the block width, so one line measures the whole
+			// thing, and frame() insets it by a column.
+			a.chatColumnEnd = 1 + lipgloss.Width(firstLine(joined)) - a.sidebarWidth()
+			return a.frame(joined)
 		}
 		// Narrow terminal: TS overlays the sidebar as a right-aligned drawer
 		// over a dimmed backdrop instead of a docked column (the chat column
@@ -180,6 +187,14 @@ func (a *App) viewChat() string {
 		return a.frame(a.compositeSidebarOverlay(main, sidebar))
 	}
 	return a.frame(main)
+}
+
+// firstLine returns s up to its first newline.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // compositeSidebarOverlay splices the sidebar panel onto the right edge of

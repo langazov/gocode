@@ -1,8 +1,6 @@
 package tui
 
 import (
-	"encoding/base64"
-	"fmt"
 	"image/color"
 	"os"
 	"os/exec"
@@ -357,9 +355,7 @@ func (a *App) copyTranscript() tea.Cmd {
 	if strings.TrimSpace(text) == "" {
 		return staticMsg(statusMsg{text: "nothing to copy"})
 	}
-	encoded := base64.StdEncoding.EncodeToString([]byte(text))
-	fmt.Fprintf(os.Stdout, "\033]52;c;%s\a", encoded)
-	return staticMsg(statusMsg{text: "transcript copied (OSC52)"})
+	return copyToClipboard(a, text, "transcript copied")
 }
 
 // exportToEditor opens the current prompt in $EDITOR (session.export,
