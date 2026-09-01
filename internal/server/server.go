@@ -15,7 +15,9 @@ import (
 	"github.com/anomalyco/opencode-go/internal/modelsdev"
 	"github.com/anomalyco/opencode-go/internal/modelstate"
 	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/anomalyco/opencode-go/internal/question"
 	"github.com/anomalyco/opencode-go/internal/session"
+	"github.com/anomalyco/opencode-go/internal/skill"
 )
 
 // Server bundles the HTTP routes with their backing services.
@@ -30,6 +32,11 @@ type Server struct {
 	// Jobs tracks detached background subagents. nil unless background
 	// subagents are enabled.
 	Jobs *background.Registry
+	// Questions owns the pending ask/reply rounds raised by the question tool
+	// and plan mode.
+	Questions *question.Service
+	// Skills holds the discovered skills.
+	Skills *skill.Registry
 }
 
 // Mux builds the HTTP route tree. The TypeScript server exposes GET /api/health
@@ -61,6 +68,15 @@ func (s *Server) Mux() *http.ServeMux {
 	if s.Jobs != nil {
 		mux.HandleFunc("GET /api/job", s.listJobs)
 		mux.HandleFunc("POST /api/session/{sessionID}/background", s.backgroundSession)
+	}
+	if s.Questions != nil {
+		mux.HandleFunc("GET /api/question", s.listQuestions)
+		mux.HandleFunc("GET /api/session/{sessionID}/question", s.listSessionQuestions)
+		mux.HandleFunc("POST /api/question/{requestID}/reply", s.replyQuestion)
+		mux.HandleFunc("POST /api/question/{requestID}/reject", s.rejectQuestion)
+	}
+	if s.Skills != nil {
+		mux.HandleFunc("GET /api/skill", s.listSkills)
 	}
 	if s.Session != nil {
 		mux.HandleFunc("POST /api/session", s.createSession)
@@ -574,4 +590,73 @@ func (s *Server) backgroundSession(w http.ResponseWriter, r *http.Request) {
 	sessionID := r.PathValue("sessionID")
 	promoted := s.Jobs.PromoteSession(sessionID)
 	writeJSON(w, http.StatusOK, map[string]any{"promoted": promoted})
+}
+
+type questionReplyRequest struct {
+	Answers [][]string `json:"answers"`
+}
+
+// listQuestions reports every question waiting on a user.
+func (s *Server) listQuestions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.Questions.List())
+}
+
+func (s *Server) listSessionQuestions(w http.ResponseWriter, r *http.Request) {
+	pending := s.Questions.ForSession(r.PathValue("sessionID"))
+	if pending == nil {
+		pending = []question.Request{}
+	}
+	writeJSON(w, http.StatusOK, pending)
+}
+
+// replyQuestion answers a pending question, unblocking the tool call that
+// asked it.
+func (s *Server) replyQuestion(w http.ResponseWriter, r *http.Request) {
+	var body questionReplyRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	answers := make([]question.Answer, 0, len(body.Answers))
+	for _, answer := range body.Answers {
+		answers = append(answers, question.Answer(answer))
+	}
+	if err := s.Questions.Reply(r.PathValue("requestID"), answers); err != nil {
+		if errors.Is(err, question.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// rejectQuestion declines a pending question, failing the tool call.
+func (s *Server) rejectQuestion(w http.ResponseWriter, r *http.Request) {
+	if err := s.Questions.Reject(r.PathValue("requestID")); err != nil {
+		if errors.Is(err, question.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// listSkills reports the discovered skills, without their bodies — the tool
+// is what injects a skill's content.
+func (s *Server) listSkills(w http.ResponseWriter, r *http.Request) {
+	infos := s.Skills.List()
+	out := make([]map[string]any, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, map[string]any{
+			"name":        info.Name,
+			"description": info.Description,
+			"slash":       info.Slash,
+			"location":    info.Location,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }

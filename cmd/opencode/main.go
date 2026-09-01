@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -13,13 +14,16 @@ import (
 	"github.com/anomalyco/opencode-go/internal/config"
 	"github.com/anomalyco/opencode-go/internal/db"
 	"github.com/anomalyco/opencode-go/internal/event"
+	"github.com/anomalyco/opencode-go/internal/global"
 	"github.com/anomalyco/opencode-go/internal/llm"
 	"github.com/anomalyco/opencode-go/internal/mcp"
 	"github.com/anomalyco/opencode-go/internal/modelsdev"
 	"github.com/anomalyco/opencode-go/internal/modelstate"
 	"github.com/anomalyco/opencode-go/internal/permission"
 	"github.com/anomalyco/opencode-go/internal/provider"
+	"github.com/anomalyco/opencode-go/internal/question"
 	"github.com/anomalyco/opencode-go/internal/session"
+	"github.com/anomalyco/opencode-go/internal/skill"
 	"github.com/anomalyco/opencode-go/internal/tool"
 	"github.com/anomalyco/opencode-go/internal/tool/builtins"
 )
@@ -94,6 +98,12 @@ type stack struct {
 	// Jobs tracks detached background subagents. nil unless background
 	// subagents are enabled.
 	Jobs *background.Registry
+	// Skills holds the discovered skills backing the skill tool and the
+	// available-skills prompt block.
+	Skills *skill.Registry
+	// Questions owns the pending ask/reply rounds from the question tool and
+	// plan mode.
+	Questions *question.Service
 }
 
 // resolveModelFlag applies precedence: explicit flag wins, then config,
@@ -160,13 +170,35 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Skills are discovered from the project and the user's global config,
+	// project first so a local skill overrides a global one of the same name.
+	skills := skill.Discover(
+		filepath.Join(workdir, ".opencode"),
+		filepath.Join(global.Resolve().Config, "opencode"),
+	)
+	questions := question.NewService(question.Hooks{}, nil)
+
 	tools := tool.NewRegistry()
-	builtins.Register(tools, workdir, database)
+	// The agent switcher is bound after the session service exists; plan mode
+	// is registered below once it does.
+	builtins.RegisterWith(tools, workdir, builtins.Options{
+		Database: database,
+		Skills:   skills,
+		Asker:    questions,
+	})
 
 	mcpServers, _ := mcp.ParseServers(cfg.MCP)
 	mcpService := mcp.NewService(workdir)
 	mcpService.SetRegistry(tools)
 	mcpService.LoadAsync(mcpServers)
+
+	// Markdown-defined agents (.opencode/agent/*.md) merge into the config's
+	// agent map before the registry is built, so both definition styles flow
+	// through one code path. JSON config wins on a name collision.
+	cfg.DiscoverAgents(
+		filepath.Join(workdir, ".opencode"),
+		filepath.Join(global.Resolve().Config, "opencode"),
+	)
 
 	agents := agent.NewRegistry()
 	// defaultPermissions mirrors agent.ts's `defaults` object, merged into
@@ -240,6 +272,10 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	}
 	catalog.StartBackgroundRefresh(ctx)
 	service := session.NewService(database, bus)
+	// Plan mode needs both the question service and the session service, so it
+	// is registered here rather than in the builtins block above.
+	tools.Register(builtins.NewPlanEnterTool(questions, service))
+	tools.Register(builtins.NewPlanExitTool(questions, service))
 	agentRules.Sessions = service
 	service.Execution = execution
 	service.Compactor = &session.Compactor{
@@ -279,6 +315,8 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Runner:      runner,
 		MCP:         mcpService,
 		Jobs:        jobs,
+		Skills:      skills,
+		Questions:   questions,
 	}, nil
 }
 
