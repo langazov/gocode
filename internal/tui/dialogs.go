@@ -51,8 +51,11 @@ type overlayItem struct {
 // dialogAction is a footer action (DialogSelect actions): a title plus the
 // keybind that triggers it on the selected item.
 type dialogAction struct {
-	title     string
-	keys      string
+	title string
+	keys  string
+	// right places the action in the footer's right-aligned group
+	// (DialogSelect's `side: "right"`); the default group is left-aligned.
+	right     bool
 	onTrigger func(item overlayItem) tea.Cmd
 }
 
@@ -70,11 +73,22 @@ type overlay struct {
 	selected int
 	current  string // value of the current item, marked with ●
 	actions  []dialogAction
-	armValue string // armed two-press confirmation (session delete)
-	armKeys  string // keybind shown in the armed confirmation label
-	onMove   func(item overlayItem)
-	input    string // for overlayInput
-	onSubmit func(string) tea.Msg
+	// focusedAction is the footer action tab/shift+tab has focused, or -1.
+	// DialogSelect's focusedAction signal: while one is focused the selected
+	// row dims and enter triggers the action instead of the item.
+	focusedAction int
+	// scrollTop is the first visible body row, and centerScroll picks which
+	// of scrollToSelection's two arms applies. move() (the arrow and page
+	// keys) passes center=true and recenters the selection; moveTo() —
+	// home/end and mouse hover — leaves it false and scrolls the minimum
+	// needed to bring the row back into view.
+	scrollTop    int
+	centerScroll bool
+	armValue     string // armed two-press confirmation (session delete)
+	armKeys      string // keybind shown in the armed confirmation label
+	onMove       func(item overlayItem)
+	input        string // for overlayInput
+	onSubmit     func(string) tea.Msg
 
 	// placeholder is the filter input's placeholder (DialogSelect's
 	// placeholder prop, "Search" when unset).
@@ -124,7 +138,7 @@ func (a *App) openConfirm(title, message, cancelLabel string, onConfirm, onCance
 }
 
 func (a *App) openList(title string, items []overlayItem) {
-	a.overlay = &overlay{kind: overlayList, title: title, items: items, all: items}
+	a.overlay = &overlay{kind: overlayList, title: title, items: items, all: items, focusedAction: -1}
 }
 
 func (a *App) openInput(title, placeholder string, onSubmit func(string) tea.Msg) {
@@ -168,21 +182,49 @@ func (o *overlay) selectedItem() (overlayItem, bool) {
 
 // moveSelection moves the list selection with wraparound, disarming any
 // pending confirmation and notifying onMove (live theme preview).
+// moveSelection is DialogSelect's move(): it wraps at both ends and recenters
+// the scroll (moveTo's center=true arm).
 func (a *App) moveSelection(o *overlay, delta int) {
 	if len(o.items) == 0 {
 		return
 	}
-	o.selected += delta
-	if o.selected < 0 {
-		o.selected = len(o.items) - 1
+	next := o.selected + delta
+	if next < 0 {
+		next = len(o.items) - 1
 	}
-	if o.selected >= len(o.items) {
-		o.selected = 0
+	if next >= len(o.items) {
+		next = 0
 	}
+	o.selected = next
+	o.centerScroll = true
+	o.focusedAction = -1 // moveTo() clears the focused action
 	o.armValue = ""
 	if o.onMove != nil {
 		o.onMove(o.items[o.selected])
 	}
+}
+
+// moveActionFocus is DialogSelect's moveAction(): tab enters the footer at the
+// first action, shift+tab at the last, and stepping off either end releases
+// focus back to the list rather than wrapping.
+func (a *App) moveActionFocus(o *overlay, direction int) {
+	if len(o.actions) == 0 {
+		return
+	}
+	if o.focusedAction < 0 {
+		if direction == 1 {
+			o.focusedAction = 0
+		} else {
+			o.focusedAction = len(o.actions) - 1
+		}
+		return
+	}
+	next := o.focusedAction + direction
+	if next < 0 || next >= len(o.actions) {
+		o.focusedAction = -1
+		return
+	}
+	o.focusedAction = next
 }
 
 func (a *App) handleOverlayKey(key string) tea.Cmd {
@@ -198,7 +240,10 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 	}
 	switch o.kind {
 	case overlayHelp, overlayStatus:
-		if key == "esc" || key == "enter" || key == "q" {
+		// DialogHelp binds return and escape; every dialog also closes on
+		// escape/ctrl+c from the Dialog container. `q` was this port's own
+		// invention.
+		if key == "esc" || key == "enter" {
 			a.closeOverlay()
 		}
 		return nil
@@ -269,15 +314,37 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 			return nil
 		}
 	}
+	// config/keybind.ts's dialog.select.* defaults. Note what is NOT here:
+	// j/k. The filter input owns the keyboard in the original, so those are
+	// ordinary characters to type — binding them to movement (as this port
+	// did) made them impossible to search for.
 	switch key {
 	case "esc":
 		a.closeOverlay()
 		return nil
-	case "up", "k":
+	case "up", "ctrl+p":
 		a.moveSelection(o, -1)
 		return nil
-	case "down", "j":
+	case "down", "ctrl+n":
 		a.moveSelection(o, 1)
+		return nil
+	case "pgup", "pageup":
+		a.moveSelection(o, -10)
+		return nil
+	case "pgdown", "pagedown":
+		a.moveSelection(o, 10)
+		return nil
+	case "home":
+		a.moveSelectionTo(o, 0)
+		return nil
+	case "end":
+		a.moveSelectionTo(o, len(o.items)-1)
+		return nil
+	case "tab":
+		a.moveActionFocus(o, 1)
+		return nil
+	case "shift+tab":
+		a.moveActionFocus(o, -1)
 		return nil
 	case "backspace":
 		if run := []rune(o.filter); len(run) > 0 {
@@ -286,6 +353,13 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 		}
 		return nil
 	case "enter":
+		// submit(): a focused footer action wins over the selected item.
+		if o.focusedAction >= 0 && o.focusedAction < len(o.actions) {
+			if item, ok := o.selectedItem(); ok {
+				return o.actions[o.focusedAction].onTrigger(item)
+			}
+			return nil
+		}
 		item, ok := o.selectedItem()
 		if !ok {
 			return nil
@@ -336,11 +410,15 @@ func (a *App) activateItem(item overlayItem) tea.Cmd {
 
 // moveSelectionTo jumps the list selection to an absolute index (mouse hover
 // preselect / press), sharing moveSelection's disarm+onMove notification.
+// moveSelectionTo is DialogSelect's moveTo() with its default center=false:
+// home/end and mouse hover scroll only as far as they must.
 func (a *App) moveSelectionTo(o *overlay, index int) {
 	if index < 0 || index >= len(o.items) {
 		return
 	}
 	o.selected = index
+	o.centerScroll = false
+	o.focusedAction = -1
 	o.armValue = ""
 	if o.onMove != nil {
 		o.onMove(o.items[o.selected])
@@ -409,7 +487,20 @@ func wrapWords(text string, width int) []string {
 // height/4, centered — the Dialog backdrop in ui/dialog.tsx.
 func (a *App) viewOverlay() string {
 	panel, _ := a.overlayPanel()
-	return a.frame(a.compositeOverlay(a.underlay(), panel))
+	// The outer frame's own padding cells sit outside the composited base, so
+	// they carry the scrim's background explicitly — the backdrop covers the
+	// whole terminal in the original, margins included.
+	return a.dimFrame(a.compositeOverlay(a.underlay(), panel))
+}
+
+// dimFrame is frame() with the scrim's background under its padding.
+func (a *App) dimFrame(content string) string {
+	bg := dimChannels(a.theme.Background)
+	return lipgloss.NewStyle().
+		Background(lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", bg[0], bg[1], bg[2]))).
+		Padding(0, 1).
+		MaxHeight(a.height).
+		Render(content)
 }
 
 func (a *App) underlay() string {
@@ -517,12 +608,11 @@ func (a *App) overlayOrigin(panelW int) (top, left int) {
 	return a.height / 4, (a.width - panelW) / 2
 }
 
-// compositeOverlay splices the panel into the base render. The backdrop dim
-// of the original (black at ~59% alpha) has no lipgloss equivalent, so the
-// base stays undimmed around the panel.
+// compositeOverlay dims the base render and splices the panel onto it,
+// reproducing the Dialog backdrop's black-at-59% scrim (see dim.go).
 func (a *App) compositeOverlay(base, panel string) string {
 	top, left := a.overlayOrigin(lipgloss.Width(panel))
-	return a.spliceAt(base, panel, top, left)
+	return a.spliceAt(a.dimBackdrop(base), panel, top, left)
 }
 
 // spliceAt splices panel into base at the given absolute screen row/col,
@@ -565,14 +655,32 @@ func sliceCells(line string, start, end int) string {
 	if start == 0 && lipgloss.Width(line) <= end {
 		return line
 	}
-	var out, pending strings.Builder
+	var out, pending, carry strings.Builder
 	cells := 0
 	inEscape := false
+	started := false
 	for _, r := range line {
 		if inEscape {
 			pending.WriteRune(r)
-			if r == 'm' {
-				inEscape = false
+			if r != 'm' {
+				continue
+			}
+			inEscape = false
+			sequence := pending.String()
+			pending.Reset()
+			// carry is the style still in force at the current cell. An
+			// earlier version kept only the escapes immediately preceding the
+			// window's first cell, which silently dropped any style opened
+			// further left — a line-level style (the dialog backdrop opens
+			// one per line, see dim.go) was lost entirely for the slice after
+			// the dialog panel, leaving those cells at terminal defaults.
+			if sequence == "[m" || sequence == "[0m" {
+				carry.Reset()
+			} else {
+				carry.WriteString(sequence)
+			}
+			if started {
+				out.WriteString(sequence)
 			}
 			continue
 		}
@@ -582,10 +690,12 @@ func sliceCells(line string, start, end int) string {
 			continue
 		}
 		if cells >= start && cells < end {
-			out.WriteString(pending.String())
+			if !started {
+				out.WriteString(carry.String())
+				started = true
+			}
 			out.WriteRune(r)
 		}
-		pending.Reset()
 		cells++
 		if cells >= end {
 			break
@@ -617,7 +727,9 @@ func (a *App) listOverlay(o *overlay, w int, hits *overlayHits) []string {
 			hits.rowItem = append(hits.rowItem, -1)
 		}
 	} else {
-		bodyLines, bodyHits := a.listBody(o, w-2)
+		// The scrollbox spans the full panel width; its own paddingLeft/Right
+		// of 1 is taken inside listBody.
+		bodyLines, bodyHits := a.listBody(o, w)
 		lines = append(lines, bodyLines...)
 		hits.rowItem = append(hits.rowItem, bodyHits...)
 	}
@@ -644,6 +756,14 @@ func (a *App) listBody(o *overlay, width int) ([]string, []int) {
 		selected  bool
 		itemIndex int
 	}
+	// The scrollbox pads 1 on each side, outside the row boxes — so the
+	// highlight stops one column short of the panel edge, and a category
+	// header's own paddingLeft={3} lands at column 4.
+	const scrollPad = 1
+	inner := width - 2*scrollPad
+	indent := strings.Repeat(" ", scrollPad)
+	panel := lipgloss.NewStyle().Background(a.theme.BackgroundPanel)
+
 	var rows []row
 	category := ""
 	for i, item := range o.items {
@@ -652,15 +772,20 @@ func (a *App) listBody(o *overlay, width int) ([]string, []int) {
 				rows = append(rows, row{itemIndex: -1})
 			}
 			rows = append(rows, row{
-				text: strings.Repeat(" ", 3) +
+				text: indent + strings.Repeat(" ", 3) +
 					a.onPanel(a.theme.Accent, true).Render(item.category),
 				itemIndex: -1,
 			})
 		}
 		category = item.category
-		rows = append(rows, row{text: a.listRow(o, item, i, width), selected: i == o.selected, itemIndex: i})
+		rows = append(rows, row{
+			text:      indent + a.listRow(o, item, i, inner) + panel.Render(indent),
+			selected:  i == o.selected,
+			itemIndex: i,
+		})
 	}
 
+	// maxHeight={height()} where height = min(rows, floor(h/2) - 6).
 	maxRows := a.height/2 - 6
 	if maxRows < 3 {
 		maxRows = 3
@@ -673,14 +798,33 @@ func (a *App) listBody(o *overlay, width int) ([]string, []int) {
 				selected = i
 			}
 		}
-		start := selected - maxRows/2
-		if start < 0 {
-			start = 0
+		top := o.scrollTop
+		if o.centerScroll {
+			// scrollBy(y - floor(height/2)): bring the row to the middle.
+			top = selected - maxRows/2
+		} else {
+			// The default arm: only scroll far enough to bring the row back
+			// inside the viewport.
+			if top > len(rows)-maxRows {
+				top = len(rows) - maxRows
+			}
+			if selected < top {
+				top = selected
+			}
+			if selected >= top+maxRows {
+				top = selected - maxRows + 1
+			}
 		}
-		if start > len(rows)-maxRows {
-			start = len(rows) - maxRows
+		if top > len(rows)-maxRows {
+			top = len(rows) - maxRows
 		}
-		window = rows[start : start+maxRows]
+		if top < 0 {
+			top = 0
+		}
+		o.scrollTop = top
+		window = rows[top : top+maxRows]
+	} else {
+		o.scrollTop = 0
 	}
 	texts := make([]string, len(window))
 	indexes := make([]int, len(window))
@@ -691,20 +835,37 @@ func (a *App) listBody(o *overlay, width int) ([]string, []int) {
 	return texts, indexes
 }
 
-// listRow renders one DialogSelect option: left padding 1 for the current
-// item (with a ● gutter) or 3 otherwise, title in text color (primary for
-// the current item), muted hint, right-aligned footer, and the selected row
-// highlighted with a primary background and bold background-colored text.
+// listRow renders one DialogSelect option row.
+//
+// The geometry is worth spelling out, because this port had it wrong by three
+// columns. The row box is `paddingLeft={current||gutter ? 1 : 3}
+// paddingRight={3} gap={1}`, and inside it the *title text has its own
+// `paddingLeft={3}`*. So a current row spends its first three cells on
+// "␣●␣" (pad, bullet, gap) and a plain row on three pad cells, and in
+// both cases the title starts at column 6 -- the bullet occupies the gutter
+// without shifting the title. This port previously emitted only the row
+// padding, so every row sat three columns left of the original.
+//
+// The background belongs to the row *box*, so a highlighted row is filled
+// edge to edge including both paddings; this port used to leave them
+// unstyled, which cut three columns off each end of the highlight.
 func (a *App) listRow(o *overlay, item overlayItem, index, width int) string {
 	active := index == o.selected
 	armed := o.armValue != "" && o.armValue == item.value
 	current := o.current != "" && item.value == o.current
+	// actionFocused(): while a footer action holds focus the selected row
+	// steps back to backgroundElement and its text goes muted.
+	muted := o.focusedAction >= 0
 
 	bg := a.theme.BackgroundPanel
 	if active {
-		bg = a.theme.Primary
-		if armed {
+		switch {
+		case muted:
+			bg = a.theme.BackgroundElement
+		case armed:
 			bg = a.theme.Error
+		default:
+			bg = a.theme.Primary
 		}
 	}
 	segment := func(fg color.Color, bold bool, text string) string {
@@ -714,91 +875,170 @@ func (a *App) listRow(o *overlay, item overlayItem, index, width int) string {
 		}
 		return s.Render(text)
 	}
+	fill := func(n int) string {
+		if n <= 0 {
+			return ""
+		}
+		return lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", n))
+	}
+
+	// Option's text() memo, in its own order.
 	titleFg := a.theme.Text
-	if active {
-		titleFg = a.theme.Background
-	} else if current {
+	switch {
+	case active && !muted:
+		titleFg = a.theme.SelectedListItemText
+	case muted && (active || current):
+		titleFg = a.theme.TextMuted
+	case current:
 		titleFg = a.theme.Primary
 	}
-	hintFg := a.theme.TextMuted
-	if active {
-		hintFg = a.theme.Background
+	// The description span and the footer share one color rule.
+	secondaryFg := a.theme.TextMuted
+	if active && !muted {
+		secondaryFg = a.theme.SelectedListItemText
 	}
 
 	label := item.label
 	if armed {
 		label = "Press " + o.armKeys + " again to confirm"
 	}
-	const padLeftDefault, padRight = 3, 3
-	padLeft := padLeftDefault
-	if current {
-		padLeft = 1
+	// Locale.truncate(title, titleWidth ?? 61) runs before any layout, so a
+	// long title carries its ellipsis even in a dialog wide enough to hold it.
+	label = truncateEllipsis(label, dialogTitleWidth)
+
+	const gutter, padRight = 6, 3
+	budget := width - gutter - padRight
+	if item.footer != "" {
+		// gap={1} to the flexShrink={0} footer box.
+		budget -= 1 + lipgloss.Width(item.footer)
 	}
-	bullet := 0
-	if current {
-		bullet = 2 // "● "
+	if budget < 0 {
+		budget = 0
 	}
 
-	hint := item.hint
-	footerW := lipgloss.Width(item.footer)
-	if hint != "" && lipgloss.Width(label)+1+lipgloss.Width(hint) > width-padLeft-padRight-bullet-footerW-1 {
-		hint = ""
+	// The title and its description live in one `overflow="hidden"` text, so
+	// they are clipped together rather than the description being dropped.
+	var body strings.Builder
+	used := 0
+	if lipgloss.Width(label) > budget {
+		label = truncateRunes(label, budget)
 	}
-	if lipgloss.Width(label) > width-padLeft-padRight-bullet-footerW-hintWidth(hint)-1 {
-		label = truncateRunes(label, width-padLeft-padRight-bullet-footerW-hintWidth(hint)-1)
-	}
-	fillWidth := width - padLeft - bullet - lipgloss.Width(label) - hintWidth(hint) - footerW - padRight
-	if fillWidth < 0 {
-		fillWidth = 0
+	body.WriteString(segment(titleFg, active && !muted, label))
+	used += lipgloss.Width(label)
+	if item.hint != "" && used+1 < budget {
+		hint := " " + item.hint
+		if lipgloss.Width(hint) > budget-used {
+			hint = truncateRunes(hint, budget-used)
+		}
+		body.WriteString(segment(secondaryFg, false, hint))
+		used += lipgloss.Width(hint)
 	}
 
 	var b strings.Builder
-	b.WriteString(strings.Repeat(" ", padLeft))
 	if current {
-		b.WriteString(segment(titleFg, false, "● "))
+		// paddingLeft 1, the bullet gutter, then the row's gap={1}.
+		b.WriteString(fill(1))
+		b.WriteString(segment(titleFg, false, "●"))
+		b.WriteString(fill(1))
+	} else {
+		b.WriteString(fill(3))
 	}
-	b.WriteString(segment(titleFg, active, label))
-	if hint != "" {
-		b.WriteString(segment(hintFg, false, " "+hint))
-	}
-	b.WriteString(lipgloss.NewStyle().Background(bg).Render(strings.Repeat(" ", fillWidth)))
+	b.WriteString(fill(3)) // the title text's own paddingLeft
+	b.WriteString(body.String())
+	b.WriteString(fill(budget - used))
 	if item.footer != "" {
-		b.WriteString(segment(hintFg, false, item.footer))
+		b.WriteString(fill(1))
+		b.WriteString(segment(secondaryFg, false, item.footer))
 	}
-	b.WriteString(strings.Repeat(" ", padRight))
+	b.WriteString(fill(padRight))
 	return b.String()
 }
 
-// hintWidth returns 1 + visible width for a non-empty hint (the leading
-// space), 0 otherwise.
-func hintWidth(hint string) int {
-	if hint == "" {
-		return 0
+// dialogTitleWidth is DialogSelectOption's `titleWidth ?? 61`.
+const dialogTitleWidth = 61
+
+// truncateEllipsis is util/locale.ts's truncate(): the first len-1 runes plus
+// a single-cell ellipsis. It counts runes, not cells, exactly as the original
+// counts UTF-16 code units -- this is a content rule, not a layout one.
+func truncateEllipsis(value string, max int) string {
+	runes := []rune(value)
+	if len(runes) <= max || max < 1 {
+		return value
 	}
-	return 1 + lipgloss.Width(hint)
+	return string(runes[:max-1]) + "…"
 }
 
-// actionRow renders the footer actions: "title keys" pairs separated by two
-// spaces (DialogSelect's FooterAction).
-// actionRow renders the footer actions and, alongside, the column span each
-// one occupies (a leading 4-space pad, then "title keys" segments joined by
-// two spaces) for a mouse click to resolve back to an action index.
+// actionRow renders DialogSelect's footer action bar:
+//
+//	<box paddingRight={2} paddingLeft={4} justifyContent="space-between">
+//	  <box gap={2}> …left actions… </box>
+//	  <box gap={2}> …right actions… </box>
+//	</box>
+//
+// Each action is its own box, so a focused one is filled with the primary
+// color across its whole "title label" span. It also reports the column span
+// each action occupies, so a click resolves back to an action index.
 func (a *App) actionRow(o *overlay, w int) (string, []actionHit) {
-	parts := make([]string, 0, len(o.actions))
+	const padLeft, padRight = 4, 2
 	spans := make([]actionHit, 0, len(o.actions))
-	col := 4
-	for i, action := range o.actions {
-		if i > 0 {
-			col += 2 // the "  " separator
+
+	render := func(index int, action dialogAction, col int) (string, int) {
+		focused := index == o.focusedAction
+		titleStyle := a.onPanel(a.theme.Text, false)
+		keyStyle := a.onPanel(a.theme.TextMuted, false)
+		if focused {
+			titleStyle = lipgloss.NewStyle().
+				Foreground(a.theme.SelectedListItemText).Background(a.theme.Primary).Bold(true)
+			keyStyle = lipgloss.NewStyle().
+				Foreground(a.theme.SelectedListItemText).Background(a.theme.Primary)
 		}
-		parts = append(parts,
-			a.onPanel(a.theme.Text, false).Render(action.title)+" "+
-				a.onPanel(a.theme.TextMuted, false).Render(action.keys))
+		text := titleStyle.Render(action.title) + keyStyle.Render(" "+action.keys)
 		width := lipgloss.Width(action.title) + 1 + lipgloss.Width(action.keys)
-		spans = append(spans, actionHit{start: col, end: col + width, index: i})
-		col += width
+		spans = append(spans, actionHit{start: col, end: col + width, index: index})
+		return text, width
 	}
-	return strings.Repeat(" ", 4) + strings.Join(parts, "  "), spans
+
+	group := func(indexes []int, col int) (string, int) {
+		var out strings.Builder
+		used := 0
+		for n, index := range indexes {
+			if n > 0 {
+				out.WriteString(a.onPanel(a.theme.TextMuted, false).Render("  ")) // gap={2}
+				used += 2
+				col += 2
+			}
+			text, width := render(index, o.actions[index], col)
+			out.WriteString(text)
+			used += width
+			col += width
+		}
+		return out.String(), used
+	}
+
+	var leftIdx, rightIdx []int
+	for i, action := range o.actions {
+		if action.right {
+			rightIdx = append(rightIdx, i)
+		} else {
+			leftIdx = append(leftIdx, i)
+		}
+	}
+
+	left, leftWidth := group(leftIdx, padLeft)
+	rightWidth := 0
+	for n, index := range rightIdx {
+		if n > 0 {
+			rightWidth += 2
+		}
+		rightWidth += lipgloss.Width(o.actions[index].title) + 1 + lipgloss.Width(o.actions[index].keys)
+	}
+	gap := w - padLeft - padRight - leftWidth - rightWidth
+	if gap < 0 {
+		gap = 0
+	}
+	right, _ := group(rightIdx, padLeft+leftWidth+gap)
+
+	return strings.Repeat(" ", padLeft) + left + strings.Repeat(" ", gap) + right, spans
 }
 
 // inputOverlay mirrors DialogPrompt: bold title with esc, a three-row
@@ -1072,6 +1312,7 @@ func (a *App) themesOverlay() {
 	o.current = a.theme.Name
 	o.onMove = func(item overlayItem) {
 		a.theme = themeResolve(item.value) // live preview like DialogThemeList
+		a.invalidateRenderCache()
 	}
 }
 
@@ -1150,6 +1391,7 @@ func (a *App) commandsRegistry() []overlayItem {
 		}},
 		{label: "thinking.toggle", hint: thinkingToggleHint(a.thinkingMode), category: "Session", action: func() tea.Msg {
 			a.thinkingMode = nextThinkingMode(a.thinkingMode)
+			a.invalidateRenderCache()
 			return nil
 		}},
 		{label: "help.show", hint: "Keybinds", category: "System", action: func() tea.Msg {

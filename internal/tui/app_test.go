@@ -690,10 +690,24 @@ func TestShortConversationAnchorsPromptToBottom(t *testing.T) {
 func TestPageScrolling(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
+	// The scroll now clamps to the content above the viewport, so the
+	// timeline has to be longer than the screen for there to be anywhere to
+	// go — an empty one correctly refuses to scroll at all.
+	app.view = viewChat
+	app.active = &client.Session{ID: "ses_1", Directory: "/tmp"}
+	for i := range 40 {
+		app.timeline = append(app.timeline, settledAssistant(t, fmt.Sprintf("m%d", i), "line"))
+	}
+
 	before := app.scrollOffset
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if app.scrollOffset <= before {
 		t.Fatal("pageup should scroll the timeline up")
+	}
+	// messages_page_up is a *full* page upstream, not the half page this port
+	// used to scroll.
+	if app.scrollOffset != app.viewportHeight() {
+		t.Fatalf("pageup scrolled %d lines, want a full page of %d", app.scrollOffset, app.viewportHeight())
 	}
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if app.scrollOffset != before {

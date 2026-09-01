@@ -11,8 +11,23 @@ import (
 	"github.com/anomalyco/opencode-go/internal/tui/theme"
 )
 
+// frame applies the screen's 1-column side margin and crops to the terminal
+// height. It used to be `lipgloss.NewStyle().Padding(0,1).MaxHeight(h)`, which
+// is the same thing but pays to measure the display width of every line in a
+// ~90KB fully-styled frame — a third of the render budget, and grapheme
+// segmentation is the single most expensive thing in the profile. Nothing
+// downstream needs the uniform right edge that padding produced: the
+// compositors (spliceAt, compositeSidebarOverlay) pad to a.width themselves,
+// and no background is set here for a ragged edge to expose.
 func (a *App) frame(content string) string {
-	return lipgloss.NewStyle().Padding(0, 1).MaxHeight(a.height).Render(content)
+	lines := strings.Split(content, "\n")
+	if a.height > 0 && len(lines) > a.height {
+		lines = lines[:a.height]
+	}
+	for i, line := range lines {
+		lines[i] = " " + line + " "
+	}
+	return strings.Join(lines, "\n")
 }
 
 // sidebarWidth returns the columns reserved for the sidebar (42 when visible
@@ -797,7 +812,12 @@ func (a *App) viewHome() string {
 	}
 	logo := centerBlock(area, strings.Join(rows, "\n"))
 	prompt := centerBlock(area, a.homePromptBlock(promptMaxWidth(a.width)-1))
+	// tips_toggle (<leader>h). The row keeps its place in the stack so the
+	// logo and prompt do not jump when the tip is hidden.
 	tip := centerBlock(area, a.tipLine(area))
+	if a.tipsHidden {
+		tip = ""
+	}
 
 	content := strings.Join([]string{logo, "", prompt, "", tip}, "\n")
 

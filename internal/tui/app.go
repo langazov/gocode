@@ -155,12 +155,33 @@ type App struct {
 	chatWindowPad     int
 	chatWindowStart   int
 
+	// agents is the agent roster, cached so agent_cycle (tab) can step
+	// through it without a fetch.
+	agents2 []client.Agent
+	// tipsHidden is tips_toggle's state (<leader>h on the home screen).
+	tipsHidden bool
+
+	// messageCache memoizes each message's rendered block (see
+	// renderMessageCached); renderEpoch is the generation counter its keys
+	// carry, bumped for the inputs cheaper to invalidate wholesale than to
+	// track per message.
+	messageCache map[string]cachedRender
+	renderEpoch  uint64
+
 	// mdRenderer caches the glamour renderer built for the current
 	// theme+width (see markdown.go): constructing one loads chroma's lexer/
 	// style registries, too costly to redo on every streamed delta.
 	mdRenderer      *glamour.TermRenderer
 	mdRendererWidth int
 	mdRendererTheme string
+}
+
+// cachedRender is one memoized message block and the reasoning-header
+// offsets that go with it.
+type cachedRender struct {
+	signature uint64
+	block     string
+	refs      []reasoningHeaderRef
 }
 
 // placeholders mirrors the Home route's rotating prompt suggestions.
@@ -224,7 +245,7 @@ type leaderTimeoutMsg struct{}
 
 func (a *App) Init() tea.Cmd {
 	a.windowTitle = a.desiredWindowTitle()
-	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.tick()}
+	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadAgentsCmd(0), a.tick()}
 	if a.resumeSessionID != "" {
 		cmds = append(cmds, a.resumeSessionCmd(a.resumeSessionID))
 	}
@@ -487,6 +508,10 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		}
 		a.providerNames = map[string]string{}
 		a.providers = msg.providers
+		// settlementLine resolves a model's display name through this
+		// catalog, and messages rendered before it arrived cached the raw
+		// model ID.
+		a.invalidateRenderCache()
 		for _, provider := range msg.providers {
 			a.providerNames[provider.ID] = provider.Name
 		}
@@ -501,6 +526,12 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		)
 	case mcpMsg:
 		a.mcpServers = msg.servers
+		return nil
+	case agentsLoadedMsg:
+		a.agents2 = msg.agents
+		if msg.cycle != 0 {
+			return a.cycleAgent(msg.cycle)
+		}
 		return nil
 	case fadeTickMsg:
 		if cmd := a.agentMetaFade.Advance(msg); cmd != nil {
@@ -646,8 +677,12 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case "g":
 			a.openList("Timeline", a.timelineOverlayItems())
 			return nil
-		case "f":
-			a.openList("Fork from message", a.timelineOverlayItems())
+		case "down":
+			// session_child_first
+			return a.childrenOverlay()
+		case "h":
+			// tips_toggle
+			a.tipsHidden = !a.tipsHidden
 			return nil
 		case "e":
 			return a.exportToEditor()
@@ -670,8 +705,26 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return tea.Tick(time.Second, func(time.Time) tea.Msg { return leaderTimeoutMsg{} })
 	}
 
-	if msg.String() == "ctrl+p" {
+	switch msg.String() {
+	case "ctrl+p":
+		// command_list
 		a.commandPalette()
+		return nil
+	case "tab":
+		// agent_cycle — the hint row has always advertised this ("tab
+		// agents"); nothing was bound to it.
+		return a.cycleAgent(1)
+	case "shift+tab":
+		// agent_cycle_reverse
+		return a.cycleAgent(-1)
+	case "ctrl+z":
+		// terminal_suspend
+		return tea.Suspend
+	case "shift+enter", "ctrl+enter", "alt+enter", "ctrl+j":
+		// input_newline. bubbles' textarea only treats a bare enter as a
+		// newline, and this handler claims that for input_submit, so the
+		// aliases have to insert one explicitly.
+		a.input.InsertString("\n")
 		return nil
 	}
 	if msg.String() == "ctrl+r" {
@@ -686,10 +739,6 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 			a.active.Title = value
 			return statusMsg{text: "renamed"}
 		})
-		return nil
-	}
-	if msg.String() == "?" && strings.TrimSpace(a.input.Value()) == "" {
-		a.overlay = &overlay{kind: overlayHelp, title: "Help"}
 		return nil
 	}
 	if msg.String() == "@" {
@@ -739,14 +788,30 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return a.armInterrupt()
 		}
 		return nil
-	case "pgup", "pageup":
-		a.scrollOffset += a.viewportHeight() / 2
+	// The messages_* family from config/keybind.ts. pageup/pagedown are a
+	// *full* page upstream; this port scrolled half a page for both and had
+	// no half-page, line or first/last bindings at all.
+	case "pgup", "pageup", "ctrl+alt+b":
+		return a.scrollMessages(a.viewportHeight())
+	case "pgdown", "pagedown", "ctrl+alt+f":
+		return a.scrollMessages(-a.viewportHeight())
+	case "ctrl+alt+u":
+		return a.scrollMessages(a.viewportHeight() / 2)
+	case "ctrl+alt+d":
+		return a.scrollMessages(-a.viewportHeight() / 2)
+	case "ctrl+alt+y":
+		return a.scrollMessages(1)
+	case "ctrl+alt+e":
+		return a.scrollMessages(-1)
+	case "ctrl+g":
+		// messages_first. `home` is the other binding upstream, but it is
+		// also input_buffer_home and the prompt holds focus here, so it stays
+		// with the input.
+		a.scrollOffset = a.maxScrollOffset()
 		return nil
-	case "pgdown", "pagedown":
-		a.scrollOffset -= a.viewportHeight() / 2
-		if a.scrollOffset < 0 {
-			a.scrollOffset = 0
-		}
+	case "ctrl+alt+g":
+		// messages_last (`end` likewise stays with the input).
+		a.scrollOffset = 0
 		return nil
 	case "enter":
 		text := strings.TrimSpace(a.input.Value())
@@ -769,22 +834,53 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	return cmd
 }
 
-// historyKey ports prompt/index.tsx's prompt.history.previous/next commands:
-// "up" recalls an older prompt only when the cursor already sits at the very
-// start of the input, "down" recalls a newer one only at the very end;
-// anywhere else the arrow should move the cursor within a wrapped/multi-line
-// draft instead (handled == false, so handleKey falls through to the
-// textarea's own Update).
+// historyKey ports prompt/index.tsx's prompt.history.previous /
+// prompt.history.next commands, which are a *two-stage* gesture:
+//
+//	if (input.cursorOffset !== 0) {
+//	  if (on the first visual row) input.cursorOffset = 0
+//	  return false
+//	}
+//	… recall …
+//	input.cursorOffset = 0
+//
+// So an arrow first moves the cursor to the far end of the draft, and only a
+// second press with the cursor already parked there recalls. That matters
+// because a recall leaves the cursor at the *start* (for up) — which is
+// exactly why "down" appeared dead in this port. It required the cursor to be
+// at the end before it would do anything, the recall had just put it at the
+// start, and bubbles' CursorDown on a single-row document does not move it,
+// so no amount of pressing down ever reached the forward branch.
+//
+// handled=false lets the key fall through to the textarea's own cursor
+// movement; upstream returns false in the snap case too, but its own movement
+// is a no-op on the boundary row it just snapped to, so consuming the key here
+// is equivalent.
 func (a *App) historyKey(key string) (tea.Cmd, bool) {
-	direction := -1
-	atBoundary := a.inputAtStart()
-	if key == "down" {
-		direction = 1
-		atBoundary = a.inputAtEnd()
+	if key == "up" {
+		if !a.inputAtStart() {
+			if a.inputOnFirstRow() {
+				moveCursorToDocumentStart(&a.input)
+				return nil, true
+			}
+			return nil, false
+		}
+		return a.recallHistory(-1)
 	}
-	if !atBoundary {
+	if !a.inputAtEnd() {
+		if a.inputOnLastRow() {
+			moveCursorToDocumentEnd(&a.input)
+			return nil, true
+		}
 		return nil, false
 	}
+	return a.recallHistory(1)
+}
+
+// recallHistory swaps the draft for the neighbouring history entry, parking
+// the cursor at the end the arrow came from so the next press continues in the
+// same direction.
+func (a *App) recallHistory(direction int) (tea.Cmd, bool) {
 	text, ok := a.history.Move(direction, a.input.Value())
 	if !ok {
 		return nil, false
@@ -798,17 +894,33 @@ func (a *App) historyKey(key string) (tea.Cmd, bool) {
 	return nil, true
 }
 
-// inputAtStart/inputAtEnd check the absolute document boundary (not just the
-// current visual row), matching TS's cursorOffset === 0 /
-// cursorOffset === plainText.length checks.
+// inputAtStart/inputAtEnd are TS's `cursorOffset === 0` /
+// `cursorOffset === plainText.length`: the absolute document boundary.
+// textarea.Column() is the cursor's rune offset within its *logical* line,
+// which is what these need — LineInfo().CharOffset, which this port used
+// before, is a column count relative to the current *visual* row, so both
+// checks silently failed the moment a draft wrapped.
 func (a *App) inputAtStart() bool {
-	return a.input.Line() == 0 && a.input.LineInfo().CharOffset == 0
+	return a.input.Line() == 0 && a.input.Column() == 0
 }
 
 func (a *App) inputAtEnd() bool {
 	lines := strings.Split(a.input.Value(), "\n")
-	lastLine := []rune(lines[len(lines)-1])
-	return a.input.Line() == a.input.LineCount()-1 && a.input.LineInfo().CharOffset == len(lastLine)
+	last := []rune(lines[len(lines)-1])
+	return a.input.Line() == a.input.LineCount()-1 && a.input.Column() == len(last)
+}
+
+// inputOnFirstRow/inputOnLastRow are the *visual* boundaries the snap stage
+// keys off (TS's `scrollY + visualCursor.visualRow === 0` and its
+// last-virtual-line counterpart), so a wrapped draft still walks row by row
+// before the recall takes over.
+func (a *App) inputOnFirstRow() bool {
+	return a.input.Line() == 0 && a.input.LineInfo().RowOffset == 0
+}
+
+func (a *App) inputOnLastRow() bool {
+	info := a.input.LineInfo()
+	return a.input.Line() == a.input.LineCount()-1 && info.RowOffset == info.Height-1
 }
 
 // moveCursorToDocumentStart/End walk line by line since textarea.Model only

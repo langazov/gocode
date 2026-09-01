@@ -175,6 +175,7 @@ func (a *App) handleClick(x, y int) tea.Cmd {
 		if a.view == viewChat {
 			if id, ok := a.reasoningClickTarget(y); ok {
 				a.expandedReasoning[id] = !a.expandedReasoning[id]
+				a.invalidateRenderCache()
 			}
 		}
 		return nil

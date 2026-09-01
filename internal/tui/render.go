@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"regexp"
 	"strconv"
 	"strings"
@@ -46,7 +48,7 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 		messages = messages[len(messages)-60:]
 	}
 	for i, message := range messages {
-		if block, refs := a.renderMessage(message, i == len(messages)-1); block != "" {
+		if block, refs := a.renderMessageCached(message, i == len(messages)-1); block != "" {
 			blocks = append(blocks, block)
 			blockRefs = append(blockRefs, refs)
 		}
@@ -92,6 +94,80 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 // header rows within it (relative to the block's own first line — see
 // reasoningHeaderRef and buildTimeline, which re-bases them into the full
 // timeline).
+// renderMessageCached memoizes renderMessage per message.
+//
+// Rendering a message is not cheap: an assistant message runs its markdown
+// through glamour, which parses it and syntax-highlights every fenced block
+// through chroma. buildTimeline does that for up to 60 messages, and it runs
+// on *every* frame — so every keystroke re-highlighted the whole visible
+// history. On a realistic session (60 messages with code blocks) that was 84ms
+// per frame, which is exactly the lag you feel when a key repeats.
+//
+// A settled message's render only changes when something outside it does, so
+// the cache key is the message data plus everything else the render reads:
+// the content width, whether it is the last message, whether a turn is
+// running, and renderEpoch — bumped by the rarer inputs (theme, thinking mode,
+// an expanded reasoning block) rather than tracked individually.
+func (a *App) renderMessageCached(message client.Message, isLast bool) (string, []reasoningHeaderRef) {
+	// The live message is never cached. Its block carries the inline spinner
+	// (a running tool row, a streaming reasoning header), which advances every
+	// tick — caching it would freeze the one thing on screen that has to move.
+	// It is a single message per frame, so re-rendering it costs nothing next
+	// to the history behind it.
+	if isLast && a.busy {
+		return a.renderMessage(message, isLast)
+	}
+	signature := a.renderSignature(message, isLast)
+	if hit, ok := a.messageCache[message.ID]; ok && hit.signature == signature {
+		return hit.block, hit.refs
+	}
+	block, refs := a.renderMessage(message, isLast)
+	if a.messageCache == nil {
+		a.messageCache = map[string]cachedRender{}
+	}
+	// The timeline is capped at 60 messages, but a long-lived session cycles
+	// through many more; drop the cache wholesale rather than grow forever.
+	if len(a.messageCache) > 256 {
+		a.messageCache = map[string]cachedRender{}
+	}
+	a.messageCache[message.ID] = cachedRender{signature: signature, block: block, refs: refs}
+	return block, refs
+}
+
+// renderSignature hashes everything renderMessage's output depends on. The
+// inputs it does *not* hash directly — the theme, the thinking mode, expanded
+// reasoning blocks, and the model-name catalog — all fold into renderEpoch,
+// which their own mutation sites bump.
+func (a *App) renderSignature(message client.Message, isLast bool) uint64 {
+	h := fnv.New64a()
+	h.Write(message.Data)
+	var scalars [8]byte
+	binary.LittleEndian.PutUint64(scalars[:], uint64(a.contentWidth()))
+	h.Write(scalars[:])
+	binary.LittleEndian.PutUint64(scalars[:], a.renderEpoch)
+	h.Write(scalars[:])
+	binary.LittleEndian.PutUint64(scalars[:], uint64(message.TimeCreated))
+	h.Write(scalars[:])
+	flags := byte(0)
+	if isLast {
+		flags |= 1
+	}
+	if a.busy {
+		flags |= 2
+	}
+	if a.timestamps {
+		flags |= 4
+	}
+	h.Write([]byte{flags})
+	h.Write([]byte(message.Type))
+	return h.Sum64()
+}
+
+// invalidateRenderCache bumps the epoch every cached render is keyed against.
+// Used for the inputs that are cheaper to invalidate wholesale than to track:
+// the theme, the thinking mode, and per-part reasoning expansion.
+func (a *App) invalidateRenderCache() { a.renderEpoch++ }
+
 func (a *App) renderMessage(message client.Message, isLast bool) (string, []reasoningHeaderRef) {
 	switch message.Type {
 	case "user":
