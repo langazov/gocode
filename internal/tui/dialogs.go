@@ -15,11 +15,11 @@ import (
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 )
 
-// Dialog panel sizes mirror ui/dialog.tsx: medium 60, large 88 (xlarge 116
-// is unused by this port).
+// Dialog panel widths, from the size prop in ui/dialog.tsx.
 const (
 	dialogMedium = 60
 	dialogLarge  = 88
+	dialogXLarge = 116
 )
 
 // overlayKind discriminates the active dialog.
@@ -31,6 +31,8 @@ const (
 	overlayInput
 	overlayHelp
 	overlayStatus
+	overlayAlert
+	overlayConfirm
 )
 
 // overlayItem is one row of a list dialog, mirroring DialogSelectOption:
@@ -73,6 +75,52 @@ type overlay struct {
 	onMove   func(item overlayItem)
 	input    string // for overlayInput
 	onSubmit func(string) tea.Msg
+
+	// placeholder is the filter input's placeholder (DialogSelect's
+	// placeholder prop, "Search" when unset).
+	placeholder string
+	// hideFilter suppresses the filter row, mirroring renderFilter={false}.
+	hideFilter bool
+	// locked disables selection, filtering and activation while leaving the
+	// panel on screen — DialogSelect's locked prop, used with emptyBody to
+	// show a load failure in place of the list.
+	locked bool
+	// emptyTitle/emptyBody replace the "No results found" fallback, the
+	// port of DialogSelect's emptyView.
+	emptyTitle string
+	emptyBody  string
+
+	// message is the body paragraph of an alert or confirm dialog.
+	message string
+	// cancelLabel overrides the left button's text on a confirm dialog
+	// (DialogConfirm's label prop); empty renders "Cancel".
+	cancelLabel string
+	// confirmActive tracks which confirm button is highlighted; it starts on
+	// confirm, matching DialogConfirm's initial active state.
+	confirmActive bool
+	onConfirm     func() tea.Msg
+	onCancel      func() tea.Msg
+}
+
+// openAlert mirrors DialogAlert.show: a titled message with a single ok
+// button, dismissed by enter or escape.
+func (a *App) openAlert(title, message string, onConfirm func() tea.Msg) {
+	a.overlay = &overlay{kind: overlayAlert, title: title, message: message, onConfirm: onConfirm}
+}
+
+// openConfirm mirrors DialogConfirm.show. cancelLabel overrides the left
+// button's text; onCancel also runs when the dialog is dismissed with escape,
+// matching the TS promise resolving via the dialog's onClose.
+func (a *App) openConfirm(title, message, cancelLabel string, onConfirm, onCancel func() tea.Msg) {
+	a.overlay = &overlay{
+		kind:          overlayConfirm,
+		title:         title,
+		message:       message,
+		cancelLabel:   cancelLabel,
+		confirmActive: true,
+		onConfirm:     onConfirm,
+		onCancel:      onCancel,
+	}
 }
 
 func (a *App) openList(title string, items []overlayItem) {
@@ -154,6 +202,31 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 			a.closeOverlay()
 		}
 		return nil
+	case overlayAlert:
+		// Both keys dismiss: DialogAlert.show settles its promise from the
+		// ok binding and from the dialog's onClose alike, so escape runs the
+		// same continuation enter does.
+		if key == "esc" || key == "enter" {
+			return a.resolveOverlay(o.onConfirm)
+		}
+		return nil
+	case overlayConfirm:
+		switch key {
+		case "esc":
+			// DialogConfirm.show resolves undefined on close, running
+			// neither branch.
+			a.closeOverlay()
+			return nil
+		case "left", "right":
+			o.confirmActive = !o.confirmActive
+			return nil
+		case "enter":
+			if o.confirmActive {
+				return a.resolveOverlay(o.onConfirm)
+			}
+			return a.resolveOverlay(o.onCancel)
+		}
+		return nil
 	case overlayInput:
 		switch key {
 		case "esc":
@@ -180,6 +253,14 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 	}
 
 	// overlayList
+	if o.locked {
+		// DialogSelect's locked prop guards filtering, movement and
+		// selection alike; only the dialog's own escape still applies.
+		if key == "esc" {
+			a.closeOverlay()
+		}
+		return nil
+	}
 	for _, action := range o.actions {
 		if action.keys != "" && key == action.keys {
 			if item, ok := o.selectedItem(); ok {
@@ -214,6 +295,22 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 	if len(key) == 1 {
 		o.filter += key
 		o.applyFilter()
+	}
+	return nil
+}
+
+// resolveOverlay closes the dialog and dispatches the chosen branch, the
+// shared tail of the alert and confirm button handlers.
+func (a *App) resolveOverlay(branch func() tea.Msg) tea.Cmd {
+	a.closeOverlay()
+	if branch == nil {
+		return nil
+	}
+	if result := branch(); result != nil {
+		if cmd, ok := result.(tea.Cmd); ok {
+			return cmd
+		}
+		return staticMsg(result)
 	}
 	return nil
 }
@@ -332,6 +429,10 @@ type overlayHits struct {
 	escStart, escEnd int
 	actionRow        int
 	actions          []actionHit
+	// buttonRow/buttons locate the ok / cancel+confirm buttons of an alert
+	// or confirm dialog, whose onMouseUp handlers they reproduce.
+	buttonRow int
+	buttons   []actionHit
 }
 
 type actionHit struct {
@@ -339,7 +440,7 @@ type actionHit struct {
 }
 
 func newOverlayHits() *overlayHits {
-	return &overlayHits{escRow: -1, actionRow: -1}
+	return &overlayHits{escRow: -1, actionRow: -1, buttonRow: -1}
 }
 
 // shiftRows accounts for n lines prepended ahead of everything already
@@ -355,6 +456,9 @@ func (h *overlayHits) shiftRows(n int) {
 	}
 	if h.actionRow >= 0 {
 		h.actionRow += n
+	}
+	if h.buttonRow >= 0 {
+		h.buttonRow += n
 	}
 }
 
@@ -383,6 +487,14 @@ func (a *App) overlayPanel() (string, *overlayHits) {
 		hits.escStart, hits.escEnd = a.escHintRange(2, "Status", "esc", w)
 	case overlayInput:
 		content = a.inputOverlay(w)
+		hits.escRow = 0
+		hits.escStart, hits.escEnd = a.escHintRange(2, o.title, "esc", w)
+	case overlayAlert:
+		content, hits.buttonRow, hits.buttons = a.alertOverlay(w)
+		hits.escRow = 0
+		hits.escStart, hits.escEnd = a.escHintRange(2, o.title, "esc", w)
+	case overlayConfirm:
+		content, hits.buttonRow, hits.buttons = a.confirmOverlay(w)
 		hits.escRow = 0
 		hits.escStart, hits.escEnd = a.escHintRange(2, o.title, "esc", w)
 	default:
@@ -485,14 +597,25 @@ func sliceCells(line string, start, end int) string {
 // listOverlay renders a DialogSelect: header, filter, grouped rows, and the
 // footer actions, separated by blank lines (the gap=1/paddingBottom=1 box).
 func (a *App) listOverlay(o *overlay, w int, hits *overlayHits) []string {
-	lines := []string{a.dialogHeader(4, o.title, "esc", w), ""}
-	hits.rowItem = append(hits.rowItem, -1, -1)
+	lines := []string{a.dialogHeader(4, o.title, "esc", w)}
+	hits.rowItem = append(hits.rowItem, -1)
 	hits.escRow = 0
 	hits.escStart, hits.escEnd = a.escHintRange(4, o.title, "esc", w)
-	if len(o.items) == 0 {
-		lines = append(lines, "",
-			strings.Repeat(" ", 4)+a.onPanel(a.theme.TextMuted, false).Render("No results found"))
+	// The filter input sits under the title inside the same padded header
+	// box (paddingTop 1), then the parent's gap separates it from the list.
+	if !o.hideFilter {
+		lines = append(lines, "", a.filterRow(o, w))
 		hits.rowItem = append(hits.rowItem, -1, -1)
+	}
+	lines = append(lines, "")
+	hits.rowItem = append(hits.rowItem, -1)
+	if len(o.items) == 0 {
+		lines = append(lines, "")
+		hits.rowItem = append(hits.rowItem, -1)
+		for _, line := range a.emptyView(o, w) {
+			lines = append(lines, line)
+			hits.rowItem = append(hits.rowItem, -1)
+		}
 	} else {
 		bodyLines, bodyHits := a.listBody(o, w-2)
 		lines = append(lines, bodyLines...)
@@ -718,8 +841,10 @@ func (a *App) helpOverlay(w int) string {
 		"Press ctrl+p to see all available actions and commands in any context.", w-4) {
 		lines = append(lines, pad+a.onPanel(a.theme.TextMuted, false).Render(line))
 	}
+	// The message box's paddingBottom and the parent box's gap are two
+	// separate rows between the paragraph and the button.
 	return strings.Join(append(lines,
-		"",
+		"", "",
 		pad+strings.Repeat(" ", align)+ok,
 		"",
 	), "\n")
@@ -978,12 +1103,22 @@ func (a *App) commandsRegistry() []overlayItem {
 			if a.active == nil {
 				return statusMsg{text: "open a session first"}
 			}
+			// The original only exposes session.delete as an action inside
+			// the session list, where an armed second press confirms it.
+			// Reaching it from the palette has no list row to arm, so it
+			// confirms through DialogConfirm instead of deleting outright.
 			id := a.active.ID
-			a.active = nil
-			a.view = viewHome
-			a.timeline = nil
-			go func() { _ = c.Delete(context.Background(), id) }()
-			return reloadMsg{}
+			title := a.sessionTitle()
+			a.openConfirm("Delete Session",
+				fmt.Sprintf("Are you sure you want to delete %q?", title), "",
+				func() tea.Msg {
+					a.active = nil
+					a.view = viewHome
+					a.timeline = nil
+					go func() { _ = c.Delete(context.Background(), id) }()
+					return reloadMsg{}
+				}, nil)
+			return nil
 		}},
 		{label: "session.compact", hint: "Compact context", category: "Session", footer: "ctrl+x c", action: func() tea.Msg {
 			return statusMsg{text: "compaction runs automatically near the context limit"}

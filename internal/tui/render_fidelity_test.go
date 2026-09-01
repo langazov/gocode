@@ -213,8 +213,45 @@ func TestEditDiffBlockShowsColoredDiffWhenPresent(t *testing.T) {
 	if !strings.Contains(got, "← Edit foo.go") {
 		t.Fatalf("edit block missing title, got %q", got)
 	}
-	if !strings.Contains(got, "-old line") || !strings.Contains(got, "+new line") {
+	// Markers are separated from content by the line-number gutter, so assert
+	// on the marker and the content rather than the concatenation.
+	if !strings.Contains(got, "- old line") || !strings.Contains(got, "+ new line") {
 		t.Fatalf("edit block missing diff lines, got %q", got)
+	}
+	// The header carries the add/remove counts computed from the parsed diff.
+	if !strings.Contains(got, "+1 -1") {
+		t.Fatalf("edit block missing diff stats, got %q", got)
+	}
+}
+
+// TestEditDiffBlockRendersHunkHeadersAndLineNumbers covers the structured
+// path: a real unified diff (as the edit tool now emits) must render its @@
+// header and gutter line numbers, which the old prefix-scanning renderer
+// could not produce.
+func TestEditDiffBlockRendersHunkHeadersAndLineNumbers(t *testing.T) {
+	app := &App{width: 120, height: 40}
+	unified := strings.Join([]string{
+		"```diff",
+		"@@ -1,4 +1,4 @@",
+		" package main",
+		" ",
+		"-const answer = 41",
+		"+const answer = 42",
+		" ",
+		"```",
+	}, "\n")
+	state := &toolState{Status: "done", Input: map[string]any{"filePath": "main.go"}, Output: unified}
+	got := app.toolRow(client.Message{}, "edit", state)
+
+	if !strings.Contains(got, "@@ -1,4 +1,4 @@") {
+		t.Fatalf("hunk header missing, got %q", got)
+	}
+	if !strings.Contains(got, "- const answer = 41") || !strings.Contains(got, "+ const answer = 42") {
+		t.Fatalf("changed lines missing, got %q", got)
+	}
+	// Line 3 is where the change lands on both sides.
+	if !strings.Contains(got, " 3") {
+		t.Fatalf("gutter line numbers missing, got %q", got)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/anomalyco/opencode-go/internal/diff"
 	"github.com/anomalyco/opencode-go/internal/patch"
 )
 
@@ -80,8 +81,11 @@ type fileChange struct {
 	path     string
 	movePath string
 	kind     string // add | update | move | delete
+	oldText  string
 	content  string
 	bom      bool
+	diff     string
+	stat     diff.Stat
 }
 
 func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (string, error) {
@@ -116,7 +120,7 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 				contents += "\n"
 			}
 			body, bom := patch.SplitBOM(contents)
-			changes = append(changes, fileChange{path: target, kind: "add", content: body, bom: bom})
+			changes = append(changes, newFileChange(target, "add", "", body, bom))
 
 		case patch.HunkUpdate:
 			info, err := os.Stat(target)
@@ -131,7 +135,8 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 			if err != nil {
 				return "", fmt.Errorf("apply_patch verification failed: %w", err)
 			}
-			change := fileChange{path: target, kind: "update", content: content, bom: bom}
+			oldText, _ := patch.SplitBOM(string(raw))
+			change := newFileChange(target, "update", oldText, content, bom)
 			if hunk.MovePath != "" {
 				movePath, err := t.resolver.Resolve(hunk.MovePath)
 				if err != nil {
@@ -146,8 +151,8 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 			if err != nil {
 				return "", fmt.Errorf("apply_patch verification failed: %w", err)
 			}
-			_, bom := patch.SplitBOM(string(raw))
-			changes = append(changes, fileChange{path: target, kind: "delete", bom: bom})
+			oldText, bom := patch.SplitBOM(string(raw))
+			changes = append(changes, newFileChange(target, "delete", oldText, "", bom))
 
 		default:
 			return "", fmt.Errorf("apply_patch: unknown hunk type %q", hunk.Type)
@@ -155,18 +160,19 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 	}
 
 	var summary []string
+	var combined strings.Builder
 	for _, change := range changes {
 		switch change.kind {
 		case "add":
 			if err := writeWithDirs(change.path, patch.JoinBOM(change.content, change.bom)); err != nil {
 				return "", err
 			}
-			summary = append(summary, "A "+t.relative(change.path))
+			summary = append(summary, t.summaryLine("A", change.path, change))
 		case "update":
 			if err := writeWithDirs(change.path, patch.JoinBOM(change.content, change.bom)); err != nil {
 				return "", err
 			}
-			summary = append(summary, "M "+t.relative(change.path))
+			summary = append(summary, t.summaryLine("M", change.path, change))
 		case "move":
 			if err := writeWithDirs(change.movePath, patch.JoinBOM(change.content, change.bom)); err != nil {
 				return "", err
@@ -174,15 +180,53 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 			if err := os.Remove(change.path); err != nil && !os.IsNotExist(err) {
 				return "", err
 			}
-			summary = append(summary, "M "+t.relative(change.movePath))
+			summary = append(summary, t.summaryLine("M", change.movePath, change))
 		case "delete":
 			if err := os.Remove(change.path); err != nil && !os.IsNotExist(err) {
 				return "", err
 			}
-			summary = append(summary, "D "+t.relative(change.path))
+			summary = append(summary, t.summaryLine("D", change.path, change))
+		}
+		// Accumulated after the write succeeds, so a failure partway through
+		// does not report a diff for changes that never landed.
+		if change.diff != "" {
+			target := change.path
+			if change.movePath != "" {
+				target = change.movePath
+			}
+			combined.WriteString("--- " + t.relative(target) + "\n")
+			combined.WriteString(strings.TrimRight(change.diff, "\n") + "\n")
 		}
 	}
-	return "Success. Updated the following files:\n" + strings.Join(summary, "\n"), nil
+	out := "Success. Updated the following files:\n" + strings.Join(summary, "\n")
+	if combined.Len() > 0 {
+		out += "\n\n```diff\n" + strings.Join(
+			truncateDiff(combined.String(), maxPatchDiffLines), "\n") + "\n```"
+	}
+	return out, nil
+}
+
+// maxPatchDiffLines bounds the echoed diff. A patch can touch many files, and
+// the model does not need every line read back to it.
+const maxPatchDiffLines = 120
+
+// newFileChange resolves one operation and computes its diff up front, so a
+// patch that fails verification never writes and never reports a diff.
+func newFileChange(target, kind, oldText, newText string, bom bool) fileChange {
+	return fileChange{
+		path:    target,
+		kind:    kind,
+		oldText: oldText,
+		content: newText,
+		bom:     bom,
+		diff:    diff.Trim(diff.Unified(target, target, oldText, newText)),
+		stat:    diff.Count(oldText, newText),
+	}
+}
+
+// summaryLine renders one file's status line and accumulates its diff.
+func (t *ApplyPatchTool) summaryLine(marker, path string, change fileChange) string {
+	return fmt.Sprintf("%s %s (+%d -%d)", marker, t.relative(path), change.stat.Additions, change.stat.Deletions)
 }
 
 // relative renders a path for the summary, relative to the tool root and

@@ -189,6 +189,16 @@ func (a *App) handleClick(x, y int) tea.Cmd {
 		if sel, ok := o.selectedItem(); ok {
 			return o.actions[target.action].onTrigger(sel)
 		}
+	case overlayTargetButton:
+		// The buttons carry their own onMouseUp in dialog-alert.tsx and
+		// dialog-confirm.tsx; a confirm's row is [cancel, confirm].
+		if o.kind == overlayAlert {
+			return a.resolveOverlay(o.onConfirm)
+		}
+		if target.button == 0 {
+			return a.resolveOverlay(o.onCancel)
+		}
+		return a.resolveOverlay(o.onConfirm)
 	}
 	return nil
 }
@@ -224,12 +234,14 @@ const (
 	overlayTargetItem
 	overlayTargetEsc
 	overlayTargetAction
+	overlayTargetButton // an alert's ok, or a confirm's cancel/confirm
 )
 
 type overlayTarget struct {
 	kind   overlayTargetKind
 	item   int
 	action int
+	button int
 }
 
 // overlayMouseTarget resolves an absolute screen (row, col) against the
@@ -247,6 +259,13 @@ func (a *App) overlayMouseTarget(row, col int) overlayTarget {
 	}
 	if hits.escRow == localRow && localCol >= hits.escStart && localCol < hits.escEnd {
 		return overlayTarget{kind: overlayTargetEsc}
+	}
+	if hits.buttonRow == localRow {
+		for _, span := range hits.buttons {
+			if localCol >= span.start && localCol < span.end {
+				return overlayTarget{kind: overlayTargetButton, button: span.index}
+			}
+		}
 	}
 	if hits.actionRow == localRow {
 		for _, span := range hits.actions {

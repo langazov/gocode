@@ -4,11 +4,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
+	"github.com/anomalyco/opencode-go/internal/diff"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/anomalyco/opencode-go/internal/tui/theme"
 	"github.com/charmbracelet/x/ansi"
@@ -550,57 +552,131 @@ func (a *App) bashBlock(state *toolState) string {
 	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
 }
 
-// editDiffBlock approximates TS's diff BlockTool. TS renders a full
-// syntax-highlighted split/unified diff from structured `metadata.diff`
-// this port's wire schema doesn't carry; this instead colors the ```diff
-// preview (up to 6 old/new lines) that internal/tool/builtins/edit.go's
-// formatEditOutput already embeds in the tool's Output text — real diff
-// content, just not the exact original presentation. Returns "" (falling
-// back to the one-line "← Edit path" summary) until there's a diff to show.
+// editDiffBlock renders a tool's unified diff.
+//
+// The diff is parsed with internal/diff (sourcegraph/go-diff underneath)
+// rather than classified by string prefix, which is what gives us hunk
+// headers and real line numbers in the gutter. The diff text itself comes
+// from the fenced ```diff block that edit.go and apply_patch.go embed in
+// their output, matching how TS carries a unified diff in tool metadata.
+// Returns "" (falling back to the one-line summary) when there is nothing
+// to show.
 func (a *App) editDiffBlock(state *toolState) string {
-	diff := parseDiffPreview(state.Output)
-	if len(diff) == 0 {
+	block := parseDiffPreview(state.Output)
+	if block == "" {
 		return ""
 	}
+	files := diff.Parse(block)
+	if len(files) == 0 {
+		return ""
+	}
+
 	path, _ := state.Input["filePath"].(string)
 	title := "← Edit"
 	if path != "" {
 		title = "← Edit " + path
 	}
-	lines := []string{a.styles().Muted.Render(title)}
-	for _, dl := range diff {
-		switch {
-		case strings.HasPrefix(dl, "+"):
-			lines = append(lines, lipgloss.NewStyle().Foreground(a.theme.Success).Render(dl))
-		case strings.HasPrefix(dl, "-"):
-			lines = append(lines, lipgloss.NewStyle().Foreground(a.theme.Error).Render(dl))
-		default:
-			lines = append(lines, a.styles().Muted.Render(dl))
+	var additions, deletions int
+	for _, file := range files {
+		additions += file.Stat.Additions
+		deletions += file.Stat.Deletions
+	}
+	if additions > 0 || deletions > 0 {
+		title += fmt.Sprintf("  +%d -%d", additions, deletions)
+	}
+
+	styles := a.styles()
+	added := lipgloss.NewStyle().Foreground(a.theme.Success)
+	removed := lipgloss.NewStyle().Foreground(a.theme.Error)
+	lines := []string{styles.Muted.Render(title)}
+
+	// Line numbers are right-aligned to a width derived from the largest one
+	// on show, so the gutter does not jitter between hunks.
+	width := gutterWidth(files)
+	rendered := 0
+	for _, file := range files {
+		if len(files) > 1 {
+			lines = append(lines, styles.Muted.Render(file.Name()))
+		}
+		for _, line := range file.Lines {
+			if rendered >= maxRenderedDiffLines {
+				lines = append(lines, styles.Muted.Render("  … diff truncated"))
+				return a.finishDiffBlock(lines, state)
+			}
+			rendered++
+			switch line.Kind {
+			case diff.LineHunk:
+				lines = append(lines, styles.Muted.Render(line.Content))
+			case diff.LineAdded:
+				lines = append(lines, added.Render(gutter(0, line.NewLine, width)+"+ "+line.Content))
+			case diff.LineRemoved:
+				lines = append(lines, removed.Render(gutter(line.OldLine, 0, width)+"- "+line.Content))
+			case diff.LineMeta:
+				lines = append(lines, styles.Muted.Render(line.Content))
+			default:
+				lines = append(lines, styles.Muted.Render(gutter(line.OldLine, line.NewLine, width)+"  "+line.Content))
+			}
 		}
 	}
+	return a.finishDiffBlock(lines, state)
+}
+
+// maxRenderedDiffLines bounds a single diff block so one large edit cannot
+// push the rest of the conversation off screen.
+const maxRenderedDiffLines = 40
+
+func (a *App) finishDiffBlock(lines []string, state *toolState) string {
 	if state.Status == "error" && state.Error != "" {
 		lines = append(lines, a.styles().Error.Render(state.Error))
 	}
 	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
 }
 
-// parseDiffPreview extracts the lines inside the fenced ```diff block
-// edit.go's formatEditOutput embeds in the tool's output text.
-func parseDiffPreview(output string) []string {
+// gutterWidth sizes the line-number column from the largest number shown.
+func gutterWidth(files []diff.File) int {
+	largest := 0
+	for _, file := range files {
+		for _, line := range file.Lines {
+			largest = max(largest, line.OldLine, line.NewLine)
+		}
+	}
+	width := len(strconv.Itoa(largest))
+	if width < 2 {
+		width = 2
+	}
+	return width
+}
+
+// gutter renders the old/new line-number pair, blanking the side a line does
+// not exist on.
+func gutter(oldLine, newLine, width int) string {
+	return pad(oldLine, width) + " " + pad(newLine, width) + " "
+}
+
+func pad(value, width int) string {
+	if value == 0 {
+		return strings.Repeat(" ", width)
+	}
+	text := strconv.Itoa(value)
+	if len(text) >= width {
+		return text
+	}
+	return strings.Repeat(" ", width-len(text)) + text
+}
+
+// parseDiffPreview extracts the text inside the fenced ```diff block that the
+// edit and apply_patch tools embed in their output.
+func parseDiffPreview(output string) string {
 	start := strings.Index(output, "```diff")
 	if start == -1 {
-		return nil
+		return ""
 	}
 	rest := output[start+len("```diff"):]
 	end := strings.Index(rest, "```")
 	if end == -1 {
 		end = len(rest)
 	}
-	block := strings.Trim(rest[:end], "\n")
-	if block == "" {
-		return nil
-	}
-	return strings.Split(block, "\n")
+	return strings.Trim(rest[:end], "\n")
 }
 
 // todoWriteBlock mirrors TodoWrite's "# Todos" BlockTool: internal/tool/

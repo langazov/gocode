@@ -30,6 +30,25 @@ type Colors struct {
 	Border            color.Color
 	BorderActive      color.Color
 	BorderSubtle      color.Color
+	// SelectedListItemText is the foreground of text drawn on a Primary
+	// fill (dialog buttons, the which-key active tab). theme/index.ts makes
+	// it optional and falls back to background, which Normalize reproduces.
+	SelectedListItemText color.Color
+	// BackgroundMenu is the surface behind menu-style panels. Optional in
+	// theme/index.ts with a backgroundElement fallback.
+	BackgroundMenu color.Color
+}
+
+// Normalize applies theme/index.ts's fallbacks for the two optional keys, so
+// a palette that leaves them unset resolves exactly as the original does.
+func (c Colors) Normalize() Colors {
+	if c.SelectedListItemText == nil {
+		c.SelectedListItemText = c.Background
+	}
+	if c.BackgroundMenu == nil {
+		c.BackgroundMenu = c.BackgroundElement
+	}
+	return c
 }
 
 // Theme is a named palette with the resolved keys the UI reads.
@@ -155,11 +174,13 @@ func clamp255(v int) int {
 
 // Resolve picks a theme by name; unknown names fall back to dark.
 func Resolve(name string) Theme {
+	var t Theme
 	switch name {
-	case "opencode", "opencode-dark", "dark":
-		return Dark()
 	case "opencode-light", "light":
-		return Light()
+		t = Light()
+	default:
+		t = Dark()
 	}
-	return Dark()
+	t.Colors = t.Colors.Normalize()
+	return t
 }
