@@ -415,23 +415,75 @@ func TestChatSendAndTimeline(t *testing.T) {
 	}
 }
 
+// feed folds events through the aggregator's tree and applies the resulting
+// snapshot, which is the path a real event takes since the multi-agent
+// rework: per-event work happens off the main goroutine, and Update only ever
+// sees a coalesced snapshot.
+func feed(app *App, events ...client.Event) bool {
+	state := newTree()
+	for _, e := range events {
+		state.apply(e)
+	}
+	return app.applySnapshot(state.snapshot(0))
+}
+
 func TestStreamingTextDeltas(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
+	openSession(t, app)
 
-	app.handleEvent(client.Event{Type: "session.next.step.started", Data: map[string]any{"sessionID": "ses_1"}})
-	app.handleEvent(client.Event{Type: "session.next.text.delta", Data: map[string]any{
-		"sessionID": "ses_1", "assistantMessageID": "msg_a1", "delta": "Hel",
-	}})
-	app.handleEvent(client.Event{Type: "session.next.text.delta", Data: map[string]any{
-		"sessionID": "ses_1", "assistantMessageID": "msg_a1", "delta": "lo",
-	}})
-	if got := app.streaming["msg_a1"].String(); got != "Hello" {
-		t.Fatalf("expected accumulated streaming text, got %q", got)
+	feed(app,
+		client.Event{Type: "session.next.step.started", Session: "ses_1"},
+		client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_a1", "delta": "Hel",
+		}},
+		client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_a1", "delta": "lo",
+		}},
+	)
+	if got := app.streaming["msg_a1"]; got == nil || got.String() != "Hello" {
+		t.Fatalf("expected accumulated streaming text, got %v", app.streaming["msg_a1"])
 	}
-	app.handleEvent(client.Event{Type: "session.next.step.ended", Data: map[string]any{"sessionID": "ses_1"}})
+	if !app.busy {
+		t.Fatal("step.started should mark the session busy")
+	}
+
+	feed(app, client.Event{Type: "session.next.step.ended", Session: "ses_1"})
 	if len(app.streaming) != 0 {
 		t.Fatal("streaming buffers should clear when the step ends")
+	}
+	if app.busy {
+		t.Fatal("step.ended should clear busy")
+	}
+}
+
+// TestSubagentEventsDoNotTouchParent is the phase 4 isolation guarantee: a
+// child session's deltas must never land in the parent's streaming text. The
+// old per-event path ignored the event's session entirely.
+func TestSubagentEventsDoNotTouchParent(t *testing.T) {
+	_, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+	openSession(t, app)
+
+	feed(app,
+		client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_parent", "delta": "parent text",
+		}},
+		client.Event{Type: "session.next.text.delta", Session: "ses_child", Data: map[string]any{
+			"assistantMessageID": "msg_child", "delta": "subagent text",
+		}},
+		client.Event{Type: "session.next.step.started", Session: "ses_child"},
+	)
+
+	if got := app.streaming["msg_parent"]; got == nil || got.String() != "parent text" {
+		t.Fatalf("parent text = %v, want %q", app.streaming["msg_parent"], "parent text")
+	}
+	if _, leaked := app.streaming["msg_child"]; leaked {
+		t.Fatal("a subagent's streamed text leaked into the parent's view")
+	}
+	subagents := app.activeSubagents()
+	if len(subagents) != 1 || subagents[0].ID != "ses_child" {
+		t.Fatalf("expected the child to show as a live subagent, got %+v", subagents)
 	}
 }
 
@@ -858,6 +910,8 @@ func TestStatusOverlay(t *testing.T) {
 func TestEventPumpKeepsFlowing(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
+	// Snapshots are applied against the active session, so open one first.
+	openSession(t, app)
 	p := tea.NewProgram(program{app: app}, tea.WithInput(nil), tea.WithOutput(io.Discard))
 	done := make(chan error, 1)
 	go func() {
@@ -866,13 +920,17 @@ func TestEventPumpKeepsFlowing(t *testing.T) {
 	}()
 
 	events := make(chan client.Event, 8)
-	go pumpEvents(p, events)
-	events <- client.Event{Type: "session.next.step.started", Data: map[string]any{"sessionID": "ses_1"}}
-	events <- client.Event{Type: "session.next.text.delta", Data: map[string]any{
-		"sessionID": "ses_1", "assistantMessageID": "msg_x", "delta": "Hel",
+	snapshots := make(chan Snapshot, 8)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go Aggregate(ctx, events, snapshots, time.Millisecond)
+	go pumpSnapshots(p, snapshots, nil)
+	events <- client.Event{Type: "session.next.step.started", Session: "ses_1"}
+	events <- client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+		"assistantMessageID": "msg_x", "delta": "Hel",
 	}}
-	events <- client.Event{Type: "session.next.text.delta", Data: map[string]any{
-		"sessionID": "ses_1", "assistantMessageID": "msg_x", "delta": "lo",
+	events <- client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+		"assistantMessageID": "msg_x", "delta": "lo",
 	}}
 
 	time.Sleep(500 * time.Millisecond) // allow the runtime to process the stream

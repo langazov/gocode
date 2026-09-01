@@ -82,8 +82,12 @@ type Source struct {
 }
 
 type Request struct {
-	ID        string         `json:"id"`
-	SessionID string         `json:"sessionID"`
+	ID        string `json:"id"`
+	SessionID string `json:"sessionID"`
+	// Agent names the agent that asked. With subagents running concurrently,
+	// several sessions can have prompts pending at once, so the UI needs to
+	// say who is asking.
+	Agent     string         `json:"agent,omitempty"`
 	Action    string         `json:"action"`
 	Resources []string       `json:"resources"`
 	Save      []string       `json:"save,omitempty"`
@@ -371,6 +375,7 @@ func (e *Engine) requestFor(input AssertInput) Request {
 	return Request{
 		ID:        id,
 		SessionID: input.SessionID,
+		Agent:     input.Agent,
 		Action:    input.Action,
 		Resources: input.Resources,
 		Save:      input.Save,

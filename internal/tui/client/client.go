@@ -56,6 +56,7 @@ type Message struct {
 type PermissionRequest struct {
 	ID        string   `json:"id"`
 	SessionID string   `json:"sessionID"`
+	Agent     string   `json:"agent,omitempty"`
 	Action    string   `json:"action"`
 	Resources []string `json:"resources"`
 }

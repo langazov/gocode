@@ -131,7 +131,7 @@ func (a *App) viewToastPanel() (panel string, link *linkHit) {
 	if totalWidth < 12 {
 		totalWidth = 12
 	}
-	const borderCols = 2 // one ┃ each side
+	const borderCols = 2  // one ┃ each side
 	const paddingCols = 4 // paddingLeft(2) + paddingRight(2)
 	contentWidth := totalWidth - borderCols - paddingCols
 
@@ -261,9 +261,16 @@ func (a *App) childrenOverlay() tea.Cmd {
 		items := make([]overlayItem, 0, len(children))
 		for i := range children {
 			child := children[i]
+			// Live status comes from the aggregated snapshot rather than a
+			// fetch: subagent sessions are children too, and their activity
+			// is already streaming in. See aggregator.go.
+			hint := relativeTime(child.TimeUpdated)
+			if node := a.agents.Sessions[child.ID]; node != nil && node.Busy {
+				hint = "running · " + hint
+			}
 			items = append(items, overlayItem{
 				label: sessionTitleOf(child),
-				hint:  relativeTime(child.TimeUpdated),
+				hint:  hint,
 				value: child.ID,
 				action: func() tea.Msg {
 					a.active = &child
@@ -275,9 +282,9 @@ func (a *App) childrenOverlay() tea.Cmd {
 			})
 		}
 		if len(items) == 0 {
-			items = append(items, overlayItem{label: "(no forked sessions)"})
+			items = append(items, overlayItem{label: "(no forked or subagent sessions)"})
 		}
-		a.openList("Forked sessions", items)
+		a.openList("Forked & subagent sessions", items)
 		return nil
 	}
 }

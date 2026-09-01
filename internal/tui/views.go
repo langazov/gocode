@@ -444,16 +444,31 @@ func (a *App) permissionBanner() string {
 // mirroring permission.tsx's info() cases exactly — including the absence
 // of a "write" case: TS has none, so write falls to the same generic
 // "Call tool <action>" every unhandled action gets. (TS also special-cases
-// list/task/websearch/external_directory/doom_loop, but Go's
-// PermissionRequest carries only a flat Resources list — no subagent_type,
-// patterns, provider, or query — so those can't be reconstructed and are
-// left to the generic fallback too.)
+// list/websearch/external_directory/doom_loop, but Go's PermissionRequest
+// carries only a flat Resources list — no patterns, provider, or query — so
+// those can't be reconstructed and are left to the generic fallback too.)
+//
+// A request from a subagent is attributed to it: with several sessions asking
+// concurrently, an unlabeled prompt is ambiguous about who is blocked.
 func permissionTitle(request *client.PermissionRequest) (icon, title string) {
+	icon, title = permissionAction(request)
+	if agent := request.Agent; agent != "" && agent != "build" {
+		title = title + " (@" + agent + ")"
+	}
+	return icon, title
+}
+
+func permissionAction(request *client.PermissionRequest) (icon, title string) {
 	path := ""
 	if len(request.Resources) > 0 {
 		path = request.Resources[0]
 	}
 	switch request.Action {
+	case "task":
+		if path == "" {
+			return "│", "Launch subagent"
+		}
+		return "│", "Launch " + path + " subagent"
 	case "edit":
 		return "→", "Edit " + path
 	case "read":

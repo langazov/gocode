@@ -8,6 +8,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -39,10 +40,17 @@ type App struct {
 	quitting  bool
 	statusMsg string
 
-	sessions     []client.Session
-	active       *client.Session
-	timeline     []client.Message
-	streaming    map[string]*strings.Builder // assistantMessageID -> live text
+	sessions []client.Session
+	active   *client.Session
+	timeline []client.Message
+	// streaming holds the ACTIVE session's live assistant text, projected out
+	// of the latest snapshot. It is never written from an event directly:
+	// with subagents running, a child's deltas must not land here.
+	streaming map[string]*strings.Builder // assistantMessageID -> live text
+	// agents is the latest aggregated snapshot: one node per session,
+	// including subagent sessions. See aggregator.go.
+	agents       Snapshot
+	dropped      int
 	busy         bool
 	input        textarea.Model
 	scrollOffset int // lines kept off the bottom when scrolled up
@@ -221,39 +229,54 @@ func (a *App) syncWindowTitle() (string, bool) {
 	return title, true
 }
 
+// tick is now only a slow reconciliation safety net. Live updates arrive as
+// coalesced snapshots from the aggregator, so the old 2-second full reload is
+// no longer the refresh mechanism — it exists to recover from dropped events.
 func (a *App) tick() tea.Cmd {
-	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
+	return tea.Tick(10*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// handleEvent applies an SSE event to the model, reporting whether the
-// timeline should refresh.
-func (a *App) handleEvent(event client.Event) bool {
-	switch event.Type {
-	case "session.next.step.started":
-		a.busy = true
-	case "session.next.text.started", "session.next.text.delta":
-		messageID, _ := event.Data["assistantMessageID"].(string)
-		if messageID == "" {
-			return false
-		}
-		builder := a.streaming[messageID]
-		if builder == nil {
-			builder = &strings.Builder{}
-			a.streaming[messageID] = builder
-		}
-		delta, _ := event.Data["delta"].(string)
-		builder.WriteString(delta)
-	case "session.next.text.ended", "session.next.step.ended", "session.next.step.failed",
-		"session.next.tool.called", "session.next.tool.success", "session.next.tool.failed",
-		"session.next.compaction.ended", "session.next.prompted",
-		"todo.updated":
-		for key := range a.streaming {
-			delete(a.streaming, key)
-		}
+// applySnapshot folds one aggregated snapshot into the model, reporting
+// whether the active session's durable timeline needs a refetch.
+//
+// All per-event work happens on the aggregator goroutine (aggregator.go); this
+// runs on the main goroutine and is therefore deliberately cheap — a map
+// lookup and a pointer swap, regardless of how many agents are running.
+func (a *App) applySnapshot(snapshot Snapshot) bool {
+	a.agents = snapshot
+	a.dropped += snapshot.Dropped
+	if a.active == nil {
+		return false
+	}
+	node := snapshot.Sessions[a.active.ID]
+	if node == nil {
+		// Only subagent sessions reported activity this frame.
+		return false
+	}
+	a.busy = node.Busy
+	a.streaming = node.Text
+	if snapshot.Dirty[a.active.ID] {
 		a.scrollOffset = 0
 		return true
 	}
 	return false
+}
+
+// activeSubagents lists the child sessions that reported activity, so the UI
+// can show live subagent rows without a per-event refetch.
+func (a *App) activeSubagents() []*SessionNode {
+	if a.active == nil {
+		return nil
+	}
+	var out []*SessionNode
+	for id, node := range a.agents.Sessions {
+		if id == a.active.ID || !node.Busy {
+			continue
+		}
+		out = append(out, node)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 type eventMsg struct{ event client.Event }
@@ -493,11 +516,9 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case statsMsg:
 		a.stats = msg.stats
 		return nil
-	case eventMsg:
-		if a.handleEvent(msg.event) {
-			if a.active != nil {
-				return a.loadMessages(a.active.ID)
-			}
+	case snapshotMsg:
+		if a.applySnapshot(msg.snapshot) && a.active != nil {
+			return a.loadMessages(a.active.ID)
 		}
 		return nil
 	case statusMsg:
@@ -1014,21 +1035,31 @@ func Run(ctx context.Context, c *client.Client, themeName string, opts RunOption
 	// (see program.View()) rather than as ProgramOptions here.
 	program := tea.NewProgram(program{app: app})
 
+	// Subscribe to every session, not just the active one: subagents run in
+	// their own sessions and their activity has to reach the UI too.
 	events, err := c.Events(ctx, "")
 	if err != nil {
 		return err
 	}
-	go pumpEvents(program, events)
+
+	// Two goroutines sit between the wire and the main goroutine:
+	//
+	//   SSE ──> Aggregate ──(coalesced snapshots)──> pumpSnapshots ──> program
+	//
+	// Aggregate does all per-event work and emits at most one snapshot per
+	// frame, so a burst of subagent traffic cannot stall a redraw. The main
+	// goroutine only swaps in the snapshot. See MULTI_AGENTS.md phase 4.
+	snapshots := make(chan Snapshot, 8)
+	aggregatorCtx, stopAggregator := context.WithCancel(ctx)
+	defer stopAggregator()
+	go func() {
+		defer close(snapshots)
+		Aggregate(aggregatorCtx, events, snapshots, DefaultFrame)
+	}()
+	go pumpSnapshots(program, snapshots, nil)
 
 	_, err = program.Run()
 	return err
-}
-
-// pumpEvents forwards every server event into the running program.
-func pumpEvents(program *tea.Program, events <-chan client.Event) {
-	for event := range events {
-		program.Send(eventMsg{event: event})
-	}
 }
 
 func (a *App) activeModelSet() bool { return a.activeModel != "" }

@@ -106,6 +106,15 @@ type ToolCall struct {
 	ID    string
 	Name  string
 	Input map[string]any
+
+	// ProviderExecuted marks a tool the provider ran server-side (web search
+	// and friends). The runner must not dispatch it locally; Output already
+	// carries the result. Mirrors the AI SDK's `providerExecuted` flag, which
+	// the TypeScript runtime branches on in
+	// packages/opencode/src/session/llm/native-runtime.ts.
+	ProviderExecuted bool
+	// Output is the provider-supplied result, set only when ProviderExecuted.
+	Output string
 }
 
 type StreamEvent struct {

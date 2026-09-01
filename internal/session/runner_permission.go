@@ -27,14 +27,35 @@ func (g *EnginePermissionGate) Assert(ctx context.Context, input ToolPermissionI
 	})
 }
 
+// SessionRules resolves a session-scoped ruleset, if one was stored. Subagent
+// sessions carry a ruleset derived from their parent's grants intersected with
+// the subagent's own (see DeriveSubagentPermissions), which must win over the
+// agent's stock ruleset.
+type SessionRules interface {
+	Permission(ctx context.Context, sessionID string) (permission.Ruleset, error)
+}
+
 // AgentRulesProvider supplies the permission engine with the resolved agent's
 // ruleset, defaulting to deny-all for unknown agents, matching the TypeScript
-// configured() behavior.
+// configured() behavior. When Sessions is set and the session carries its own
+// ruleset, that ruleset is used instead.
 type AgentRulesProvider struct {
 	Agents *agent.Registry
+	// Sessions, when set, is consulted first so a subagent session's derived
+	// ruleset overrides its agent's.
+	Sessions SessionRules
 }
 
 func (p *AgentRulesProvider) Configured(sessionID, agentID string) (permission.Ruleset, error) {
+	if p.Sessions != nil && sessionID != "" {
+		scoped, err := p.Sessions.Permission(context.Background(), sessionID)
+		if err != nil {
+			return nil, err
+		}
+		if len(scoped) > 0 {
+			return scoped, nil
+		}
+	}
 	info, ok := p.Agents.Resolve(agentID)
 	if !ok {
 		return permission.MissingAgentPermissions, nil

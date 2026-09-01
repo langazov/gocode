@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/anomalyco/opencode-go/internal/agent"
+	"github.com/anomalyco/opencode-go/internal/background"
 	"github.com/anomalyco/opencode-go/internal/config"
 	"github.com/anomalyco/opencode-go/internal/db"
 	"github.com/anomalyco/opencode-go/internal/event"
@@ -90,6 +91,9 @@ type stack struct {
 	// registry; exposed so CLI commands (mcp list/auth/logout) and the TUI
 	// status dialog can query live status.
 	MCP *mcp.Service
+	// Jobs tracks detached background subagents. nil unless background
+	// subagents are enabled.
+	Jobs *background.Registry
 }
 
 // resolveModelFlag applies precedence: explicit flag wins, then config,
@@ -181,6 +185,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Mode:        "primary",
 		Permissions: buildPermissions,
 	})
+	registerBuiltinSubagents(agents, defaultPermissions)
 	if cfg.DefaultAgent != "" {
 		agents.SetDefault(cfg.DefaultAgent)
 	}
@@ -205,8 +210,11 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		}
 		agents.Update(info)
 	}
-	permissionEngine := permission.NewEngine(
-		&session.AgentRulesProvider{Agents: agents}, nil, permission.Hooks{}, nil)
+	// Bound late: the rules provider needs the session service, which is not
+	// constructed until below. Subagent sessions store a derived ruleset that
+	// must override their agent's stock one.
+	agentRules := &session.AgentRulesProvider{Agents: agents}
+	permissionEngine := permission.NewEngine(agentRules, nil, permission.Hooks{}, nil)
 
 	runner := &session.Runner{
 		DB:                database,
@@ -232,6 +240,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	}
 	catalog.StartBackgroundRefresh(ctx)
 	service := session.NewService(database, bus)
+	agentRules.Sessions = service
 	service.Execution = execution
 	service.Compactor = &session.Compactor{
 		Bus:      bus,
@@ -239,6 +248,25 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Settings: session.DefaultCompactionSettings(),
 	}
 	service.DefaultModel = session.ModelRef{ProviderID: providerID, ID: modelID}
+	// The task tool closes the loop between the tool layer and the session
+	// layer through the tool.Spawner seam: builtins cannot import session
+	// (session imports tool), so the concrete spawner is injected here.
+	var jobs *background.Registry
+	subagentDepth := session.DefaultSubagentDepth
+	if cfg.SubagentDepth != nil {
+		subagentDepth = *cfg.SubagentDepth
+	}
+	if subagentDepth > 0 {
+		spawner := session.NewSpawner(service, execution, agents, subagentDepth)
+		// Background subagents stay opt-in, matching the TypeScript gate.
+		if os.Getenv("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS") == "true" ||
+			os.Getenv("OPENCODE_EXPERIMENTAL") == "true" {
+			jobs = background.NewRegistry()
+			tools.Register(builtins.NewBackgroundTaskTool(spawner, jobs))
+		} else {
+			tools.Register(builtins.NewTaskTool(spawner))
+		}
+	}
 	return &stack{
 		Service:     service,
 		Bus:         bus,
@@ -250,6 +278,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		ModelID:     modelID,
 		Runner:      runner,
 		MCP:         mcpService,
+		Jobs:        jobs,
 	}, nil
 }
 

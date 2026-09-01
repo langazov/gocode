@@ -82,7 +82,7 @@ func runRootTui(a *clix.Args) error {
 		return err
 	}
 	go func() {
-		srv := &server.Server{Session: stack.Service, Bus: stack.Bus, Permissions: stack.Permissions, Models: stack.Models, Agents: stack.Agents, Config: stack.Config, MCP: stack.MCP}
+		srv := &server.Server{Session: stack.Service, Bus: stack.Bus, Permissions: stack.Permissions, Models: stack.Models, Agents: stack.Agents, Config: stack.Config, MCP: stack.MCP, Jobs: stack.Jobs}
 		server.ServeOn(listener, srv.Mux())
 	}()
 

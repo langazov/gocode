@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/anomalyco/opencode-go/internal/agent"
+	"github.com/anomalyco/opencode-go/internal/background"
 	"github.com/anomalyco/opencode-go/internal/config"
 	"github.com/anomalyco/opencode-go/internal/event"
 	"github.com/anomalyco/opencode-go/internal/mcp"
@@ -26,6 +27,9 @@ type Server struct {
 	Agents      *agent.Registry
 	Config      *config.Config
 	MCP         *mcp.Service
+	// Jobs tracks detached background subagents. nil unless background
+	// subagents are enabled.
+	Jobs *background.Registry
 }
 
 // Mux builds the HTTP route tree. The TypeScript server exposes GET /api/health
@@ -53,6 +57,10 @@ func (s *Server) Mux() *http.ServeMux {
 	}
 	if s.MCP != nil {
 		mux.HandleFunc("GET /api/mcp", s.listMCP)
+	}
+	if s.Jobs != nil {
+		mux.HandleFunc("GET /api/job", s.listJobs)
+		mux.HandleFunc("POST /api/session/{sessionID}/background", s.backgroundSession)
 	}
 	if s.Session != nil {
 		mux.HandleFunc("POST /api/session", s.createSession)
@@ -160,6 +168,9 @@ type eventWire struct {
 	Session string         `json:"sessionID,omitempty"`
 }
 
+// eventStreamBuffer bounds one SSE subscriber's backlog.
+const eventStreamBuffer = 1024
+
 // eventStream serves a server-sent event stream of committed events,
 // optionally filtered by ?sessionID=.
 func (s *Server) eventStream(w http.ResponseWriter, r *http.Request) {
@@ -170,7 +181,14 @@ func (s *Server) eventStream(w http.ResponseWriter, r *http.Request) {
 	}
 	// Subscribe before writing headers so the client cannot observe the
 	// response (and start publishing) before the subscription is live.
-	events, unsubscribe := s.Bus.Subscribe(256)
+	//
+	// The buffer is sized for multi-agent load: with several subagent
+	// sessions settling tools at once the event rate is far higher than the
+	// single-session case this originally assumed. Bus.Subscribe drops on a
+	// full buffer by design, and a drop is recoverable — clients treat
+	// streamed deltas as a liveness hint and refetch the durable timeline —
+	// but a drop still costs a redraw, so the buffer is generous.
+	events, unsubscribe := s.Bus.Subscribe(eventStreamBuffer)
 	defer unsubscribe()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -542,4 +560,18 @@ func (s *Server) compactSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"compacted": compacted})
+}
+
+// listJobs reports every background job this process is tracking.
+func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.Jobs.List())
+}
+
+// backgroundSession promotes every running foreground subagent of a session,
+// so the user can push in-flight work to the background and get their prompt
+// back. Ports the TypeScript sessionBackground handler.
+func (s *Server) backgroundSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("sessionID")
+	promoted := s.Jobs.PromoteSession(sessionID)
+	writeJSON(w, http.StatusOK, map[string]any{"promoted": promoted})
 }
