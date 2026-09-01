@@ -36,6 +36,7 @@ import (
 	"math"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -631,4 +632,58 @@ func wrapOnBackground(a *App, text string, width int) []string {
 		out = append(out, style.Render(line+strings.Repeat(" ", max(0, width-len(line)))))
 	}
 	return out
+}
+
+// --- sidebar context (feature-plugins/sidebar/context.tsx) ------------------
+
+// sidebarContextState is what the sidebar's Context section reports: the last
+// assistant turn's own context size and its share of that model's window.
+type sidebarContextState struct {
+	tokens  int
+	percent int
+}
+
+// sidebarContext ports context.tsx's state() memo. It deliberately shares
+// nothing but its inputs with the footer's usage meter: the same findLast over
+// assistant messages with output tokens and the same five-bucket sum, but the
+// sidebar renders the raw count (toLocaleString, comma-grouped) and the
+// percentage as separate lines rather than one "159.6K (16%)" string, so the
+// formatting cannot be shared.
+func (a *App) sidebarContext() sidebarContextState {
+	for i := len(a.timeline) - 1; i >= 0; i-- {
+		if a.timeline[i].Type != "assistant" {
+			continue
+		}
+		data, err := client.DecodeAssistant(a.timeline[i].Data)
+		if err != nil || data.Tokens == nil || data.Tokens.Output <= 0 {
+			continue
+		}
+		out := sidebarContextState{tokens: data.Tokens.Total()}
+		// `model?.limit.context ? … : null` — an unknown limit renders 0%,
+		// not a percentage of a guessed window.
+		if limit := a.contextLimitFor(data.Model.ProviderID, data.Model.ID); limit > 0 {
+			out.percent = int(math.Round(float64(out.tokens) / float64(limit) * 100))
+		}
+		return out
+	}
+	return sidebarContextState{}
+}
+
+// groupDigits is Number.prototype.toLocaleString for the en-US grouping the
+// sidebar uses ("159,600"). The footer's meter uses Locale.number's compact
+// form ("159.6K") instead — the two surfaces genuinely differ upstream.
+func groupDigits(value int) string {
+	digits := strconv.Itoa(value)
+	sign := ""
+	if strings.HasPrefix(digits, "-") {
+		sign, digits = "-", digits[1:]
+	}
+	var out strings.Builder
+	for i, r := range digits {
+		if i > 0 && (len(digits)-i)%3 == 0 {
+			out.WriteByte(',')
+		}
+		out.WriteRune(r)
+	}
+	return sign + out.String()
 }

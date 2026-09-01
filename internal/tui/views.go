@@ -329,14 +329,6 @@ func formatTokens(count int) string {
 	return fmt.Sprintf("%d", count)
 }
 
-func contextPercent(tokens int) int {
-	const limit = 200000
-	if limit == 0 {
-		return 0
-	}
-	return tokens * 100 / limit
-}
-
 // permissionBanner mirrors the PermissionPrompt: a warning-bordered
 // backgroundPanel block with the "△ Permission required" header, the tool
 // body, and an option bar with selectable buttons.
@@ -580,22 +572,19 @@ func (a *App) sidebarView() string {
 	title := truncateRunes(sessionTitleOf(*a.active), width-6)
 	rows := []string{a.onPanel(a.theme.Text, true).Render(title)}
 
-	rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("Context"))
-	if a.stats != nil {
-		tokens := a.stats.TokensInput + a.stats.TokensOutput +
-			a.stats.TokensReasoning + a.stats.TokensCacheRead + a.stats.TokensCacheWrite
-		rows = append(rows,
-			a.onPanel(a.theme.TextMuted, false).Render(fmt.Sprintf("%d tokens", tokens)),
-			a.onPanel(a.theme.TextMuted, false).Render(fmt.Sprintf("%d%% used", contextPercent(a.stats.TokensInput))),
-			a.onPanel(a.theme.TextMuted, false).Render(fmt.Sprintf("$%.2f spent", a.stats.Cost)),
-		)
-	} else {
-		rows = append(rows,
-			a.onPanel(a.theme.TextMuted, false).Render("0 tokens"),
-			a.onPanel(a.theme.TextMuted, false).Render("0% used"),
-			a.onPanel(a.theme.TextMuted, false).Render("$0.00 spent"),
-		)
-	}
+	// feature-plugins/sidebar/context.tsx. Note what it is *not*: a session
+	// total. Upstream reports the last assistant turn's own context — the
+	// same findLast/five-bucket sum the footer's usage meter uses — against
+	// that model's context limit. This port used to sum every message's
+	// tokens and divide by a hardcoded 200000, so the count grew without
+	// bound and the percentage was meaningless. Only "spent" is a running
+	// session total.
+	context := a.sidebarContext()
+	rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("Context"),
+		a.onPanel(a.theme.TextMuted, false).Render(groupDigits(context.tokens)+" tokens"),
+		a.onPanel(a.theme.TextMuted, false).Render(fmt.Sprintf("%d%% used", context.percent)),
+		a.onPanel(a.theme.TextMuted, false).Render(formatMoney(a.sessionCost())+" spent"),
+	)
 	// MCP (order 200 in the original's sidebar_content slots): live status
 	// per server (feature-plugins/sidebar/mcp.tsx), fetched once at startup
 	// via GET /api/mcp — see loadMCPCmd's doc comment for why once-at-startup

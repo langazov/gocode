@@ -40,6 +40,7 @@ type mockAPI struct {
 	models     []modelCall
 	forkedFrom string
 	mcpStatus  string // GET /api/mcp responds with this status for "test-server"; mutate mid-test to verify tickMsg re-fetches it
+	statsCalls int
 }
 
 func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
@@ -133,6 +134,7 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 		json.NewEncoder(w).Encode([]client.Session{{ID: "ses_child", Title: "child", Directory: "/tmp", Version: "1"}})
 	})
 	mux.HandleFunc("GET /api/session/{sessionID}/stats", func(w http.ResponseWriter, r *http.Request) {
+		api.statsCalls++
 		json.NewEncoder(w).Encode(map[string]any{
 			"cost": 0.5, "tokensInput": 10, "tokensOutput": 20,
 			"tokensReasoning": 0, "tokensCacheRead": 0, "tokensCacheWrite": 0, "messages": 2,

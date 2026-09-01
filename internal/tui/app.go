@@ -533,9 +533,16 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			a.timeline = msg.messages
 			wasBusy := a.busy
 			a.busy = hasUnfinishedAssistant(a.timeline)
+			// The sidebar's "spent" total is server-side state that only the
+			// stats endpoint reports, so it has to be refetched alongside the
+			// timeline. Without this it moved only on the 10-second
+			// reconciliation tick, which is what made the sidebar look frozen
+			// while a turn streamed.
+			cmds := []tea.Cmd{a.loadStats(msg.sessionID)}
 			if a.busy && !wasBusy {
-				return a.startSpinner()
+				cmds = append(cmds, a.startSpinner())
 			}
+			return tea.Batch(cmds...)
 		}
 		return nil
 	case permissionsMsg:

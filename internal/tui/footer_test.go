@@ -481,3 +481,82 @@ func abortedAssistant(t *testing.T) client.Message {
 	}
 	return client.Message{ID: "msg_aborted", Type: "assistant", TimeCreated: 1, Data: data}
 }
+
+// --- sidebar Context section ------------------------------------------------
+
+func TestGroupDigitsMatchesToLocaleString(t *testing.T) {
+	for _, tc := range []struct {
+		in   int
+		want string
+	}{{0, "0"}, {999, "999"}, {1000, "1,000"}, {159600, "159,600"}, {1234567, "1,234,567"}} {
+		if got := groupDigits(tc.in); got != tc.want {
+			t.Fatalf("groupDigits(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// The Context section reports the *last* assistant turn's own context, not a
+// session total — this port used to sum every message and divide by a
+// hardcoded 200000 window.
+func TestSidebarContextReportsTheLastTurnAgainstItsModelLimit(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.contextLimits["anthropic/claude"] = 200_000
+	app.timeline = []client.Message{
+		assistantWithTokens(t, "anthropic", "claude", 150_000, 10_000),
+		assistantWithTokens(t, "anthropic", "claude", 40_000, 10_000),
+	}
+
+	got := app.sidebarContext()
+	if got.tokens != 50_000 {
+		t.Fatalf("tokens = %d, want the last turn's 50000 (not the sum)", got.tokens)
+	}
+	if got.percent != 25 {
+		t.Fatalf("percent = %d, want 25", got.percent)
+	}
+}
+
+func TestSidebarContextIsZeroPercentWithoutAModelLimit(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.timeline = []client.Message{assistantWithTokens(t, "anthropic", "unknown-model", 40_000, 10_000)}
+
+	got := app.sidebarContext()
+	if got.tokens != 50_000 {
+		t.Fatalf("tokens = %d, want 50000", got.tokens)
+	}
+	if got.percent != 0 {
+		t.Fatalf("an unknown window renders 0%%, not a guess, got %d", got.percent)
+	}
+}
+
+func TestSidebarRendersLiveContextAndSpend(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.width, app.height = 140, 40
+	app.active = &client.Session{ID: "ses_1", Title: "Test"}
+	app.sidebar = true
+	app.contextLimits["anthropic/claude"] = 200_000
+	app.timeline = []client.Message{assistantWithTokens(t, "anthropic", "claude", 90_000, 9_600)}
+	app.stats = &client.Stats{Cost: 4.23}
+
+	view := ansi.Strip(app.sidebarView())
+	for _, want := range []string{"99,600 tokens", "50% used", "$4.23 spent"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("sidebar missing %q, got:\n%s", want, view)
+		}
+	}
+}
+
+// The sidebar's "spent" is server-side state the timeline does not carry, so a
+// timeline refetch has to pull the stats with it. Without this it moved only
+// on the 10-second reconciliation tick, which is what made the sidebar look
+// frozen while a turn streamed.
+func TestTimelineRefetchAlsoRefreshesStats(t *testing.T) {
+	api, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+	openSession(t, app)
+
+	before := api.statsCalls
+	drive(t, app, messagesMsg{sessionID: app.active.ID, messages: nil})
+	if api.statsCalls <= before {
+		t.Fatalf("a timeline refetch should refresh the stats, calls went %d -> %d", before, api.statsCalls)
+	}
+}

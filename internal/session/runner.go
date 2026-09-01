@@ -77,6 +77,12 @@ type Runner struct {
 	// --variant behavior — no variant selected means no reasoning
 	// requested). nil disables reasoning variant support entirely.
 	ReasoningVariants func(providerID, modelID, variantID string) map[string]any
+
+	// Pricing resolves a model's per-million-token rates so a settled step can
+	// be costed. Injected from the boot wiring, like ReasoningVariants above,
+	// to keep the catalog out of this package. When nil (or when the catalog
+	// has no entry) a step costs nothing rather than a guessed amount.
+	Pricing PricingResolver
 }
 
 // resolvedAgent carries the effective per-turn agent configuration.
@@ -517,7 +523,13 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 		"timestamp":          nowMillis(),
 		"assistantMessageID": assistantMessageID,
 		"finish":             finish,
-		"cost":               0,
+		"cost": r.stepCost(resolved.Model.ProviderID, resolved.Model.ID, TokenUsage{
+			Input:      usage.Input,
+			Output:     usage.Output,
+			Reasoning:  usage.Reasoning,
+			CacheRead:  usage.CacheRead,
+			CacheWrite: usage.CacheWrite,
+		}),
 		"tokens": map[string]any{
 			"input":     usage.Input,
 			"output":    usage.Output,
@@ -735,4 +747,17 @@ func (r *Runner) resolveAgent(ctx context.Context, sessionID string) (resolvedAg
 		resolved.Model = *sessionModel
 	}
 	return resolved, nil
+}
+
+// stepCost prices a settled step, or returns 0 when no pricing is wired or the
+// catalog has no rates for the model. See cost.go.
+func (r *Runner) stepCost(providerID, modelID string, usage TokenUsage) float64 {
+	if r.Pricing == nil {
+		return 0
+	}
+	rates, ok := r.Pricing(providerID, modelID, usage.Input)
+	if !ok {
+		return 0
+	}
+	return stepCost(rates, usage)
 }

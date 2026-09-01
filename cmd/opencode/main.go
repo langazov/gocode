@@ -261,6 +261,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Permissions:       &session.EnginePermissionGate{Engine: permissionEngine},
 		ContextLimit:      defaultContextLimit,
 		ReasoningVariants: reasoningVariantsResolver(catalog),
+		Pricing:           pricingResolver(catalog),
 		Compactor: &session.Compactor{
 			Bus:      bus,
 			Provider: streamClient,
