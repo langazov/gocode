@@ -58,7 +58,12 @@ func (a *App) chatWidth() int {
 }
 
 func (a *App) viewportHeight() int {
-	h := a.height - a.input.Height() - 6
+	// promptContentHeight, not input.Height(): the editor is transiently
+	// inflated to its maximum while a key is handled (see
+	// expandPromptForInput), and the timeline's budget must reflect the height
+	// the prompt will actually render at, not that intermediate value. Reading
+	// the live height here made pageup scroll a short page.
+	h := a.height - a.promptContentHeight() - 6
 	// A permission banner occupies rows the fixed budget above does not
 	// account for. Without this the column overflows and frame()'s MaxHeight
 	// crops from the bottom — taking the banner's own buttons with it, which
