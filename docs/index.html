@@ -171,6 +171,12 @@
   .dl .meta b { display: block; font-size: 15px; font-weight: 590; }
   .dl .meta span { color: var(--text-faint); font-size: 12.5px; font-family: var(--mono); }
   .dl .arrow { color: var(--text-faint); }
+  .dl-cell { display: flex; flex-direction: column; gap: 5px; }
+  .dl-raw {
+    align-self: flex-start; padding-left: 2px;
+    color: var(--text-faint); font-size: 11.5px; font-family: var(--mono);
+  }
+  .dl-raw:hover { color: var(--accent); }
   .note { color: var(--text-muted); font-size: 14px; margin-top: 20px; }
 
   /* ---------- code blocks ---------- */
@@ -449,19 +455,45 @@ opencode run "fix the failing test"   <span style="color:#6e6e7c"># one-shot, no
       var grid = document.getElementById("downloads-grid");
       grid.innerHTML = "";
       PLATFORMS.forEach(function (platform) {
-        var asset = (release.assets || []).filter(function (a) {
+        var mine = (release.assets || []).filter(function (a) {
           return platform.match.test(a.name) && !/\.sha256$/.test(a.name);
+        });
+        // Each platform ships an archive and a bare executable, so match on
+        // the extension rather than taking whichever the API listed first.
+        var archive = mine.filter(function (a) {
+          return /\.(tar\.gz|zip)$/.test(a.name);
         })[0];
-        if (!asset) return;
+        var bare = mine.filter(function (a) {
+          return !/\.(tar\.gz|zip)$/.test(a.name);
+        })[0];
+
+        var primary = archive || bare;
+        if (!primary) return;
+
+        // One grid cell per platform, so the "binary only" link stays with the
+        // card it belongs to instead of flowing into the next auto-fit column.
+        var cell = document.createElement("div");
+        cell.className = "dl-cell";
+
         var a = document.createElement("a");
         a.className = "dl";
-        a.href = asset.browser_download_url;
+        a.href = primary.browser_download_url;
         a.innerHTML =
           '<span class="os">' + platform.icon + '</span>' +
           '<span class="meta"><b>' + platform.name + '</b><span>' +
-          platform.detail + " · " + size(asset.size) + '</span></span>' +
+          platform.detail + " · " + size(primary.size) + '</span></span>' +
           '<span class="arrow">↓</span>';
-        grid.appendChild(a);
+        cell.appendChild(a);
+
+        // A second, quieter link straight to the runnable executable.
+        if (archive && bare) {
+          var raw = document.createElement("a");
+          raw.className = "dl-raw";
+          raw.href = bare.browser_download_url;
+          raw.textContent = "↓ binary only, no unpacking · " + size(bare.size);
+          cell.appendChild(raw);
+        }
+        grid.appendChild(cell);
       });
       if (!grid.children.length) fallback("This release has no published binaries yet.");
     })
