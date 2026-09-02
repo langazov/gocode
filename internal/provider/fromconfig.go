@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"sort"
 	"strings"
@@ -20,14 +21,39 @@ func keylessProvider(providerID string) bool {
 	return providerID == "ollama" || providerID == "lmstudio"
 }
 
-// openaiCompatibleBase resolves a default endpoint for known
-// OpenAI-compatible providers, with {PROVIDER}_BASE_URL overrides.
-func openaiCompatibleBase(providerID string) (string, bool) {
-	if value := os.Getenv(strings.ToUpper(providerID) + "_BASE_URL"); value != "" {
-		return value, true
-	}
+// sdkBaseURL maps a models.dev `npm` package to the endpoint that package
+// hard-codes.
+//
+// models.dev omits its own `api` field for exactly those providers whose
+// TypeScript SDK supplies the endpoint — 26 of the catalog's 212 entries,
+// including groq, mistral, cerebras, xai and perplexity. This port has no such
+// SDKs, so without this table those providers resolve to *no* base URL, and an
+// openai-protocol client with no base URL silently defaults to
+// api.openai.com: a Mistral key posted to OpenAI. Keying on the npm package
+// rather than the provider id means a new provider that reuses a known SDK
+// works without another entry here.
+//
+// Only genuinely OpenAI-compatible endpoints belong in this table. A provider
+// whose SDK speaks its own protocol must fall through and be reported, not
+// guessed at — see FromConfig's unknown-endpoint error.
+var sdkBaseURL = map[string]string{
+	"@ai-sdk/openai":     openai.DefaultBaseURL,
+	"@ai-sdk/groq":       "https://api.groq.com/openai/v1",
+	"@ai-sdk/cerebras":   "https://api.cerebras.ai/v1",
+	"@ai-sdk/mistral":    "https://api.mistral.ai/v1",
+	"@ai-sdk/perplexity": "https://api.perplexity.ai",
+	"@ai-sdk/deepinfra":  "https://api.deepinfra.com/v1/openai",
+	"@ai-sdk/togetherai": "https://api.together.xyz/v1",
+	"@ai-sdk/xai":        "https://api.x.ai/v1",
+	"@ai-sdk/vercel":     "https://api.v0.dev/v1",
+}
+
+// providerBaseURL is the legacy provider-id table, kept for the local
+// endpoints that are in no catalog (ollama, lmstudio) and for ids whose
+// catalog entry predates their `api` field.
+func providerBaseURL(providerID string) (string, bool) {
 	defaults := map[string]string{
-		"openai":     "https://api.openai.com/v1",
+		"openai":     openai.DefaultBaseURL,
 		"openrouter": "https://openrouter.ai/api/v1",
 		"groq":       "https://api.groq.com/openai/v1",
 		"together":   "https://api.together.xyz/v1",
@@ -38,6 +64,29 @@ func openaiCompatibleBase(providerID string) (string, bool) {
 	}
 	base, ok := defaults[providerID]
 	return base, ok
+}
+
+// resolveBaseURL layers every source of a provider's endpoint, most specific
+// first. ok is false when none of them knows one — which must be an error
+// rather than a default, because the default would be someone else's API.
+func resolveBaseURL(providerID string, providerConfig *config.Provider, entry modelsdev.Provider) (string, bool) {
+	// An explicit config override wins outright.
+	if providerConfig != nil && providerConfig.Options.BaseURL != "" {
+		return providerConfig.Options.BaseURL, true
+	}
+	// Then the env override, which used to be reachable only for the handful
+	// of ids in the legacy table and only when the provider was *not*
+	// declared in config.
+	if value := os.Getenv(strings.ToUpper(providerID) + "_BASE_URL"); value != "" {
+		return value, true
+	}
+	if entry.API != "" {
+		return entry.API, true
+	}
+	if base, ok := sdkBaseURL[entry.NPM]; ok {
+		return base, true
+	}
+	return providerBaseURL(providerID)
 }
 
 // FromConfig builds the stream client for a provider, honoring config
@@ -57,22 +106,18 @@ func FromConfig(ctx context.Context, providerID string, cfg *config.Config) (llm
 		}
 	}
 
-	baseURL := ""
 	protocol := "openai"
-	if providerConfig != nil {
-		baseURL = providerConfig.Options.BaseURL
-		if providerConfig.API != "" {
-			protocol = Protocol(providerConfig.API)
-		}
+	if providerConfig != nil && providerConfig.API != "" {
+		protocol = Protocol(providerConfig.API)
 	}
 
-	// Catalog providers carry their own endpoint and SDK protocol; use them
-	// unless the config overrode the endpoint.
-	if baseURL == "" {
-		catalogData, catErr := modelsdev.New().Get(ctx)
-		if catErr == nil {
-			if entry, ok := catalogData[providerID]; ok {
-				baseURL = entry.API
+	// The catalog names the provider's SDK, which is what decides the wire
+	// protocol, and usually its endpoint too.
+	var entry modelsdev.Provider
+	if catalogData, catErr := modelsdev.New().Get(ctx); catErr == nil {
+		if found, ok := catalogData[providerID]; ok {
+			entry = found
+			if providerConfig == nil || providerConfig.API == "" {
 				protocol = Protocol(entry.NPM)
 			}
 		}
@@ -85,13 +130,10 @@ func FromConfig(ctx context.Context, providerID string, cfg *config.Config) (llm
 		protocol = "gemini"
 	}
 
-	if providerConfig == nil {
-		if base, ok := openaiCompatibleBase(providerID); ok && baseURL == "" {
-			baseURL = base
-		}
-		if keyErr != nil && !keylessProvider(providerID) {
-			return nil, keyErr
-		}
+	baseURL, haveBase := resolveBaseURL(providerID, providerConfig, entry)
+
+	if keyErr != nil && !keylessProvider(providerID) && (providerConfig == nil || providerConfig.Options.APIKey == "") {
+		return nil, keyErr
 	}
 
 	switch protocol {
@@ -121,10 +163,16 @@ func FromConfig(ctx context.Context, providerID string, cfg *config.Config) (llm
 		if keyErr != nil && !keylessProvider(providerID) {
 			return nil, keyErr
 		}
-		client := openai.New(key)
-		if baseURL != "" {
-			client.BaseURL = baseURL
+		// Never fall through to openai.DefaultBaseURL for a provider that is
+		// not OpenAI. Doing so used to post the user's key for one provider to
+		// another company's API — silently, and with a 401 as the only clue.
+		if !haveBase {
+			return nil, fmt.Errorf(
+				"provider %q: no API endpoint known (models.dev lists no `api` for it and its SDK %q is not one this port implements) — set provider.%s.options.baseURL in opencode.json",
+				providerID, entry.NPM, providerID)
 		}
+		client := openai.New(key)
+		client.BaseURL = baseURL
 		return client, nil
 	}
 }
