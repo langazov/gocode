@@ -99,10 +99,14 @@ type PermissionGate interface {
 }
 
 type ToolPermissionInput struct {
-	SessionID          string
-	Agent              string
-	Action             string
-	Resources          []string
+	SessionID string
+	Agent     string
+	Action    string
+	Resources []string
+	// Save is the rule an "allow always" reply persists. Empty means the
+	// approval cannot be remembered, so the same request asks again next
+	// time — which is why every ask here sets it.
+	Save               []string
 	AssistantMessageID string
 	CallID             string
 }
@@ -563,6 +567,7 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 					Agent:              agentID,
 					Action:             extra.Action,
 					Resources:          extra.Resources,
+					Save:               extra.Save,
 					AssistantMessageID: assistantMessageID,
 					CallID:             call.ID,
 				})
@@ -571,11 +576,13 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 				}
 			}
 		}
+		resources := r.permissionResourcesFor(call)
 		err := r.Permissions.Assert(ctx, ToolPermissionInput{
 			SessionID:          sessionID,
 			Agent:              agentID,
 			Action:             permissionAction(call.Name),
-			Resources:          permissionResources(call.Name, call.Input),
+			Resources:          resources,
+			Save:               permissionSave(call.Name, resources),
 			AssistantMessageID: assistantMessageID,
 			CallID:             call.ID,
 		})
@@ -614,7 +621,26 @@ func permissionAction(toolName string) string {
 	}
 }
 
+// permissionResourcesFor asks the tool for its permission resources, falling
+// back to the name-based mapping. A tool whose resources are not one input
+// field away — apply_patch, whose targets are inside the patch — implements
+// tool.PermissionResourced.
+func (r *Runner) permissionResourcesFor(call llm.ToolCall) []string {
+	if resourced, ok := r.tool(call.Name).(tool.PermissionResourced); ok {
+		if resources := resourced.PermissionResources(call.Input); len(resources) > 0 {
+			return resources
+		}
+	}
+	return permissionResources(call.Name, call.Input)
+}
+
 // permissionResources derives the permission resource from the tool input.
+//
+// Every case here names the input field the TypeScript tool passes to
+// permission.assert. Getting one wrong is not cosmetic: an unmapped field
+// falls through to "*", and "*" as a resource matches neither an allow nor a
+// deny rule written against a pattern, so the action silently escapes every
+// path- or URL-scoped rule a user configured.
 func permissionResources(toolName string, input map[string]any) []string {
 	resource := ""
 	switch toolName {
@@ -627,6 +653,18 @@ func permissionResources(toolName string, input map[string]any) []string {
 		// allow `explore` while still asking for `general`. Matches the
 		// TypeScript task tool's patterns: [subagent_type].
 		resource, _ = input["subagent_type"].(string)
+	case "webfetch":
+		resource, _ = input["url"].(string)
+	case "websearch":
+		resource, _ = input["query"].(string)
+	case "skill":
+		// The skill's name, so a ruleset can allow one skill and ask for
+		// another — and so "allow always" grants that skill rather than all
+		// of them.
+		resource, _ = input["name"].(string)
+	case "todowrite", "todoread":
+		// No meaningful resource; TS passes ["*"] explicitly.
+		resource = "*"
 	default:
 		resource, _ = input["path"].(string)
 	}
@@ -634,6 +672,25 @@ func permissionResources(toolName string, input map[string]any) []string {
 		resource = "*"
 	}
 	return []string{resource}
+}
+
+// permissionSave derives what an "allow always" reply persists for a tool's
+// own action, matching the save values the TypeScript tools pass to
+// permission.assert.
+//
+// The file tools save "*": the question a user answers for `read` is "may you
+// read files", not "may you read this one path", and saving the path would
+// mean re-asking for the next file. bash and skill save what was asked about,
+// because for them the reasoning inverts — remembering "may you run any
+// command" or "may you load any skill" from one approval is not what was
+// agreed to.
+func permissionSave(toolName string, resources []string) []string {
+	switch toolName {
+	case "bash", "skill":
+		return resources
+	default:
+		return []string{"*"}
+	}
 }
 
 // failInterruptedTools settles tools left pending or running by an earlier

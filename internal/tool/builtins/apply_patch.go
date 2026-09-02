@@ -84,6 +84,40 @@ func (t *ApplyPatchTool) InputSchema() map[string]any {
 	}
 }
 
+// PermissionResources implements tool.PermissionResourced: every file the
+// patch would touch, so the edit rules are evaluated against real paths.
+//
+// The runner's default mapping reads input["path"], which this tool does not
+// have — the resource collapsed to "*", and `Evaluate("edit", "*", rules)`
+// matches neither an allow nor a deny written against a path pattern. A
+// `"edit": {"*.env": "deny"}` rule stopped the edit tool and let the identical
+// patch through.
+//
+// Paths are reported as the patch spells them, matching how edit, write and
+// read pass input["path"] through unresolved.
+func (t *ApplyPatchTool) PermissionResources(input map[string]any) []string {
+	hunks, err := patch.Parse(stringArg(input, "patchText"))
+	if err != nil {
+		// Unparseable: Execute fails on it in a moment without touching a
+		// file, so there is nothing to scope an approval to.
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []string
+	for _, hunk := range hunks {
+		// A move writes two paths and both need approval: the destination is
+		// as much a write as the source.
+		for _, path := range []string{hunk.Path, hunk.MovePath} {
+			if path == "" || seen[path] {
+				continue
+			}
+			seen[path] = true
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
 // fileChange is one resolved, ready-to-write file operation.
 type fileChange struct {
 	path     string

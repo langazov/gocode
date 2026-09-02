@@ -138,11 +138,23 @@ func (t *BashTool) ExtraPermissions(input map[string]any) []tool.ExtraPermission
 	if len(directories) == 0 {
 		return nil
 	}
-	// The resource is a glob over the directory, matching the TypeScript scan,
-	// so approving once covers the whole directory rather than one file.
+	// The resource is a glob over the directory, matching
+	// LocationMutation.externalDirectoryPermission, so approving once covers
+	// the directory, its subdirectories and everything in them rather than
+	// the single file the command happened to name. Wildcard `*` compiles to
+	// `.*`, which crosses separators, so `/srv/data/*` also covers
+	// `/srv/data/a/b.txt`.
+	//
+	// Save mirrors Resources: the TypeScript store persists the same glob it
+	// asked about, which is what makes "allow always" cover the directory
+	// tree instead of re-asking for each new file in it.
 	resources := make([]string, 0, len(directories))
 	for _, dir := range directories {
-		resources = append(resources, filepath.Join(dir, "*"))
+		resources = append(resources, filepath.ToSlash(filepath.Join(dir, "*")))
 	}
-	return []tool.ExtraPermission{{Action: permission.ExternalDirectoryAction, Resources: resources}}
+	return []tool.ExtraPermission{{
+		Action:    permission.ExternalDirectoryAction,
+		Resources: resources,
+		Save:      resources,
+	}}
 }

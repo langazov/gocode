@@ -249,8 +249,16 @@ func (s *Service) exists(ctx context.Context, sessionID string) (bool, error) {
 }
 
 func (s *Service) ensureProject(ctx context.Context, directory string) (string, error) {
+	return EnsureProject(ctx, s.DB, directory)
+}
+
+// EnsureProject returns the project row for a worktree, creating it if this is
+// the first time opencode has been run there. Exported because anything keyed
+// by project — saved permissions, for one — needs the same ID before a session
+// exists to create it.
+func EnsureProject(ctx context.Context, database *db.DB, directory string) (string, error) {
 	var projectID string
-	err := s.DB.QueryRow(ctx,
+	err := database.QueryRow(ctx,
 		`SELECT id FROM project WHERE worktree = ? LIMIT 1`, directory).Scan(&projectID)
 	if err == nil {
 		return projectID, nil
@@ -260,7 +268,7 @@ func (s *Service) ensureProject(ctx context.Context, directory string) (string, 
 	}
 	projectID = directory
 	now := time.Now().UnixMilli()
-	_, err = s.DB.Exec(ctx, `
+	_, err = database.Exec(ctx, `
 		INSERT INTO project (id, worktree, sandboxes, time_created, time_updated)
 		VALUES (?, ?, '[]', ?, ?)`, projectID, directory, now, now)
 	if err != nil {

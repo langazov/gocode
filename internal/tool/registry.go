@@ -86,6 +86,24 @@ func (r *Registry) Execute(ctx context.Context, name string, input map[string]an
 type ExtraPermission struct {
 	Action    string
 	Resources []string
+	// Save is what an "allow always" reply persists. It is separate from
+	// Resources because a grant is usually broader than the thing being
+	// asked about: external_directory asks about one directory and saves a
+	// glob covering it and everything beneath.
+	Save []string
+}
+
+// PermissionResourced is implemented by a tool whose permission resources
+// cannot be read off a single input field.
+//
+// It exists for apply_patch, whose input is a patch rather than a path: the
+// files it touches are only known after parsing it. Without this the resources
+// collapse to "*", and a rule like `"edit": {"*.env": "deny"}` silently stops
+// applying — the same patch the edit tool refuses goes through.
+//
+// Returning nil falls back to the runner's default mapping.
+type PermissionResourced interface {
+	PermissionResources(input map[string]any) []string
 }
 
 // PermissionScoped is implemented by a tool whose input can require approval

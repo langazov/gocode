@@ -139,7 +139,7 @@ func TestAssistantTextBlockMatchesMessageBlockWidth(t *testing.T) {
 }
 
 func TestPermissionEditIconMatchesOriginal(t *testing.T) {
-	icon, title := permissionTitle(&client.PermissionRequest{Action: "edit", Resources: []string{"foo.go"}})
+	icon, title := (&App{}).permissionTitle(&client.PermissionRequest{Action: "edit", Resources: []string{"foo.go"}})
 	if icon != "→" {
 		t.Fatalf("edit permission icon = %q, want %q", icon, "→")
 	}
@@ -149,7 +149,7 @@ func TestPermissionEditIconMatchesOriginal(t *testing.T) {
 }
 
 func TestPermissionWriteFallsBackToGenericLikeTS(t *testing.T) {
-	icon, title := permissionTitle(&client.PermissionRequest{Action: "write", Resources: []string{"foo.go"}})
+	icon, title := (&App{}).permissionTitle(&client.PermissionRequest{Action: "write", Resources: []string{"foo.go"}})
 	if icon != "⚙" || title != "Call tool write" {
 		t.Fatalf("write permission = (%q, %q), want the generic fallback (\"⚙\", \"Call tool write\") — TS has no write-specific case", icon, title)
 	}

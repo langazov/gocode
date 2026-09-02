@@ -176,6 +176,22 @@ which on macOS matters more than you'd expect: `/var` is a symlink to
 > without prompting. Regexes cannot fix it, because the shell grammar decides
 > what a path even is.
 
+#### The grant is a subtree, not a file
+
+The scan reports **directories**, and the permission resource is a glob over
+one — `/srv/data/*`, never `/srv/data/one.txt`. Since `*` compiles to `.*`,
+which crosses `/`, approving `/srv/data/*` also covers `/srv/data/sub/deeper/`
+and everything in it. A sibling like `/srv/other/` is not covered: the grant
+widens down, never sideways.
+
+> A second reported bug lived here: the prompt reappeared on almost every
+> command, because "allow always" was doing nothing. Two independent defects,
+> either one sufficient to cause it — the runner never set `Save` on the
+> permission input, so `Engine.Reply`'s `len(Save) > 0` guard skipped the
+> write; and `main.go` passed a `nil` `SavedStore`, so there was nowhere to
+> write to. `TestExternalDirectoryAlwaysIsAskedOnce` fails if either is
+> reverted.
+
 ### Rules from config
 
 ```jsonc
@@ -189,8 +205,54 @@ which on macOS matters more than you'd expect: `/var` is a symlink to
 }
 ```
 
-Rules can also be persisted at runtime — answering "always allow" writes to the
-`permission` table, scoped to the project.
+### Rules saved at runtime
+
+Answering **"allow always"** writes to the `permission` table
+(`internal/session/permission_saved.go`), scoped to the **project**, not the
+session — so a directory approved once stays approved in every later session in
+the same worktree, across restarts.
+
+What gets saved is the request's `Save` list, which is deliberately not the
+same as the resources being asked about. Both columns match what the
+TypeScript tool passes to `permission.assert`:
+
+| Action | Resource (asked about) | Saved by "always" |
+|---|---|---|
+| `read` · `edit` · `write` | the path | `*` |
+| `apply_patch` | **every file the patch touches** | `*` |
+| `bash` | the command | that command |
+| `external_directory` | `dir/*` | `dir/*` |
+| `glob` · `grep` | the pattern | `*` |
+| `webfetch` | the URL | `*` |
+| `websearch` | the query | `*` |
+| `skill` | the skill's name | that skill |
+| `task` | the subagent type | `*` |
+| `todowrite` | `*` | `*` |
+
+The asymmetry is the point. For the file tools the question a person answers is
+"may you read files", not "may you read this one path" — saving the path would
+re-ask for the next file. For `bash` and `skill` it inverts: one approval must
+not become "run anything" or "load any skill".
+
+> Getting the **resource** column wrong is not cosmetic. An unmapped field
+> falls through to `"*"`, and `"*"` on the *input* side of a match is a
+> literal, not a wildcard: `Evaluate("edit", "*", rules)` matches neither an
+> allow nor a deny written against a path pattern. Four tools were reading
+> `input["path"]`, a field they do not have — `webfetch`, `websearch`, `skill`
+> and `apply_patch` — so every URL-, query- and path-scoped rule silently
+> stopped applying to them. For `apply_patch` that was a bypass: `"edit":
+> {"*.env": "deny"}` stopped the edit tool while the identical change went
+> through as a patch.
+
+`apply_patch` is the one tool whose resources are not one input field away —
+its targets are inside the patch text — so it implements
+`tool.PermissionResourced` and parses them out. A move reports both paths;
+the destination is as much a write as the source.
+
+`permission.Rule`s built from the table are merged in after the agent's
+configured rules, and `Evaluate` takes the **last** match, so a saved allow
+beats a configured ask — but never a configured `deny`, which is checked first
+and on its own.
 
 ## The permission round trip
 

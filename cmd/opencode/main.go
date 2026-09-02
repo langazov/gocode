@@ -267,7 +267,11 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	// constructed until below. Subagent sessions store a derived ruleset that
 	// must override their agent's stock one.
 	agentRules := &session.AgentRulesProvider{Agents: agents}
-	permissionEngine := permission.NewEngine(agentRules, nil, permission.Hooks{}, nil)
+	// "Allow always" is only meaningful with somewhere to put the grant.
+	// Scoped to the project, so approving a directory survives the session
+	// and every later one in the same worktree.
+	savedPermissions := session.NewSavedPermissions(database, workdir)
+	permissionEngine := permission.NewEngine(agentRules, savedPermissions, permission.Hooks{}, nil)
 
 	runner := &session.Runner{
 		DB:                database,

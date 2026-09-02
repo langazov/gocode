@@ -137,3 +137,63 @@ func TestTimelineYieldsRowsToPermissionBanner(t *testing.T) {
 		t.Errorf("viewportHeight is %d with a banner and %d without; the timeline must yield the rows the banner takes", with, without)
 	}
 }
+
+// TestExternalDirectoryPromptNamesTheDirectory is the regression for a prompt
+// that read, in full, "Call tool external_directory" / "Tool:
+// external_directory" — the generic fallback, because the port skipped TS's
+// external_directory case in permission.tsx's info().
+//
+// It told the user something outside the project was being touched but not
+// what, and the only safe answer to an unknown is "reject". The resources are
+// the globs the grant is saved as, so the directory is recoverable from them.
+func TestExternalDirectoryPromptNamesTheDirectory(t *testing.T) {
+	app := permissionApp(t, 120, 40, &client.PermissionRequest{
+		ID:        "p1",
+		Action:    "external_directory",
+		Resources: []string{"/srv/data/*", "/srv/logs/*"},
+	})
+	view := app.View()
+
+	if strings.Contains(view, "Call tool external_directory") {
+		t.Error("the prompt fell back to the generic title and never says which directory")
+	}
+	for _, want := range []string{"Access external directory /srv/data", "/srv/data/*", "/srv/logs/*"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("prompt does not show %q", want)
+		}
+	}
+}
+
+// TestExternalDirectoryPromptSaysWhatAlwaysMeans: "Allow always" grants the
+// directory subtree for the whole project, not just this one command, and a
+// prompt that does not say so is asking for uninformed consent.
+func TestExternalDirectoryPromptSaysWhatAlwaysMeans(t *testing.T) {
+	app := permissionApp(t, 120, 40, &client.PermissionRequest{
+		ID: "p1", Action: "external_directory", Resources: []string{"/srv/data/*"},
+	})
+	if view := app.View(); !strings.Contains(view, "everything under them") {
+		t.Error("the prompt does not say that always covers subdirectories and the whole project")
+	}
+}
+
+// TestWebPromptsNameTheirTarget: webfetch and websearch prompts rendered with
+// an empty target ("WebFetch " and the generic fallback) because the runner
+// read input["path"] from tools that carry "url" and "query". Approving a
+// request that does not say what it is reaching is not consent.
+func TestWebPromptsNameTheirTarget(t *testing.T) {
+	for _, c := range []struct{ action, resource, want string }{
+		{"webfetch", "https://docs.example/page", "WebFetch https://docs.example/page"},
+		{"websearch", "how to write go", `Web search "how to write go"`},
+	} {
+		app := permissionApp(t, 120, 40, &client.PermissionRequest{
+			ID: "p1", Action: c.action, Resources: []string{c.resource},
+		})
+		view := app.View()
+		if !strings.Contains(view, c.want) {
+			t.Errorf("%s prompt does not show %q", c.action, c.want)
+		}
+		if strings.Contains(view, "Call tool "+c.action) {
+			t.Errorf("%s prompt fell back to the generic title", c.action)
+		}
+	}
+}

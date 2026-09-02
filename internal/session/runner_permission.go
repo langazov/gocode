@@ -19,6 +19,7 @@ func (g *EnginePermissionGate) Assert(ctx context.Context, input ToolPermissionI
 		Agent:     input.Agent,
 		Action:    input.Action,
 		Resources: input.Resources,
+		Save:      input.Save,
 		Source: &permission.Source{
 			Type:      "tool",
 			MessageID: input.AssistantMessageID,

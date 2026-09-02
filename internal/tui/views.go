@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"image/color"
+	pathpkg "path"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -472,7 +473,7 @@ func (a *App) permissionBanner() string {
 	header := lipgloss.JoinHorizontal(lipgloss.Top,
 		a.styles().Warning.Render("△"),
 		" ", a.styles().Text.Render("Permission required"))
-	icon, title := permissionTitle(request)
+	icon, title := a.permissionTitle(request)
 	line2 := "  " + a.styles().Muted.Render(icon) + " " + a.styles().Text.Render(title)
 	body := a.permissionBody(request)
 
@@ -533,26 +534,49 @@ func clampPermissionBody(body string, budget int) string {
 // mirroring permission.tsx's info() cases exactly — including the absence
 // of a "write" case: TS has none, so write falls to the same generic
 // "Call tool <action>" every unhandled action gets. (TS also special-cases
-// list/websearch/external_directory/doom_loop, but Go's PermissionRequest
-// carries only a flat Resources list — no patterns, provider, or query — so
-// those can't be reconstructed and are left to the generic fallback too.)
+// list/websearch/doom_loop, but Go's PermissionRequest carries only a flat
+// Resources list — no provider or query — so those can't be reconstructed and
+// are left to the generic fallback too.)
 //
 // A request from a subagent is attributed to it: with several sessions asking
 // concurrently, an unlabeled prompt is ambiguous about who is blocked.
-func permissionTitle(request *client.PermissionRequest) (icon, title string) {
-	icon, title = permissionAction(request)
+func (a *App) permissionTitle(request *client.PermissionRequest) (icon, title string) {
+	icon, title = a.permissionAction(request)
 	if agent := request.Agent; agent != "" && agent != "build" {
 		title = title + " (@" + agent + ")"
 	}
 	return icon, title
 }
 
-func permissionAction(request *client.PermissionRequest) (icon, title string) {
+// externalDirectoryTarget recovers the directory an external_directory request
+// is about. The resources are globs over it (`/srv/data/*`), which is what the
+// grant is saved as; the directory is what a person can actually answer about.
+func externalDirectoryTarget(resources []string) string {
+	if len(resources) == 0 {
+		return ""
+	}
+	pattern := resources[0]
+	if strings.Contains(pattern, "*") {
+		return pathpkg.Dir(pattern)
+	}
+	return pattern
+}
+
+func (a *App) permissionAction(request *client.PermissionRequest) (icon, title string) {
 	path := ""
 	if len(request.Resources) > 0 {
 		path = request.Resources[0]
 	}
 	switch request.Action {
+	case "external_directory":
+		// Without the directory in the title this prompt is unanswerable: it
+		// says something outside the project is being touched but not what,
+		// and the only safe reply to an unknown is "reject".
+		target := externalDirectoryTarget(request.Resources)
+		if target == "" {
+			return "←", "Access external directory"
+		}
+		return "←", "Access external directory " + abbreviateHome(target, a.homeDir)
 	case "task":
 		if path == "" {
 			return "│", "Launch subagent"
@@ -570,6 +594,14 @@ func permissionAction(request *client.PermissionRequest) (icon, title string) {
 		return "#", "Shell command"
 	case "webfetch":
 		return "%", "WebFetch " + path
+	case "websearch":
+		// TS titles this with the search provider, which this port's
+		// PermissionRequest does not carry (no metadata is set on the ask), so
+		// the query alone stands in.
+		if path == "" {
+			return "◈", "Web search"
+		}
+		return "◈", fmt.Sprintf("Web search %q", path)
 	}
 	return "⚙", "Call tool " + request.Action
 }
@@ -584,6 +616,19 @@ func (a *App) permissionBody(request *client.PermissionRequest) string {
 		path = request.Resources[0]
 	}
 	switch request.Action {
+	case "external_directory":
+		// Listing every pattern, not just the first: one command can reach
+		// into several directories, and approving covers all of them.
+		if len(request.Resources) == 0 {
+			return ""
+		}
+		lines := []string{pad + a.styles().Muted.Render("Patterns")}
+		for _, resource := range request.Resources {
+			lines = append(lines, pad+a.styles().Text.Render("- "+resource))
+		}
+		lines = append(lines, pad+a.styles().Muted.Render(
+			"Allow always grants these directories and everything under them, for this project."))
+		return strings.Join(lines, "\n")
 	case "bash":
 		if path == "" {
 			return ""
@@ -606,6 +651,11 @@ func (a *App) permissionBody(request *client.PermissionRequest) string {
 			return ""
 		}
 		return pad + a.styles().Muted.Render("URL: "+path)
+	case "websearch":
+		if path == "" {
+			return ""
+		}
+		return pad + a.styles().Muted.Render("Query: "+path)
 	}
 	return pad + a.styles().Muted.Render("Tool: "+request.Action)
 }
