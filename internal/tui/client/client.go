@@ -430,6 +430,25 @@ func (c *Client) OAuthStatus(ctx context.Context, attemptID string) (*OAuthAttem
 	return &out, nil
 }
 
+// Command is a slash command offered for completion.
+type Command struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Agent       string   `json:"agent,omitempty"`
+	Model       string   `json:"model,omitempty"`
+	Subtask     bool     `json:"subtask,omitempty"`
+	Template    string   `json:"template"`
+	Source      string   `json:"source,omitempty"`
+	Hints       []string `json:"hints,omitempty"`
+}
+
+// Commands fetches the slash commands.
+func (c *Client) Commands(ctx context.Context) ([]Command, error) {
+	var out []Command
+	err := c.do(ctx, "GET", "/api/command", nil, &out)
+	return out, err
+}
+
 // LSPState is the language-server status shown in the sidebar.
 type LSPState struct {
 	Enabled   bool        `json:"enabled"`

@@ -9,6 +9,7 @@ import (
 
 	"github.com/anomalyco/opencode-go/internal/agent"
 	"github.com/anomalyco/opencode-go/internal/background"
+	"github.com/anomalyco/opencode-go/internal/command"
 	"github.com/anomalyco/opencode-go/internal/config"
 	"github.com/anomalyco/opencode-go/internal/event"
 	"github.com/anomalyco/opencode-go/internal/lsp"
@@ -40,6 +41,8 @@ type Server struct {
 	Skills *skill.Registry
 	// LSP owns the running language servers, for the status surfaces.
 	LSP *lsp.Service
+	// Commands holds the slash commands the interface completes and runs.
+	Commands *command.Registry
 
 	// oauth tracks in-flight provider logins started from the interface. A
 	// device flow outlives the request that begins it, so the attempt is
@@ -92,6 +95,7 @@ func (s *Server) Mux() *http.ServeMux {
 		mux.HandleFunc("GET /api/skill", s.listSkills)
 	}
 	mux.HandleFunc("GET /api/lsp", s.listLSP)
+	mux.HandleFunc("GET /api/command", s.listCommands)
 	if s.Session != nil {
 		mux.HandleFunc("POST /api/session", s.createSession)
 		mux.HandleFunc("GET /api/session", s.listSessions)

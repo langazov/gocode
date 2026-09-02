@@ -194,6 +194,12 @@ func (a *App) viewChat() string {
 	if footer := a.subagentFooter(); footer != "" {
 		chat = append(chat, a.indentBlock(footer))
 	}
+	// The completion popup sits directly above the prompt and shares its
+	// width, porting the autocomplete's absolute position anchored to the
+	// prompt box.
+	if popup := a.autocompleteView(a.sessionPromptBoxWidth()); popup != "" {
+		chat = append(chat, a.indentBlock(popup))
+	}
 	chat = append(chat,
 		a.indentBlock(a.promptBox(a.sessionPromptBoxWidth())),
 		a.indentBlock(a.chatFooter()))
@@ -364,7 +370,13 @@ func (a *App) homePromptBlock(width int) string {
 	shadow := lipgloss.NewStyle().Foreground(a.theme.BackgroundElement).Render(strings.Repeat("▀", width))
 	hints := a.styles().Text.Render("tab") + " " + a.styles().Muted.Render("agents") + "  " +
 		a.styles().Text.Render("ctrl+p") + " " + a.styles().Muted.Render("commands")
-	return strings.Join([]string{a.promptBox(width), corner + shadow, hints}, "\n")
+	blocks := []string{}
+	// Above the prompt, sharing its width — the popup's anchored position.
+	if popup := a.autocompleteView(width); popup != "" {
+		blocks = append(blocks, popup)
+	}
+	blocks = append(blocks, a.promptBox(width), corner+shadow, hints)
+	return strings.Join(blocks, "\n")
 }
 
 // statusBar mirrors the home footer plugin: abbreviated directory with the

@@ -40,11 +40,18 @@ const (
 // annotation, category the group header, and value the stable id matched
 // against overlay.current for the ● current-item marker.
 type overlayItem struct {
-	label    string
-	hint     string
-	value    string
-	category string
-	footer   string
+	label string
+	// slash is the name this item answers to after a "/", and slashAliases
+	// any additional ones. The interface command's own label is a dotted
+	// internal name ("session.new") that nobody types; the original gives each
+	// one an explicit slashName ("new") plus aliases ("clear"), and matching
+	// on the label alone means "/new" resolves to nothing.
+	slash        string
+	slashAliases []string
+	hint         string
+	value        string
+	category     string
+	footer       string
 	// gutter is a glyph drawn in the bullet column (DialogSelectOption's
 	// `gutter` slot), used for the connect dialog's ✓ on providers that
 	// already have a credential. The current-item bullet wins over it.
@@ -53,6 +60,26 @@ type overlayItem struct {
 	// title color, matching `<text fg={theme.success}>✓</text>`.
 	gutterOK bool
 	action   func() tea.Msg
+}
+
+// matchesSlash reports whether an interface command answers to a "/" name.
+//
+// The dotted label is matched too, so "/session.new" keeps working for anyone
+// who learned it, and a namespace prefix still resolves ("/help" would reach
+// "help.show" even without its slash name).
+func (i overlayItem) matchesSlash(name string) bool {
+	if name == "" {
+		return false
+	}
+	if i.slash == name || i.label == name {
+		return true
+	}
+	for _, alias := range i.slashAliases {
+		if alias == name {
+			return true
+		}
+	}
+	return strings.HasPrefix(i.label, name+".")
 }
 
 // dialogAction is a footer action (DialogSelect actions): a title plus the
@@ -401,18 +428,31 @@ func (a *App) resolveOverlay(branch func() tea.Msg) tea.Cmd {
 // action returns. Shared by the enter key and a mouse click/release on the
 // row (see mouse.go's overlayMouseTarget/handleClick).
 func (a *App) activateItem(item overlayItem) tea.Cmd {
-	action := item.action
 	a.closeOverlay()
-	if action == nil {
+	return runItemAction(item)
+}
+
+// runItemAction runs a registry item's action and returns the command it
+// implies.
+//
+// An action's declared result is tea.Msg, but several of them return a
+// tea.Cmd — the real implementations they delegate to (newSession,
+// modelsOverlay, compactNow) are command-producing. Returning one as a message
+// would leave it sitting in the update loop unexecuted, so it is unwrapped
+// here. Both the palette and the inline "/" popup go through this, or one of
+// them silently does nothing.
+func runItemAction(item overlayItem) tea.Cmd {
+	if item.action == nil {
 		return nil
 	}
-	if result := action(); result != nil {
-		if cmd, ok := result.(tea.Cmd); ok {
-			return cmd
-		}
-		return staticMsg(result)
+	result := item.action()
+	if result == nil {
+		return nil
 	}
-	return nil
+	if cmd, ok := result.(tea.Cmd); ok {
+		return cmd
+	}
+	return staticMsg(result)
 }
 
 // moveSelectionTo jumps the list selection to an absolute index (mouse hover
@@ -1316,26 +1356,38 @@ func (a *App) themesOverlay() {
 func (a *App) commandsRegistry() []overlayItem {
 	c := a.client
 	items := []overlayItem{
-		{label: "session.new", hint: "New session", category: "Session", footer: "ctrl+x n", action: func() tea.Msg { return reloadMsg{} }},
-		{label: "session.list", hint: "List sessions", category: "Session", footer: "ctrl+x l", action: func() tea.Msg {
+		{label: "session.new", slash: "new", slashAliases: []string{"clear"}, hint: "New session", category: "Session", footer: "ctrl+x n", action: func() tea.Msg {
+			// The same call the ctrl+x n keybind makes. This used to return
+			// reloadMsg, which only reloads the *open* session's messages and
+			// is a no-op on the home screen — so the command did nothing.
+			return a.newSession()
+		}},
+		{label: "session.list", slash: "sessions", slashAliases: []string{"resume", "continue"}, hint: "List sessions", category: "Session", footer: "ctrl+x l", action: func() tea.Msg {
 			a.sessionsOverlay()
 			return nil
 		}},
-		{label: "session.interrupt", hint: "Interrupt", category: "Session", footer: "esc", action: func() tea.Msg {
-			if a.active != nil && a.busy {
-				_ = c.Interrupt(a.ctx, a.active.ID)
-				a.busy = false
+		{label: "session.interrupt", slash: "interrupt", hint: "Interrupt", category: "Session", footer: "esc", action: func() tea.Msg {
+			// Say why nothing happened. Every other command reports when it
+			// cannot act; this one returned silently, which from a command
+			// palette or a "/" prompt is indistinguishable from being broken.
+			if a.active == nil {
+				return statusMsg{text: "open a session first"}
 			}
-			return nil
+			if !a.busy {
+				return statusMsg{text: "nothing is running"}
+			}
+			_ = c.Interrupt(a.ctx, a.active.ID)
+			a.busy = false
+			return statusMsg{text: "interrupted"}
 		}},
-		{label: "session.rename", hint: "Rename session", category: "Session", footer: "ctrl+r", action: func() tea.Msg {
+		{label: "session.rename", slash: "rename", hint: "Rename session", category: "Session", footer: "ctrl+r", action: func() tea.Msg {
 			if a.active == nil {
 				return statusMsg{text: "open a session first"}
 			}
 			a.renameSessionAction(overlayItem{value: a.active.ID, label: a.sessionTitle()})
 			return nil
 		}},
-		{label: "session.delete", hint: "Delete session", category: "Session", footer: "ctrl+d", action: func() tea.Msg {
+		{label: "session.delete", slash: "delete", hint: "Delete session", category: "Session", footer: "ctrl+d", action: func() tea.Msg {
 			if a.active == nil {
 				return statusMsg{text: "open a session first"}
 			}
@@ -1356,23 +1408,23 @@ func (a *App) commandsRegistry() []overlayItem {
 				}, nil)
 			return nil
 		}},
-		{label: "session.compact", hint: "Compact context", category: "Session", footer: "ctrl+x c", action: func() tea.Msg {
-			return statusMsg{text: "compaction runs automatically near the context limit"}
+		{label: "session.compact", slash: "compact", hint: "Compact context", category: "Session", footer: "ctrl+x c", action: func() tea.Msg {
+			// Was a placeholder message even though the server endpoint and
+			// the ctrl+x c binding both exist.
+			return a.compactNow()
 		}},
-		{label: "session.timeline", hint: "Jump to message", category: "Session", footer: "ctrl+x g", action: func() tea.Msg {
+		{label: "session.timeline", slash: "timeline", hint: "Jump to message", category: "Session", footer: "ctrl+x g", action: func() tea.Msg {
 			a.openList("Timeline", a.timelineOverlayItems())
 			a.overlay.size = dialogLarge
 			return nil
 		}},
-		{label: "model.list", hint: "Choose model", category: "Model", footer: "ctrl+x m", action: func() tea.Msg {
-			a.modelsOverlay()
-			return nil
+		{label: "model.list", slash: "models", hint: "Choose model", category: "Model", footer: "ctrl+x m", action: func() tea.Msg {
+			return a.modelsOverlay()
 		}},
-		{label: "agent.list", hint: "Choose agent", category: "Agent", footer: "ctrl+x a", action: func() tea.Msg {
-			a.agentsOverlay()
-			return nil
+		{label: "agent.list", slash: "agents", hint: "Choose agent", category: "Agent", footer: "ctrl+x a", action: func() tea.Msg {
+			return a.agentsOverlay()
 		}},
-		{label: "theme.list", hint: "Choose theme", category: "Theme", footer: "ctrl+x t", action: func() tea.Msg {
+		{label: "theme.list", slash: "themes", hint: "Choose theme", category: "Theme", footer: "ctrl+x t", action: func() tea.Msg {
 			a.themesOverlay()
 			return nil
 		}},
@@ -1389,15 +1441,15 @@ func (a *App) commandsRegistry() []overlayItem {
 			a.invalidateRenderCache()
 			return nil
 		}},
-		{label: "help.show", hint: "Keybinds", category: "System", action: func() tea.Msg {
+		{label: "help.show", slash: "help", hint: "Keybinds", category: "System", action: func() tea.Msg {
 			a.overlay = &overlay{kind: overlayHelp, title: "Help"}
 			return nil
 		}},
-		{label: "status.view", hint: "Session status", category: "System", footer: "ctrl+x s", action: func() tea.Msg {
+		{label: "status.view", slash: "status", hint: "Session status", category: "System", footer: "ctrl+x s", action: func() tea.Msg {
 			a.overlay = &overlay{kind: overlayStatus, title: "Status"}
 			return nil
 		}},
-		{label: "app.exit", hint: "Quit", category: "System", footer: "ctrl+c", action: func() tea.Msg { return quitMsg{} }},
+		{label: "app.exit", slash: "exit", slashAliases: []string{"quit", "q"}, hint: "Quit", category: "System", footer: "ctrl+c", action: func() tea.Msg { return quitMsg{} }},
 	}
 	// The sidebar footer's getting-started card is dismissed by clicking its
 	// "✕" upstream. This port has no per-widget mouse targets inside the

@@ -36,11 +36,11 @@ func TestDiagnoseWrapWidthMismatch(t *testing.T) {
 
 	declared := app.inputWidth()
 	textWidth := app.input.Width()
-	fmt.Printf("\ninputWidth()      = %d   (what SetWidth is given)\n", declared)
-	fmt.Printf("input.Width()     = %d   (the width the textarea actually wraps at)\n", textWidth)
-	fmt.Printf("difference        = %d   (input.Prompt = %q)\n\n", declared-textWidth, " ")
+	// Logged rather than printed: t.Log is held back unless the test fails or
+	// -v is passed, so a passing suite stays quiet.
+	t.Logf("inputWidth()=%d input.Width()=%d (difference is the prompt column)", declared, textWidth)
 
-	fmt.Printf("%-6s %-10s %-10s %s\n", "len", "box sized", "textarea", "")
+	var report strings.Builder
 	mismatches := 0
 	for _, length := range []int{declared - 3, declared - 2, declared - 1, declared, declared + 1, declared + 2} {
 		text := strings.Repeat("x", length)
@@ -54,9 +54,10 @@ func TestDiagnoseWrapWidthMismatch(t *testing.T) {
 			flag = "  <-- MISMATCH: the box is sized for fewer rows than are rendered"
 			mismatches++
 		}
-		fmt.Printf("%-6d %-10d %-10d%s\n", length, mine, theirs, flag)
+		fmt.Fprintf(&report, "len=%-4d box sized %-3d textarea %-3d%s\n", length, mine, theirs, flag)
 	}
 	if mismatches > 0 {
+		t.Log("\n" + report.String())
 		t.Errorf("%d widths disagree; the viewport scrolls to keep the cursor visible and the first line goes off the top", mismatches)
 	}
 }

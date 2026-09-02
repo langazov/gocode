@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/anomalyco/opencode-go/internal/command"
 	"github.com/anomalyco/opencode-go/internal/global"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/anomalyco/opencode-go/internal/tui/theme"
@@ -119,6 +120,10 @@ type App struct {
 	// prompt), so the value passed has to be remembered to tell a real change
 	// from that adjustment.
 	promptWidthSet int
+	// autocomplete is the inline "/" and "@" popup above the prompt.
+	autocomplete autocompleteState
+	// commands is the cached slash-command list, for completion and dispatch.
+	commands []client.Command
 	// lsp is the latest language-server status, refreshed on the tick like
 	// mcpServers. nil until the first fetch lands.
 	lsp *client.LSPState
@@ -276,7 +281,7 @@ type leaderTimeoutMsg struct{}
 
 func (a *App) Init() tea.Cmd {
 	a.windowTitle = a.desiredWindowTitle()
-	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadAgentsCmd(0), a.tick()}
+	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadCommandsCmd(), a.loadAgentsCmd(0), a.tick()}
 	if a.resumeSessionID != "" {
 		cmds = append(cmds, a.resumeSessionCmd(a.resumeSessionID))
 	}
@@ -385,6 +390,9 @@ type mcpMsg struct{ servers []client.MCPServer }
 // lspMsg carries the language-server status for the sidebar.
 type lspMsg struct{ state *client.LSPState }
 
+// commandsMsg carries the slash-command list.
+type commandsMsg struct{ commands []client.Command }
+
 // subagentSiblingsMsg carries the children of the open session's parent, the
 // list the subagent footer counts for its "(2 of 5)" position.
 type subagentSiblingsMsg struct {
@@ -461,6 +469,19 @@ func (a *App) loadCatalogCmd() tea.Cmd {
 // loadLSPCmd refreshes the language-server status. Re-run on the tick, like
 // MCP: servers start lazily as files are read, so the list grows during a
 // session rather than being fixed at boot.
+// loadCommandsCmd fetches the slash commands. Run once at Init: the set only
+// changes when config or skill files change, which needs a restart anyway.
+func (a *App) loadCommandsCmd() tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		commands, err := c.Commands(a.ctx)
+		if err != nil {
+			return nil
+		}
+		return commandsMsg{commands: commands}
+	}
+}
+
 func (a *App) loadLSPCmd() tea.Cmd {
 	c := a.client
 	return func() tea.Msg {
@@ -595,6 +616,9 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return nil
 	case lspMsg:
 		a.lsp = msg.state
+		return nil
+	case commandsMsg:
+		a.commands = msg.commands
 		return nil
 	case agentsLoadedMsg:
 		a.agents2 = msg.agents
@@ -852,9 +876,24 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		})
 		return nil
 	}
+	// The inline popup takes the navigation keys while it is open; everything
+	// else falls through to the editor so typing keeps narrowing the list.
+	if a.autocomplete.visible() {
+		if cmd, handled := a.handleAutocompleteKey(msg); handled {
+			return cmd
+		}
+	}
 	if msg.String() == "@" {
 		a.input.InsertString("@")
-		a.openFileMentions()
+		a.openMentionAutocomplete()
+		return nil
+	}
+	// "/" opens command completion, but only at the very start of the prompt:
+	// a slash anywhere else is ordinary text (a path, a date, a fraction).
+	// Ports autocomplete.tsx's "/ at position 0" trigger.
+	if msg.String() == "/" && a.input.Value() == "" {
+		a.input.InsertString("/")
+		a.openSlashAutocomplete()
 		return nil
 	}
 
@@ -952,6 +991,9 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	var cmd tea.Cmd
 	a.input, cmd = a.input.Update(msg)
+	// The prompt is the popup's query: re-filter after every keystroke, and
+	// close it once the trigger no longer applies.
+	a.syncAutocomplete()
 	return cmd
 }
 
@@ -1263,20 +1305,279 @@ func themeResolve(name string) theme.Theme { return theme.Resolve(name) }
 
 // runSlashCommand executes "/name" from the editor. Names may be the full
 // command ("session.new") or a namespace prefix ("/help" -> "help.show").
-func (a *App) runSlashCommand(name string) tea.Cmd {
-	name = strings.TrimSpace(strings.TrimPrefix(name, "/"))
-	commands := a.commandsRegistry()
-	for _, command := range commands {
-		if command.label == name {
-			return command.action
+// runSlashCommand dispatches "/name args".
+//
+// Two kinds of command share the syntax. A *prompt* command — the ones from
+// config, markdown files and skills, plus the built-in init and review — is a
+// template: it expands with the arguments and is sent as the prompt. An
+// *interface* command (session.new, model.list, ...) drives the interface and
+// takes no arguments. Prompt commands are matched first, because they are the
+// ones a user defines and would be surprised to see shadowed.
+func (a *App) runSlashCommand(input string) tea.Cmd {
+	input = strings.TrimSpace(strings.TrimPrefix(input, "/"))
+	name, arguments, _ := strings.Cut(input, " ")
+	arguments = strings.TrimSpace(arguments)
+
+	for _, entry := range a.commands {
+		if entry.Name == name {
+			return a.runPromptCommand(entry, arguments)
 		}
 	}
-	for _, command := range commands {
-		if strings.HasPrefix(command.label, name+".") {
-			return command.action
+
+	for _, entry := range a.commandsRegistry() {
+		if entry.matchesSlash(name) {
+			return runItemAction(entry)
 		}
 	}
 	return staticMsg(statusMsg{text: "unknown command: /" + name})
+}
+
+// runPromptCommand expands a command template and sends it as the prompt.
+func (a *App) runPromptCommand(entry client.Command, arguments string) tea.Cmd {
+	text := command.Expand(a.ctx, entry.Template, arguments, "")
+	if text == "" {
+		return staticMsg(statusMsg{text: "/" + entry.Name + " produced an empty prompt"})
+	}
+	if a.view == viewHome {
+		return a.createAndPrompt(text)
+	}
+	if a.active == nil {
+		return staticMsg(statusMsg{text: "open a session first"})
+	}
+	return a.sendPrompt(a.active.ID, text)
+}
+
+// openSlashAutocomplete opens the inline "/" popup.
+func (a *App) openSlashAutocomplete() {
+	items := a.slashAutocompleteItems()
+	if len(items) == 0 {
+		return
+	}
+	a.autocomplete = autocompleteState{kind: autocompleteSlash, all: items, trigger: 0}
+	a.autocomplete.filter("")
+}
+
+// openMentionAutocomplete opens the inline "@" popup for workspace files.
+func (a *App) openMentionAutocomplete() {
+	var items []autocompleteItem
+	for _, item := range fileMentions("") {
+		path := item.label
+		items = append(items, autocompleteItem{
+			display: "@" + path,
+			value:   path,
+			action: func() tea.Cmd {
+				a.replaceAutocompleteToken(path + " ")
+				return nil
+			},
+		})
+	}
+	if len(items) == 0 {
+		return
+	}
+	a.autocomplete = autocompleteState{
+		kind:    autocompleteMention,
+		all:     items,
+		trigger: strings.LastIndex(a.input.Value(), "@"),
+	}
+	a.autocomplete.filter("")
+}
+
+// hideAutocomplete closes the popup, clearing the half-typed command it was
+// completing.
+//
+// Ports hide() in autocomplete.tsx:
+//
+//	if (store.visible === "/" && !text.endsWith(" ") && text.startsWith("/")) {
+//	  props.input().deleteRange(0, 0, cursor.row, cursor.col)
+//	}
+//
+// Without it, running a command that opens a dialog leaves "/models" sitting
+// in the prompt after the dialog closes. The trailing-space guard is what
+// keeps a completed command with arguments ("/deploy staging") intact — that
+// text is the user's, not a leftover.
+func (a *App) hideAutocomplete() {
+	if a.autocomplete.kind == autocompleteSlash {
+		text := a.input.Value()
+		if strings.HasPrefix(text, "/") && !strings.HasSuffix(text, " ") {
+			a.input.SetValue("")
+		}
+	}
+	a.autocomplete.close()
+}
+
+// handleAutocompleteKey takes the keys the popup owns. Everything else falls
+// through so typing keeps going into the prompt and narrowing the list, which
+// is how the original behaves — it has no input field of its own.
+func (a *App) handleAutocompleteKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	switch msg.String() {
+	case "up", "ctrl+p":
+		a.autocomplete.move(-1)
+		return nil, true
+	case "down", "ctrl+n":
+		a.autocomplete.move(1)
+		return nil, true
+	case "esc", "escape":
+		a.hideAutocomplete()
+		return nil, true
+	case "enter", "tab":
+		item, ok := a.autocompleteSelection()
+		if !ok {
+			// Nothing matched. The original's select() returns early here and
+			// the keypress is swallowed, which leaves the user with no way to
+			// find out why. Closing without clearing and letting the key fall
+			// through submits what they typed, so an unrecognised command
+			// reports itself instead of doing nothing.
+			a.autocomplete.close()
+			return nil, false
+		}
+		// hide() runs before the action in the original, so the command text
+		// is gone by the time a dialog opens over it — and a prompt command's
+		// own insert then writes into an empty prompt.
+		a.hideAutocomplete()
+		if item.action == nil {
+			return nil, true
+		}
+		return item.action(), true
+	}
+	return nil, false
+}
+
+func (a *App) autocompleteSelection() (autocompleteItem, bool) {
+	state := a.autocomplete
+	if state.selected < 0 || state.selected >= len(state.items) {
+		return autocompleteItem{}, false
+	}
+	return state.items[state.selected], true
+}
+
+// syncAutocomplete re-filters the popup against the prompt after a keystroke,
+// and closes it when the trigger no longer applies.
+func (a *App) syncAutocomplete() {
+	state := &a.autocomplete
+	if !state.visible() {
+		return
+	}
+	value := a.input.Value()
+	if state.trigger < 0 || state.trigger >= len(value) {
+		// The trigger character itself is gone (backspaced away), so there is
+		// nothing left to clear — close without touching the prompt.
+		state.close()
+		return
+	}
+	query := value[state.trigger+1:]
+	// A space ends the token: "/new " has been chosen, and "@a b" is no longer
+	// one path.
+	if strings.ContainsAny(query, " \t\n") {
+		state.close()
+		return
+	}
+	state.filter(query)
+}
+
+// replaceAutocompleteToken swaps the trigger token for the chosen value.
+func (a *App) replaceAutocompleteToken(replacement string) {
+	value := a.input.Value()
+	trigger := a.autocomplete.trigger
+	if trigger < 0 || trigger > len(value) {
+		a.input.InsertString(replacement)
+		return
+	}
+	a.input.SetValue(value[:trigger] + replacement)
+	a.input.MoveToEnd()
+}
+
+// slashAutocompleteItems lists everything "/" can reach: the prompt commands
+// from the server, then the interface commands under their typeable names.
+func (a *App) slashAutocompleteItems() []autocompleteItem {
+	items := make([]autocompleteItem, 0, len(a.commands)+16)
+	for _, entry := range a.commands {
+		entry := entry
+		description := entry.Description
+		if description == "" && len(entry.Hints) > 0 {
+			description = strings.Join(entry.Hints, " ")
+		}
+		items = append(items, autocompleteItem{
+			display:     "/" + entry.Name,
+			description: description,
+			value:       entry.Name,
+			action: func() tea.Cmd {
+				// Insert rather than run, so arguments can be typed. Matches
+				// the original setting the text to "/" + name + " ".
+				a.input.SetValue("/" + entry.Name + " ")
+				a.input.MoveToEnd()
+				return nil
+			},
+		})
+	}
+	for _, entry := range a.commandsRegistry() {
+		entry := entry
+		if entry.slash == "" {
+			continue
+		}
+		description := entry.hint
+		if len(entry.slashAliases) > 0 {
+			description = strings.TrimSpace(description + " (" + strings.Join(entry.slashAliases, ", ") + ")")
+		}
+		items = append(items, autocompleteItem{
+			display:     "/" + entry.slash,
+			description: description,
+			value:       entry.slash,
+			action:      func() tea.Cmd { return runItemAction(entry) },
+		})
+	}
+	return items
+}
+
+// slashCommandItems lists everything "/" can reach: the prompt commands from
+// the server, then the interface commands, matching the order the original's
+// autocomplete builds (its own slashes first, then server commands — inverted
+// here because a user's own commands are the ones they are looking for).
+func (a *App) slashCommandItems() []overlayItem {
+	items := make([]overlayItem, 0, len(a.commands)+8)
+	for _, entry := range a.commands {
+		entry := entry
+		hint := entry.Description
+		if hint == "" && len(entry.Hints) > 0 {
+			hint = strings.Join(entry.Hints, " ")
+		}
+		category := "Commands"
+		if entry.Source == "skill" {
+			category = "Skills"
+		}
+		items = append(items, overlayItem{
+			label:    entry.Name,
+			hint:     hint,
+			value:    entry.Name,
+			category: category,
+			action: func() tea.Msg {
+				a.input.SetValue("/" + entry.Name + " ")
+				a.input.MoveToEnd()
+				return nil
+			},
+		})
+	}
+	for _, entry := range a.commandsRegistry() {
+		entry := entry
+		// Listed under the name a user actually types. An interface command
+		// with no slash name is palette-only, exactly as upstream drops any
+		// entry whose slashName is unset.
+		if entry.slash == "" {
+			continue
+		}
+		hint := entry.hint
+		if len(entry.slashAliases) > 0 {
+			hint = strings.TrimSpace(hint + "  (" + strings.Join(entry.slashAliases, ", ") + ")")
+		}
+		items = append(items, overlayItem{
+			label:    entry.slash,
+			hint:     hint,
+			value:    entry.slash,
+			category: "Interface",
+			footer:   entry.footer,
+			action:   entry.action,
+		})
+	}
+	return items
 }
 
 // openFileMentions shows @-completion for workspace files; selecting inserts

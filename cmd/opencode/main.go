@@ -12,6 +12,7 @@ import (
 
 	"github.com/anomalyco/opencode-go/internal/agent"
 	"github.com/anomalyco/opencode-go/internal/background"
+	"github.com/anomalyco/opencode-go/internal/command"
 	"github.com/anomalyco/opencode-go/internal/config"
 	"github.com/anomalyco/opencode-go/internal/db"
 	"github.com/anomalyco/opencode-go/internal/event"
@@ -109,6 +110,9 @@ type stack struct {
 	// LSP owns the running language servers backing edit/write diagnostics and
 	// the status view. Servers start lazily on the first file that needs one.
 	LSP *lsp.Service
+	// Commands holds the slash commands: built-ins, config entries, markdown
+	// definitions and skills.
+	Commands *command.Registry
 }
 
 // resolveModelFlag applies precedence: explicit flag wins, then config,
@@ -195,6 +199,13 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Skills:    skills,
 		Asker:     questions,
 		Diagnoser: lspService,
+	})
+
+	// Slash commands are assembled after skills are discovered, since a skill
+	// is one of their sources.
+	commands := command.Load(cfg, workdir, skills, []string{
+		filepath.Join(workdir, ".opencode"),
+		filepath.Join(global.Resolve().Config, "opencode"),
 	})
 
 	mcpServers, _ := mcp.ParseServers(cfg.MCP)
@@ -327,6 +338,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Skills:      skills,
 		Questions:   questions,
 		LSP:         lspService,
+		Commands:    commands,
 	}, nil
 }
 
