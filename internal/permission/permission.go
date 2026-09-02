@@ -43,11 +43,24 @@ var MissingAgentPermissions = Ruleset{{Action: "*", Resource: "*", Effect: Deny}
 func Defaults() Ruleset {
 	return Ruleset{
 		{Action: "*", Resource: "*", Effect: Allow},
+		// Reaching outside the working directory is always asked for, even
+		// though everything else is allowed by default. Matching agent.ts's
+		// `external_directory: {"*": "ask"}`, which sits beside the same
+		// allow-all baseline.
+		//
+		// Without this the directory restriction on write/edit/apply_patch is
+		// decorative: a shell command can write anywhere, and does.
+		{Action: ExternalDirectoryAction, Resource: "*", Effect: Ask},
 		{Action: "read", Resource: "*.env", Effect: Ask},
 		{Action: "read", Resource: "*.env.*", Effect: Ask},
 		{Action: "read", Resource: "*.env.example", Effect: Allow},
 	}
 }
+
+// ExternalDirectoryAction gates a tool reaching outside the working
+// directory. Defined here rather than in the shell tool so the permission
+// defaults can name it without depending on the tool package.
+const ExternalDirectoryAction = "external_directory"
 
 // Evaluate returns the last matching rule across the rulesets, defaulting to
 // ask, matching PermissionV2.evaluate.

@@ -548,6 +548,29 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 		return "", fmt.Errorf("session: no tool registry")
 	}
 	if r.Permissions != nil {
+		// A tool may imply approvals beyond its own action. The shell does:
+		// its command can reach outside the working directory, which every
+		// file tool refuses, so it declares those paths and they are asked for
+		// first. Asking before the tool's own action means a denial stops the
+		// command without the model seeing a partial approval.
+		if scoped, ok := r.tool(call.Name).(tool.PermissionScoped); ok {
+			for _, extra := range scoped.ExtraPermissions(call.Input) {
+				if len(extra.Resources) == 0 {
+					continue
+				}
+				err := r.Permissions.Assert(ctx, ToolPermissionInput{
+					SessionID:          sessionID,
+					Agent:              agentID,
+					Action:             extra.Action,
+					Resources:          extra.Resources,
+					AssistantMessageID: assistantMessageID,
+					CallID:             call.ID,
+				})
+				if err != nil {
+					return "", err
+				}
+			}
+		}
 		err := r.Permissions.Assert(ctx, ToolPermissionInput{
 			SessionID:          sessionID,
 			Agent:              agentID,
@@ -566,6 +589,18 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 		AssistantMessageID: assistantMessageID,
 		CallID:             call.ID,
 	})
+}
+
+// tool looks a tool up by name, returning nil when the registry has none.
+func (r *Runner) tool(name string) tool.Tool {
+	if r.Tools == nil {
+		return nil
+	}
+	found, ok := r.Tools.Get(name)
+	if !ok {
+		return nil
+	}
+	return found
 }
 
 // permissionAction maps a tool to its permission action. edit, write, and

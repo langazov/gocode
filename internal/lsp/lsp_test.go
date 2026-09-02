@@ -497,3 +497,92 @@ func TestPublishBeforeWaitIsNotMissed(t *testing.T) {
 		t.Errorf("waiting took %v for a publish that already arrived", elapsed)
 	}
 }
+
+// TestNullLSPConfigMeansDefault is a regression for a latent bug: the loader
+// round-trips config through JSON, and unmarshalling `null` into a bool
+// succeeds while leaving it false — which the boolean branch then read as
+// `lsp: false` and used to switch every server off.
+func TestNullLSPConfigMeansDefault(t *testing.T) {
+	cfg := &config.Config{}
+	if err := jsonUnmarshalConfig(`{"lsp": null}`, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LSP.Disabled() {
+		t.Error("`lsp: null` means unconfigured, not disabled")
+	}
+	if !New(t.TempDir(), cfg).Enabled() {
+		t.Error("a null lsp section must leave the subsystem enabled")
+	}
+
+	// The round trip the loader actually performs must survive too.
+	encoded, err := json.Marshal(map[string]any{"lsp": cfg.LSP})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reloaded config.Config
+	if err := json.Unmarshal(encoded, &reloaded); err != nil {
+		t.Fatal(err)
+	}
+	if reloaded.LSP.Disabled() {
+		t.Errorf("a config round trip disabled LSP: %s", encoded)
+	}
+}
+
+// TestDiagnoseExplainsMissingBinary covers the case the sidebar could not
+// distinguish: a server that handles the file but is not installed.
+func TestDiagnoseExplainsMissingBinary(t *testing.T) {
+	dir := t.TempDir()
+	file := writeFile(t, dir, "main.fake", "text\n")
+
+	service := &Service{
+		directory: normalizePath(dir),
+		clients:   map[string]*Client{},
+		broken:    map[string]bool{},
+		spawning:  map[string]*sync.WaitGroup{},
+		enabled:   true,
+		servers: []Server{
+			{ID: "missing", Extensions: []string{".fake"}, Command: []string{"opencode-no-such-server"}},
+			{ID: "other", Extensions: []string{".rs"}, Command: []string{"opencode-no-such-server"}},
+		},
+	}
+	t.Cleanup(service.Shutdown)
+
+	explanations := service.Diagnose(file)
+	if len(explanations) != 2 {
+		t.Fatalf("got %d explanations, want one per server", len(explanations))
+	}
+
+	byID := map[string]Explanation{}
+	for _, item := range explanations {
+		byID[item.ServerID] = item
+	}
+	if !byID["missing"].Handles {
+		t.Error("the .fake server should report that it handles the file")
+	}
+	if byID["missing"].Installed {
+		t.Error("a binary that does not exist must report as not installed")
+	}
+	if byID["missing"].Command != "opencode-no-such-server" {
+		t.Errorf("the command must be named so a PATH problem is actionable, got %q", byID["missing"].Command)
+	}
+	if byID["other"].Handles {
+		t.Error("a server for another language must report that it does not handle the file")
+	}
+}
+
+// TestDiagnoseReportsRunning: once a server is up, Diagnose says so.
+func TestDiagnoseReportsRunning(t *testing.T) {
+	dir := t.TempDir()
+	file := writeFile(t, dir, "main.fake", "a BUG\n")
+
+	service := newFakeService(t, dir, []string{".fake"})
+	service.Touch(context.Background(), file, true)
+
+	explanations := service.Diagnose(file)
+	if len(explanations) != 1 {
+		t.Fatalf("got %d explanations, want 1", len(explanations))
+	}
+	if !explanations[0].Running {
+		t.Errorf("a connected server must report Running: %+v", explanations[0])
+	}
+}

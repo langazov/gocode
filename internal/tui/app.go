@@ -108,6 +108,11 @@ type App struct {
 	// getting-started card asks whether any provider beyond the bundled free
 	// one is reachable.
 	providers []client.Provider
+	// promptWidthSet is the last value handed to the editor's SetWidth. The
+	// editor reports back a smaller number (it reserves a column for its
+	// prompt), so the value passed has to be remembered to tell a real change
+	// from that adjustment.
+	promptWidthSet int
 	// lsp is the latest language-server status, refreshed on the tick like
 	// mcpServers. nil until the first fetch lands.
 	lsp *client.LSPState
@@ -501,7 +506,11 @@ func (a *App) loadPermissions(sessionID string) tea.Cmd {
 // a.windowTitle in the returned tea.View, which bubbletea v2 applies as the
 // declarative replacement for v1's tea.SetWindowTitle command.
 func (a *App) Update(msg tea.Msg) tea.Cmd {
+	// Bracket the update: edit at full height so the editor never scrolls, then
+	// trim back to the content. See expandPromptForInput.
+	a.expandPromptForInput()
 	cmd := a.update(msg)
+	a.syncPromptSize()
 	a.syncWindowTitle()
 	return cmd
 }
@@ -510,7 +519,8 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
-		a.input.SetWidth(a.inputWidth())
+		// syncPromptSize (called from Update) resizes the editor; the width
+		// and height both depend on the new dimensions.
 		return nil
 	case tickMsg:
 		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd(), a.loadLSPCmd()}
@@ -1294,13 +1304,22 @@ func (a *App) providerName(providerID string) string {
 	return providerID
 }
 
-// inputWidth keeps the shared editor inside both the home prompt box and the
-// session prompt box: each box's own *declared* width (promptMaxWidth(a.width)-1
-// for home, chatWidth()-1 for the session — see their promptBox call sites)
-// minus promptBox's paddingLeft(2)+paddingRight(2) (the 1-column left border
-// renders outside the declared width, so it isn't subtracted again here).
+// inputWidth sizes the shared editor to the prompt box of the view it is
+// currently in: promptMaxWidth(a.width) on home, sessionPromptBoxWidth() in a
+// session, each minus promptBox's paddingLeft(2)+paddingRight(2) and the
+// border column.
+//
+// It used to take the *minimum* of the two, so one editor could sit in either
+// box. That left the text 20-odd columns short of the box's right edge in a
+// session on a wide terminal, because the home box is capped at 75 columns
+// while the session box is not. The view is known here, so it sizes for the
+// box it is actually in; syncPromptSize re-runs this when the view changes.
 func (a *App) inputWidth() int {
-	w := min(promptMaxWidth(a.width)-5, a.chatWidth()-5)
+	box := promptMaxWidth(a.width)
+	if a.view == viewChat {
+		box = a.sessionPromptBoxWidth()
+	}
+	w := box - 4
 	if w < 20 {
 		w = 20
 	}

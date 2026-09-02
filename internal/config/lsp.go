@@ -1,6 +1,9 @@
 package config
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // LSPServer is one entry in the `lsp` config section, porting
 // ConfigV2.LSP.Server in packages/core/src/config/lsp.ts.
@@ -45,6 +48,14 @@ func (l LSPConfig) MarshalJSON() ([]byte, error) {
 }
 
 func (l *LSPConfig) UnmarshalJSON(data []byte) error {
+	// `null` means "not configured", the same as absent. Without this it would
+	// decode as the boolean false and switch every server off, because
+	// unmarshalling null into a bool succeeds and leaves it false. The loader
+	// round-trips config through JSON, so a null can reach here.
+	if string(bytes.TrimSpace(data)) == "null" {
+		l.off, l.servers = false, nil
+		return nil
+	}
 	var flag bool
 	if err := json.Unmarshal(data, &flag); err == nil {
 		// `true` means "the defaults", which is also what absent means.

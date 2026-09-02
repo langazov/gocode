@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/anomalyco/opencode-go/internal/clix"
@@ -313,12 +312,33 @@ func runDebugLSPDiagnostics(a *clix.Args) error {
 
 	status := service.Status()
 	if len(status) == 0 {
-		fmt.Printf("no language server started for %s\n", file)
-		if available := service.Available(); len(available) > 0 {
-			fmt.Printf("installed servers: %s\n", strings.Join(available, ", "))
-		} else {
-			fmt.Println("no language servers are installed on PATH")
+		// Say why, not just that. The usual cause is the binary not being on
+		// the PATH this process inherited, which is otherwise invisible.
+		fmt.Printf("no language server started for %s\n\n", file)
+		var candidates []lsp.Explanation
+		for _, item := range service.Diagnose(target) {
+			if item.Handles {
+				candidates = append(candidates, item)
+			}
 		}
+		if len(candidates) == 0 {
+			fmt.Printf("no configured server handles %s\n", filepath.Ext(file))
+			return nil
+		}
+		fmt.Printf("servers that handle %s:\n", filepath.Ext(file))
+		for _, item := range candidates {
+			switch {
+			case !item.Installed:
+				fmt.Printf("  %-24s not found on PATH (looked for %q)\n", item.ServerID, item.Command)
+			case item.Broken:
+				fmt.Printf("  %-24s installed, but failed to start\n", item.ServerID)
+			case item.Root == "":
+				fmt.Printf("  %-24s installed, but no project root was found\n", item.ServerID)
+			default:
+				fmt.Printf("  %-24s installed, root %s\n", item.ServerID, item.Root)
+			}
+		}
+		fmt.Printf("\nPATH=%s\n", os.Getenv("PATH"))
 		return nil
 	}
 	for _, item := range status {

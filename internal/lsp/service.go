@@ -394,3 +394,63 @@ func containsPath(directory, file string) bool {
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
+
+// Explanation is why one server did or did not start for a file.
+type Explanation struct {
+	ServerID string
+	// Handles is false when the server does not claim this file's extension.
+	Handles bool
+	// Installed is false when the command is not on PATH — the most common
+	// reason nothing starts, and the one that is otherwise invisible.
+	Installed bool
+	// Command is the argv, so a PATH problem names the binary being looked for.
+	Command string
+	// Root is where it would run, empty when a strict server found no marker.
+	Root string
+	// Running is true when a client is connected for this server and root.
+	Running bool
+	// Broken is true when a start was attempted and failed.
+	Broken bool
+}
+
+// Diagnose explains, for one file, what each server would do. It answers the
+// question the sidebar cannot: not "is a server running" but "why isn't one".
+//
+// Nothing here starts a server; it is pure inspection.
+func (s *Service) Diagnose(file string) []Explanation {
+	if s == nil || !s.enabled {
+		return nil
+	}
+	file = normalizePath(file)
+
+	s.mu.Lock()
+	running := make(map[string]bool, len(s.clients))
+	for id := range s.clients {
+		running[id] = true
+	}
+	broken := make(map[string]bool, len(s.broken))
+	for id := range s.broken {
+		broken[id] = true
+	}
+	s.mu.Unlock()
+
+	out := make([]Explanation, 0, len(s.servers))
+	for _, server := range s.servers {
+		explanation := Explanation{
+			ServerID:  server.ID,
+			Handles:   server.Handles(file),
+			Installed: server.Available(),
+		}
+		if len(server.Command) > 0 {
+			explanation.Command = strings.Join(server.Command, " ")
+		}
+		if root, ok := server.Root(file, s.directory); ok {
+			explanation.Root = root
+			explanation.Running = running[key(root, server.ID)]
+			explanation.Broken = broken[key(root, server.ID)]
+		}
+		out = append(out, explanation)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ServerID < out[j].ServerID })
+	return out
+}

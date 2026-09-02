@@ -59,10 +59,53 @@ func (a *App) chatWidth() int {
 
 func (a *App) viewportHeight() int {
 	h := a.height - a.input.Height() - 6
+	// A permission banner occupies rows the fixed budget above does not
+	// account for. Without this the column overflows and frame()'s MaxHeight
+	// crops from the bottom — taking the banner's own buttons with it, which
+	// is the one part of it the user has to reach.
+	if banner := a.permissionBannerHeight(); banner > 0 {
+		// The banner replaces the single blank row its slot always occupied.
+		h -= banner - 1
+	}
 	if h < 3 {
 		h = 3
 	}
 	return h
+}
+
+// permissionBannerHeight is the rendered height of the permission banner, or
+// zero when none is showing.
+func (a *App) permissionBannerHeight() int {
+	banner := a.permissionBanner()
+	if banner == "" {
+		return 0
+	}
+	return strings.Count(banner, "\n") + 1
+}
+
+// permissionMaxHeight caps the collapsed permission prompt, porting
+// `maxHeight: 15` on the non-expanded branch of permission.tsx's Prompt.
+//
+// The cap is what keeps the buttons reachable: in the original the body sits
+// in a flexGrow box while the option bar is flexShrink={0}, so a long body is
+// squeezed and the bar always survives. This port has no flexbox, so the body
+// is truncated to the same effect.
+const permissionMaxHeight = 15
+
+// permissionBudget is how many rows the banner may occupy: the maxHeight cap,
+// or less when the terminal cannot spare that much.
+//
+// maxHeight is a maximum, not a fixed height — in the original the flex
+// container still shrinks below it when the column is short, which is what
+// keeps the option bar on screen in a small terminal. Capping at a flat 15
+// reintroduced the bug at 14 rows.
+func (a *App) permissionBudget() int {
+	budget := permissionMaxHeight
+	// The prompt box and its hint row still have to fit beneath.
+	if available := a.height - a.input.Height() - 5; available < budget {
+		budget = available
+	}
+	return budget
 }
 
 // contentWidth is the message column width. TS's Session route computes one
@@ -415,6 +458,18 @@ func (a *App) permissionBanner() string {
 	icon, title := permissionTitle(request)
 	line2 := "  " + a.styles().Muted.Render(icon) + " " + a.styles().Text.Render(title)
 	body := a.permissionBody(request)
+
+	// Cap the panel so the option bar below it stays on screen, porting
+	// maxHeight: 15. The bar's own height comes out of the budget first
+	// (flexShrink={0}), then the panel's padding and its two header rows,
+	// which are flexShrink={0} in the original too; whatever is left is what
+	// the body may occupy.
+	barHeight := strings.Count(bar, "\n") + 1 + 2                                 // + paddingTop/paddingBottom
+	const panelChrome = 2                                                         // paddingTop + paddingBottom
+	const headerRows = 2                                                          // "△ Permission required" + the title line
+	bodyBudget := a.permissionBudget() - barHeight - panelChrome - headerRows - 1 // -1 for the blank separator
+	body = clampPermissionBody(body, bodyBudget)
+
 	content := []string{header, line2}
 	if body != "" {
 		content = append(content, "", body)
@@ -430,6 +485,31 @@ func (a *App) permissionBanner() string {
 		PaddingRight(3).
 		Width(borderBoxWidth(a.contentWidth() - 2))
 	return style.Render(strings.Join(content, "\n")) + "\n" + barStyle.Render(bar)
+}
+
+// clampPermissionBody truncates a body to budget rows, replacing the last one
+// with a count of what was dropped.
+//
+// The original scrolls the body instead (a <scrollbox> for diffs) and offers a
+// fullscreen toggle to see it whole; neither exists here, so the count is what
+// tells the reader the text continues rather than ending where it was cut.
+func clampPermissionBody(body string, budget int) string {
+	if body == "" {
+		return ""
+	}
+	if budget < 1 {
+		// No room for any body at all: the header and the buttons are what
+		// matter, and dropping the body is better than losing them.
+		return ""
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= budget {
+		return body
+	}
+	kept := lines[:budget-1]
+	hidden := len(lines) - len(kept)
+	kept = append(kept, fmt.Sprintf("… %d more lines", hidden))
+	return strings.Join(kept, "\n")
 }
 
 // permissionTitle derives the icon and title for a permission request,
@@ -638,6 +718,12 @@ func (a *App) sidebarView() string {
 		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("Loading..."))
 	case !a.lsp.Enabled:
 		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("LSPs are disabled"))
+	case len(a.lsp.Servers) == 0 && len(a.lsp.Available) == 0:
+		// A deliberate addition to TS's two states. TS says "will activate as
+		// files are read" whether or not any server could ever start, so a
+		// missing binary — usually a PATH the process did not inherit — is
+		// invisible and looks like the feature is broken.
+		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("No language servers found on PATH"))
 	case len(a.lsp.Servers) == 0:
 		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("LSPs will activate as files are read"))
 	default:
