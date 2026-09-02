@@ -17,7 +17,7 @@ WASM_DIR  := build/wasm
 WASM_OUT  := $(WASM_DIR)/app.wasm
 GO_WASM_EXEC := $(shell $(GO) env GOROOT)/misc/wasm/wasm_exec.js
 
-.PHONY: help build release install test cover fmt vet lint wasm wasm-run clean
+.PHONY: help build release run install test cover fmt fmt-check vet lint check wasm wasm-run clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -48,10 +48,18 @@ cover: ## Run tests with coverage report
 fmt: ## Format code
 	$(GO) fmt ./...
 
+fmt-check: ## Fail if any file is not gofmt-clean (what CI runs)
+	@unformatted=$$(gofmt -l .); \
+	if [ -n "$$unformatted" ]; then \
+		echo "not gofmt-clean:"; echo "$$unformatted"; exit 1; \
+	fi
+
 vet: ## Run go vet
 	$(GO) vet ./...
 
 lint: vet ## Run vet (alias for static checks)
+
+check: fmt-check vet test ## Everything CI runs: format check, vet, tests
 
 wasm: ## Build WebAssembly binary (GOOS=js GOARCH=wasm)
 	mkdir -p $(WASM_DIR)
