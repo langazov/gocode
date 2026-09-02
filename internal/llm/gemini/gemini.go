@@ -84,8 +84,14 @@ func (c *Client) baseURL() string {
 	return strings.TrimRight(c.BaseURL, "/")
 }
 
+type inlineData struct {
+	MimeType string `json:"mimeType"`
+	Data     string `json:"data"`
+}
+
 type part struct {
 	Text             string            `json:"text,omitempty"`
+	InlineData       *inlineData       `json:"inlineData,omitempty"`
 	Thought          bool              `json:"thought,omitempty"`
 	FunctionCall     *functionCallPart `json:"functionCall,omitempty"`
 	FunctionResponse *funcResponsePart `json:"functionResponse,omitempty"`
@@ -173,7 +179,19 @@ func convertMessage(message llm.Message) []content {
 	case llm.RoleSystem:
 		return nil
 	case llm.RoleUser:
-		return []content{{Role: "user", Parts: []part{{Text: joinText(message)}}}}
+		parts := []part{}
+		if text := joinText(message); text != "" {
+			parts = append(parts, part{Text: text})
+		}
+		for _, p := range message.Content {
+			if p.Type == llm.PartImage {
+				parts = append(parts, part{InlineData: &inlineData{MimeType: p.Mime, Data: p.Data}})
+			}
+		}
+		if len(parts) == 0 {
+			parts = append(parts, part{Text: ""})
+		}
+		return []content{{Role: "user", Parts: parts}}
 	case llm.RoleAssistant:
 		var parts []part
 		var text []string

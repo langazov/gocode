@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/anomalyco/opencode-go/internal/llm"
 )
@@ -31,6 +32,7 @@ func toLLMMessage(message StoredMessage, model ModelRef) ([]llm.Message, error) 
 			return nil, fmt.Errorf("session: decode user message: %w", err)
 		}
 		parts := []llm.ContentPart{{Type: llm.PartText, Text: user.Text}}
+		parts = append(parts, attachmentParts(user.Files)...)
 		return []llm.Message{{ID: message.ID, Role: llm.RoleUser, Content: parts}}, nil
 	case TypeSynthetic:
 		var synthetic struct {
@@ -131,4 +133,49 @@ func toolResultPart(item AssistantContent) (string, bool) {
 		return item.State.Error, true
 	}
 	return "", false
+}
+
+// attachmentParts lowers a user message's file attachments into image parts.
+//
+// Only data: URIs are carried: the attachment's bytes have to be in the
+// request, and a path or http URL would need fetching, which the model cannot
+// do and this port does not do for it. A file: attachment recorded by another
+// client is skipped rather than sent as a dead reference.
+//
+// Before this, Prompt.Files was stored on the message and rendered as pills in
+// the interface but never reached the model — an attached image was invisible
+// to it.
+func attachmentParts(files []FileAttachment) []llm.ContentPart {
+	var parts []llm.ContentPart
+	for _, file := range files {
+		mime, data, ok := decodeDataURI(file.URI)
+		if !ok {
+			continue
+		}
+		if file.Mime != "" {
+			mime = file.Mime
+		}
+		parts = append(parts, llm.ContentPart{Type: llm.PartImage, Mime: mime, Data: data})
+	}
+	return parts
+}
+
+// decodeDataURI splits "data:<mime>;base64,<data>".
+func decodeDataURI(uri string) (mime, data string, ok bool) {
+	const prefix = "data:"
+	if !strings.HasPrefix(uri, prefix) {
+		return "", "", false
+	}
+	rest := uri[len(prefix):]
+	head, payload, found := strings.Cut(rest, ",")
+	if !found {
+		return "", "", false
+	}
+	mime = strings.TrimSuffix(head, ";base64")
+	if mime == head {
+		// Not base64-encoded; the providers all want base64, so a plain data
+		// URI is not something this can forward.
+		return "", "", false
+	}
+	return mime, payload, true
 }

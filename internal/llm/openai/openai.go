@@ -91,12 +91,27 @@ func (c *Client) endpoint(model string) string {
 	return c.Options.URL(base, model, base+"/chat/completions")
 }
 
+// chatMessage's Content is `any` because the Chat Completions API accepts
+// either a plain string or an array of typed parts, and only the array form can
+// carry an image. Plain text still marshals as a string so requests without
+// attachments are byte-identical to what they were.
 type chatMessage struct {
 	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
+	Content    any        `json:"content,omitempty"`
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
 	Name       string     `json:"name,omitempty"`
+}
+
+// contentPart is one element of the array form.
+type contentPart struct {
+	Type     string        `json:"type"`
+	Text     string        `json:"text,omitempty"`
+	ImageURL *contentImage `json:"image_url,omitempty"`
+}
+
+type contentImage struct {
+	URL string `json:"url"`
 }
 
 type toolCall struct {
@@ -189,7 +204,7 @@ func convertMessage(message llm.Message) ([]chatMessage, error) {
 	case llm.RoleSystem:
 		return []chatMessage{{Role: "system", Content: joinText(message)}}, nil
 	case llm.RoleUser:
-		return []chatMessage{{Role: "user", Content: joinText(message)}}, nil
+		return []chatMessage{{Role: "user", Content: userContent(message)}}, nil
 	case llm.RoleAssistant:
 		msg := chatMessage{Role: "assistant"}
 		var text []string
@@ -230,6 +245,36 @@ func convertMessage(message llm.Message) ([]chatMessage, error) {
 		return out, nil
 	}
 	return nil, nil
+}
+
+// userContent returns a plain string when the message is text only, and the
+// typed-parts array when it carries an image.
+func userContent(message llm.Message) any {
+	hasImage := false
+	for _, part := range message.Content {
+		if part.Type == llm.PartImage {
+			hasImage = true
+			break
+		}
+	}
+	if !hasImage {
+		return joinText(message)
+	}
+	parts := make([]contentPart, 0, len(message.Content))
+	for _, part := range message.Content {
+		switch part.Type {
+		case llm.PartText:
+			if part.Text != "" {
+				parts = append(parts, contentPart{Type: "text", Text: part.Text})
+			}
+		case llm.PartImage:
+			parts = append(parts, contentPart{
+				Type:     "image_url",
+				ImageURL: &contentImage{URL: "data:" + part.Mime + ";base64," + part.Data},
+			})
+		}
+	}
+	return parts
 }
 
 func joinText(message llm.Message) string {

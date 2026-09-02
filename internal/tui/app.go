@@ -108,6 +108,12 @@ type App struct {
 	// getting-started card asks whether any provider beyond the bundled free
 	// one is reachable.
 	providers []client.Provider
+	// pastes holds the collapsed large pastes currently standing in the
+	// prompt as placeholders, restored on submit. See paste.go.
+	pastes []pastedText
+	// attachments holds files pasted by path, standing in the prompt as
+	// "[Image 1]" placeholders and sent with the message. See paste_attach.go.
+	attachments []pastedAttachment
 	// promptWidthSet is the last value handed to the editor's SetWidth. The
 	// editor reports back a smaller number (it reserves a column for its
 	// prompt), so the value passed has to be remembered to tell a real change
@@ -724,6 +730,10 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			strings.Contains(msg.text, "failed:") ||
 			strings.Contains(msg.text, "error")
 		return a.showToast(msg.text, isError)
+	case tea.PasteMsg:
+		// Bracketed paste. Without this case the message falls through the
+		// switch and the pasted text is silently dropped.
+		return a.handlePaste(msg)
 	case tea.KeyMsg:
 		return a.handleKey(msg)
 	case tea.MouseMsg:
@@ -914,20 +924,30 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// messages_last (`end` likewise stays with the input).
 		a.scrollOffset = 0
 		return nil
+	case "ctrl+v":
+		// prompt.paste. Most terminals turn their paste shortcut into a
+		// bracketed paste, which arrives as tea.PasteMsg and never reaches
+		// here; this is for the ones that send the key through instead.
+		return a.pasteFromClipboard()
 	case "enter":
 		text := strings.TrimSpace(a.input.Value())
 		if text == "" {
 			return nil
 		}
 		a.input.Reset()
+		// Restore any collapsed pastes before the text goes anywhere: what is
+		// sent is the real content, not the "[Pasted ~N lines]" stand-in.
+		pastes := a.takePastes()
+		files := a.takeAttachments()
 		if strings.HasPrefix(text, "/") {
 			return a.runSlashCommand(strings.TrimPrefix(text, "/"))
 		}
+		text = expandPastes(text, pastes)
 		a.history.Append(text)
 		if a.view == viewHome {
 			return a.createAndPrompt(text)
 		}
-		return a.sendPrompt(a.active.ID, text)
+		return a.sendPromptWith(a.active.ID, text, files)
 	}
 
 	var cmd tea.Cmd
@@ -1134,9 +1154,14 @@ func (a *App) createAndPrompt(text string) tea.Cmd {
 }
 
 func (a *App) sendPrompt(sessionID, text string) tea.Cmd {
+	return a.sendPromptWith(sessionID, text, nil)
+}
+
+// sendPromptWith sends a message that may carry pasted attachments.
+func (a *App) sendPromptWith(sessionID, text string, files []client.FileAttachment) tea.Cmd {
 	c := a.client
 	return func() tea.Msg {
-		if _, err := c.Prompt(a.ctx, sessionID, text); err != nil {
+		if _, err := c.PromptWith(a.ctx, sessionID, text, files); err != nil {
 			return statusMsg{text: "prompt failed: " + err.Error()}
 		}
 		return promptSentMsg{sessionID: sessionID, text: text}

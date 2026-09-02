@@ -161,7 +161,14 @@ func (s *Service) List(ctx context.Context) ([]Info, error) {
 
 // Prompt admits one durable prompt and wakes execution, returning the prompt
 // message ID.
+// Prompt admits a text-only message. PromptWith carries attachments.
 func (s *Service) Prompt(ctx context.Context, sessionID, text string, delivery Delivery) (string, error) {
+	return s.PromptWith(ctx, sessionID, Prompt{Text: text}, delivery)
+}
+
+// PromptWith admits a message that may carry file attachments.
+func (s *Service) PromptWith(ctx context.Context, sessionID string, prompt Prompt, delivery Delivery) (string, error) {
+	text := prompt.Text
 	exists, err := s.exists(ctx, sessionID)
 	if err != nil {
 		return "", err
@@ -179,7 +186,7 @@ func (s *Service) Prompt(ctx context.Context, sessionID, text string, delivery D
 	if _, err := Admit(ctx, s.Bus, s.DB, AdmitInput{
 		ID:        messageID,
 		SessionID: sessionID,
-		Prompt:    Prompt{Text: text},
+		Prompt:    prompt,
 		Delivery:  delivery,
 	}); err != nil {
 		return "", err

@@ -16,6 +16,11 @@ const (
 	PartReasoning  = "reasoning"
 	PartToolCall   = "tool-call"
 	PartToolResult = "tool-result"
+	// PartImage carries an image or PDF attached to a user message. Every
+	// provider spells it differently — Anthropic an image block, OpenAI an
+	// image_url with a data URI, Gemini inlineData — so it is kept as mime
+	// plus base64 here and lowered per client.
+	PartImage = "image"
 )
 
 type ContentPart struct {
@@ -26,6 +31,10 @@ type ContentPart struct {
 	Input      map[string]any
 	Result     string
 	IsError    bool
+	// Mime and Data carry a PartImage: the media type and the base64-encoded
+	// bytes, without a data: prefix.
+	Mime string
+	Data string
 }
 
 type Message struct {

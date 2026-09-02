@@ -268,6 +268,8 @@ type createSessionRequest struct {
 type promptRequest struct {
 	Text     string `json:"text"`
 	Delivery string `json:"delivery"`
+	// Files carries attachments (a pasted image, say) as data: URIs.
+	Files []session.FileAttachment `json:"files,omitempty"`
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
@@ -322,11 +324,15 @@ func (s *Server) promptSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if body.Text == "" {
+	// A message carrying only an attachment is legitimate; text is required
+	// only when there is nothing else to send.
+	if body.Text == "" && len(body.Files) == 0 {
 		writeError(w, http.StatusBadRequest, "text is required")
 		return
 	}
-	messageID, err := s.Session.Prompt(r.Context(), r.PathValue("sessionID"), body.Text, session.Delivery(body.Delivery))
+	messageID, err := s.Session.PromptWith(r.Context(), r.PathValue("sessionID"),
+		session.Prompt{Text: body.Text, Files: body.Files},
+		session.Delivery(body.Delivery))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return

@@ -128,10 +128,19 @@ func (c *Client) CreateSession(ctx context.Context, input CreateInput) (*Session
 }
 
 func (c *Client) Prompt(ctx context.Context, sessionID, text string) (string, error) {
+	return c.PromptWith(ctx, sessionID, text, nil)
+}
+
+// PromptWith sends a message that may carry attachments, each a data: URI.
+func (c *Client) PromptWith(ctx context.Context, sessionID, text string, files []FileAttachment) (string, error) {
 	var out struct {
 		MessageID string `json:"messageID"`
 	}
-	err := c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/prompt", map[string]string{"text": text}, &out)
+	body := map[string]any{"text": text}
+	if len(files) > 0 {
+		body["files"] = files
+	}
+	err := c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/prompt", body, &out)
 	return out.MessageID, err
 }
 
@@ -283,6 +292,10 @@ type UserData struct {
 // FileAttachment mirrors internal/session.FileAttachment (the subset the
 // TUI renders as a pill: a directory-vs-file badge plus the name).
 type FileAttachment struct {
+	// URI is a data: URI when the interface is sending an attachment. It is
+	// absent on attachments read back from a message, which only carry enough
+	// to render the pill.
+	URI  string `json:"uri,omitempty"`
 	Mime string `json:"mime"`
 	Name string `json:"name,omitempty"`
 }

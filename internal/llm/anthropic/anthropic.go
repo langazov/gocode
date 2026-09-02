@@ -43,8 +43,16 @@ func New(apiKey string) *Client {
 	}
 }
 
+// Source is the base64 payload of an image or document block.
+type Source struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
 type ContentBlock struct {
 	Type      string          `json:"type"`
+	Source    *Source         `json:"source,omitempty"`
 	Text      string          `json:"text,omitempty"`
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
