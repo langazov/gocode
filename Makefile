@@ -3,19 +3,34 @@ MAIN    := ./cmd/opencode
 GO      ?= go
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X main.version=$(VERSION)
+# The version and channel live in internal/installation, not package main.
+# `-X main.version` named a symbol that does not exist, so every build — the
+# release target included — reported "local".
+VERSION_PKG := github.com/anomalyco/opencode-go/internal/installation
+LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION)
+RELEASE_DIR := dist
+RELEASE_LDFLAGS := $(LDFLAGS) -X $(VERSION_PKG).Channel=release
+
+CGO_ENABLED ?= 0
 
 WASM_DIR  := build/wasm
 WASM_OUT  := $(WASM_DIR)/app.wasm
 GO_WASM_EXEC := $(shell $(GO) env GOROOT)/misc/wasm/wasm_exec.js
 
-.PHONY: help build run install test cover fmt vet lint wasm wasm-run clean
+.PHONY: help build release install test cover fmt vet lint wasm wasm-run clean
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
 build: ## Build the opencode binary
 	$(GO) build -ldflags '$(LDFLAGS)' -o $(BINARY) $(MAIN)
+
+release: vet test ## Build optimized release binary into dist/
+	$(GO) version
+	CGO_ENABLED=$(CGO_ENABLED) $(GO) build -trimpath -buildmode=exe \
+		-ldflags '$(RELEASE_LDFLAGS)' \
+		-o $(RELEASE_DIR)/$(BINARY) $(MAIN)
+	@echo "Release binary: $(RELEASE_DIR)/$(BINARY)"
 
 run: ## Build and run opencode
 	$(GO) run $(MAIN)
@@ -62,4 +77,4 @@ wasm-run: wasm ## Build for WebAssembly and serve it in the browser
 	@$(GO) run tools/wasmserve.go $(WASM_DIR)
 
 clean: ## Remove build artifacts
-	rm -rf $(BINARY) coverage.out $(WASM_DIR)
+	rm -rf $(BINARY) coverage.out $(RELEASE_DIR) $(WASM_DIR)

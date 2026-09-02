@@ -175,6 +175,11 @@ func TestCorruptCacheIsDroppedAndRefetched(t *testing.T) {
 	}
 }
 
+// TestDisableModelsFetch asserts the embedded snapshot serves the catalog when
+// fetching is switched off. Disabling the fetch means "do not go to the
+// network", not "have no models" — before the snapshot existed this path
+// returned an empty catalog, leaving a fresh offline install with no model
+// list at all.
 func TestDisableModelsFetch(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("OPENCODE_MODELS_PATH", "")
@@ -184,8 +189,43 @@ func TestDisableModelsFetch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(catalog) != 0 {
-		t.Fatalf("expected empty catalog when fetch disabled, got %d", len(catalog))
+	if _, ok := catalog["anthropic"]; !ok {
+		t.Fatalf("expected the embedded snapshot when fetch disabled, got %d providers", len(catalog))
+	}
+}
+
+// TestUnreachableSourceFallsBackToSnapshot covers the other offline path: the
+// fetch is allowed but the source is unreachable.
+func TestUnreachableSourceFallsBackToSnapshot(t *testing.T) {
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("OPENCODE_MODELS_PATH", "")
+	t.Setenv("OPENCODE_MODELS_URL", "http://127.0.0.1:1")
+	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "")
+	catalog, err := New().Get(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := catalog["anthropic"]
+	if !ok {
+		t.Fatalf("expected the embedded snapshot for an unreachable source, got %d providers", len(catalog))
+	}
+	if len(entry.Env) == 0 || len(entry.Models) == 0 {
+		t.Fatalf("snapshot entry is not usable: env=%v models=%d", entry.Env, len(entry.Models))
+	}
+}
+
+func TestSnapshotDecodes(t *testing.T) {
+	catalog, err := Snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) < 100 {
+		t.Fatalf("snapshot looks truncated: %d providers", len(catalog))
+	}
+	for _, id := range []string{"anthropic", "openai", "google", "amazon-bedrock", "github-copilot"} {
+		if _, ok := catalog[id]; !ok {
+			t.Errorf("snapshot is missing provider %q", id)
+		}
 	}
 }
 

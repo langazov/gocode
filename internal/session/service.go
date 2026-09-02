@@ -14,6 +14,7 @@ import (
 	"github.com/anomalyco/opencode-go/internal/event"
 	"github.com/anomalyco/opencode-go/internal/id"
 	"github.com/anomalyco/opencode-go/internal/identifier"
+	"github.com/anomalyco/opencode-go/internal/permission"
 )
 
 // Service is the application seam over the durable session core: creating
@@ -38,11 +39,23 @@ func NewService(database *db.DB, bus *event.Bus) *Service {
 type CreateInput struct {
 	Directory string
 	Title     string
+	// ParentID links this session to the one that spawned it. Set for
+	// subagent sessions created by the task tool; Fork sets it directly for
+	// user-facing conversation forks.
+	ParentID string
+	// Agent pins the session to a specific agent, so the runner resolves that
+	// agent's model, system prompt, and step budget for every turn.
+	Agent string
+	// Permission overrides the agent's ruleset for this session only. Used by
+	// the task tool to hand a subagent a ruleset derived from its parent's.
+	Permission permission.Ruleset
 }
 
 type Info struct {
 	ID          string    `json:"id"`
 	ProjectID   string    `json:"projectID"`
+	ParentID    string    `json:"parentID,omitempty"`
+	Agent       string    `json:"agent,omitempty"`
 	Title       string    `json:"title"`
 	Directory   string    `json:"directory"`
 	Version     string    `json:"version"`
@@ -70,23 +83,40 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Info, error) {
 	now := time.Now().UnixMilli()
 	_, err = s.DB.Exec(ctx, `
 		INSERT INTO session
-			(id, project_id, slug, directory, title, version, cost,
+			(id, project_id, parent_id, agent, slug, directory, title, version, cost,
 			 tokens_input, tokens_output, tokens_reasoning, tokens_cache_read, tokens_cache_write,
 			 time_created, time_updated)
-		VALUES (?, ?, ?, ?, ?, '1', 0, 0, 0, 0, 0, 0, ?, ?)`,
-		sessionID, projectID, title, directory, title, now, now)
+		VALUES (?, ?, ?, ?, ?, ?, ?, '1', 0, 0, 0, 0, 0, 0, ?, ?)`,
+		sessionID, projectID, nullableString(input.ParentID), nullableString(input.Agent),
+		title, directory, title, now, now)
 	if err != nil {
 		return Info{}, err
+	}
+	if len(input.Permission) > 0 {
+		if err := s.setPermission(ctx, sessionID, input.Permission); err != nil {
+			return Info{}, err
+		}
 	}
 	return Info{
 		ID:          sessionID,
 		ProjectID:   projectID,
+		ParentID:    input.ParentID,
+		Agent:       input.Agent,
 		Title:       title,
 		Directory:   directory,
 		Version:     "1",
 		TimeCreated: now,
 		TimeUpdated: now,
 	}, nil
+}
+
+// nullableString stores an empty string as SQL NULL, keeping parent_id and
+// agent nullable as the schema declares them.
+func nullableString(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
 
 // Get returns a session by ID.
@@ -131,7 +161,14 @@ func (s *Service) List(ctx context.Context) ([]Info, error) {
 
 // Prompt admits one durable prompt and wakes execution, returning the prompt
 // message ID.
+// Prompt admits a text-only message. PromptWith carries attachments.
 func (s *Service) Prompt(ctx context.Context, sessionID, text string, delivery Delivery) (string, error) {
+	return s.PromptWith(ctx, sessionID, Prompt{Text: text}, delivery)
+}
+
+// PromptWith admits a message that may carry file attachments.
+func (s *Service) PromptWith(ctx context.Context, sessionID string, prompt Prompt, delivery Delivery) (string, error) {
+	text := prompt.Text
 	exists, err := s.exists(ctx, sessionID)
 	if err != nil {
 		return "", err
@@ -149,7 +186,7 @@ func (s *Service) Prompt(ctx context.Context, sessionID, text string, delivery D
 	if _, err := Admit(ctx, s.Bus, s.DB, AdmitInput{
 		ID:        messageID,
 		SessionID: sessionID,
-		Prompt:    Prompt{Text: text},
+		Prompt:    prompt,
 		Delivery:  delivery,
 	}); err != nil {
 		return "", err
@@ -443,4 +480,62 @@ func parseModelColumn(model sql.NullString) *ModelRef {
 		return nil
 	}
 	return &ref
+}
+
+// setPermission stores a session-scoped ruleset, overriding the agent's own
+// for this session. Used for subagent sessions, whose ruleset is derived from
+// the parent's grants intersected with the subagent's own.
+func (s *Service) setPermission(ctx context.Context, sessionID string, ruleset permission.Ruleset) error {
+	encoded, err := json.Marshal(ruleset)
+	if err != nil {
+		return err
+	}
+	_, err = s.DB.Exec(ctx,
+		`UPDATE session SET permission = ?, time_updated = ? WHERE id = ?`,
+		string(encoded), time.Now().UnixMilli(), sessionID)
+	return err
+}
+
+// Permission returns the session-scoped ruleset, or nil when the session
+// inherits its agent's ruleset unchanged.
+func (s *Service) Permission(ctx context.Context, sessionID string) (permission.Ruleset, error) {
+	var raw sql.NullString
+	err := s.DB.QueryRow(ctx, `SELECT permission FROM session WHERE id = ?`, sessionID).Scan(&raw)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if !raw.Valid || raw.String == "" {
+		return nil, nil
+	}
+	var ruleset permission.Ruleset
+	if err := json.Unmarshal([]byte(raw.String), &ruleset); err != nil {
+		return nil, fmt.Errorf("session: decode permission for %s: %w", sessionID, err)
+	}
+	return ruleset, nil
+}
+
+// Parents walks the parent chain upward from sessionID, nearest first. The
+// session itself is not included. Used for the subagent depth limit.
+func (s *Service) Parents(ctx context.Context, sessionID string) ([]string, error) {
+	var out []string
+	current := sessionID
+	for range 64 { // guard against a cycle in corrupted data
+		var parent sql.NullString
+		err := s.DB.QueryRow(ctx, `SELECT parent_id FROM session WHERE id = ?`, current).Scan(&parent)
+		if errors.Is(err, sql.ErrNoRows) {
+			return out, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		if !parent.Valid || parent.String == "" {
+			return out, nil
+		}
+		out = append(out, parent.String)
+		current = parent.String
+	}
+	return out, nil
 }

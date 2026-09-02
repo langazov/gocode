@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -13,6 +14,7 @@ import (
 	"github.com/anomalyco/opencode-go/internal/db"
 	"github.com/anomalyco/opencode-go/internal/global"
 	"github.com/anomalyco/opencode-go/internal/installation"
+	"github.com/anomalyco/opencode-go/internal/lsp"
 )
 
 // processStart is used by "debug startup" to print elapsed process time,
@@ -265,7 +267,7 @@ func debugLSPCommand() *clix.Command {
 		Sub: []*clix.Command{
 			{Name: "diagnostics", Describe: "get diagnostics for a file",
 				Positionals: []clix.Positional{{Name: "file", Required: true}},
-				Run:         func(a *clix.Args) error { return notImplemented("opencode debug lsp diagnostics") }},
+				Run:         runDebugLSPDiagnostics},
 			{Name: "symbols", Describe: "search workspace symbols",
 				Positionals: []clix.Positional{{Name: "query", Required: true}},
 				Run:         func(a *clix.Args) error { return notImplemented("opencode debug lsp symbols") }},
@@ -274,4 +276,83 @@ func debugLSPCommand() *clix.Command {
 				Run:         func(a *clix.Args) error { return notImplemented("opencode debug lsp document-symbols") }},
 		},
 	}
+}
+
+// runDebugLSPDiagnostics starts the language servers for one file and prints
+// what they report — the CLI view of what the edit and write tools append to
+// their output.
+func runDebugLSPDiagnostics(a *clix.Args) error {
+	file := a.PositionalOr("file", "")
+	if file == "" {
+		return &usageError{msg: "a file is required"}
+	}
+	workdir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	service := lsp.New(workdir, cfg)
+	defer service.Shutdown()
+	if !service.Enabled() {
+		fmt.Println("LSP is disabled by config")
+		return nil
+	}
+
+	target := file
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(workdir, target)
+	}
+
+	ctx := context.Background()
+	service.Touch(ctx, target, true)
+
+	status := service.Status()
+	if len(status) == 0 {
+		// Say why, not just that. The usual cause is the binary not being on
+		// the PATH this process inherited, which is otherwise invisible.
+		fmt.Printf("no language server started for %s\n\n", file)
+		var candidates []lsp.Explanation
+		for _, item := range service.Diagnose(target) {
+			if item.Handles {
+				candidates = append(candidates, item)
+			}
+		}
+		if len(candidates) == 0 {
+			fmt.Printf("no configured server handles %s\n", filepath.Ext(file))
+			return nil
+		}
+		fmt.Printf("servers that handle %s:\n", filepath.Ext(file))
+		for _, item := range candidates {
+			switch {
+			case !item.Installed:
+				fmt.Printf("  %-24s not found on PATH (looked for %q)\n", item.ServerID, item.Command)
+			case item.Broken:
+				fmt.Printf("  %-24s installed, but failed to start\n", item.ServerID)
+			case item.Root == "":
+				fmt.Printf("  %-24s installed, but no project root was found\n", item.ServerID)
+			default:
+				fmt.Printf("  %-24s installed, root %s\n", item.ServerID, item.Root)
+			}
+		}
+		fmt.Printf("\nPATH=%s\n", os.Getenv("PATH"))
+		return nil
+	}
+	for _, item := range status {
+		fmt.Printf("%s (%s) %s\n", item.Name, item.Root, item.Status)
+	}
+
+	diagnostics := service.DiagnosticsFor(target)
+	if len(diagnostics) == 0 {
+		fmt.Printf("\nno diagnostics for %s\n", file)
+		return nil
+	}
+	fmt.Println()
+	for _, item := range diagnostics {
+		fmt.Println(item.Pretty())
+	}
+	return nil
 }

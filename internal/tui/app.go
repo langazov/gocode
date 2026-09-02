@@ -8,16 +8,19 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/anomalyco/opencode-go/internal/command"
 	"github.com/anomalyco/opencode-go/internal/global"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/anomalyco/opencode-go/internal/tui/theme"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
+	"charm.land/lipgloss/v2"
 )
 
 const (
@@ -32,23 +35,39 @@ type App struct {
 	theme  theme.Theme
 	ctx    context.Context
 
+	// models holds the recent/favorite lists behind the model dialog's
+	// sections, shared with the TypeScript client via <state>/model.json.
+	models *modelStore
+
 	view      int
 	width     int
 	height    int
 	quitting  bool
 	statusMsg string
 
-	sessions     []client.Session
-	active       *client.Session
-	timeline     []client.Message
-	streaming    map[string]*strings.Builder // assistantMessageID -> live text
+	sessions []client.Session
+	active   *client.Session
+	timeline []client.Message
+	// streaming holds the ACTIVE session's live assistant text, projected out
+	// of the latest snapshot. It is never written from an event directly:
+	// with subagents running, a child's deltas must not land here.
+	streaming map[string]*strings.Builder // assistantMessageID -> live text
+	// agents is the latest aggregated snapshot: one node per session,
+	// including subagent sessions. See aggregator.go.
+	agents       Snapshot
+	dropped      int
 	busy         bool
 	input        textarea.Model
 	scrollOffset int // lines kept off the bottom when scrolled up
 
 	leaderArmed  bool
 	spinnerFrame int
-	toast        *toast
+	// spinning reports whether a spinnerTickMsg loop is in flight, so the
+	// several call sites that set busy can all call startSpinner without
+	// stacking duplicate loops. See startSpinner.
+	spinning bool
+	toast    *toast
+	linkHits []linkHit // clickable regions recorded by the last render, see link.go
 
 	overlay           *overlay
 	sidebar           bool
@@ -62,6 +81,23 @@ type App struct {
 	permissionChoice int // selected option: 0 once, 1 always, 2 reject
 	stats            *client.Stats
 
+	// interruptArmed ports the prompt's `store.interrupt` counter: the
+	// session.interrupt command is a two-press gesture, and the footer's hint
+	// row reads this to switch between "esc interrupt" and "esc again to
+	// interrupt". A press that is not followed up within
+	// interruptArmWindow decays back to 0 (setTimeout(..., 5000) upstream).
+	interruptArmed   int
+	interruptExpires time.Time
+
+	// contextLimits maps "provider/model" to the catalog's limit.context, the
+	// denominator behind the footer usage segment's percentage.
+	contextLimits map[string]int
+
+	// subagentSiblings holds the children of the open session's parent, which
+	// is what the subagent footer counts to render "(2 of 5)". Loaded when a
+	// session with a parent is opened.
+	subagentSiblings []client.Session
+
 	tip           string
 	mcpServers    []client.MCPServer
 	cwd           string
@@ -69,6 +105,41 @@ type App struct {
 	gitBranch     string
 	modelNames    map[string]string // "provider/model" -> display name
 	providerNames map[string]string // provider id -> display name
+	// providers is the raw catalog list, kept because the sidebar footer's
+	// getting-started card asks whether any provider beyond the bundled free
+	// one is reachable.
+	providers []client.Provider
+	// pastes holds the collapsed large pastes currently standing in the
+	// prompt as placeholders, restored on submit. See paste.go.
+	pastes []pastedText
+	// attachments holds files pasted by path, standing in the prompt as
+	// "[Image 1]" placeholders and sent with the message. See paste_attach.go.
+	attachments []pastedAttachment
+	// promptWidthSet is the last value handed to the editor's SetWidth. The
+	// editor reports back a smaller number (it reserves a column for its
+	// prompt), so the value passed has to be remembered to tell a real change
+	// from that adjustment.
+	promptWidthSet int
+	// autocomplete is the inline "/" and "@" popup above the prompt.
+	autocomplete autocompleteState
+	// commands is the cached slash-command list, for completion and dispatch.
+	commands []client.Command
+	// lsp is the latest language-server status, refreshed on the tick like
+	// mcpServers. nil until the first fetch lands.
+	lsp *client.LSPState
+	// agentList is the cached agent list, so the agent dialog opens without a
+	// round trip. (Distinct from `agents`, the subagent aggregator snapshot.)
+	agentList []client.Agent
+	// catalogModels is the last-fetched model list, the port of TS's
+	// sync.data.provider: the dialogs render from it immediately instead of
+	// waiting on a request, and a refresh lands through catalogMsg.
+	catalogModels []client.Model
+	// modelCosts maps "provider/model" to the catalog's cost.input, the other
+	// half of that same question.
+	modelCosts map[string]float64
+	// dismissedGettingStarted is the in-memory stand-in for the original's
+	// `kv.get("dismissed_getting_started")`.
+	dismissedGettingStarted bool
 
 	// animationsEnabled and the fades port util/signal.ts's createFadeIn,
 	// applied to the prompt's agent/model meta segments (see modelMeta).
@@ -113,6 +184,39 @@ type App struct {
 	chatReasoningRows map[int]string
 	chatWindowPad     int
 	chatWindowStart   int
+	// chatColumnEnd is the screen column where the chat column stops and the
+	// docked sidebar begins, recorded by the same render that laid them out.
+	// A drag-selection is held inside whichever of the two it started in —
+	// see selectionColumnBounds.
+	chatColumnEnd int
+
+	// agents is the agent roster, cached so agent_cycle (tab) can step
+	// through it without a fetch.
+	agents2 []client.Agent
+	// tipsHidden is tips_toggle's state (<leader>h on the home screen).
+	tipsHidden bool
+
+	// messageCache memoizes each message's rendered block (see
+	// renderMessageCached); renderEpoch is the generation counter its keys
+	// carry, bumped for the inputs cheaper to invalidate wholesale than to
+	// track per message.
+	messageCache map[string]cachedRender
+	renderEpoch  uint64
+
+	// mdRenderer caches the glamour renderer built for the current
+	// theme+width (see markdown.go): constructing one loads chroma's lexer/
+	// style registries, too costly to redo on every streamed delta.
+	mdRenderer      *glamour.TermRenderer
+	mdRendererWidth int
+	mdRendererTheme string
+}
+
+// cachedRender is one memoized message block and the reasoning-header
+// offsets that go with it.
+type cachedRender struct {
+	signature uint64
+	block     string
+	refs      []reasoningHeaderRef
 }
 
 // placeholders mirrors the Home route's rotating prompt suggestions.
@@ -138,18 +242,18 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 	// the box tint instead and mute the placeholder like the original.
 	element := lipgloss.NewStyle().Background(resolved.BackgroundElement)
 	muted := lipgloss.NewStyle().Foreground(resolved.TextMuted)
-	focused, blurred := textarea.DefaultStyles()
-	focused.CursorLine = element
-	blurred.CursorLine = element
-	focused.Placeholder = muted
-	blurred.Placeholder = muted
-	input.FocusedStyle = focused
-	input.BlurredStyle = blurred
+	taStyles := textarea.DefaultStyles(resolved.Dark)
+	taStyles.Focused.CursorLine = element
+	taStyles.Blurred.CursorLine = element
+	taStyles.Focused.Placeholder = muted
+	taStyles.Blurred.Placeholder = muted
+	input.SetStyles(taStyles)
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
 	return &App{
 		ctx:               ctx,
 		client:            c,
+		models:            newModelStore(),
 		theme:             resolved,
 		view:              viewHome,
 		sidebar:           true, // the original shows the sidebar by default
@@ -162,6 +266,8 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 		animationsEnabled: true,
 		agentMetaFade:     newFadeAnim(false),
 		modelMetaFade:     newFadeAnim(false),
+		contextLimits:     map[string]int{},
+		modelCosts:        map[string]float64{},
 		history:           loadPromptHistory(filepath.Join(global.Resolve().State, promptHistoryFile)),
 		windowTitle:       "OpenCode",
 		thinkingMode:      "hide",
@@ -174,7 +280,8 @@ type tickMsg time.Time
 type leaderTimeoutMsg struct{}
 
 func (a *App) Init() tea.Cmd {
-	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.tick(), tea.SetWindowTitle(a.desiredWindowTitle())}
+	a.windowTitle = a.desiredWindowTitle()
+	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadCommandsCmd(), a.loadAgentsCmd(0), a.tick()}
 	if a.resumeSessionID != "" {
 		cmds = append(cmds, a.resumeSessionCmd(a.resumeSessionID))
 	}
@@ -212,39 +319,57 @@ func (a *App) syncWindowTitle() (string, bool) {
 	return title, true
 }
 
+// tick is now only a slow reconciliation safety net. Live updates arrive as
+// coalesced snapshots from the aggregator, so the old 2-second full reload is
+// no longer the refresh mechanism — it exists to recover from dropped events.
 func (a *App) tick() tea.Cmd {
-	return tea.Tick(2*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
+	return tea.Tick(10*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// handleEvent applies an SSE event to the model, reporting whether the
-// timeline should refresh.
-func (a *App) handleEvent(event client.Event) bool {
-	switch event.Type {
-	case "session.next.step.started":
-		a.busy = true
-	case "session.next.text.started", "session.next.text.delta":
-		messageID, _ := event.Data["assistantMessageID"].(string)
-		if messageID == "" {
-			return false
-		}
-		builder := a.streaming[messageID]
-		if builder == nil {
-			builder = &strings.Builder{}
-			a.streaming[messageID] = builder
-		}
-		delta, _ := event.Data["delta"].(string)
-		builder.WriteString(delta)
-	case "session.next.text.ended", "session.next.step.ended", "session.next.step.failed",
-		"session.next.tool.called", "session.next.tool.success", "session.next.tool.failed",
-		"session.next.compaction.ended", "session.next.prompted",
-		"todo.updated":
-		for key := range a.streaming {
-			delete(a.streaming, key)
-		}
+// applySnapshot folds one aggregated snapshot into the model, reporting
+// whether the active session's durable timeline needs a refetch.
+//
+// All per-event work happens on the aggregator goroutine (aggregator.go); this
+// runs on the main goroutine and is therefore deliberately cheap — a map
+// lookup and a pointer swap, regardless of how many agents are running.
+func (a *App) applySnapshot(snapshot Snapshot) bool {
+	a.agents = snapshot
+	a.dropped += snapshot.Dropped
+	if a.active == nil {
+		return false
+	}
+	node := snapshot.Sessions[a.active.ID]
+	if node == nil {
+		// Only subagent sessions reported activity this frame.
+		return false
+	}
+	a.streaming = node.Text
+	// node.Busy alone is not the status: the aggregator only learns a turn
+	// started once the runner publishes step.started, which it does lazily,
+	// when the model's first token arrives. See sessionBusy.
+	a.busy = node.Busy || sessionBusy(a.timeline)
+	if snapshot.Dirty[a.active.ID] {
 		a.scrollOffset = 0
 		return true
 	}
 	return false
+}
+
+// activeSubagents lists the child sessions that reported activity, so the UI
+// can show live subagent rows without a per-event refetch.
+func (a *App) activeSubagents() []*SessionNode {
+	if a.active == nil {
+		return nil
+	}
+	var out []*SessionNode
+	for id, node := range a.agents.Sessions {
+		if id == a.active.ID || !node.Busy {
+			continue
+		}
+		out = append(out, node)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 type eventMsg struct{ event client.Event }
@@ -261,6 +386,20 @@ type catalogMsg struct {
 	providers []client.Provider
 }
 type mcpMsg struct{ servers []client.MCPServer }
+
+// lspMsg carries the language-server status for the sidebar.
+type lspMsg struct{ state *client.LSPState }
+
+// commandsMsg carries the slash-command list.
+type commandsMsg struct{ commands []client.Command }
+
+// subagentSiblingsMsg carries the children of the open session's parent, the
+// list the subagent footer counts for its "(2 of 5)" position.
+type subagentSiblingsMsg struct {
+	parentID string
+	siblings []client.Session
+}
+
 type sessionOpenedMsg struct{ session *client.Session }
 type permissionsMsg struct{ pending []client.PermissionRequest }
 type promptSentMsg struct {
@@ -268,7 +407,13 @@ type promptSentMsg struct {
 	text      string
 }
 type sessionRefreshedMsg struct{ session *client.Session }
-type statusMsg struct{ text string }
+type statusMsg struct {
+	text string
+	// isErr marks a message as an error explicitly. Without it the toast
+	// variant is inferred from the wording, which misses messages that are
+	// errors without saying "failed".
+	isErr bool
+}
 
 // staticMsg turns a ready message into a command.
 func staticMsg(msg tea.Msg) tea.Cmd {
@@ -321,6 +466,33 @@ func (a *App) loadCatalogCmd() tea.Cmd {
 // fetch error, returns nil (no message) rather than an empty server list,
 // so a transient hiccup talking to the local API doesn't blank out the
 // last-known-good status.
+// loadLSPCmd refreshes the language-server status. Re-run on the tick, like
+// MCP: servers start lazily as files are read, so the list grows during a
+// session rather than being fixed at boot.
+// loadCommandsCmd fetches the slash commands. Run once at Init: the set only
+// changes when config or skill files change, which needs a restart anyway.
+func (a *App) loadCommandsCmd() tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		commands, err := c.Commands(a.ctx)
+		if err != nil {
+			return nil
+		}
+		return commandsMsg{commands: commands}
+	}
+}
+
+func (a *App) loadLSPCmd() tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		state, err := c.LSP(a.ctx)
+		if err != nil {
+			return nil
+		}
+		return lspMsg{state: state}
+	}
+}
+
 func (a *App) loadMCPCmd() tea.Cmd {
 	c := a.client
 	return func() tea.Msg {
@@ -357,13 +529,16 @@ func (a *App) loadPermissions(sessionID string) tea.Cmd {
 // Update dispatches msg then syncs the terminal window title, mirroring
 // app.tsx's createEffect over the current route/session — rather than
 // hooking every place a.view/a.active changes, this just recomputes the
-// desired title every tick and only emits tea.SetWindowTitle when it
-// actually changed.
+// desired title every tick; the program adapter's View() surfaces
+// a.windowTitle in the returned tea.View, which bubbletea v2 applies as the
+// declarative replacement for v1's tea.SetWindowTitle command.
 func (a *App) Update(msg tea.Msg) tea.Cmd {
+	// Bracket the update: edit at full height so the editor never scrolls, then
+	// trim back to the content. See expandPromptForInput.
+	a.expandPromptForInput()
 	cmd := a.update(msg)
-	if title, changed := a.syncWindowTitle(); changed {
-		return tea.Batch(cmd, tea.SetWindowTitle(title))
-	}
+	a.syncPromptSize()
+	a.syncWindowTitle()
 	return cmd
 }
 
@@ -371,10 +546,11 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
-		a.input.SetWidth(a.inputWidth())
+		// syncPromptSize (called from Update) resizes the editor; the width
+		// and height both depend on the new dimensions.
 		return nil
 	case tickMsg:
-		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd()}
+		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd(), a.loadLSPCmd()}
 		if a.active != nil {
 			cmds = append(cmds, a.loadPermissions(a.active.ID))
 			cmds = append(cmds, a.loadStats(a.active.ID))
@@ -384,6 +560,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		}
 		return tea.Batch(cmds...)
 	case spinnerTickMsg:
+		a.spinning = false
 		if a.busy {
 			a.spinnerFrame++
 			return a.startSpinner()
@@ -405,10 +582,23 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return nil
 	case catalogMsg:
 		a.modelNames = map[string]string{}
+		a.contextLimits = map[string]int{}
+		a.modelCosts = map[string]float64{}
 		for _, model := range msg.models {
 			a.modelNames[model.ProviderID+"/"+model.ID] = model.Name
+			a.contextLimits[model.ProviderID+"/"+model.ID] = model.ContextLimit
+			a.modelCosts[model.ProviderID+"/"+model.ID] = model.CostInput
 		}
 		a.providerNames = map[string]string{}
+		a.providers = msg.providers
+		a.catalogModels = msg.models
+		// A dialog open before the catalog arrived is showing a stale or empty
+		// list; refresh it in place now that there is one.
+		a.refreshOpenCatalogDialog()
+		// settlementLine resolves a model's display name through this
+		// catalog, and messages rendered before it arrived cached the raw
+		// model ID.
+		a.invalidateRenderCache()
 		for _, provider := range msg.providers {
 			a.providerNames[provider.ID] = provider.Name
 		}
@@ -424,6 +614,18 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case mcpMsg:
 		a.mcpServers = msg.servers
 		return nil
+	case lspMsg:
+		a.lsp = msg.state
+		return nil
+	case commandsMsg:
+		a.commands = msg.commands
+		return nil
+	case agentsLoadedMsg:
+		a.agents2 = msg.agents
+		if msg.cycle != 0 {
+			return a.cycleAgent(msg.cycle)
+		}
+		return nil
 	case fadeTickMsg:
 		if cmd := a.agentMetaFade.Advance(msg); cmd != nil {
 			return cmd
@@ -433,9 +635,15 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.active = msg.session
 		a.view = viewChat
 		a.timeline = nil
+		a.subagentSiblings = nil
 		a.input.Reset()
 		a.input.Focus()
-		return a.loadMessages(a.active.ID)
+		return tea.Batch(a.loadMessages(a.active.ID), a.loadSubagentSiblings())
+	case subagentSiblingsMsg:
+		if a.active != nil && a.active.ParentID == msg.parentID {
+			a.subagentSiblings = msg.siblings
+		}
+		return nil
 	case openedWithPrompt:
 		a.active = msg.session
 		a.view = viewChat
@@ -448,10 +656,17 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		if a.active != nil && msg.sessionID == a.active.ID {
 			a.timeline = msg.messages
 			wasBusy := a.busy
-			a.busy = hasUnfinishedAssistant(a.timeline)
+			a.busy = a.recomputeBusy()
+			// The sidebar's "spent" total is server-side state that only the
+			// stats endpoint reports, so it has to be refetched alongside the
+			// timeline. Without this it moved only on the 10-second
+			// reconciliation tick, which is what made the sidebar look frozen
+			// while a turn streamed.
+			cmds := []tea.Cmd{a.loadStats(msg.sessionID)}
 			if a.busy && !wasBusy {
-				return a.startSpinner()
+				cmds = append(cmds, a.startSpinner())
 			}
+			return tea.Batch(cmds...)
 		}
 		return nil
 	case permissionsMsg:
@@ -485,19 +700,64 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case statsMsg:
 		a.stats = msg.stats
 		return nil
-	case eventMsg:
-		if a.handleEvent(msg.event) {
-			if a.active != nil {
-				return a.loadMessages(a.active.ID)
-			}
+	case snapshotMsg:
+		// applySnapshot is where a live turn's busy state actually lands (the
+		// aggregator is the only thing watching the event stream), so this is
+		// the path that has to keep the spinner running.
+		dirty := a.applySnapshot(msg.snapshot)
+		cmds := []tea.Cmd{a.startSpinner()}
+		if dirty && a.active != nil {
+			cmds = append(cmds, a.loadMessages(a.active.ID))
+		}
+		return tea.Batch(cmds...)
+	case agentListMsg:
+		a.agentList = msg.agents
+		if o := a.overlay; o != nil && o.kind == overlayList && o.title == "Select agent" {
+			filter, selected := o.filter, a.selectedOverlayValue()
+			a.openAgentDialog(a.agentList)
+			a.restoreOverlaySelection(filter, selected)
 		}
 		return nil
+	case providerListMsg:
+		a.providers = msg.providers
+		a.providerNames = map[string]string{}
+		for _, provider := range msg.providers {
+			a.providerNames[provider.ID] = provider.Name
+		}
+		a.refreshOpenCatalogDialog()
+		return nil
+	case providerConnectedMsg:
+		a.closeOverlay()
+		return tea.Batch(
+			a.showToast("Connected "+msg.name, false),
+			a.modelsOverlay(),
+		)
+	case oauthPollMsg:
+		return a.pollOAuth(msg)
+	case oauthDoneMsg:
+		a.closeOverlay()
+		return tea.Batch(
+			a.showToast("Connected "+msg.name, false),
+			a.modelsOverlay(),
+		)
+	case oauthFailedMsg:
+		a.closeOverlay()
+		text := "login failed"
+		if msg.err != "" {
+			text += ": " + msg.err
+		}
+		return a.showToast(text, true)
 	case statusMsg:
 		a.statusMsg = msg.text
-		isError := strings.HasPrefix(msg.text, "failed") ||
+		isError := msg.isErr ||
+			strings.HasPrefix(msg.text, "failed") ||
 			strings.Contains(msg.text, "failed:") ||
 			strings.Contains(msg.text, "error")
 		return a.showToast(msg.text, isError)
+	case tea.PasteMsg:
+		// Bracketed paste. Without this case the message falls through the
+		// switch and the pasted text is silently dropped.
+		return a.handlePaste(msg)
 	case tea.KeyMsg:
 		return a.handleKey(msg)
 	case tea.MouseMsg:
@@ -552,8 +812,12 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case "g":
 			a.openList("Timeline", a.timelineOverlayItems())
 			return nil
-		case "f":
-			a.openList("Fork from message", a.timelineOverlayItems())
+		case "down":
+			// session_child_first
+			return a.childrenOverlay()
+		case "h":
+			// tips_toggle
+			a.tipsHidden = !a.tipsHidden
 			return nil
 		case "e":
 			return a.exportToEditor()
@@ -576,8 +840,26 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return tea.Tick(time.Second, func(time.Time) tea.Msg { return leaderTimeoutMsg{} })
 	}
 
-	if msg.String() == "ctrl+p" {
+	switch msg.String() {
+	case "ctrl+p":
+		// command_list
 		a.commandPalette()
+		return nil
+	case "tab":
+		// agent_cycle — the hint row has always advertised this ("tab
+		// agents"); nothing was bound to it.
+		return a.cycleAgent(1)
+	case "shift+tab":
+		// agent_cycle_reverse
+		return a.cycleAgent(-1)
+	case "ctrl+z":
+		// terminal_suspend
+		return tea.Suspend
+	case "shift+enter", "ctrl+enter", "alt+enter", "ctrl+j":
+		// input_newline. bubbles' textarea only treats a bare enter as a
+		// newline, and this handler claims that for input_submit, so the
+		// aliases have to insert one explicitly.
+		a.input.InsertString("\n")
 		return nil
 	}
 	if msg.String() == "ctrl+r" {
@@ -594,13 +876,24 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		})
 		return nil
 	}
-	if msg.String() == "?" && strings.TrimSpace(a.input.Value()) == "" {
-		a.overlay = &overlay{kind: overlayHelp, title: "Help"}
-		return nil
+	// The inline popup takes the navigation keys while it is open; everything
+	// else falls through to the editor so typing keeps narrowing the list.
+	if a.autocomplete.visible() {
+		if cmd, handled := a.handleAutocompleteKey(msg); handled {
+			return cmd
+		}
 	}
 	if msg.String() == "@" {
 		a.input.InsertString("@")
-		a.openFileMentions()
+		a.openMentionAutocomplete()
+		return nil
+	}
+	// "/" opens command completion, but only at the very start of the prompt:
+	// a slash anywhere else is ordinary text (a path, a date, a fraction).
+	// Ports autocomplete.tsx's "/ at position 0" trigger.
+	if msg.String() == "/" && a.input.Value() == "" {
+		a.input.InsertString("/")
+		a.openSlashAutocomplete()
 		return nil
 	}
 
@@ -616,65 +909,141 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// multi-line cursor movement below.
 	}
 
+	// Subagent navigation (session_parent / session_child_cycle_reverse /
+	// session_child_cycle: up / left / right in config/keybind.ts). These are
+	// the commands the subagent footer's Parent/Prev/Next buttons dispatch.
+	// Upstream binds them on the session route and lets the focused textarea
+	// win; this port has no focus tree, so they only fire on an empty prompt
+	// and otherwise fall through to the textarea's own cursor movement.
+	if strings.TrimSpace(a.input.Value()) == "" {
+		switch msg.String() {
+		case "up":
+			if cmd, handled := a.openParentSession(); handled {
+				return cmd
+			}
+		case "left":
+			if cmd, handled := a.cycleSubagentSibling(-1); handled {
+				return cmd
+			}
+		case "right":
+			if cmd, handled := a.cycleSubagentSibling(1); handled {
+				return cmd
+			}
+		}
+	}
+
 	switch msg.String() {
 	case "esc", "escape":
 		if a.view == viewChat && a.busy && a.active != nil {
-			c := a.client
-			sessionID := a.active.ID
-			return func() tea.Msg {
-				if err := c.Interrupt(a.ctx, sessionID); err != nil {
-					return statusMsg{text: "interrupt failed: " + err.Error()}
-				}
-				return nil
-			}
+			return a.armInterrupt()
 		}
 		return nil
-	case "pgup", "pageup":
-		a.scrollOffset += a.viewportHeight() / 2
+	// The messages_* family from config/keybind.ts. pageup/pagedown are a
+	// *full* page upstream; this port scrolled half a page for both and had
+	// no half-page, line or first/last bindings at all.
+	case "pgup", "pageup", "ctrl+alt+b":
+		return a.scrollMessages(a.viewportHeight())
+	case "pgdown", "pagedown", "ctrl+alt+f":
+		return a.scrollMessages(-a.viewportHeight())
+	case "ctrl+alt+u":
+		return a.scrollMessages(a.viewportHeight() / 2)
+	case "ctrl+alt+d":
+		return a.scrollMessages(-a.viewportHeight() / 2)
+	case "ctrl+alt+y":
+		return a.scrollMessages(1)
+	case "ctrl+alt+e":
+		return a.scrollMessages(-1)
+	case "ctrl+g":
+		// messages_first. `home` is the other binding upstream, but it is
+		// also input_buffer_home and the prompt holds focus here, so it stays
+		// with the input.
+		a.scrollOffset = a.maxScrollOffset()
 		return nil
-	case "pgdown", "pagedown":
-		a.scrollOffset -= a.viewportHeight() / 2
-		if a.scrollOffset < 0 {
-			a.scrollOffset = 0
-		}
+	case "ctrl+alt+g":
+		// messages_last (`end` likewise stays with the input).
+		a.scrollOffset = 0
 		return nil
+	case "ctrl+v":
+		// prompt.paste. Most terminals turn their paste shortcut into a
+		// bracketed paste, which arrives as tea.PasteMsg and never reaches
+		// here; this is for the ones that send the key through instead.
+		return a.pasteFromClipboard()
 	case "enter":
 		text := strings.TrimSpace(a.input.Value())
 		if text == "" {
 			return nil
 		}
 		a.input.Reset()
+		// Restore any collapsed pastes before the text goes anywhere: what is
+		// sent is the real content, not the "[Pasted ~N lines]" stand-in.
+		pastes := a.takePastes()
+		files := a.takeAttachments()
 		if strings.HasPrefix(text, "/") {
 			return a.runSlashCommand(strings.TrimPrefix(text, "/"))
 		}
+		text = expandPastes(text, pastes)
 		a.history.Append(text)
 		if a.view == viewHome {
 			return a.createAndPrompt(text)
 		}
-		return a.sendPrompt(a.active.ID, text)
+		return a.sendPromptWith(a.active.ID, text, files)
 	}
 
 	var cmd tea.Cmd
 	a.input, cmd = a.input.Update(msg)
+	// The prompt is the popup's query: re-filter after every keystroke, and
+	// close it once the trigger no longer applies.
+	a.syncAutocomplete()
 	return cmd
 }
 
-// historyKey ports prompt/index.tsx's prompt.history.previous/next commands:
-// "up" recalls an older prompt only when the cursor already sits at the very
-// start of the input, "down" recalls a newer one only at the very end;
-// anywhere else the arrow should move the cursor within a wrapped/multi-line
-// draft instead (handled == false, so handleKey falls through to the
-// textarea's own Update).
+// historyKey ports prompt/index.tsx's prompt.history.previous /
+// prompt.history.next commands, which are a *two-stage* gesture:
+//
+//	if (input.cursorOffset !== 0) {
+//	  if (on the first visual row) input.cursorOffset = 0
+//	  return false
+//	}
+//	… recall …
+//	input.cursorOffset = 0
+//
+// So an arrow first moves the cursor to the far end of the draft, and only a
+// second press with the cursor already parked there recalls. That matters
+// because a recall leaves the cursor at the *start* (for up) — which is
+// exactly why "down" appeared dead in this port. It required the cursor to be
+// at the end before it would do anything, the recall had just put it at the
+// start, and bubbles' CursorDown on a single-row document does not move it,
+// so no amount of pressing down ever reached the forward branch.
+//
+// handled=false lets the key fall through to the textarea's own cursor
+// movement; upstream returns false in the snap case too, but its own movement
+// is a no-op on the boundary row it just snapped to, so consuming the key here
+// is equivalent.
 func (a *App) historyKey(key string) (tea.Cmd, bool) {
-	direction := -1
-	atBoundary := a.inputAtStart()
-	if key == "down" {
-		direction = 1
-		atBoundary = a.inputAtEnd()
+	if key == "up" {
+		if !a.inputAtStart() {
+			if a.inputOnFirstRow() {
+				moveCursorToDocumentStart(&a.input)
+				return nil, true
+			}
+			return nil, false
+		}
+		return a.recallHistory(-1)
 	}
-	if !atBoundary {
+	if !a.inputAtEnd() {
+		if a.inputOnLastRow() {
+			moveCursorToDocumentEnd(&a.input)
+			return nil, true
+		}
 		return nil, false
 	}
+	return a.recallHistory(1)
+}
+
+// recallHistory swaps the draft for the neighbouring history entry, parking
+// the cursor at the end the arrow came from so the next press continues in the
+// same direction.
+func (a *App) recallHistory(direction int) (tea.Cmd, bool) {
 	text, ok := a.history.Move(direction, a.input.Value())
 	if !ok {
 		return nil, false
@@ -688,17 +1057,33 @@ func (a *App) historyKey(key string) (tea.Cmd, bool) {
 	return nil, true
 }
 
-// inputAtStart/inputAtEnd check the absolute document boundary (not just the
-// current visual row), matching TS's cursorOffset === 0 /
-// cursorOffset === plainText.length checks.
+// inputAtStart/inputAtEnd are TS's `cursorOffset === 0` /
+// `cursorOffset === plainText.length`: the absolute document boundary.
+// textarea.Column() is the cursor's rune offset within its *logical* line,
+// which is what these need — LineInfo().CharOffset, which this port used
+// before, is a column count relative to the current *visual* row, so both
+// checks silently failed the moment a draft wrapped.
 func (a *App) inputAtStart() bool {
-	return a.input.Line() == 0 && a.input.LineInfo().CharOffset == 0
+	return a.input.Line() == 0 && a.input.Column() == 0
 }
 
 func (a *App) inputAtEnd() bool {
 	lines := strings.Split(a.input.Value(), "\n")
-	lastLine := []rune(lines[len(lines)-1])
-	return a.input.Line() == a.input.LineCount()-1 && a.input.LineInfo().CharOffset == len(lastLine)
+	last := []rune(lines[len(lines)-1])
+	return a.input.Line() == a.input.LineCount()-1 && a.input.Column() == len(last)
+}
+
+// inputOnFirstRow/inputOnLastRow are the *visual* boundaries the snap stage
+// keys off (TS's `scrollY + visualCursor.visualRow === 0` and its
+// last-virtual-line counterpart), so a wrapped draft still walks row by row
+// before the recall takes over.
+func (a *App) inputOnFirstRow() bool {
+	return a.input.Line() == 0 && a.input.LineInfo().RowOffset == 0
+}
+
+func (a *App) inputOnLastRow() bool {
+	info := a.input.LineInfo()
+	return a.input.Line() == a.input.LineCount()-1 && info.RowOffset == info.Height-1
 }
 
 // moveCursorToDocumentStart/End walk line by line since textarea.Model only
@@ -811,9 +1196,14 @@ func (a *App) createAndPrompt(text string) tea.Cmd {
 }
 
 func (a *App) sendPrompt(sessionID, text string) tea.Cmd {
+	return a.sendPromptWith(sessionID, text, nil)
+}
+
+// sendPromptWith sends a message that may carry pasted attachments.
+func (a *App) sendPromptWith(sessionID, text string, files []client.FileAttachment) tea.Cmd {
 	c := a.client
 	return func() tea.Msg {
-		if _, err := c.Prompt(a.ctx, sessionID, text); err != nil {
+		if _, err := c.PromptWith(a.ctx, sessionID, text, files); err != nil {
 			return statusMsg{text: "prompt failed: " + err.Error()}
 		}
 		return promptSentMsg{sessionID: sessionID, text: text}
@@ -836,18 +1226,55 @@ func (a *App) View() string {
 	return content
 }
 
-func hasUnfinishedAssistant(timeline []client.Message) bool {
-	for i := len(timeline) - 1; i >= 0; i-- {
-		if timeline[i].Type != "assistant" {
-			continue
-		}
-		data, err := client.DecodeAssistant(timeline[i].Data)
+// sessionBusy ports context/sync.tsx's status():
+//
+//	const last = messages.at(-1)
+//	if (!last) return "idle"
+//	if (last.role === "user") return "working"
+//	return last.time.completed ? "idle" : "working"
+//
+// The user arm is the load-bearing one and this port did not have it: it only
+// ever inspected the last *assistant* message, so in the window between a
+// prompt being admitted and the model producing its first token -- the whole
+// time-to-first-token, commonly a second or more -- the timeline ended with
+// the user's own message and this reported idle. That is what put a visible
+// delay between pressing enter and the spinner appearing.
+//
+// A settled turn is `time.completed` upstream. The finish and error checks
+// alongside it are this port's own belt-and-braces: projectStepEnded and
+// projectStepFailed both stamp time.completed, but an interrupted turn records
+// no finish at all (see messageAborted), and rows written before that stamping
+// existed have neither.
+func sessionBusy(timeline []client.Message) bool {
+	if len(timeline) == 0 {
+		return false
+	}
+	last := timeline[len(timeline)-1]
+	switch last.Type {
+	case "user":
+		return true
+	case "assistant":
+		data, err := client.DecodeAssistant(last.Data)
 		if err != nil {
-			continue
+			return false
 		}
-		return data.Finish == ""
+		return data.Finish == "" && data.Time.Completed == 0 && data.Error == nil
 	}
 	return false
+}
+
+// recomputeBusy combines the two signals this port has for a running turn: the
+// aggregator's live step tracking, and the timeline-derived status upstream
+// uses. They agree once a turn is underway; the timeline covers the gap before
+// the first step event, and the aggregator covers events arriving faster than
+// the timeline is refetched.
+func (a *App) recomputeBusy() bool {
+	if a.active != nil {
+		if node := a.agents.Sessions[a.active.ID]; node != nil && node.Busy {
+			return true
+		}
+	}
+	return sessionBusy(a.timeline)
 }
 
 // program adapts App to bubbletea's immutable Model interface.
@@ -859,7 +1286,18 @@ func (p program) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return p, p.app.Update(msg)
 }
 
-func (p program) View() string { return p.app.View() }
+// View builds the declarative tea.View bubbletea v2 replaced v1's plain
+// string + tea.WithAltScreen()/tea.WithMouseAllMotion() program options
+// with. AllMotion (not just CellMotion) so dialog rows preselect on hover
+// with no button held, matching dialog-select.tsx's onMouseMove/onMouseOver
+// (same rationale as the removed Run() options it replaces).
+func (p program) View() tea.View {
+	v := tea.NewView(p.app.View())
+	v.AltScreen = true
+	v.MouseMode = tea.MouseModeAllMotion
+	v.WindowTitle = p.app.windowTitle
+	return v
+}
 
 type quitMsg struct{}
 
@@ -867,20 +1305,279 @@ func themeResolve(name string) theme.Theme { return theme.Resolve(name) }
 
 // runSlashCommand executes "/name" from the editor. Names may be the full
 // command ("session.new") or a namespace prefix ("/help" -> "help.show").
-func (a *App) runSlashCommand(name string) tea.Cmd {
-	name = strings.TrimSpace(strings.TrimPrefix(name, "/"))
-	commands := a.commandsRegistry()
-	for _, command := range commands {
-		if command.label == name {
-			return command.action
+// runSlashCommand dispatches "/name args".
+//
+// Two kinds of command share the syntax. A *prompt* command — the ones from
+// config, markdown files and skills, plus the built-in init and review — is a
+// template: it expands with the arguments and is sent as the prompt. An
+// *interface* command (session.new, model.list, ...) drives the interface and
+// takes no arguments. Prompt commands are matched first, because they are the
+// ones a user defines and would be surprised to see shadowed.
+func (a *App) runSlashCommand(input string) tea.Cmd {
+	input = strings.TrimSpace(strings.TrimPrefix(input, "/"))
+	name, arguments, _ := strings.Cut(input, " ")
+	arguments = strings.TrimSpace(arguments)
+
+	for _, entry := range a.commands {
+		if entry.Name == name {
+			return a.runPromptCommand(entry, arguments)
 		}
 	}
-	for _, command := range commands {
-		if strings.HasPrefix(command.label, name+".") {
-			return command.action
+
+	for _, entry := range a.commandsRegistry() {
+		if entry.matchesSlash(name) {
+			return runItemAction(entry)
 		}
 	}
 	return staticMsg(statusMsg{text: "unknown command: /" + name})
+}
+
+// runPromptCommand expands a command template and sends it as the prompt.
+func (a *App) runPromptCommand(entry client.Command, arguments string) tea.Cmd {
+	text := command.Expand(a.ctx, entry.Template, arguments, "")
+	if text == "" {
+		return staticMsg(statusMsg{text: "/" + entry.Name + " produced an empty prompt"})
+	}
+	if a.view == viewHome {
+		return a.createAndPrompt(text)
+	}
+	if a.active == nil {
+		return staticMsg(statusMsg{text: "open a session first"})
+	}
+	return a.sendPrompt(a.active.ID, text)
+}
+
+// openSlashAutocomplete opens the inline "/" popup.
+func (a *App) openSlashAutocomplete() {
+	items := a.slashAutocompleteItems()
+	if len(items) == 0 {
+		return
+	}
+	a.autocomplete = autocompleteState{kind: autocompleteSlash, all: items, trigger: 0}
+	a.autocomplete.filter("")
+}
+
+// openMentionAutocomplete opens the inline "@" popup for workspace files.
+func (a *App) openMentionAutocomplete() {
+	var items []autocompleteItem
+	for _, item := range fileMentions("") {
+		path := item.label
+		items = append(items, autocompleteItem{
+			display: "@" + path,
+			value:   path,
+			action: func() tea.Cmd {
+				a.replaceAutocompleteToken(path + " ")
+				return nil
+			},
+		})
+	}
+	if len(items) == 0 {
+		return
+	}
+	a.autocomplete = autocompleteState{
+		kind:    autocompleteMention,
+		all:     items,
+		trigger: strings.LastIndex(a.input.Value(), "@"),
+	}
+	a.autocomplete.filter("")
+}
+
+// hideAutocomplete closes the popup, clearing the half-typed command it was
+// completing.
+//
+// Ports hide() in autocomplete.tsx:
+//
+//	if (store.visible === "/" && !text.endsWith(" ") && text.startsWith("/")) {
+//	  props.input().deleteRange(0, 0, cursor.row, cursor.col)
+//	}
+//
+// Without it, running a command that opens a dialog leaves "/models" sitting
+// in the prompt after the dialog closes. The trailing-space guard is what
+// keeps a completed command with arguments ("/deploy staging") intact — that
+// text is the user's, not a leftover.
+func (a *App) hideAutocomplete() {
+	if a.autocomplete.kind == autocompleteSlash {
+		text := a.input.Value()
+		if strings.HasPrefix(text, "/") && !strings.HasSuffix(text, " ") {
+			a.input.SetValue("")
+		}
+	}
+	a.autocomplete.close()
+}
+
+// handleAutocompleteKey takes the keys the popup owns. Everything else falls
+// through so typing keeps going into the prompt and narrowing the list, which
+// is how the original behaves — it has no input field of its own.
+func (a *App) handleAutocompleteKey(msg tea.KeyMsg) (tea.Cmd, bool) {
+	switch msg.String() {
+	case "up", "ctrl+p":
+		a.autocomplete.move(-1)
+		return nil, true
+	case "down", "ctrl+n":
+		a.autocomplete.move(1)
+		return nil, true
+	case "esc", "escape":
+		a.hideAutocomplete()
+		return nil, true
+	case "enter", "tab":
+		item, ok := a.autocompleteSelection()
+		if !ok {
+			// Nothing matched. The original's select() returns early here and
+			// the keypress is swallowed, which leaves the user with no way to
+			// find out why. Closing without clearing and letting the key fall
+			// through submits what they typed, so an unrecognised command
+			// reports itself instead of doing nothing.
+			a.autocomplete.close()
+			return nil, false
+		}
+		// hide() runs before the action in the original, so the command text
+		// is gone by the time a dialog opens over it — and a prompt command's
+		// own insert then writes into an empty prompt.
+		a.hideAutocomplete()
+		if item.action == nil {
+			return nil, true
+		}
+		return item.action(), true
+	}
+	return nil, false
+}
+
+func (a *App) autocompleteSelection() (autocompleteItem, bool) {
+	state := a.autocomplete
+	if state.selected < 0 || state.selected >= len(state.items) {
+		return autocompleteItem{}, false
+	}
+	return state.items[state.selected], true
+}
+
+// syncAutocomplete re-filters the popup against the prompt after a keystroke,
+// and closes it when the trigger no longer applies.
+func (a *App) syncAutocomplete() {
+	state := &a.autocomplete
+	if !state.visible() {
+		return
+	}
+	value := a.input.Value()
+	if state.trigger < 0 || state.trigger >= len(value) {
+		// The trigger character itself is gone (backspaced away), so there is
+		// nothing left to clear — close without touching the prompt.
+		state.close()
+		return
+	}
+	query := value[state.trigger+1:]
+	// A space ends the token: "/new " has been chosen, and "@a b" is no longer
+	// one path.
+	if strings.ContainsAny(query, " \t\n") {
+		state.close()
+		return
+	}
+	state.filter(query)
+}
+
+// replaceAutocompleteToken swaps the trigger token for the chosen value.
+func (a *App) replaceAutocompleteToken(replacement string) {
+	value := a.input.Value()
+	trigger := a.autocomplete.trigger
+	if trigger < 0 || trigger > len(value) {
+		a.input.InsertString(replacement)
+		return
+	}
+	a.input.SetValue(value[:trigger] + replacement)
+	a.input.MoveToEnd()
+}
+
+// slashAutocompleteItems lists everything "/" can reach: the prompt commands
+// from the server, then the interface commands under their typeable names.
+func (a *App) slashAutocompleteItems() []autocompleteItem {
+	items := make([]autocompleteItem, 0, len(a.commands)+16)
+	for _, entry := range a.commands {
+		entry := entry
+		description := entry.Description
+		if description == "" && len(entry.Hints) > 0 {
+			description = strings.Join(entry.Hints, " ")
+		}
+		items = append(items, autocompleteItem{
+			display:     "/" + entry.Name,
+			description: description,
+			value:       entry.Name,
+			action: func() tea.Cmd {
+				// Insert rather than run, so arguments can be typed. Matches
+				// the original setting the text to "/" + name + " ".
+				a.input.SetValue("/" + entry.Name + " ")
+				a.input.MoveToEnd()
+				return nil
+			},
+		})
+	}
+	for _, entry := range a.commandsRegistry() {
+		entry := entry
+		if entry.slash == "" {
+			continue
+		}
+		description := entry.hint
+		if len(entry.slashAliases) > 0 {
+			description = strings.TrimSpace(description + " (" + strings.Join(entry.slashAliases, ", ") + ")")
+		}
+		items = append(items, autocompleteItem{
+			display:     "/" + entry.slash,
+			description: description,
+			value:       entry.slash,
+			action:      func() tea.Cmd { return runItemAction(entry) },
+		})
+	}
+	return items
+}
+
+// slashCommandItems lists everything "/" can reach: the prompt commands from
+// the server, then the interface commands, matching the order the original's
+// autocomplete builds (its own slashes first, then server commands — inverted
+// here because a user's own commands are the ones they are looking for).
+func (a *App) slashCommandItems() []overlayItem {
+	items := make([]overlayItem, 0, len(a.commands)+8)
+	for _, entry := range a.commands {
+		entry := entry
+		hint := entry.Description
+		if hint == "" && len(entry.Hints) > 0 {
+			hint = strings.Join(entry.Hints, " ")
+		}
+		category := "Commands"
+		if entry.Source == "skill" {
+			category = "Skills"
+		}
+		items = append(items, overlayItem{
+			label:    entry.Name,
+			hint:     hint,
+			value:    entry.Name,
+			category: category,
+			action: func() tea.Msg {
+				a.input.SetValue("/" + entry.Name + " ")
+				a.input.MoveToEnd()
+				return nil
+			},
+		})
+	}
+	for _, entry := range a.commandsRegistry() {
+		entry := entry
+		// Listed under the name a user actually types. An interface command
+		// with no slash name is palette-only, exactly as upstream drops any
+		// entry whose slashName is unset.
+		if entry.slash == "" {
+			continue
+		}
+		hint := entry.hint
+		if len(entry.slashAliases) > 0 {
+			hint = strings.TrimSpace(hint + "  (" + strings.Join(entry.slashAliases, ", ") + ")")
+		}
+		items = append(items, overlayItem{
+			label:    entry.slash,
+			hint:     hint,
+			value:    entry.slash,
+			category: "Interface",
+			footer:   entry.footer,
+			action:   entry.action,
+		})
+	}
+	return items
 }
 
 // openFileMentions shows @-completion for workspace files; selecting inserts
@@ -933,13 +1630,22 @@ func (a *App) providerName(providerID string) string {
 	return providerID
 }
 
-// inputWidth keeps the shared editor inside both the home prompt box and the
-// session prompt box: each box's own *declared* width (promptMaxWidth(a.width)-1
-// for home, chatWidth()-1 for the session — see their promptBox call sites)
-// minus promptBox's paddingLeft(2)+paddingRight(2) (the 1-column left border
-// renders outside the declared width, so it isn't subtracted again here).
+// inputWidth sizes the shared editor to the prompt box of the view it is
+// currently in: promptMaxWidth(a.width) on home, sessionPromptBoxWidth() in a
+// session, each minus promptBox's paddingLeft(2)+paddingRight(2) and the
+// border column.
+//
+// It used to take the *minimum* of the two, so one editor could sit in either
+// box. That left the text 20-odd columns short of the box's right edge in a
+// session on a wide terminal, because the home box is capped at 75 columns
+// while the session box is not. The view is known here, so it sizes for the
+// box it is actually in; syncPromptSize re-runs this when the view changes.
 func (a *App) inputWidth() int {
-	w := min(promptMaxWidth(a.width)-5, a.chatWidth()-5)
+	box := promptMaxWidth(a.width)
+	if a.view == viewChat {
+		box = a.sessionPromptBoxWidth()
+	}
+	w := box - 4
 	if w < 20 {
 		w = 20
 	}
@@ -991,25 +1697,35 @@ func Run(ctx context.Context, c *client.Client, themeName string, opts RunOption
 	app := New(ctx, c, themeName)
 	app.SetDefaultModel(opts.DefaultModel)
 	app.resumeSessionID = opts.SessionID
-	// AllMotion (not just CellMotion) so dialog rows preselect on hover with
-	// no button held, matching dialog-select.tsx's onMouseMove/onMouseOver.
-	program := tea.NewProgram(program{app: app}, tea.WithAltScreen(), tea.WithMouseAllMotion())
+	// AltScreen/MouseMode are now declared per-frame on the returned tea.View
+	// (see program.View()) rather than as ProgramOptions here.
+	program := tea.NewProgram(program{app: app})
 
+	// Subscribe to every session, not just the active one: subagents run in
+	// their own sessions and their activity has to reach the UI too.
 	events, err := c.Events(ctx, "")
 	if err != nil {
 		return err
 	}
-	go pumpEvents(program, events)
+
+	// Two goroutines sit between the wire and the main goroutine:
+	//
+	//   SSE ──> Aggregate ──(coalesced snapshots)──> pumpSnapshots ──> program
+	//
+	// Aggregate does all per-event work and emits at most one snapshot per
+	// frame, so a burst of subagent traffic cannot stall a redraw. The main
+	// goroutine only swaps in the snapshot. See MULTI_AGENTS.md phase 4.
+	snapshots := make(chan Snapshot, 8)
+	aggregatorCtx, stopAggregator := context.WithCancel(ctx)
+	defer stopAggregator()
+	go func() {
+		defer close(snapshots)
+		Aggregate(aggregatorCtx, events, snapshots, DefaultFrame)
+	}()
+	go pumpSnapshots(program, snapshots, nil)
 
 	_, err = program.Run()
 	return err
-}
-
-// pumpEvents forwards every server event into the running program.
-func pumpEvents(program *tea.Program, events <-chan client.Event) {
-	for event := range events {
-		program.Send(eventMsg{event: event})
-	}
 }
 
 func (a *App) activeModelSet() bool { return a.activeModel != "" }

@@ -2,16 +2,32 @@ package tui
 
 import (
 	"fmt"
+	"image/color"
 	"strings"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/anomalyco/opencode-go/internal/tui/theme"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 )
 
+// frame applies the screen's 1-column side margin and crops to the terminal
+// height. It used to be `lipgloss.NewStyle().Padding(0,1).MaxHeight(h)`, which
+// is the same thing but pays to measure the display width of every line in a
+// ~90KB fully-styled frame — a third of the render budget, and grapheme
+// segmentation is the single most expensive thing in the profile. Nothing
+// downstream needs the uniform right edge that padding produced: the
+// compositors (spliceAt, compositeSidebarOverlay) pad to a.width themselves,
+// and no background is set here for a ragged edge to expose.
 func (a *App) frame(content string) string {
-	return lipgloss.NewStyle().Padding(0, 1).MaxHeight(a.height).Render(content)
+	lines := strings.Split(content, "\n")
+	if a.height > 0 && len(lines) > a.height {
+		lines = lines[:a.height]
+	}
+	for i, line := range lines {
+		lines[i] = " " + line + " "
+	}
+	return strings.Join(lines, "\n")
 }
 
 // sidebarWidth returns the columns reserved for the sidebar (42 when visible
@@ -42,11 +58,59 @@ func (a *App) chatWidth() int {
 }
 
 func (a *App) viewportHeight() int {
-	h := a.height - a.input.Height() - 6
+	// promptContentHeight, not input.Height(): the editor is transiently
+	// inflated to its maximum while a key is handled (see
+	// expandPromptForInput), and the timeline's budget must reflect the height
+	// the prompt will actually render at, not that intermediate value. Reading
+	// the live height here made pageup scroll a short page.
+	h := a.height - a.promptContentHeight() - 6
+	// A permission banner occupies rows the fixed budget above does not
+	// account for. Without this the column overflows and frame()'s MaxHeight
+	// crops from the bottom — taking the banner's own buttons with it, which
+	// is the one part of it the user has to reach.
+	if banner := a.permissionBannerHeight(); banner > 0 {
+		// The banner replaces the single blank row its slot always occupied.
+		h -= banner - 1
+	}
 	if h < 3 {
 		h = 3
 	}
 	return h
+}
+
+// permissionBannerHeight is the rendered height of the permission banner, or
+// zero when none is showing.
+func (a *App) permissionBannerHeight() int {
+	banner := a.permissionBanner()
+	if banner == "" {
+		return 0
+	}
+	return strings.Count(banner, "\n") + 1
+}
+
+// permissionMaxHeight caps the collapsed permission prompt, porting
+// `maxHeight: 15` on the non-expanded branch of permission.tsx's Prompt.
+//
+// The cap is what keeps the buttons reachable: in the original the body sits
+// in a flexGrow box while the option bar is flexShrink={0}, so a long body is
+// squeezed and the bar always survives. This port has no flexbox, so the body
+// is truncated to the same effect.
+const permissionMaxHeight = 15
+
+// permissionBudget is how many rows the banner may occupy: the maxHeight cap,
+// or less when the terminal cannot spare that much.
+//
+// maxHeight is a maximum, not a fixed height — in the original the flex
+// container still shrinks below it when the column is short, which is what
+// keeps the option bar on screen in a small terminal. Capping at a flat 15
+// reintroduced the bug at 14 rows.
+func (a *App) permissionBudget() int {
+	budget := permissionMaxHeight
+	// The prompt box and its hint row still have to fit beneath.
+	if available := a.height - a.input.Height() - 5; available < budget {
+		budget = available
+	}
+	return budget
 }
 
 // contentWidth is the message column width. TS's Session route computes one
@@ -61,14 +125,6 @@ func (a *App) contentWidth() int {
 		w = 20
 	}
 	return w
-}
-
-func (a *App) bodyWidth() int {
-	width := a.width - 8
-	if width < 20 {
-		return 20
-	}
-	return width
 }
 
 // viewChat mirrors the Session route: a scrollable message timeline sticky to
@@ -127,15 +183,28 @@ func (a *App) viewChat() string {
 	for _, line := range lines {
 		chat = append(chat, " "+line)
 	}
-	chat = append(chat, "",
-		a.indentBlock(a.permissionBanner()),
+	// Order matches session/index.tsx's bottom box: the permission prompt,
+	// then the subagent footer for a child session, then the prompt with its
+	// hint row. The permission banner keeps its unconditional slot (an empty
+	// one is the blank separator row this column has always had); the
+	// subagent footer is appended only when it renders, so a root session's
+	// row budget — and with it frame()'s MaxHeight crop of the footer — is
+	// unchanged.
+	chat = append(chat, "", a.indentBlock(a.permissionBanner()))
+	if footer := a.subagentFooter(); footer != "" {
+		chat = append(chat, a.indentBlock(footer))
+	}
+	// The completion popup sits directly above the prompt and shares its
+	// width, porting the autocomplete's absolute position anchored to the
+	// prompt box.
+	if popup := a.autocompleteView(a.sessionPromptBoxWidth()); popup != "" {
+		chat = append(chat, a.indentBlock(popup))
+	}
+	chat = append(chat,
 		a.indentBlock(a.promptBox(a.sessionPromptBoxWidth())),
 		a.indentBlock(a.chatFooter()))
 	main := strings.Join(chat, "\n")
 
-	if toast := a.viewToast(a.bodyWidth() + 6); toast != "" {
-		main = strings.TrimRight(main, "\n") + "\n" + a.indentBlock(toast)
-	}
 	// TS's timeline is a flexGrow scrollbox with stickyScroll="bottom": a
 	// short conversation's messages (and the prompt/footer glued below it)
 	// sit at the bottom of the column, with any unused space above them —
@@ -149,12 +218,19 @@ func (a *App) viewChat() string {
 	if pad > 0 {
 		main = strings.Repeat("\n", pad) + main
 	}
+	a.chatColumnEnd = a.width
 	if sidebar := a.sidebarView(); sidebar != "" {
 		if a.wide() {
 			// The chat column is already sized to the chat width; no
 			// per-line truncation here — cutting styled lines corrupts ANSI
 			// sequences.
-			return a.frame(lipgloss.JoinHorizontal(lipgloss.Top, main, sidebar))
+			joined := lipgloss.JoinHorizontal(lipgloss.Top, main, sidebar)
+			// Record where the chat column stops so a drag-selection can be
+			// held inside it (see selectionColumnBounds). JoinHorizontal pads
+			// every line to the block width, so one line measures the whole
+			// thing, and frame() insets it by a column.
+			a.chatColumnEnd = 1 + lipgloss.Width(firstLine(joined)) - a.sidebarWidth()
+			return a.frame(joined)
 		}
 		// Narrow terminal: TS overlays the sidebar as a right-aligned drawer
 		// over a dimmed backdrop instead of a docked column (the chat column
@@ -165,6 +241,14 @@ func (a *App) viewChat() string {
 		return a.frame(a.compositeSidebarOverlay(main, sidebar))
 	}
 	return a.frame(main)
+}
+
+// firstLine returns s up to its first newline.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // compositeSidebarOverlay splices the sidebar panel onto the right edge of
@@ -216,12 +300,11 @@ func promptMaxWidth(width int) int {
 }
 
 // sessionPromptBoxWidth is the Width promptBox is given in the chat view.
-// It's chatWidth()-2, not chatWidth()-1: lipgloss renders a 1-char left
-// border *outside* the declared width (verified directly: Width(20)+a
-// 1-char left border renders 21 cells wide), so border(1)+Width(chatWidth()-2)
-// totals chatWidth()-1 — matching every other bordered timeline panel
-// (userBlock, errBlock, blockToolStyle), all sized to the same total as
-// assistantTextBlock's own max reach (indent(3) + renderMarkdown's
+// It's chatWidth()-2, not chatWidth()-1: promptBox's own borderBoxWidth()
+// call adds the 1-char left border's column back on top of this value to
+// reach a total of chatWidth()-1 — matching every other bordered timeline
+// panel (userBlock, errBlock, blockToolStyle), all sized to the same total
+// as assistantTextBlock's own max reach (indent(3) + renderMarkdown's
 // contentWidth()-4 wrap width = contentWidth()-1 = chatWidth()-1), rather
 // than widening the markdown side to fill a wider box.
 func (a *App) sessionPromptBoxWidth() int {
@@ -243,7 +326,7 @@ func (a *App) promptBox(width int) string {
 		PaddingTop(1).
 		PaddingLeft(2).
 		PaddingRight(2).
-		Width(width)
+		Width(borderBoxWidth(width))
 	content := strings.TrimRight(a.input.View(), "\n")
 	// The editor's viewport pads its row with plain unstyled spaces, which
 	// would break the box tint; drop the tail and let Width() refill it.
@@ -287,47 +370,13 @@ func (a *App) homePromptBlock(width int) string {
 	shadow := lipgloss.NewStyle().Foreground(a.theme.BackgroundElement).Render(strings.Repeat("▀", width))
 	hints := a.styles().Text.Render("tab") + " " + a.styles().Muted.Render("agents") + "  " +
 		a.styles().Text.Render("ctrl+p") + " " + a.styles().Muted.Render("commands")
-	return strings.Join([]string{a.promptBox(width), corner + shadow, hints}, "\n")
-}
-
-// chatFooter mirrors the Prompt hint row: while busy a spinner with the esc
-// interrupt hint; idle, the directory on the left and usage or the shortcut
-// hints on the right.
-func (a *App) chatFooter() string {
-	width := a.chatWidth()
-	if a.busy {
-		right := a.styles().Text.Render("esc") + " " + a.styles().Muted.Render("interrupt")
-		spinner := a.spinnerLabel()
-		gap := width - 8 - lipgloss.Width(spinner) - lipgloss.Width(right)
-		if gap < 1 {
-			// Not enough room for both halves — drop the hint rather than
-			// overflow past the chat column into the sidebar (a long
-			// directory/session path can already fill most of a narrow
-			// column on its own).
-			return truncateRunes(spinner, width)
-		}
-		return spinner + strings.Repeat(" ", gap) + right
+	blocks := []string{}
+	// Above the prompt, sharing its width — the popup's anchored position.
+	if popup := a.autocompleteView(width); popup != "" {
+		blocks = append(blocks, popup)
 	}
-	// In a session the hint row shows the session directory; on home it
-	// falls back to the working directory with the git branch.
-	directory := a.homeDirectory()
-	if a.active != nil && a.active.Directory != "" {
-		directory = a.active.Directory
-	}
-	left := a.styles().Muted.Render(directory)
-	right := a.styles().Text.Render("tab") + " " + a.styles().Muted.Render("agents") +
-		"  " + a.styles().Text.Render("ctrl+p") + " " + a.styles().Muted.Render("commands")
-	if a.stats != nil {
-		tokens := formatTokens(a.stats.TokensInput + a.stats.TokensOutput)
-		right = a.styles().Muted.Render(
-			fmt.Sprintf("%s (%d%%)", tokens, contextPercent(a.stats.TokensInput))) + "  " + right
-	}
-	// The footer spans the chat column only; the sidebar continues below it.
-	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		return truncateRunes(left, width)
-	}
-	return left + strings.Repeat(" ", gap) + right
+	blocks = append(blocks, a.promptBox(width), corner+shadow, hints)
+	return strings.Join(blocks, "\n")
 }
 
 // statusBar mirrors the home footer plugin: abbreviated directory with the
@@ -368,14 +417,6 @@ func formatTokens(count int) string {
 		return fmt.Sprintf("%.1fK", float64(count)/1000)
 	}
 	return fmt.Sprintf("%d", count)
-}
-
-func contextPercent(tokens int) int {
-	const limit = 200000
-	if limit == 0 {
-		return 0
-	}
-	return tokens * 100 / limit
 }
 
 // permissionBanner mirrors the PermissionPrompt: a warning-bordered
@@ -434,6 +475,18 @@ func (a *App) permissionBanner() string {
 	icon, title := permissionTitle(request)
 	line2 := "  " + a.styles().Muted.Render(icon) + " " + a.styles().Text.Render(title)
 	body := a.permissionBody(request)
+
+	// Cap the panel so the option bar below it stays on screen, porting
+	// maxHeight: 15. The bar's own height comes out of the budget first
+	// (flexShrink={0}), then the panel's padding and its two header rows,
+	// which are flexShrink={0} in the original too; whatever is left is what
+	// the body may occupy.
+	barHeight := strings.Count(bar, "\n") + 1 + 2                                 // + paddingTop/paddingBottom
+	const panelChrome = 2                                                         // paddingTop + paddingBottom
+	const headerRows = 2                                                          // "△ Permission required" + the title line
+	bodyBudget := a.permissionBudget() - barHeight - panelChrome - headerRows - 1 // -1 for the blank separator
+	body = clampPermissionBody(body, bodyBudget)
+
 	content := []string{header, line2}
 	if body != "" {
 		content = append(content, "", body)
@@ -447,24 +500,64 @@ func (a *App) permissionBanner() string {
 		PaddingBottom(1).
 		PaddingLeft(1).
 		PaddingRight(3).
-		Width(a.contentWidth() - 2)
+		Width(borderBoxWidth(a.contentWidth() - 2))
 	return style.Render(strings.Join(content, "\n")) + "\n" + barStyle.Render(bar)
+}
+
+// clampPermissionBody truncates a body to budget rows, replacing the last one
+// with a count of what was dropped.
+//
+// The original scrolls the body instead (a <scrollbox> for diffs) and offers a
+// fullscreen toggle to see it whole; neither exists here, so the count is what
+// tells the reader the text continues rather than ending where it was cut.
+func clampPermissionBody(body string, budget int) string {
+	if body == "" {
+		return ""
+	}
+	if budget < 1 {
+		// No room for any body at all: the header and the buttons are what
+		// matter, and dropping the body is better than losing them.
+		return ""
+	}
+	lines := strings.Split(body, "\n")
+	if len(lines) <= budget {
+		return body
+	}
+	kept := lines[:budget-1]
+	hidden := len(lines) - len(kept)
+	kept = append(kept, fmt.Sprintf("… %d more lines", hidden))
+	return strings.Join(kept, "\n")
 }
 
 // permissionTitle derives the icon and title for a permission request,
 // mirroring permission.tsx's info() cases exactly — including the absence
 // of a "write" case: TS has none, so write falls to the same generic
 // "Call tool <action>" every unhandled action gets. (TS also special-cases
-// list/task/websearch/external_directory/doom_loop, but Go's
-// PermissionRequest carries only a flat Resources list — no subagent_type,
-// patterns, provider, or query — so those can't be reconstructed and are
-// left to the generic fallback too.)
+// list/websearch/external_directory/doom_loop, but Go's PermissionRequest
+// carries only a flat Resources list — no patterns, provider, or query — so
+// those can't be reconstructed and are left to the generic fallback too.)
+//
+// A request from a subagent is attributed to it: with several sessions asking
+// concurrently, an unlabeled prompt is ambiguous about who is blocked.
 func permissionTitle(request *client.PermissionRequest) (icon, title string) {
+	icon, title = permissionAction(request)
+	if agent := request.Agent; agent != "" && agent != "build" {
+		title = title + " (@" + agent + ")"
+	}
+	return icon, title
+}
+
+func permissionAction(request *client.PermissionRequest) (icon, title string) {
 	path := ""
 	if len(request.Resources) > 0 {
 		path = request.Resources[0]
 	}
 	switch request.Action {
+	case "task":
+		if path == "" {
+			return "│", "Launch subagent"
+		}
+		return "│", "Launch " + path + " subagent"
 	case "edit":
 		return "→", "Edit " + path
 	case "read":
@@ -522,7 +615,7 @@ func (a *App) permissionBody(request *client.PermissionRequest) string {
 // part of TS's Status union) LoadAsync sets as a placeholder while a
 // server's initial background connect is still in flight, so it never
 // reads as simply missing during startup.
-func mcpDotColor(t theme.Theme, status string) lipgloss.Color {
+func mcpDotColor(t theme.Theme, status string) color.Color {
 	switch status {
 	case "connected":
 		return t.Success
@@ -606,22 +699,19 @@ func (a *App) sidebarView() string {
 	title := truncateRunes(sessionTitleOf(*a.active), width-6)
 	rows := []string{a.onPanel(a.theme.Text, true).Render(title)}
 
-	rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("Context"))
-	if a.stats != nil {
-		tokens := a.stats.TokensInput + a.stats.TokensOutput +
-			a.stats.TokensReasoning + a.stats.TokensCacheRead + a.stats.TokensCacheWrite
-		rows = append(rows,
-			a.onPanel(a.theme.TextMuted, false).Render(fmt.Sprintf("%d tokens", tokens)),
-			a.onPanel(a.theme.TextMuted, false).Render(fmt.Sprintf("%d%% used", contextPercent(a.stats.TokensInput))),
-			a.onPanel(a.theme.TextMuted, false).Render(fmt.Sprintf("$%.2f spent", a.stats.Cost)),
-		)
-	} else {
-		rows = append(rows,
-			a.onPanel(a.theme.TextMuted, false).Render("0 tokens"),
-			a.onPanel(a.theme.TextMuted, false).Render("0% used"),
-			a.onPanel(a.theme.TextMuted, false).Render("$0.00 spent"),
-		)
-	}
+	// feature-plugins/sidebar/context.tsx. Note what it is *not*: a session
+	// total. Upstream reports the last assistant turn's own context — the
+	// same findLast/five-bucket sum the footer's usage meter uses — against
+	// that model's context limit. This port used to sum every message's
+	// tokens and divide by a hardcoded 200000, so the count grew without
+	// bound and the percentage was meaningless. Only "spent" is a running
+	// session total.
+	context := a.sidebarContext()
+	rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("Context"),
+		a.onPanel(a.theme.TextMuted, false).Render(groupDigits(context.tokens)+" tokens"),
+		a.onPanel(a.theme.TextMuted, false).Render(fmt.Sprintf("%d%% used", context.percent)),
+		a.onPanel(a.theme.TextMuted, false).Render(formatMoney(a.sessionCost())+" spent"),
+	)
 	// MCP (order 200 in the original's sidebar_content slots): live status
 	// per server (feature-plugins/sidebar/mcp.tsx), fetched once at startup
 	// via GET /api/mcp — see loadMCPCmd's doc comment for why once-at-startup
@@ -637,11 +727,30 @@ func (a *App) sidebarView() string {
 		}
 	}
 
-	// LSP (order 300): this port has no LSP client, so unlike TS's
-	// conditional "disabled"/"will activate as files are read"/live server
-	// list, it is unconditionally disabled — which is simply true today.
-	rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("LSP"),
-		a.onPanel(a.theme.TextMuted, false).Render("LSPs are disabled"))
+	// LSP (order 300), porting feature-plugins/sidebar/lsp.tsx's three states:
+	// disabled outright, none started yet, or the live server list.
+	rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("LSP"))
+	switch {
+	case a.lsp == nil:
+		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("Loading..."))
+	case !a.lsp.Enabled:
+		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("LSPs are disabled"))
+	case len(a.lsp.Servers) == 0 && len(a.lsp.Available) == 0:
+		// A deliberate addition to TS's two states. TS says "will activate as
+		// files are read" whether or not any server could ever start, so a
+		// missing binary — usually a PATH the process did not inherit — is
+		// invisible and looks like the feature is broken.
+		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("No language servers found on PATH"))
+	case len(a.lsp.Servers) == 0:
+		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("LSPs will activate as files are read"))
+	default:
+		for _, server := range a.lsp.Servers {
+			dot := lipgloss.NewStyle().Foreground(a.theme.Success).Render("•")
+			rows = append(rows, dot+" "+
+				a.onPanel(a.theme.Text, false).Render(server.Name)+" "+
+				a.onPanel(a.theme.TextMuted, false).Render(server.Root))
+		}
+	}
 
 	if len(a.sidebarTodos) > 0 && a.hasOpenTodos() {
 		rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("Todo"))
@@ -653,6 +762,7 @@ func (a *App) sidebarView() string {
 	// Footer pinned to the bottom, mirroring the sidebar-footer plugin: the
 	// abbreviated directory (+ git branch) with its last segment brighter,
 	// then the "• OpenCode version" line.
+	card := a.gettingStartedCard(width)
 	pathLine := a.sidebarPathLine(width - 4)
 	versionLine := a.onPanel(a.theme.Success, false).Render("•") + " " +
 		a.onPanel(a.theme.Text, true).Render("Open") +
@@ -671,7 +781,14 @@ func (a *App) sidebarView() string {
 	for len(rows) < content {
 		rows = append(rows, "")
 	}
-	rows = append(rows[:content-2], pathLine, versionLine)
+	// The getting-started card sits directly above the path/version lines
+	// (the plugin renders card, path, version inside one gap-1 column), so it
+	// comes out of the same fixed row budget.
+	tail := append(card, pathLine, versionLine)
+	if len(tail) > content {
+		tail = tail[len(tail)-content:]
+	}
+	rows = append(rows[:content-len(tail)], tail...)
 
 	style := lipgloss.NewStyle().
 		Background(a.theme.BackgroundPanel).
@@ -760,11 +877,13 @@ func (a *App) loadSidebarTodos() tea.Cmd {
 
 type sidebarTodosMsg struct{ todos []client.Todo }
 
+// logoLeft is the "Go" half of the wordmark, using the same glyphs the
+// original's bg-pulse "go" logo does (packages/tui/src/logo.ts).
 var logoLeft = []string{
-	"                   ",
-	"█▀▀█ █▀▀█ █▀▀█ █▀▀▄",
-	"█__█ █__█ █^^^ █__█",
-	"▀▀▀▀ █▀▀▀ ▀▀▀▀ ▀~~▀",
+	"         ",
+	"█▀▀▀ █▀▀█",
+	"█_^█ █__█",
+	"▀▀▀▀ ▀▀▀▀",
 }
 
 var logoRight = []string{
@@ -778,12 +897,12 @@ var logoRight = []string{
 // text+bold, applying the original's character substitution (_ → shadowed
 // space, ^ → ▀, ~ → shadowed ▀, , → ▄).
 func (a *App) renderLogoLine(left, right string, line int) string {
-	renderHalf := func(text string, fg lipgloss.Color, bold bool) string {
+	renderHalf := func(text string, fg color.Color, bold bool) string {
 		style := lipgloss.NewStyle().Foreground(fg)
 		if bold {
 			style = style.Bold(true)
 		}
-		shadow := lipgloss.Color(blend(string(a.theme.Background), string(fg), 0.25))
+		shadow := theme.Tint(a.theme.Background, fg, 0.25)
 		shadowStyle := lipgloss.NewStyle().Foreground(shadow)
 		if bold {
 			shadowStyle = shadowStyle.Bold(true)
@@ -824,7 +943,12 @@ func (a *App) viewHome() string {
 	}
 	logo := centerBlock(area, strings.Join(rows, "\n"))
 	prompt := centerBlock(area, a.homePromptBlock(promptMaxWidth(a.width)-1))
+	// tips_toggle (<leader>h). The row keeps its place in the stack so the
+	// logo and prompt do not jump when the tip is hidden.
 	tip := centerBlock(area, a.tipLine(area))
+	if a.tipsHidden {
+		tip = ""
+	}
 
 	content := strings.Join([]string{logo, "", prompt, "", tip}, "\n")
 
@@ -855,23 +979,4 @@ func centerBlock(width int, block string) string {
 		lines[i] = prefix + line
 	}
 	return strings.Join(lines, "\n")
-}
-
-// blend mixes two hex colors, t degrees toward b (used for the logo shadow).
-func blend(aHex, bHex string, t float64) string {
-	parse := func(c string) (float64, float64, float64) {
-		c = strings.TrimPrefix(c, "#")
-		if len(c) == 6 {
-			var r, g, b int
-			fmt.Sscanf(c, "%02x%02x%02x", &r, &g, &b)
-			return float64(r), float64(g), float64(b)
-		}
-		return 0, 0, 0
-	}
-	r1, g1, b1 := parse(aHex)
-	r2, g2, b2 := parse(bHex)
-	mix := func(v1, v2 float64) int {
-		return int(v1 + (v2-v1)*t)
-	}
-	return fmt.Sprintf("#%02x%02x%02x", mix(r1, r2), mix(g1, g2), mix(b1, b2))
 }

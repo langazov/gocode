@@ -1,308 +1,144 @@
 package tui
 
 import (
+	"image/color"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"github.com/anomalyco/opencode-go/internal/tui/theme"
+
+	"charm.land/glamour/v2"
+	"charm.land/glamour/v2/ansi"
 )
 
-// This file is a lightweight Markdown-to-ANSI renderer standing in for TS's
-// opentui <markdown> component (used for assistant TextPart, index.tsx
-// ~1687-1706), which renders through a full CommonMark parser with real
-// syntax highlighting. This hand-rolled version isn't byte-for-byte
-// identical — no nested emphasis, no syntax highlighting inside fences, no
-// tables — but converts the constructs LLM responses use most (headers,
-// fenced code, bold/italic/inline-code, lists, blockquotes, rules) instead
-// of showing them as literal "**"/"#"/backtick characters.
-//
-// Word-wrap decisions are made on the raw markdown source width (markers
-// included) rather than the true rendered width, so wrapped lines can land
-// a few columns short of the target width when a span's markers are wider
-// than its rendered form (e.g. "**bold**" counts 8 columns for 4 rendered
-// ones) — safe (never overflows), just not perfectly filled.
+// This file renders assistant markdown through charmbracelet/glamour: real
+// CommonMark parsing (goldmark) plus chroma syntax-highlighted code fences —
+// replacing an earlier hand-rolled Markdown-to-ANSI pass that had no syntax
+// highlighter at all and only covered headers, fenced code, bold/italic/
+// inline-code, lists, blockquotes, and rules (no nested emphasis, no
+// tables). glamour's own lipgloss v2 dependency was the reason that swap
+// was deferred until this port's TUI moved to lipgloss v2 too (see
+// specs/go-port-gaps.md's dated entries).
 
 // renderMarkdown converts text to ANSI-styled, word-wrapped lines within
-// width.
+// width, via a glamour renderer cached per theme+width on the App (see
+// markdownRenderer): constructing one loads chroma's lexer/style
+// registries, too costly to redo on every streamed delta.
 func (a *App) renderMarkdown(text string, width int) string {
 	if width < 10 {
 		width = 10
 	}
-	var out []string
-	var paragraph []string
-	flushParagraph := func() {
-		if len(paragraph) == 0 {
-			return
-		}
-		joined := strings.Join(paragraph, " ")
-		for _, l := range strings.Split(wrapText(joined, width), "\n") {
-			out = append(out, a.renderMarkdownInline(l))
-		}
-		paragraph = nil
+	r := a.markdownRenderer(width)
+	if r == nil {
+		return text
 	}
-
-	inFence := false
-	fenceLang := ""
-	var fenceLines []string
-	flushFence := func() {
-		if fenceLang != "" {
-			out = append(out, a.styles().Muted.Render(fenceLang))
-		}
-		style := lipgloss.NewStyle().Foreground(a.theme.Text).Background(a.theme.BackgroundElement)
-		for _, l := range fenceLines {
-			// Pad every line to the same width so the highlighted background
-			// is one stable rectangle — clipping alone left each line's
-			// highlight only as wide as its own text, so the block's right
-			// edge visibly danced from line to line (and while streaming,
-			// over time) instead of forming a solid box.
-			out = append(out, style.Render(padToWidth(l, width)))
-		}
-		fenceLines = nil
-		fenceLang = ""
+	out, err := r.Render(text)
+	if err != nil {
+		return text
 	}
-
-	for _, line := range strings.Split(text, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if lang, ok := parseFence(trimmed); ok {
-			if inFence {
-				flushFence()
-				inFence = false
-			} else {
-				flushParagraph()
-				inFence = true
-				fenceLang = lang
-			}
-			continue
-		}
-		if inFence {
-			fenceLines = append(fenceLines, line)
-			continue
-		}
-		switch {
-		case trimmed == "":
-			flushParagraph()
-		case isHorizontalRule(trimmed):
-			flushParagraph()
-			out = append(out, a.styles().Muted.Render(strings.Repeat("─", width)))
-		case isHeaderLine(trimmed):
-			flushParagraph()
-			_, content := parseHeader(trimmed)
-			out = append(out, lipgloss.NewStyle().Bold(true).Foreground(a.theme.Primary).Render(content))
-		case isBlockquoteLine(trimmed):
-			flushParagraph()
-			content := strings.TrimPrefix(strings.TrimPrefix(trimmed, ">"), " ")
-			bar := a.styles().Muted.Render("│ ")
-			for _, l := range strings.Split(wrapText(content, width-2), "\n") {
-				out = append(out, bar+a.renderMarkdownInline(l))
-			}
-		case isListLine(trimmed):
-			flushParagraph()
-			marker, content := parseListItem(trimmed)
-			bulletWidth := lipgloss.Width(marker) + 1
-			lines := strings.Split(wrapText(content, width-bulletWidth), "\n")
-			for i, l := range lines {
-				prefix := strings.Repeat(" ", bulletWidth)
-				if i == 0 {
-					prefix = a.styles().Text.Render(marker) + " "
-				}
-				out = append(out, prefix+a.renderMarkdownInline(l))
-			}
-		default:
-			paragraph = append(paragraph, trimmed)
-		}
-	}
-	if inFence {
-		flushFence()
-	}
-	flushParagraph()
-	return strings.Join(out, "\n")
+	// glamour's block renderer inserts real CommonMark block spacing
+	// (paragraphs/headings/lists/fences each carry their own trailing
+	// blank line); only the outermost leading/trailing blank lines are
+	// trimmed here since assistantTextBlock already manages the single
+	// leading blank line it needs between parts.
+	return strings.Trim(out, "\n")
 }
 
-// renderMarkdownInline converts inline spans (code/bold/italic) to styled
-// text, rendering plain runs through the same theme.Text color the old
-// plain-wrapped rendering used — each styled span self-resets (lipgloss
-// always closes with a full reset), so plain runs need their own explicit
-// color rather than relying on an outer wrapper, matching the "each styled
-// segment resets the enclosing span" pattern already noted in dialogs.go.
-func (a *App) renderMarkdownInline(s string) string {
-	var out, plain strings.Builder
-	flush := func() {
-		if plain.Len() == 0 {
-			return
-		}
-		out.WriteString(a.styles().Text.Render(plain.String()))
-		plain.Reset()
+// markdownRenderer returns the glamour renderer cached for width, rebuilding
+// it only when width or the active theme has actually changed.
+func (a *App) markdownRenderer(width int) *glamour.TermRenderer {
+	if a.mdRenderer != nil && a.mdRendererWidth == width && a.mdRendererTheme == a.theme.Name {
+		return a.mdRenderer
 	}
-	runes := []rune(s)
-	i := 0
-	for i < len(runes) {
-		switch {
-		case runes[i] == '`':
-			if end := indexRune(runes, i+1, '`'); end != -1 {
-				flush()
-				out.WriteString(lipgloss.NewStyle().Foreground(a.theme.Text).Background(a.theme.BackgroundElement).
-					Render(string(runes[i+1 : end])))
-				i = end + 1
-				continue
-			}
-		case hasPrefixAt(runes, i, "**"):
-			if end := indexSeq(runes, i+2, "**"); end > i+2 {
-				flush()
-				out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(a.theme.Text).Render(string(runes[i+2 : end])))
-				i = end + 2
-				continue
-			}
-		case hasPrefixAt(runes, i, "__"):
-			if end := indexSeq(runes, i+2, "__"); end > i+2 {
-				flush()
-				out.WriteString(lipgloss.NewStyle().Bold(true).Foreground(a.theme.Text).Render(string(runes[i+2 : end])))
-				i = end + 2
-				continue
-			}
-		case runes[i] == '*':
-			if end := indexRune(runes, i+1, '*'); end > i+1 {
-				flush()
-				out.WriteString(lipgloss.NewStyle().Italic(true).Foreground(a.theme.Text).Render(string(runes[i+1 : end])))
-				i = end + 1
-				continue
-			}
-		case runes[i] == '_':
-			if end := indexRune(runes, i+1, '_'); end > i+1 {
-				flush()
-				out.WriteString(lipgloss.NewStyle().Italic(true).Foreground(a.theme.Text).Render(string(runes[i+1 : end])))
-				i = end + 1
-				continue
-			}
-		}
-		plain.WriteRune(runes[i])
-		i++
+	r, err := glamour.NewTermRenderer(
+		glamour.WithStyles(glamourStyleConfig(a.theme)),
+		glamour.WithWordWrap(width),
+		// Truecolor to match every other truecolor hex color in this style
+		// (and the rest of the app) — chroma's own default formatter
+		// downsamples to 256-color ANSI otherwise.
+		glamour.WithChromaFormatter("terminal16m"),
+	)
+	if err != nil {
+		return nil
 	}
-	flush()
-	return out.String()
+	a.mdRenderer, a.mdRendererWidth, a.mdRendererTheme = r, width, a.theme.Name
+	return r
 }
 
-func parseFence(trimmed string) (lang string, ok bool) {
-	if !strings.HasPrefix(trimmed, "```") {
-		return "", false
+// codeBlockTheme picks one of chroma's own bundled syntax-highlighting
+// styles for fenced code, rather than mapping the app's theme colors onto
+// chroma's token roles directly: glamour registers a custom Chroma style
+// once under a single fixed name ("charm", internal to the ansi package —
+// see codeblock.go's chromaStyleTheme const) and skips re-registering it if
+// that name is already taken, so a custom per-theme Chroma struct would
+// silently keep whichever theme rendered a code block *first* for the rest
+// of the process — breaking this app's live dark/light theme toggle. Using
+// one of chroma's pre-registered named styles instead sidesteps that
+// entirely, and tokyonight-night/tokyonight-day are literal, exact matches
+// for this app's Dark()/Light() palettes (Dark() *is* Tokyo Night).
+func codeBlockTheme(t theme.Theme) string {
+	if t.Dark {
+		return "tokyonight-night"
 	}
-	return strings.TrimSpace(strings.TrimPrefix(trimmed, "```")), true
+	return "tokyonight-day"
 }
 
-func isHorizontalRule(trimmed string) bool {
-	if len(trimmed) < 3 {
-		return false
-	}
-	c := trimmed[0]
-	if c != '-' && c != '*' && c != '_' {
-		return false
-	}
-	for i := 0; i < len(trimmed); i++ {
-		if trimmed[i] != c {
-			return false
-		}
-	}
-	return true
-}
+// glamourStyleConfig builds a glamour ansi.StyleConfig from the app's own
+// theme colors rather than one of glamour's bundled prose styles, so
+// markdown blends into the rest of the UI — including this port's custom
+// light theme, which has no bundled glamour equivalent. Document/BlockQuote
+// carry no Margin/BlockPrefix/BlockSuffix: this port's own layout
+// (assistantTextBlock's indent+leading blank line) already handles the
+// insetting glamour's bundled styles would otherwise add on top.
+func glamourStyleConfig(t theme.Theme) ansi.StyleConfig {
+	c := t.Colors
+	str := func(s string) *string { return &s }
+	hex := func(col color.Color) *string { s := theme.Hex(col); return &s }
+	yes := func() *bool { b := true; return &b }
+	one := func() *uint { v := uint(1); return &v }
 
-func isHeaderLine(trimmed string) bool {
-	i := 0
-	for i < len(trimmed) && trimmed[i] == '#' {
-		i++
-	}
-	if i == 0 || i > 6 {
-		return false
-	}
-	return i == len(trimmed) || trimmed[i] == ' '
-}
+	return ansi.StyleConfig{
+		Document: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: hex(c.Text)}},
+		BlockQuote: ansi.StyleBlock{
+			StylePrimitive: ansi.StylePrimitive{Color: hex(c.TextMuted)},
+			Indent:         one(),
+			IndentToken:    str("│ "),
+		},
+		List: ansi.StyleList{StyleBlock: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: hex(c.Text)}}},
 
-func parseHeader(trimmed string) (level int, content string) {
-	i := 0
-	for i < len(trimmed) && trimmed[i] == '#' {
-		i++
-	}
-	return i, strings.TrimSpace(trimmed[i:])
-}
+		Heading: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: hex(c.Primary), Bold: yes()}},
+		H1:      ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "# ", Bold: yes()}},
+		H2:      ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "## "}},
+		H3:      ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "### "}},
+		H4:      ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "#### "}},
+		H5:      ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "##### "}},
+		H6:      ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "###### "}},
 
-func isBlockquoteLine(trimmed string) bool {
-	return trimmed == ">" || strings.HasPrefix(trimmed, "> ")
-}
+		Strikethrough: ansi.StylePrimitive{CrossedOut: yes()},
+		Emph:          ansi.StylePrimitive{Italic: yes()},
+		Strong:        ansi.StylePrimitive{Bold: yes()},
+		// glamour's Format template only ever sees the (empty, for a rule)
+		// token text — no width variable is available to it — so, like
+		// every one of glamour's own bundled styles, this can't stretch
+		// edge-to-edge the way the old hand-rolled renderer's
+		// strings.Repeat("─", width) did; a fixed-width divider is the best
+		// this mechanism supports.
+		HorizontalRule: ansi.StylePrimitive{Color: hex(c.BorderActive), Format: "\n" + strings.Repeat("─", 40) + "\n"},
 
-func isListLine(trimmed string) bool {
-	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ ") {
-		return true
-	}
-	i := 0
-	for i < len(trimmed) && trimmed[i] >= '0' && trimmed[i] <= '9' {
-		i++
-	}
-	return i > 0 && strings.HasPrefix(trimmed[i:], ". ")
-}
+		Item:        ansi.StylePrimitive{BlockPrefix: "• "},
+		Enumeration: ansi.StylePrimitive{BlockPrefix: ". ", Color: hex(c.Primary)},
 
-// parseListItem returns the rendered bullet ("•" for -/*/+, "N." for
-// ordered) and the item's remaining text.
-func parseListItem(trimmed string) (marker, content string) {
-	if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") || strings.HasPrefix(trimmed, "+ ") {
-		return "•", trimmed[2:]
-	}
-	i := 0
-	for i < len(trimmed) && trimmed[i] >= '0' && trimmed[i] <= '9' {
-		i++
-	}
-	return trimmed[:i+1], trimmed[i+2:]
-}
+		Link:      ansi.StylePrimitive{Color: hex(c.Primary), Underline: yes()},
+		LinkText:  ansi.StylePrimitive{Color: hex(c.Accent)},
+		Image:     ansi.StylePrimitive{Color: hex(c.Primary), Underline: yes()},
+		ImageText: ansi.StylePrimitive{Color: hex(c.Accent)},
 
-func clipToWidth(line string, width int) string {
-	if lipgloss.Width(line) <= width {
-		return line
+		Code: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{
+			Color:           hex(c.Accent),
+			BackgroundColor: hex(c.BackgroundElement),
+		}},
+		CodeBlock: ansi.StyleCodeBlock{
+			StyleBlock: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: hex(c.Text)}},
+			Theme:      codeBlockTheme(t),
+		},
 	}
-	return truncateRunes(line, width)
-}
-
-// padToWidth clips like clipToWidth but also right-pads shorter lines with
-// spaces, so a background style applied to the result always paints the
-// full width instead of only as far as the line's own text.
-func padToWidth(line string, width int) string {
-	line = clipToWidth(line, width)
-	if gap := width - lipgloss.Width(line); gap > 0 {
-		line += strings.Repeat(" ", gap)
-	}
-	return line
-}
-
-func hasPrefixAt(runes []rune, i int, s string) bool {
-	sr := []rune(s)
-	if i+len(sr) > len(runes) {
-		return false
-	}
-	for k, r := range sr {
-		if runes[i+k] != r {
-			return false
-		}
-	}
-	return true
-}
-
-func indexRune(runes []rune, from int, target rune) int {
-	for i := from; i < len(runes); i++ {
-		if runes[i] == target {
-			return i
-		}
-	}
-	return -1
-}
-
-func indexSeq(runes []rune, from int, seq string) int {
-	sr := []rune(seq)
-	for i := from; i+len(sr) <= len(runes); i++ {
-		match := true
-		for k, r := range sr {
-			if runes[i+k] != r {
-				match = false
-				break
-			}
-		}
-		if match {
-			return i
-		}
-	}
-	return -1
 }

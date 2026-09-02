@@ -9,10 +9,18 @@ import (
 
 type WriteTool struct {
 	resolver Resolver
+	// diagnoser, when set, appends the language servers' verdict on the
+	// written file to the tool output.
+	diagnoser Diagnoser
 }
 
 func NewWriteTool(resolver Resolver) *WriteTool {
 	return &WriteTool{resolver: resolver}
+}
+
+// NewWriteToolWith adds LSP diagnostics reporting to the write tool.
+func NewWriteToolWith(resolver Resolver, diagnoser Diagnoser) *WriteTool {
+	return &WriteTool{resolver: resolver, diagnoser: diagnoser}
 }
 
 func (t *WriteTool) Name() string { return "write" }
@@ -62,5 +70,5 @@ func (t *WriteTool) Execute(ctx context.Context, input map[string]any) (string, 
 	if existed {
 		verb = "Wrote"
 	}
-	return fmt.Sprintf("%s file successfully: %s", verb, target), nil
+	return fmt.Sprintf("%s file successfully: %s", verb, target) + diagnosticsFooter(ctx, t.diagnoser, target), nil
 }

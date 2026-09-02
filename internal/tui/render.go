@@ -1,16 +1,20 @@
 package tui
 
 import (
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
+	"charm.land/lipgloss/v2"
+	"github.com/anomalyco/opencode-go/internal/diff"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/anomalyco/opencode-go/internal/tui/theme"
-	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 )
 
@@ -44,7 +48,7 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 		messages = messages[len(messages)-60:]
 	}
 	for i, message := range messages {
-		if block, refs := a.renderMessage(message, i == len(messages)-1); block != "" {
+		if block, refs := a.renderMessageCached(message, i == len(messages)-1); block != "" {
 			blocks = append(blocks, block)
 			blockRefs = append(blockRefs, refs)
 		}
@@ -90,6 +94,80 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 // header rows within it (relative to the block's own first line — see
 // reasoningHeaderRef and buildTimeline, which re-bases them into the full
 // timeline).
+// renderMessageCached memoizes renderMessage per message.
+//
+// Rendering a message is not cheap: an assistant message runs its markdown
+// through glamour, which parses it and syntax-highlights every fenced block
+// through chroma. buildTimeline does that for up to 60 messages, and it runs
+// on *every* frame — so every keystroke re-highlighted the whole visible
+// history. On a realistic session (60 messages with code blocks) that was 84ms
+// per frame, which is exactly the lag you feel when a key repeats.
+//
+// A settled message's render only changes when something outside it does, so
+// the cache key is the message data plus everything else the render reads:
+// the content width, whether it is the last message, whether a turn is
+// running, and renderEpoch — bumped by the rarer inputs (theme, thinking mode,
+// an expanded reasoning block) rather than tracked individually.
+func (a *App) renderMessageCached(message client.Message, isLast bool) (string, []reasoningHeaderRef) {
+	// The live message is never cached. Its block carries the inline spinner
+	// (a running tool row, a streaming reasoning header), which advances every
+	// tick — caching it would freeze the one thing on screen that has to move.
+	// It is a single message per frame, so re-rendering it costs nothing next
+	// to the history behind it.
+	if isLast && a.busy {
+		return a.renderMessage(message, isLast)
+	}
+	signature := a.renderSignature(message, isLast)
+	if hit, ok := a.messageCache[message.ID]; ok && hit.signature == signature {
+		return hit.block, hit.refs
+	}
+	block, refs := a.renderMessage(message, isLast)
+	if a.messageCache == nil {
+		a.messageCache = map[string]cachedRender{}
+	}
+	// The timeline is capped at 60 messages, but a long-lived session cycles
+	// through many more; drop the cache wholesale rather than grow forever.
+	if len(a.messageCache) > 256 {
+		a.messageCache = map[string]cachedRender{}
+	}
+	a.messageCache[message.ID] = cachedRender{signature: signature, block: block, refs: refs}
+	return block, refs
+}
+
+// renderSignature hashes everything renderMessage's output depends on. The
+// inputs it does *not* hash directly — the theme, the thinking mode, expanded
+// reasoning blocks, and the model-name catalog — all fold into renderEpoch,
+// which their own mutation sites bump.
+func (a *App) renderSignature(message client.Message, isLast bool) uint64 {
+	h := fnv.New64a()
+	h.Write(message.Data)
+	var scalars [8]byte
+	binary.LittleEndian.PutUint64(scalars[:], uint64(a.contentWidth()))
+	h.Write(scalars[:])
+	binary.LittleEndian.PutUint64(scalars[:], a.renderEpoch)
+	h.Write(scalars[:])
+	binary.LittleEndian.PutUint64(scalars[:], uint64(message.TimeCreated))
+	h.Write(scalars[:])
+	flags := byte(0)
+	if isLast {
+		flags |= 1
+	}
+	if a.busy {
+		flags |= 2
+	}
+	if a.timestamps {
+		flags |= 4
+	}
+	h.Write([]byte{flags})
+	h.Write([]byte(message.Type))
+	return h.Sum64()
+}
+
+// invalidateRenderCache bumps the epoch every cached render is keyed against.
+// Used for the inputs that are cheaper to invalidate wholesale than to track:
+// the theme, the thinking mode, and per-part reasoning expansion.
+func (a *App) invalidateRenderCache() { a.renderEpoch++ }
+
 func (a *App) renderMessage(message client.Message, isLast bool) (string, []reasoningHeaderRef) {
 	switch message.Type {
 	case "user":
@@ -114,11 +192,11 @@ func (a *App) renderMessage(message client.Message, isLast bool) (string, []reas
 // backgroundPanel block (padding 1/1/2) with the plain message text, plus a
 // muted timestamp when enabled.
 //
-// Width is contentWidth()-2 (not -1): border(1)+Width(contentWidth()-2)
-// totals contentWidth()-1, matching assistantTextBlock's own max reach
-// (indent(3) + renderMarkdown wrap width contentWidth()-4 = contentWidth()-1)
-// — every bordered timeline panel (userBlock, errBlock, blockToolStyle) and
-// the session prompt box shrink to that same total instead of widening the
+// Width is borderBoxWidth(contentWidth()-2) so the rendered total lands at
+// contentWidth()-1, matching assistantTextBlock's own max reach (indent(3) +
+// renderMarkdown wrap width contentWidth()-4 = contentWidth()-1) — every
+// bordered timeline panel (userBlock, errBlock, blockToolStyle) and the
+// session prompt box shrink to that same total instead of widening the
 // markdown side, since renderMarkdown's wrap decisions run on raw source
 // width and need that spare column of margin (see markdown.go's doc
 // comment) rather than being pushed out to fill a wider box.
@@ -139,7 +217,7 @@ func (a *App) userBlock(message client.Message, data client.UserData) string {
 		PaddingTop(1).
 		PaddingBottom(1).
 		PaddingLeft(2).
-		Width(a.contentWidth() - 2)
+		Width(borderBoxWidth(a.contentWidth() - 2))
 	return style.Render(strings.Join(lines, "\n"))
 }
 
@@ -203,9 +281,24 @@ func (a *App) compactionSeparator() string {
 // messageAborted approximates TS's `error?.name === "MessageAbortedError"`:
 // the wire schema this port reads doesn't carry an error name, only a
 // message string, so this matches on the text the TS abort path produces.
+// messageAborted reports whether a settled assistant message was interrupted
+// rather than failed — the port's `error.name === "MessageAbortedError"`.
+//
+// The runner tags this explicitly (session.ErrorTypeAborted). The message
+// probe behind it is a fallback for rows written before that tagging existed;
+// note that it never matched the runner's own wording ("context canceled"),
+// which is why an interrupted turn used to render as a plain error with no
+// "· interrupted" marker at all.
 func messageAborted(data client.AssistantData) bool {
-	return data.Error != nil && (strings.Contains(data.Error.Message, "aborted") ||
-		strings.Contains(data.Error.Message, "interrupted"))
+	if data.Error == nil {
+		return false
+	}
+	if data.Error.Type == "aborted" {
+		return true
+	}
+	return strings.Contains(data.Error.Message, "aborted") ||
+		strings.Contains(data.Error.Message, "interrupted") ||
+		strings.Contains(data.Error.Message, "context canceled")
 }
 
 // renderAssistant mirrors AssistantMessage: reasoning, text, and tool parts,
@@ -246,7 +339,10 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 		}
 	}
 
-	if data.Error != nil && data.Error.Message != "" {
+	// An interruption is not an error to report: upstream guards this block
+	// with `error.name !== "MessageAbortedError"` and lets the settlement
+	// line's "· interrupted" marker carry it instead.
+	if data.Error != nil && data.Error.Message != "" && !messageAborted(data) {
 		errBlock := lipgloss.NewStyle().
 			Border(splitBorder(), false, false, false, true).
 			BorderForeground(a.theme.Error).
@@ -254,7 +350,7 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 			PaddingTop(1).
 			PaddingBottom(1).
 			PaddingLeft(2).
-			Width(a.contentWidth() - 2)
+			Width(borderBoxWidth(a.contentWidth() - 2))
 		appendBlock(errBlock.Render(a.styles().Muted.Render(data.Error.Message)))
 	}
 
@@ -396,7 +492,7 @@ func (a *App) reasoningBlock(id string, running bool, rawText string, partTime *
 
 	var header string
 	if running {
-		frame := spinnerFrames[a.spinnerFrame%len(spinnerFrames)]
+		frame := a.spinnerGlyph()
 		label := "Thinking"
 		if title != "" {
 			label = "Thinking: " + title
@@ -495,7 +591,7 @@ func (a *App) toolRow(message client.Message, name string, state *toolState) str
 		// other tool sits static in the muted icon the whole time, so
 		// running and done render identically for them.
 		if name == "bash" || name == "read" || name == "task" {
-			frame := spinnerFrames[a.spinnerFrame%len(spinnerFrames)]
+			frame := a.spinnerGlyph()
 			return a.styles().Muted.Render("   " + frame + " " + label)
 		}
 		return a.styles().Muted.Render("   " + icon + " " + label)
@@ -518,7 +614,7 @@ func (a *App) blockToolStyle() lipgloss.Style {
 		PaddingTop(1).
 		PaddingBottom(1).
 		PaddingLeft(2).
-		Width(a.contentWidth() - 2)
+		Width(borderBoxWidth(a.contentWidth() - 2))
 }
 
 // bashBlock mirrors Shell's BlockTool: the command line (spinner while
@@ -531,7 +627,7 @@ func (a *App) bashBlock(state *toolState) string {
 	}
 	var lines []string
 	if state.Status == "running" {
-		frame := spinnerFrames[a.spinnerFrame%len(spinnerFrames)]
+		frame := a.spinnerGlyph()
 		lines = append(lines, a.styles().Text.Render(frame+" "+command))
 	} else {
 		lines = append(lines, a.styles().Text.Render("$ "+command))
@@ -550,57 +646,131 @@ func (a *App) bashBlock(state *toolState) string {
 	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
 }
 
-// editDiffBlock approximates TS's diff BlockTool. TS renders a full
-// syntax-highlighted split/unified diff from structured `metadata.diff`
-// this port's wire schema doesn't carry; this instead colors the ```diff
-// preview (up to 6 old/new lines) that internal/tool/builtins/edit.go's
-// formatEditOutput already embeds in the tool's Output text — real diff
-// content, just not the exact original presentation. Returns "" (falling
-// back to the one-line "← Edit path" summary) until there's a diff to show.
+// editDiffBlock renders a tool's unified diff.
+//
+// The diff is parsed with internal/diff (sourcegraph/go-diff underneath)
+// rather than classified by string prefix, which is what gives us hunk
+// headers and real line numbers in the gutter. The diff text itself comes
+// from the fenced ```diff block that edit.go and apply_patch.go embed in
+// their output, matching how TS carries a unified diff in tool metadata.
+// Returns "" (falling back to the one-line summary) when there is nothing
+// to show.
 func (a *App) editDiffBlock(state *toolState) string {
-	diff := parseDiffPreview(state.Output)
-	if len(diff) == 0 {
+	block := parseDiffPreview(state.Output)
+	if block == "" {
 		return ""
 	}
+	files := diff.Parse(block)
+	if len(files) == 0 {
+		return ""
+	}
+
 	path, _ := state.Input["filePath"].(string)
 	title := "← Edit"
 	if path != "" {
 		title = "← Edit " + path
 	}
-	lines := []string{a.styles().Muted.Render(title)}
-	for _, dl := range diff {
-		switch {
-		case strings.HasPrefix(dl, "+"):
-			lines = append(lines, lipgloss.NewStyle().Foreground(a.theme.Success).Render(dl))
-		case strings.HasPrefix(dl, "-"):
-			lines = append(lines, lipgloss.NewStyle().Foreground(a.theme.Error).Render(dl))
-		default:
-			lines = append(lines, a.styles().Muted.Render(dl))
+	var additions, deletions int
+	for _, file := range files {
+		additions += file.Stat.Additions
+		deletions += file.Stat.Deletions
+	}
+	if additions > 0 || deletions > 0 {
+		title += fmt.Sprintf("  +%d -%d", additions, deletions)
+	}
+
+	styles := a.styles()
+	added := lipgloss.NewStyle().Foreground(a.theme.Success)
+	removed := lipgloss.NewStyle().Foreground(a.theme.Error)
+	lines := []string{styles.Muted.Render(title)}
+
+	// Line numbers are right-aligned to a width derived from the largest one
+	// on show, so the gutter does not jitter between hunks.
+	width := gutterWidth(files)
+	rendered := 0
+	for _, file := range files {
+		if len(files) > 1 {
+			lines = append(lines, styles.Muted.Render(file.Name()))
+		}
+		for _, line := range file.Lines {
+			if rendered >= maxRenderedDiffLines {
+				lines = append(lines, styles.Muted.Render("  … diff truncated"))
+				return a.finishDiffBlock(lines, state)
+			}
+			rendered++
+			switch line.Kind {
+			case diff.LineHunk:
+				lines = append(lines, styles.Muted.Render(line.Content))
+			case diff.LineAdded:
+				lines = append(lines, added.Render(gutter(0, line.NewLine, width)+"+ "+line.Content))
+			case diff.LineRemoved:
+				lines = append(lines, removed.Render(gutter(line.OldLine, 0, width)+"- "+line.Content))
+			case diff.LineMeta:
+				lines = append(lines, styles.Muted.Render(line.Content))
+			default:
+				lines = append(lines, styles.Muted.Render(gutter(line.OldLine, line.NewLine, width)+"  "+line.Content))
+			}
 		}
 	}
+	return a.finishDiffBlock(lines, state)
+}
+
+// maxRenderedDiffLines bounds a single diff block so one large edit cannot
+// push the rest of the conversation off screen.
+const maxRenderedDiffLines = 40
+
+func (a *App) finishDiffBlock(lines []string, state *toolState) string {
 	if state.Status == "error" && state.Error != "" {
 		lines = append(lines, a.styles().Error.Render(state.Error))
 	}
 	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
 }
 
-// parseDiffPreview extracts the lines inside the fenced ```diff block
-// edit.go's formatEditOutput embeds in the tool's output text.
-func parseDiffPreview(output string) []string {
+// gutterWidth sizes the line-number column from the largest number shown.
+func gutterWidth(files []diff.File) int {
+	largest := 0
+	for _, file := range files {
+		for _, line := range file.Lines {
+			largest = max(largest, line.OldLine, line.NewLine)
+		}
+	}
+	width := len(strconv.Itoa(largest))
+	if width < 2 {
+		width = 2
+	}
+	return width
+}
+
+// gutter renders the old/new line-number pair, blanking the side a line does
+// not exist on.
+func gutter(oldLine, newLine, width int) string {
+	return pad(oldLine, width) + " " + pad(newLine, width) + " "
+}
+
+func pad(value, width int) string {
+	if value == 0 {
+		return strings.Repeat(" ", width)
+	}
+	text := strconv.Itoa(value)
+	if len(text) >= width {
+		return text
+	}
+	return strings.Repeat(" ", width-len(text)) + text
+}
+
+// parseDiffPreview extracts the text inside the fenced ```diff block that the
+// edit and apply_patch tools embed in their output.
+func parseDiffPreview(output string) string {
 	start := strings.Index(output, "```diff")
 	if start == -1 {
-		return nil
+		return ""
 	}
 	rest := output[start+len("```diff"):]
 	end := strings.Index(rest, "```")
 	if end == -1 {
 		end = len(rest)
 	}
-	block := strings.Trim(rest[:end], "\n")
-	if block == "" {
-		return nil
-	}
-	return strings.Split(block, "\n")
+	return strings.Trim(rest[:end], "\n")
 }
 
 // todoWriteBlock mirrors TodoWrite's "# Todos" BlockTool: internal/tool/
@@ -805,4 +975,17 @@ func wrapText(value string, width int) string {
 // splitBorder mirrors SplitBorder: the ┃ vertical bar.
 func splitBorder() lipgloss.Border {
 	return lipgloss.Border{Left: "┃"}
+}
+
+// borderBoxWidth converts a "content+padding width, with the single left
+// border column rendered outside it" total — what every single-left-border
+// panel in this file (userBlock, errBlock, blockToolStyle, promptBox) was
+// tuned against under lipgloss v1's Style.Width(), which excluded the
+// border — into what lipgloss v2's Width() needs: v2's Width() is true
+// border-box (the declared value IS the total rendered size, border
+// included), so reaching the same on-screen total now needs the border
+// column added back into the argument instead of left for the border to add
+// on top. One left border column, hence +1.
+func borderBoxWidth(contentAndPadding int) int {
+	return contentAndPadding + 1
 }

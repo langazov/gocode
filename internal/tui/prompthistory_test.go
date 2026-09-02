@@ -148,32 +148,135 @@ func TestHistoryArrowsRecallAcrossHomeAndChat(t *testing.T) {
 	if got := app.input.Value(); got != "earlier prompt" {
 		t.Fatalf("input.Value() = %q, want %q", got, "earlier prompt")
 	}
-
-	// Cursor lands at the document start, so "down" recalls the empty draft.
 	if !app.inputAtStart() {
 		t.Fatalf("cursor should be at the start after recalling with up")
 	}
-	if _, handled := app.historyKey("down"); handled {
-		t.Fatalf("historyKey(down) right after up (cursor not at end) = handled, want not handled (normal cursor move)")
+}
+
+// The reported bug: after `up` recalled an entry the cursor sat at the start,
+// and `down` required it to be at the end — which on a single-row draft
+// bubbles' CursorDown never moves it to. Forward history was unreachable.
+//
+// Upstream's commands are a two-stage gesture: the first press snaps the
+// cursor to the far end of the draft, the second recalls.
+func TestDownWalksForwardThroughHistory(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.history.Append("first")
+	app.history.Append("second")
+
+	// Back twice: "second", then "first".
+	app.historyKey("up")
+	if got := app.input.Value(); got != "second" {
+		t.Fatalf("first up = %q, want %q", got, "second")
+	}
+	if _, handled := app.historyKey("up"); !handled {
+		t.Fatal("a second up should keep walking back (the cursor is already at the start)")
+	}
+	if got := app.input.Value(); got != "first" {
+		t.Fatalf("second up = %q, want %q", got, "first")
+	}
+
+	// Stage one: the cursor is at the start, so down parks it at the end.
+	if _, handled := app.historyKey("down"); !handled {
+		t.Fatal("down should snap the cursor to the end of the recalled draft")
+	}
+	if got := app.input.Value(); got != "first" {
+		t.Fatalf("the snap must not change the draft, got %q", got)
+	}
+	if !app.inputAtEnd() {
+		t.Fatal("the cursor should now be at the end")
+	}
+
+	// Stage two: forward through history.
+	if _, handled := app.historyKey("down"); !handled {
+		t.Fatal("down at the end should walk history forward")
+	}
+	if got := app.input.Value(); got != "second" {
+		t.Fatalf("down = %q, want %q", got, "second")
+	}
+	// And forward again restores the empty live draft.
+	if _, handled := app.historyKey("down"); !handled {
+		t.Fatal("down should restore the live draft")
+	}
+	if got := app.input.Value(); got != "" {
+		t.Fatalf("the live draft should be empty, got %q", got)
 	}
 }
 
-func TestHistoryArrowsIgnoredMidLine(t *testing.T) {
+// Mid-line on the document's only visual row, an arrow snaps the cursor to
+// that end rather than recalling — the draft is left alone either way.
+func TestHistoryArrowsSnapBeforeRecalling(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.history.Append("earlier prompt")
 	app.input.SetValue("draft text")
-	app.input.SetCursor(3) // mid-line: neither boundary
+	app.input.SetCursorColumn(3) // mid-line: neither boundary
 
 	if app.inputAtStart() || app.inputAtEnd() {
 		t.Fatalf("cursor set mid-line should be at neither boundary")
 	}
-	if _, handled := app.historyKey("up"); handled {
-		t.Fatalf("historyKey(up) mid-line = handled, want not handled")
+	if _, handled := app.historyKey("up"); !handled {
+		t.Fatal("up should snap the cursor to the start of the draft")
 	}
-	if _, handled := app.historyKey("down"); handled {
-		t.Fatalf("historyKey(down) mid-line = handled, want not handled")
+	if got := app.input.Value(); got != "draft text" {
+		t.Fatalf("the snap must not recall, got %q", got)
+	}
+	if !app.inputAtStart() {
+		t.Fatal("the cursor should be at the start after the snap")
+	}
+
+	// An edited draft still blocks the recall itself (history.move's guard).
+	if _, handled := app.historyKey("up"); handled {
+		t.Fatal("an edited draft must not recall over itself")
 	}
 	if got := app.input.Value(); got != "draft text" {
 		t.Fatalf("input.Value() = %q, want unchanged %q", got, "draft text")
+	}
+}
+
+// The boundary checks used LineInfo().CharOffset, which is a column count
+// relative to the current *visual* row — so once a draft wrapped, the cursor
+// at the true end of the buffer did not register as being at the end, and
+// history navigation stopped working entirely on long prompts.
+func TestBoundariesHoldOnAWrappedDraft(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.input.SetWidth(20)
+	long := "this draft is comfortably longer than twenty columns so it wraps"
+	app.input.SetValue(long)
+
+	moveCursorToDocumentEnd(&app.input)
+	if !app.inputAtEnd() {
+		t.Fatalf("the cursor at the end of a wrapped draft should register as the end (column %d of %d)",
+			app.input.Column(), len([]rune(long)))
+	}
+	if app.inputAtStart() {
+		t.Fatal("the end of a wrapped draft is not also its start")
+	}
+
+	moveCursorToDocumentStart(&app.input)
+	if !app.inputAtStart() {
+		t.Fatal("the cursor at the start of a wrapped draft should register as the start")
+	}
+	if app.inputAtEnd() {
+		t.Fatal("the start of a wrapped draft is not also its end")
+	}
+}
+
+// The snap stage keys off the *visual* row, so a wrapped draft still walks
+// row by row before the recall takes over.
+func TestWrappedDraftWalksRowsBeforeRecalling(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.history.Append("earlier")
+	app.input.SetWidth(20)
+	app.input.SetValue("this draft is comfortably longer than twenty columns so it wraps")
+	moveCursorToDocumentStart(&app.input)
+
+	// On the first visual row and already at offset 0, but the draft does not
+	// match any history entry, so nothing is recalled.
+	if _, handled := app.historyKey("up"); handled {
+		t.Fatal("an unrelated draft must not be replaced")
+	}
+	// From the top of a multi-row draft, down is a plain cursor move.
+	if _, handled := app.historyKey("down"); handled {
+		t.Fatal("down from a non-final visual row should fall through to cursor movement")
 	}
 }

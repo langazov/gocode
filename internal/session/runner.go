@@ -61,6 +61,11 @@ type Runner struct {
 	// ContextLimit bounds the model context window for compaction budgeting.
 	ContextLimit int
 
+	// ToolConcurrency caps how many tool calls one turn settles at once.
+	// Zero means DefaultToolConcurrency. One restores the pre-concurrency
+	// sequential behavior.
+	ToolConcurrency int
+
 	// Compactor, when set, summarizes history as the context limit approaches.
 	Compactor *Compactor
 
@@ -72,6 +77,12 @@ type Runner struct {
 	// --variant behavior — no variant selected means no reasoning
 	// requested). nil disables reasoning variant support entirely.
 	ReasoningVariants func(providerID, modelID, variantID string) map[string]any
+
+	// Pricing resolves a model's per-million-token rates so a settled step can
+	// be costed. Injected from the boot wiring, like ReasoningVariants above,
+	// to keep the catalog out of this package. When nil (or when the catalog
+	// has no entry) a step costs nothing rather than a guessed amount.
+	Pricing PricingResolver
 }
 
 // resolvedAgent carries the effective per-turn agent configuration.
@@ -272,7 +283,6 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	var reasoning strings.Builder
 	var textID string
 	var reasoningID string
-	var toolCalls []llm.ToolCall
 	var finish string
 	var usage llm.Usage
 	var providerErr error
@@ -324,64 +334,140 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 		return err
 	}
 
-	streamErr := r.Provider.Stream(runCtx, request, func(streamEvent llm.StreamEvent) {
-		if providerErr != nil {
-			return
+	// The loop below is the sole publisher for this turn. The provider stream
+	// runs in its own goroutine and forwards events inward; every tool runs in
+	// its own goroutine and reports a settlement inward. Nothing else touches
+	// the bus, so event ordering stays deterministic without a lock.
+	// See MULTI_AGENTS.md phase 1.
+	events := make(chan llm.StreamEvent, 64)
+	settlements := make(chan settlement, 16)
+	sem := make(chan struct{}, r.toolConcurrency())
+	var streamErr error
+	go func() {
+		defer close(events)
+		streamErr = r.Provider.Stream(runCtx, request, func(streamEvent llm.StreamEvent) {
+			select {
+			case events <- streamEvent:
+			case <-runCtx.Done():
+			}
+		})
+	}()
+
+	inflight := 0
+	seq := 0
+	needsContinuation := false
+	// The turn is over once the stream has closed AND every dispatched tool
+	// has reported back — the Go analogue of FiberSet.awaitEmpty.
+	for events != nil || inflight > 0 {
+		select {
+		case streamEvent, ok := <-events:
+			if !ok {
+				events = nil
+				continue
+			}
+			if providerErr != nil {
+				continue
+			}
+			switch streamEvent.Type {
+			case llm.EventTextDelta:
+				if err := startAssistant(); err != nil {
+					providerErr = err
+					continue
+				}
+				if err := startText(); err != nil {
+					providerErr = err
+					continue
+				}
+				text.WriteString(streamEvent.Text)
+				if _, err := r.Bus.Publish(ctx, TextDelta, map[string]any{
+					"sessionID":          sessionID,
+					"timestamp":          nowMillis(),
+					"assistantMessageID": assistantMessageID,
+					"textID":             textID,
+					"delta":              streamEvent.Text,
+				}, event.PublishOptions{}); err != nil {
+					providerErr = err
+					continue
+				}
+			case llm.EventReasoningDelta:
+				if err := startAssistant(); err != nil {
+					providerErr = err
+					continue
+				}
+				if err := startReasoning(); err != nil {
+					providerErr = err
+					continue
+				}
+				reasoning.WriteString(streamEvent.Text)
+				if _, err := r.Bus.Publish(ctx, ReasoningDelta, map[string]any{
+					"sessionID":          sessionID,
+					"timestamp":          nowMillis(),
+					"assistantMessageID": assistantMessageID,
+					"reasoningID":        reasoningID,
+					"delta":              streamEvent.Text,
+				}, event.PublishOptions{}); err != nil {
+					providerErr = err
+					continue
+				}
+			case llm.EventToolCall:
+				if err := startAssistant(); err != nil {
+					providerErr = err
+					continue
+				}
+				call := *streamEvent.ToolCall
+				// Published in stream order. projectToolCalled appends to the
+				// assistant message content, so this ordering is what fixes
+				// the timeline layout; settlements may land in any order.
+				if _, err := r.Bus.Publish(ctx, ToolCalled, map[string]any{
+					"sessionID":          sessionID,
+					"timestamp":          nowMillis(),
+					"assistantMessageID": assistantMessageID,
+					"callID":             call.ID,
+					"tool":               call.Name,
+					"input":              call.Input,
+					"provider":           map[string]any{"executed": call.ProviderExecuted},
+				}, event.PublishOptions{}); err != nil {
+					providerErr = err
+					continue
+				}
+				needsContinuation = true
+				if call.ProviderExecuted {
+					// The provider already ran it; settle from its output
+					// rather than dispatching locally.
+					if err := r.publishSettlement(ctx, sessionID, assistantMessageID, settlement{
+						call:   call,
+						seq:    seq,
+						output: call.Output,
+					}); err != nil {
+						providerErr = err
+					}
+					seq++
+					continue
+				}
+				// Dispatch mid-stream: the tool starts now, while the rest of
+				// the response is still arriving.
+				inflight++
+				go r.settleTool(runCtx, sem, toolRequest{
+					call:               call,
+					seq:                seq,
+					sessionID:          sessionID,
+					assistantMessageID: assistantMessageID,
+					agentID:            resolved.ID,
+				}, settlements)
+				seq++
+			case llm.EventFinish:
+				finish = streamEvent.Finish
+				usage = streamEvent.Usage
+			case llm.EventProviderError:
+				providerErr = streamEvent.Error
+			}
+		case settled := <-settlements:
+			inflight--
+			if err := r.publishSettlement(ctx, sessionID, assistantMessageID, settled); err != nil && providerErr == nil {
+				providerErr = err
+			}
 		}
-		switch streamEvent.Type {
-		case llm.EventTextDelta:
-			if err := startAssistant(); err != nil {
-				providerErr = err
-				return
-			}
-			if err := startText(); err != nil {
-				providerErr = err
-				return
-			}
-			text.WriteString(streamEvent.Text)
-			if _, err := r.Bus.Publish(ctx, TextDelta, map[string]any{
-				"sessionID":          sessionID,
-				"timestamp":          nowMillis(),
-				"assistantMessageID": assistantMessageID,
-				"textID":             textID,
-				"delta":              streamEvent.Text,
-			}, event.PublishOptions{}); err != nil {
-				providerErr = err
-				return
-			}
-		case llm.EventReasoningDelta:
-			if err := startAssistant(); err != nil {
-				providerErr = err
-				return
-			}
-			if err := startReasoning(); err != nil {
-				providerErr = err
-				return
-			}
-			reasoning.WriteString(streamEvent.Text)
-			if _, err := r.Bus.Publish(ctx, ReasoningDelta, map[string]any{
-				"sessionID":          sessionID,
-				"timestamp":          nowMillis(),
-				"assistantMessageID": assistantMessageID,
-				"reasoningID":        reasoningID,
-				"delta":              streamEvent.Text,
-			}, event.PublishOptions{}); err != nil {
-				providerErr = err
-				return
-			}
-		case llm.EventToolCall:
-			if err := startAssistant(); err != nil {
-				providerErr = err
-				return
-			}
-			toolCalls = append(toolCalls, *streamEvent.ToolCall)
-		case llm.EventFinish:
-			finish = streamEvent.Finish
-			usage = streamEvent.Usage
-		case llm.EventProviderError:
-			providerErr = streamEvent.Error
-		}
-	})
+	}
 	if streamErr != nil && providerErr == nil {
 		providerErr = streamErr
 	}
@@ -400,51 +486,11 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 			"sessionID":          sessionID,
 			"timestamp":          nowMillis(),
 			"assistantMessageID": assistantMessageID,
-			"error":              map[string]any{"type": "unknown", "message": providerErr.Error()},
+			"error":              stepError(providerErr),
 		}, event.PublishOptions{}); err != nil {
 			return turnResult{}, err
 		}
 		return turnResult{}, providerErr
-	}
-
-	needsContinuation := false
-	for _, call := range toolCalls {
-		if _, err := r.Bus.Publish(ctx, ToolCalled, map[string]any{
-			"sessionID":          sessionID,
-			"timestamp":          nowMillis(),
-			"assistantMessageID": assistantMessageID,
-			"callID":             call.ID,
-			"tool":               call.Name,
-			"input":              call.Input,
-			"provider":           map[string]any{"executed": false},
-		}, event.PublishOptions{}); err != nil {
-			return turnResult{}, err
-		}
-		needsContinuation = true
-		output, execErr := r.executeTool(runCtx, sessionID, assistantMessageID, resolved.ID, call)
-		if execErr != nil {
-			if _, err := r.Bus.Publish(ctx, ToolFailed, map[string]any{
-				"sessionID":          sessionID,
-				"timestamp":          nowMillis(),
-				"assistantMessageID": assistantMessageID,
-				"callID":             call.ID,
-				"error":              map[string]any{"type": "unknown", "message": execErr.Error()},
-				"provider":           map[string]any{"executed": false},
-			}, event.PublishOptions{}); err != nil {
-				return turnResult{}, err
-			}
-			continue
-		}
-		if _, err := r.Bus.Publish(ctx, ToolSuccess, map[string]any{
-			"sessionID":          sessionID,
-			"timestamp":          nowMillis(),
-			"assistantMessageID": assistantMessageID,
-			"callID":             call.ID,
-			"output":             output,
-			"provider":           map[string]any{"executed": false},
-		}, event.PublishOptions{}); err != nil {
-			return turnResult{}, err
-		}
 	}
 
 	if err := startAssistant(); err != nil {
@@ -477,7 +523,13 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 		"timestamp":          nowMillis(),
 		"assistantMessageID": assistantMessageID,
 		"finish":             finish,
-		"cost":               0,
+		"cost": r.stepCost(resolved.Model.ProviderID, resolved.Model.ID, TokenUsage{
+			Input:      usage.Input,
+			Output:     usage.Output,
+			Reasoning:  usage.Reasoning,
+			CacheRead:  usage.CacheRead,
+			CacheWrite: usage.CacheWrite,
+		}),
 		"tokens": map[string]any{
 			"input":     usage.Input,
 			"output":    usage.Output,
@@ -496,6 +548,29 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 		return "", fmt.Errorf("session: no tool registry")
 	}
 	if r.Permissions != nil {
+		// A tool may imply approvals beyond its own action. The shell does:
+		// its command can reach outside the working directory, which every
+		// file tool refuses, so it declares those paths and they are asked for
+		// first. Asking before the tool's own action means a denial stops the
+		// command without the model seeing a partial approval.
+		if scoped, ok := r.tool(call.Name).(tool.PermissionScoped); ok {
+			for _, extra := range scoped.ExtraPermissions(call.Input) {
+				if len(extra.Resources) == 0 {
+					continue
+				}
+				err := r.Permissions.Assert(ctx, ToolPermissionInput{
+					SessionID:          sessionID,
+					Agent:              agentID,
+					Action:             extra.Action,
+					Resources:          extra.Resources,
+					AssistantMessageID: assistantMessageID,
+					CallID:             call.ID,
+				})
+				if err != nil {
+					return "", err
+				}
+			}
+		}
 		err := r.Permissions.Assert(ctx, ToolPermissionInput{
 			SessionID:          sessionID,
 			Agent:              agentID,
@@ -514,6 +589,18 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 		AssistantMessageID: assistantMessageID,
 		CallID:             call.ID,
 	})
+}
+
+// tool looks a tool up by name, returning nil when the registry has none.
+func (r *Runner) tool(name string) tool.Tool {
+	if r.Tools == nil {
+		return nil
+	}
+	found, ok := r.Tools.Get(name)
+	if !ok {
+		return nil
+	}
+	return found
 }
 
 // permissionAction maps a tool to its permission action. edit, write, and
@@ -535,6 +622,11 @@ func permissionResources(toolName string, input map[string]any) []string {
 		resource, _ = input["pattern"].(string)
 	case "bash":
 		resource, _ = input["command"].(string)
+	case "task":
+		// Scope the grant to the subagent being launched, so a ruleset can
+		// allow `explore` while still asking for `general`. Matches the
+		// TypeScript task tool's patterns: [subagent_type].
+		resource, _ = input["subagent_type"].(string)
 	default:
 		resource, _ = input["path"].(string)
 	}
@@ -579,6 +671,17 @@ func (r *Runner) failInterruptedTools(ctx context.Context, sessionID string) err
 		}
 	}
 	return nil
+}
+
+// stepError classifies a failed step for the settled assistant message. A
+// canceled run context means the user interrupted the turn, which every
+// consumer needs to tell apart from a provider failure — see ErrorTypeAborted.
+func stepError(err error) map[string]any {
+	errType := ErrorTypeUnknown
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		errType = ErrorTypeAborted
+	}
+	return map[string]any{"type": errType, "message": err.Error()}
 }
 
 func nowMillis() int64 {
@@ -679,4 +782,17 @@ func (r *Runner) resolveAgent(ctx context.Context, sessionID string) (resolvedAg
 		resolved.Model = *sessionModel
 	}
 	return resolved, nil
+}
+
+// stepCost prices a settled step, or returns 0 when no pricing is wired or the
+// catalog has no rates for the model. See cost.go.
+func (r *Runner) stepCost(providerID, modelID string, usage TokenUsage) float64 {
+	if r.Pricing == nil {
+		return 0
+	}
+	rates, ok := r.Pricing(providerID, modelID, usage.Input)
+	if !ok {
+		return 0
+	}
+	return stepCost(rates, usage)
 }

@@ -5,14 +5,24 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/anomalyco/opencode-go/internal/diff"
 )
 
 type EditTool struct {
 	resolver Resolver
+	// diagnoser, when set, appends the language servers' verdict on the edited
+	// file to the tool output.
+	diagnoser Diagnoser
 }
 
 func NewEditTool(resolver Resolver) *EditTool {
 	return &EditTool{resolver: resolver}
+}
+
+// NewEditToolWith adds LSP diagnostics reporting to the edit tool.
+func NewEditToolWith(resolver Resolver, diagnoser Diagnoser) *EditTool {
+	return &EditTool{resolver: resolver, diagnoser: diagnoser}
 }
 
 func (t *EditTool) Name() string { return "edit" }
@@ -89,7 +99,7 @@ func (t *EditTool) Execute(ctx context.Context, input map[string]any) (string, e
 	if err := os.WriteFile(target, []byte(output), 0o644); err != nil {
 		return "", fmt.Errorf("Unable to edit %s", path)
 	}
-	return formatEditOutput(target, replacements, oldString, newString), nil
+	return formatEditOutput(target, replacements, text, replaced) + diagnosticsFooter(ctx, t.diagnoser, target), nil
 }
 
 func splitBOM(text string) (bool, string) {
@@ -138,32 +148,43 @@ func countOccurrences(content, search string) int {
 	return count
 }
 
-func formatEditOutput(path string, replacements int, oldString, newString string) string {
+// formatEditOutput renders the result as a real unified diff of the whole
+// file, replacing the previous approximation that just printed oldString
+// prefixed with "-" and newString with "+" — that showed no surrounding
+// context and no line numbers, and misrepresented a replaceAll edit as a
+// single change.
+func formatEditOutput(path string, replacements int, before, after string) string {
+	unified := diff.Trim(diff.Unified(path, path, before, after))
+	stat := diff.Count(before, after)
+
 	var lines []string
 	lines = append(lines, fmt.Sprintf("Edited file successfully: %s", path))
-	lines = append(lines, fmt.Sprintf("Replacements: %d", replacements))
+	lines = append(lines, fmt.Sprintf("Replacements: %d (+%d -%d)", replacements, stat.Additions, stat.Deletions))
 	lines = append(lines, "```diff")
-	lines = append(lines, previewLines(oldString, "-")...)
-	lines = append(lines, previewLines(newString, "+")...)
+	lines = append(lines, truncateDiff(unified, maxDiffLines)...)
 	lines = append(lines, "```")
 	return strings.Join(lines, "\n")
 }
 
-func previewLines(value, prefix string) []string {
-	lines := strings.Split(strings.ReplaceAll(value, "\r\n", "\n"), "\n")
-	var shown []string
-	max := len(lines)
-	if max > 6 {
-		max = 6
+// maxDiffLines bounds how much of a diff is echoed back to the model. A large
+// refactor can produce thousands of lines, which is context the model rarely
+// needs — the file itself is authoritative.
+const maxDiffLines = 60
+
+func truncateDiff(unified string, limit int) []string {
+	lines := strings.Split(strings.TrimRight(unified, "\n"), "\n")
+	truncated := false
+	if len(lines) > limit {
+		lines = lines[:limit]
+		truncated = true
 	}
-	for _, line := range lines[:max] {
+	for i, line := range lines {
 		if len(line) > 240 {
-			line = line[:240] + "..."
+			lines[i] = line[:240] + "..."
 		}
-		shown = append(shown, prefix+line)
 	}
-	if len(lines) > max {
-		shown = append(shown, prefix+"...")
+	if truncated {
+		lines = append(lines, "... diff truncated")
 	}
-	return shown
+	return lines
 }

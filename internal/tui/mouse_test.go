@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // --- textSelection / column math (pure) -----------------------------------
@@ -85,6 +85,35 @@ func TestApplySelectionHighlightWrapsExactRange(t *testing.T) {
 	}
 }
 
+// TestApplySelectionHighlightSurvivesEmbeddedResets is the regression for
+// "mouse selection doesn't properly select rendered code blocks": glamour's
+// chroma-highlighted code emits a full SGR reset (\x1b[0m) after nearly
+// every token, and each one previously canceled the outer \x1b[7m
+// reverse-video wrap the moment the selection crossed a second token,
+// leaving only the first token visibly highlighted.
+func TestApplySelectionHighlightSurvivesEmbeddedResets(t *testing.T) {
+	app := &App{width: 80, height: 24}
+	// "fmt.Println" as three separately colored-and-reset chroma tokens,
+	// same shape terminal16m output actually has (see markdown.go).
+	line := "\x1b[38;2;100;100;100mfmt\x1b[0m\x1b[38;2;200;200;200m.\x1b[0m\x1b[38;2;50;150;250mPrintln\x1b[0m"
+	app.selection.begin(0, 0)
+	app.selection.extend(0, 10) // whole "fmt.Println" (11 visible chars)
+	got := app.applySelectionHighlight(line)
+
+	start := strings.Index(got, "\x1b[7m")
+	end := strings.Index(got, "\x1b[27m")
+	if start == -1 || end == -1 || end < start {
+		t.Fatalf("expected a \\x1b[7m..\\x1b[27m wrap, got %q", got)
+	}
+	middle := got[start+len("\x1b[7m") : end]
+	if strings.Contains(middle, "\x1b[0m") {
+		t.Fatalf("an embedded reset inside the highlighted span cancels reverse-video partway through, got middle %q", middle)
+	}
+	if middle != "fmt.Println" {
+		t.Fatalf("highlighted span text = %q, want the full unstyled %q", middle, "fmt.Println")
+	}
+}
+
 func TestApplySelectionHighlightNoRangeIsNoop(t *testing.T) {
 	app := &App{width: 80, height: 24}
 	app.selection.begin(0, 2) // press with no drag: not a range yet
@@ -98,7 +127,7 @@ func TestExtractSelectionSingleLine(t *testing.T) {
 	var s textSelection
 	s.begin(0, 2)
 	s.extend(0, 4)
-	if got := extractSelection("abcdef", s); got != "cde" {
+	if got := extractSelection("abcdef", s, 0, 1<<30); got != "cde" {
 		t.Fatalf("extractSelection = %q, want %q", got, "cde")
 	}
 }
@@ -108,7 +137,7 @@ func TestExtractSelectionMultiLineTrimsTrailingSpace(t *testing.T) {
 	s.begin(0, 2)
 	s.extend(1, 1)
 	content := "hello world  \ngoodbye"
-	got := extractSelection(content, s)
+	got := extractSelection(content, s, 0, 1<<30)
 	want := "llo world\ngo"
 	if got != want {
 		t.Fatalf("extractSelection = %q, want %q", got, want)
@@ -195,7 +224,7 @@ func TestMouseHoverPreselectsWithoutActivating(t *testing.T) {
 	top, left := app.overlayOrigin(lipgloss.Width(panel))
 	row := rowForItem(hits, 1)
 
-	drive(t, app, tea.MouseMsg{X: left + 5, Y: top + row, Action: tea.MouseActionMotion})
+	drive(t, app, tea.MouseMotionMsg{X: left + 5, Y: top + row})
 	if app.overlay == nil || app.overlay.selected != 1 {
 		t.Fatalf("hovering item 1 should preselect it without activating, overlay=%+v", app.overlay)
 	}
@@ -217,8 +246,8 @@ func TestMousePlainClickActivatesRowAndClosesDialog(t *testing.T) {
 	top, left := app.overlayOrigin(lipgloss.Width(panel))
 	row := rowForItem(hits, 1)
 
-	drive(t, app, tea.MouseMsg{X: left + 5, Y: top + row, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-	drive(t, app, tea.MouseMsg{X: left + 5, Y: top + row, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	drive(t, app, tea.MouseClickMsg{X: left + 5, Y: top + row, Button: tea.MouseLeft})
+	drive(t, app, tea.MouseReleaseMsg{X: left + 5, Y: top + row, Button: tea.MouseLeft})
 
 	if !activated {
 		t.Fatalf("a plain click on the row should activate it")
@@ -233,8 +262,8 @@ func TestMouseClickBackdropClosesDialog(t *testing.T) {
 	app.width, app.height = 100, 40
 	app.overlay = testListOverlay(overlayItem{label: "Alpha", value: "a"})
 
-	drive(t, app, tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-	drive(t, app, tea.MouseMsg{X: 0, Y: 0, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	drive(t, app, tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft})
+	drive(t, app, tea.MouseReleaseMsg{X: 0, Y: 0, Button: tea.MouseLeft})
 
 	if app.overlay != nil {
 		t.Fatalf("clicking the backdrop should close the dialog")
@@ -254,9 +283,9 @@ func TestMouseDragSelectsAndCopiesWithoutActivating(t *testing.T) {
 	titleRow := top + hits.escRow
 	// Update directly (not drive): the release's returned Cmd is the toast's
 	// real-time expiry tick, which a full drive would run to completion.
-	app.Update(tea.MouseMsg{X: left + 4, Y: titleRow, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
-	app.Update(tea.MouseMsg{X: left + 8, Y: titleRow, Action: tea.MouseActionMotion})
-	app.Update(tea.MouseMsg{X: left + 8, Y: titleRow, Button: tea.MouseButtonLeft, Action: tea.MouseActionRelease})
+	app.Update(tea.MouseClickMsg{X: left + 4, Y: titleRow, Button: tea.MouseLeft})
+	app.Update(tea.MouseMotionMsg{X: left + 8, Y: titleRow})
+	app.Update(tea.MouseReleaseMsg{X: left + 8, Y: titleRow, Button: tea.MouseLeft})
 
 	if activated {
 		t.Fatalf("a drag-release must not activate whatever is under the cursor")
@@ -275,11 +304,11 @@ func TestMouseWheelScrollsChatAndOverlayList(t *testing.T) {
 	app.view = viewChat
 	app.scrollOffset = 5
 
-	drive(t, app, tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	drive(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	if app.scrollOffset != 2 {
 		t.Fatalf("wheel down should decrease scrollOffset by %d, got %d", wheelScrollLines, app.scrollOffset)
 	}
-	drive(t, app, tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	drive(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	if app.scrollOffset != 5 {
 		t.Fatalf("wheel up should increase scrollOffset by %d, got %d", wheelScrollLines, app.scrollOffset)
 	}
@@ -287,11 +316,11 @@ func TestMouseWheelScrollsChatAndOverlayList(t *testing.T) {
 	app.overlay = testListOverlay(
 		overlayItem{value: "a"}, overlayItem{value: "b"}, overlayItem{value: "c"},
 	)
-	drive(t, app, tea.MouseMsg{Button: tea.MouseButtonWheelDown})
+	drive(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
 	if app.overlay.selected != 1 {
 		t.Fatalf("wheel down over an open list dialog should move the selection, got %d", app.overlay.selected)
 	}
-	drive(t, app, tea.MouseMsg{Button: tea.MouseButtonWheelUp})
+	drive(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	if app.overlay.selected != 0 {
 		t.Fatalf("wheel up over an open list dialog should move the selection back, got %d", app.overlay.selected)
 	}
@@ -310,7 +339,7 @@ func TestCtrlCCopiesSelectionInsteadOfQuitting(t *testing.T) {
 	app.selection.extend(titleRow, left+8)
 
 	// Update directly (not drive): see the note in the drag-copy test above.
-	app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	app.Update(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
 	if app.quitting {
 		t.Fatalf("ctrl+c with a pending selection should copy, not quit")
@@ -326,7 +355,7 @@ func TestEscapeClearsSelectionBeforeAnythingElse(t *testing.T) {
 	app.selection.begin(0, 0)
 	app.selection.extend(0, 3)
 
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEscape})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
 
 	if app.selection.hasRange() {
 		t.Fatalf("escape should clear a pending selection")

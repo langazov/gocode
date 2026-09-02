@@ -5,8 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // These tests guard the additional session-view fidelity fixes: the
@@ -165,16 +166,55 @@ func TestSidebarHasNoMCPSectionWhenNoneConfigured(t *testing.T) {
 	}
 }
 
-func TestSidebarAlwaysShowsLSPDisabled(t *testing.T) {
-	app := newTestApp(t, "http://example.invalid")
-	app.width, app.height = 140, 40
-	app.view = viewChat
-	app.active = &client.Session{ID: "ses_1", Title: "Test"}
-	app.sidebar = true
+// TestSidebarLSPStates covers the three states ported from
+// feature-plugins/sidebar/lsp.tsx. It used to assert the hardcoded
+// "LSPs are disabled" line, from when this port had no LSP client.
+func TestSidebarLSPStates(t *testing.T) {
+	cases := []struct {
+		name  string
+		state *client.LSPState
+		want  string
+	}{
+		{"not fetched yet", nil, "Loading..."},
+		{"disabled by config", &client.LSPState{Enabled: false}, "LSPs are disabled"},
+		{
+			// A server is installed but no file has needed it yet.
+			name:  "none started yet",
+			state: &client.LSPState{Enabled: true, Available: []string{"gopls"}},
+			want:  "LSPs will activate as files are read",
+		},
+		{
+			// Nothing is installed at all, which TS cannot distinguish.
+			name:  "nothing installed",
+			state: &client.LSPState{Enabled: true},
+			want:  "No language servers found on PATH",
+		},
+		{
+			name: "a running server",
+			state: &client.LSPState{
+				Enabled: true,
+				Servers: []client.LSPServer{{ID: "gopls", Name: "gopls", Root: ".", Status: "connected"}},
+			},
+			want: "gopls",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			app := newTestApp(t, "http://example.invalid")
+			app.width, app.height = 140, 40
+			app.view = viewChat
+			app.active = &client.Session{ID: "ses_1", Title: "Test"}
+			app.sidebar = true
+			app.lsp = c.state
 
-	view := app.sidebarView()
-	if !strings.Contains(view, "LSP") || !strings.Contains(view, "LSPs are disabled") {
-		t.Fatalf("sidebar should always show the LSP-disabled line (this port has no LSP client), got:\n%s", view)
+			view := app.sidebarView()
+			if !strings.Contains(view, "LSP") {
+				t.Fatalf("sidebar is missing the LSP section:\n%s", view)
+			}
+			if !strings.Contains(view, c.want) {
+				t.Fatalf("sidebar should show %q, got:\n%s", c.want, view)
+			}
+		})
 	}
 }
 
@@ -186,8 +226,12 @@ func TestSidebarFooterShowsPathAndVersion(t *testing.T) {
 	app.sidebar = true
 	app.cwd = "/home/tester/project"
 	app.homeDir = "/home/tester"
+	app.gitBranch = "" // isolate from this actual repo's real branch/name length
 
-	view := app.sidebarView()
+	// lipgloss v2's Style.Render always emits real ANSI (v1 no-op'd styling
+	// off-TTY, which is what let these plain-substring checks work
+	// unmodified) — strip it back to plain text for a structural check.
+	view := ansi.Strip(app.sidebarView())
 	if !strings.Contains(view, "~/project") {
 		t.Fatalf("sidebar footer should show the abbreviated path, got:\n%s", view)
 	}
@@ -301,6 +345,7 @@ func TestPromptBoxHasSymmetricLeftRightPadding(t *testing.T) {
 	width := 60
 	box := app.promptBox(width)
 	for i, line := range strings.Split(box, "\n") {
+		line = ansi.Strip(line) // see TestSidebarFooterShowsPathAndVersion's comment
 		if !strings.HasSuffix(line, "  ") {
 			t.Fatalf("line %d should end with the 2-column right padding TS's Prompt has, got %q", i, line)
 		}
@@ -358,5 +403,23 @@ func TestPromptBoxAlignsWithMessageBlocksWidth(t *testing.T) {
 	}
 	if bashWidth != promptWidth {
 		t.Fatalf("bash tool block width = %d, promptBox width = %d, want equal (aligned columns)", bashWidth, promptWidth)
+	}
+}
+
+// TestSidebarSaysWhenNoServerIsInstalled: TS shows "will activate as files are
+// read" whether or not any server could ever start, so a binary missing from
+// the process's PATH is invisible and reads as the feature being broken. This
+// port distinguishes the two.
+func TestSidebarSaysWhenNoServerIsInstalled(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.width, app.height = 140, 40
+	app.view = viewChat
+	app.active = &client.Session{ID: "s", Title: "T"}
+	app.sidebar = true
+	app.lsp = &client.LSPState{Enabled: true, Servers: nil, Available: nil}
+
+	view := app.sidebarView()
+	if !strings.Contains(view, "No language servers found on PATH") {
+		t.Fatalf("with nothing installed the sidebar must say so, got:\n%s", view)
 	}
 }

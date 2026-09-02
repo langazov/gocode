@@ -1,3 +1,13 @@
+# Build output.
 /opencode
-/go/
 /build/
+/dist/
+/go/
+
+# Compiled test binaries. `go test -c` and a stray `-o` drop these next to the
+# package; one was committed by accident before this rule existed.
+*.test
+*.out
+
+# macOS
+.DS_Store

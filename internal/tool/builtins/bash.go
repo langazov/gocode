@@ -5,8 +5,12 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/anomalyco/opencode-go/internal/tool"
 )
 
 const (
@@ -117,4 +121,28 @@ func (t *BashTool) Execute(ctx context.Context, input map[string]any) (string, e
 		return "(no output)", nil
 	}
 	return text, nil
+}
+
+// ExtraPermissions implements tool.PermissionScoped: it reports the
+// directories this command would reach outside the working directory.
+//
+// Without it the working-directory restriction on write, edit and apply_patch
+// is decorative — the model that cannot write /tmp/x with the write tool can
+// always run `cat > /tmp/x` instead, which is exactly what happens in practice.
+func (t *BashTool) ExtraPermissions(input map[string]any) []tool.ExtraPermission {
+	command := stringArg(input, "command")
+	if command == "" {
+		return nil
+	}
+	directories := ScanExternalPaths(command, t.resolver.Root)
+	if len(directories) == 0 {
+		return nil
+	}
+	// The resource is a glob over the directory, matching the TypeScript scan,
+	// so approving once covers the whole directory rather than one file.
+	resources := make([]string, 0, len(directories))
+	for _, dir := range directories {
+		resources = append(resources, filepath.Join(dir, "*"))
+	}
+	return []tool.ExtraPermission{{Action: permission.ExternalDirectoryAction, Resources: resources}}
 }

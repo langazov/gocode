@@ -28,8 +28,12 @@ func New(baseURL string) *Client {
 }
 
 type Session struct {
-	ID          string    `json:"id"`
-	ProjectID   string    `json:"projectID"`
+	ID        string `json:"id"`
+	ProjectID string `json:"projectID"`
+	// ParentID links a subagent/forked session to the session that spawned
+	// it. The subagent footer (routes/session/subagent-footer.tsx) keys off
+	// exactly this: it renders only when the open session has a parent.
+	ParentID    string    `json:"parentID,omitempty"`
 	Title       string    `json:"title"`
 	Directory   string    `json:"directory"`
 	Version     string    `json:"version"`
@@ -56,6 +60,7 @@ type Message struct {
 type PermissionRequest struct {
 	ID        string   `json:"id"`
 	SessionID string   `json:"sessionID"`
+	Agent     string   `json:"agent,omitempty"`
 	Action    string   `json:"action"`
 	Resources []string `json:"resources"`
 }
@@ -123,10 +128,19 @@ func (c *Client) CreateSession(ctx context.Context, input CreateInput) (*Session
 }
 
 func (c *Client) Prompt(ctx context.Context, sessionID, text string) (string, error) {
+	return c.PromptWith(ctx, sessionID, text, nil)
+}
+
+// PromptWith sends a message that may carry attachments, each a data: URI.
+func (c *Client) PromptWith(ctx context.Context, sessionID, text string, files []FileAttachment) (string, error) {
 	var out struct {
 		MessageID string `json:"messageID"`
 	}
-	err := c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/prompt", map[string]string{"text": text}, &out)
+	body := map[string]any{"text": text}
+	if len(files) > 0 {
+		body["files"] = files
+	}
+	err := c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/prompt", body, &out)
 	return out.MessageID, err
 }
 
@@ -234,9 +248,40 @@ type AssistantData struct {
 		} `json:"state"`
 	} `json:"content"`
 	Finish string `json:"finish"`
-	Error  *struct {
-		Message string `json:"message"`
-	} `json:"error"`
+	// Tokens and Cost back the footer's usage segment (prompt/index.tsx's
+	// usage() memo reads them off the last assistant message).
+	Tokens *AssistantTokens `json:"tokens,omitempty"`
+	Cost   *float64         `json:"cost,omitempty"`
+	Error  *AssistantError  `json:"error"`
+}
+
+// AssistantError is a settled assistant message's error. Type distinguishes a
+// user-ordered interruption ("aborted") from a real failure ("unknown") — the
+// port's stand-in for the TypeScript schema's named MessageAbortedError, which
+// the original's UI branches on in several places.
+type AssistantError struct {
+	Type    string `json:"type"`
+	Message string `json:"message"`
+}
+
+// AssistantTokens mirrors internal/session.AssistantTokens.
+type AssistantTokens struct {
+	Input     int `json:"input"`
+	Output    int `json:"output"`
+	Reasoning int `json:"reasoning"`
+	Cache     struct {
+		Read  int `json:"read"`
+		Write int `json:"write"`
+	} `json:"cache"`
+}
+
+// Total sums every token bucket the original adds up for the usage row:
+// input + output + reasoning + cache read + cache write.
+func (t *AssistantTokens) Total() int {
+	if t == nil {
+		return 0
+	}
+	return t.Input + t.Output + t.Reasoning + t.Cache.Read + t.Cache.Write
 }
 
 type UserData struct {
@@ -247,6 +292,10 @@ type UserData struct {
 // FileAttachment mirrors internal/session.FileAttachment (the subset the
 // TUI renders as a pill: a directory-vs-file badge plus the name).
 type FileAttachment struct {
+	// URI is a data: URI when the interface is sending an attachment. It is
+	// absent on attachments read back from a message, which only carry enough
+	// to render the pill.
+	URI  string `json:"uri,omitempty"`
 	Mime string `json:"mime"`
 	Name string `json:"name,omitempty"`
 }
@@ -267,11 +316,48 @@ type Model struct {
 	ProviderID string `json:"providerID"`
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	// ContextLimit is models.dev's `limit.context`. The prompt hint row's
+	// usage segment divides the running token total by it to produce the
+	// "(16%)" share; zero means unknown, and the original then renders the
+	// token count with no percentage at all.
+	ContextLimit int `json:"contextLimit,omitempty"`
+	// CostInput is models.dev's `cost.input`. Zero across every model of a
+	// provider is what marks that provider as free.
+	CostInput float64 `json:"costInput,omitempty"`
 }
 
 type Provider struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// Connected reports a stored credential; Available that the provider is
+	// usable right now (a credential, or env vars, or config).
+	Connected bool `json:"connected,omitempty"`
+	Available bool `json:"available,omitempty"`
+}
+
+// AuthMethod is one way to log in to a provider, as served by
+// GET /api/provider/{id}/auth.
+type AuthMethod struct {
+	Type      string       `json:"type"`
+	Label     string       `json:"label"`
+	Env       []string     `json:"env,omitempty"`
+	Satisfied bool         `json:"satisfied,omitempty"`
+	Prompts   []AuthPrompt `json:"prompts,omitempty"`
+}
+
+type AuthPrompt struct {
+	Key     string   `json:"key"`
+	Label   string   `json:"label"`
+	Options []string `json:"options,omitempty"`
+}
+
+// OAuthAttempt is an in-flight device or browser login.
+type OAuthAttempt struct {
+	ID     string `json:"id"`
+	URL    string `json:"url"`
+	Code   string `json:"code"`
+	Status string `json:"status"`
+	Error  string `json:"error"`
 }
 
 type Agent struct {
@@ -297,6 +383,93 @@ func (c *Client) Providers(ctx context.Context) ([]Provider, error) {
 	var out []Provider
 	err := c.do(ctx, http.MethodGet, "/api/provider", nil, &out)
 	return out, err
+}
+
+// AllProviders lists every catalog provider, including ones with no
+// credential yet — what the connect dialog needs, as opposed to the usable
+// subset the model picker shows.
+func (c *Client) AllProviders(ctx context.Context) ([]Provider, error) {
+	var out []Provider
+	err := c.do(ctx, "GET", "/api/provider?all=true", nil, &out)
+	return out, err
+}
+
+// AuthMethods lists a provider's login methods.
+func (c *Client) AuthMethods(ctx context.Context, providerID string) ([]AuthMethod, error) {
+	var out []AuthMethod
+	err := c.do(ctx, "GET", "/api/provider/"+providerID+"/auth", nil, &out)
+	return out, err
+}
+
+// SetProviderKey stores a pasted API key for a provider.
+func (c *Client) SetProviderKey(ctx context.Context, providerID, key string) error {
+	return c.do(ctx, "POST", "/api/provider/"+providerID+"/auth", map[string]string{"key": key}, nil)
+}
+
+// LogoutProvider removes a provider's stored credential.
+func (c *Client) LogoutProvider(ctx context.Context, providerID string) error {
+	return c.do(ctx, "DELETE", "/api/provider/"+providerID+"/auth", nil, nil)
+}
+
+// StartOAuth begins an OAuth login and returns the code to display.
+func (c *Client) StartOAuth(ctx context.Context, providerID, method string, answers map[string]string) (*OAuthAttempt, error) {
+	var out OAuthAttempt
+	body := map[string]any{"method": method, "answers": answers}
+	if err := c.do(ctx, "POST", "/api/provider/"+providerID+"/auth/oauth", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// OAuthStatus polls an in-flight login.
+func (c *Client) OAuthStatus(ctx context.Context, attemptID string) (*OAuthAttempt, error) {
+	var out OAuthAttempt
+	if err := c.do(ctx, "GET", "/api/provider/auth/oauth/"+attemptID, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// Command is a slash command offered for completion.
+type Command struct {
+	Name        string   `json:"name"`
+	Description string   `json:"description,omitempty"`
+	Agent       string   `json:"agent,omitempty"`
+	Model       string   `json:"model,omitempty"`
+	Subtask     bool     `json:"subtask,omitempty"`
+	Template    string   `json:"template"`
+	Source      string   `json:"source,omitempty"`
+	Hints       []string `json:"hints,omitempty"`
+}
+
+// Commands fetches the slash commands.
+func (c *Client) Commands(ctx context.Context) ([]Command, error) {
+	var out []Command
+	err := c.do(ctx, "GET", "/api/command", nil, &out)
+	return out, err
+}
+
+// LSPState is the language-server status shown in the sidebar.
+type LSPState struct {
+	Enabled   bool        `json:"enabled"`
+	Servers   []LSPServer `json:"servers"`
+	Available []string    `json:"available"`
+}
+
+type LSPServer struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Root   string `json:"root"`
+	Status string `json:"status"`
+}
+
+// LSP fetches the language-server status.
+func (c *Client) LSP(ctx context.Context) (*LSPState, error) {
+	var out LSPState
+	if err := c.do(ctx, "GET", "/api/lsp", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) Agents(ctx context.Context) ([]Agent, error) {

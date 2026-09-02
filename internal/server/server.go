@@ -8,13 +8,18 @@ import (
 	"sort"
 
 	"github.com/anomalyco/opencode-go/internal/agent"
+	"github.com/anomalyco/opencode-go/internal/background"
+	"github.com/anomalyco/opencode-go/internal/command"
 	"github.com/anomalyco/opencode-go/internal/config"
 	"github.com/anomalyco/opencode-go/internal/event"
+	"github.com/anomalyco/opencode-go/internal/lsp"
 	"github.com/anomalyco/opencode-go/internal/mcp"
 	"github.com/anomalyco/opencode-go/internal/modelsdev"
 	"github.com/anomalyco/opencode-go/internal/modelstate"
 	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/anomalyco/opencode-go/internal/question"
 	"github.com/anomalyco/opencode-go/internal/session"
+	"github.com/anomalyco/opencode-go/internal/skill"
 )
 
 // Server bundles the HTTP routes with their backing services.
@@ -26,6 +31,23 @@ type Server struct {
 	Agents      *agent.Registry
 	Config      *config.Config
 	MCP         *mcp.Service
+	// Jobs tracks detached background subagents. nil unless background
+	// subagents are enabled.
+	Jobs *background.Registry
+	// Questions owns the pending ask/reply rounds raised by the question tool
+	// and plan mode.
+	Questions *question.Service
+	// Skills holds the discovered skills.
+	Skills *skill.Registry
+	// LSP owns the running language servers, for the status surfaces.
+	LSP *lsp.Service
+	// Commands holds the slash commands the interface completes and runs.
+	Commands *command.Registry
+
+	// oauth tracks in-flight provider logins started from the interface. A
+	// device flow outlives the request that begins it, so the attempt is
+	// parked here and polled.
+	oauth oauthAttempts
 }
 
 // Mux builds the HTTP route tree. The TypeScript server exposes GET /api/health
@@ -47,6 +69,11 @@ func (s *Server) Mux() *http.ServeMux {
 	if s.Models != nil {
 		mux.HandleFunc("GET /api/model", s.listModels)
 		mux.HandleFunc("GET /api/provider", s.listProviders)
+		mux.HandleFunc("GET /api/provider/{providerID}/auth", s.listProviderAuth)
+		mux.HandleFunc("POST /api/provider/{providerID}/auth", s.setProviderKey)
+		mux.HandleFunc("DELETE /api/provider/{providerID}/auth", s.logoutProvider)
+		mux.HandleFunc("POST /api/provider/{providerID}/auth/oauth", s.startProviderOAuth)
+		mux.HandleFunc("GET /api/provider/auth/oauth/{attemptID}", s.providerOAuthStatus)
 	}
 	if s.Agents != nil {
 		mux.HandleFunc("GET /api/agent", s.listAgents)
@@ -54,6 +81,21 @@ func (s *Server) Mux() *http.ServeMux {
 	if s.MCP != nil {
 		mux.HandleFunc("GET /api/mcp", s.listMCP)
 	}
+	if s.Jobs != nil {
+		mux.HandleFunc("GET /api/job", s.listJobs)
+		mux.HandleFunc("POST /api/session/{sessionID}/background", s.backgroundSession)
+	}
+	if s.Questions != nil {
+		mux.HandleFunc("GET /api/question", s.listQuestions)
+		mux.HandleFunc("GET /api/session/{sessionID}/question", s.listSessionQuestions)
+		mux.HandleFunc("POST /api/question/{requestID}/reply", s.replyQuestion)
+		mux.HandleFunc("POST /api/question/{requestID}/reject", s.rejectQuestion)
+	}
+	if s.Skills != nil {
+		mux.HandleFunc("GET /api/skill", s.listSkills)
+	}
+	mux.HandleFunc("GET /api/lsp", s.listLSP)
+	mux.HandleFunc("GET /api/command", s.listCommands)
 	if s.Session != nil {
 		mux.HandleFunc("POST /api/session", s.createSession)
 		mux.HandleFunc("GET /api/session", s.listSessions)
@@ -160,6 +202,9 @@ type eventWire struct {
 	Session string         `json:"sessionID,omitempty"`
 }
 
+// eventStreamBuffer bounds one SSE subscriber's backlog.
+const eventStreamBuffer = 1024
+
 // eventStream serves a server-sent event stream of committed events,
 // optionally filtered by ?sessionID=.
 func (s *Server) eventStream(w http.ResponseWriter, r *http.Request) {
@@ -170,7 +215,14 @@ func (s *Server) eventStream(w http.ResponseWriter, r *http.Request) {
 	}
 	// Subscribe before writing headers so the client cannot observe the
 	// response (and start publishing) before the subscription is live.
-	events, unsubscribe := s.Bus.Subscribe(256)
+	//
+	// The buffer is sized for multi-agent load: with several subagent
+	// sessions settling tools at once the event rate is far higher than the
+	// single-session case this originally assumed. Bus.Subscribe drops on a
+	// full buffer by design, and a drop is recoverable — clients treat
+	// streamed deltas as a liveness hint and refetch the durable timeline —
+	// but a drop still costs a redraw, so the buffer is generous.
+	events, unsubscribe := s.Bus.Subscribe(eventStreamBuffer)
 	defer unsubscribe()
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -220,6 +272,8 @@ type createSessionRequest struct {
 type promptRequest struct {
 	Text     string `json:"text"`
 	Delivery string `json:"delivery"`
+	// Files carries attachments (a pasted image, say) as data: URIs.
+	Files []session.FileAttachment `json:"files,omitempty"`
 }
 
 func (s *Server) createSession(w http.ResponseWriter, r *http.Request) {
@@ -274,11 +328,15 @@ func (s *Server) promptSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	if body.Text == "" {
+	// A message carrying only an attachment is legitimate; text is required
+	// only when there is nothing else to send.
+	if body.Text == "" && len(body.Files) == 0 {
 		writeError(w, http.StatusBadRequest, "text is required")
 		return
 	}
-	messageID, err := s.Session.Prompt(r.Context(), r.PathValue("sessionID"), body.Text, session.Delivery(body.Delivery))
+	messageID, err := s.Session.PromptWith(r.Context(), r.PathValue("sessionID"),
+		session.Prompt{Text: body.Text, Files: body.Files},
+		session.Delivery(body.Delivery))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -333,6 +391,14 @@ type modelEntry struct {
 	ProviderID string `json:"providerID"`
 	ID         string `json:"id"`
 	Name       string `json:"name"`
+	// ContextLimit is models.dev's `limit.context`, the denominator the TUI
+	// footer's usage segment needs to turn a token total into a percentage
+	// (prompt/index.tsx reads `model.limit.context` off the same catalog).
+	ContextLimit int `json:"contextLimit,omitempty"`
+	// CostInput is models.dev's `cost.input` (dollars per million input
+	// tokens). The sidebar footer's getting-started card keys off exactly
+	// this: it greets users whose only usable models are the free ones.
+	CostInput float64 `json:"costInput,omitempty"`
 }
 
 func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
@@ -341,30 +407,38 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	catalog = resolveCatalog(r.Context(), catalog)
 	out := []modelEntry{}
 	seen := map[string]bool{}
+	// Only providers the user can actually reach — see available.go. The
+	// catalog is the database, not the list.
+	availability := newProviderAvailability(s.Config)
 	appendModel := func(providerID string, provider config.Provider, modelID string, model modelsdev.Model) {
 		key := providerID + "/" + modelID
 		if seen[key] {
 			return
 		}
-		if s.Config != nil {
-			if s.Config.ProviderDisabled(providerID) {
-				return
-			}
-			if s.Config.EnabledProviders != nil && len(s.Config.EnabledProviders) > 0 && !s.Config.ProviderEnabled(providerID) {
-				return
-			}
+		if !availability.available(providerID, catalog[providerID]) {
+			return
 		}
 		seen[key] = true
 		name := model.Name
 		if name == "" {
 			name = modelID
 		}
-		out = append(out, modelEntry{ProviderID: providerID, ID: modelID, Name: name})
+		entry := modelEntry{
+			ProviderID:   providerID,
+			ID:           modelID,
+			Name:         name,
+			ContextLimit: int(model.Limit.Context),
+		}
+		if model.Cost != nil {
+			entry.CostInput = model.Cost.Input
+		}
+		out = append(out, entry)
 	}
-	for providerID, provider := range catalog {
-		for modelID, model := range provider.Models {
+	for providerID, entry := range catalog {
+		for modelID, model := range providerModels(r.Context(), providerID, entry, s.Config) {
 			appendModel(providerID, config.Provider{}, modelID, model)
 		}
 	}
@@ -394,10 +468,45 @@ func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
 	type providerEntry struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
+		// Connected reports a stored credential, which the connect dialog
+		// ticks. Env-var credentials count too: they are equally usable.
+		Connected bool `json:"connected,omitempty"`
+		// Available reports that the provider can be used right now. The
+		// connect dialog lists every catalog provider, including ones with no
+		// credential yet, and uses this to tell them apart.
+		Available bool `json:"available,omitempty"`
 	}
 	out := []providerEntry{}
+	availability := newProviderAvailability(s.Config)
+	connected := connectedProviders()
+	all := r.URL.Query().Get("all") == "true"
 	for id, provider := range catalog {
-		out = append(out, providerEntry{ID: id, Name: provider.Name})
+		usable := availability.available(id, provider)
+		if !usable && !all {
+			continue
+		}
+		if !availability.allowed(id) {
+			continue
+		}
+		out = append(out, providerEntry{
+			ID:        id,
+			Name:      provider.Name,
+			Connected: connected[id],
+			Available: usable,
+		})
+	}
+	// A config-declared provider need not exist in the catalog at all.
+	if s.Config != nil {
+		for id, provider := range s.Config.Provider {
+			if _, inCatalog := catalog[id]; inCatalog || !availability.allowed(id) {
+				continue
+			}
+			name := provider.Name
+			if name == "" {
+				name = id
+			}
+			out = append(out, providerEntry{ID: id, Name: name, Connected: connected[id], Available: true})
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	writeJSON(w, http.StatusOK, out)
@@ -542,4 +651,87 @@ func (s *Server) compactSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"compacted": compacted})
+}
+
+// listJobs reports every background job this process is tracking.
+func (s *Server) listJobs(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.Jobs.List())
+}
+
+// backgroundSession promotes every running foreground subagent of a session,
+// so the user can push in-flight work to the background and get their prompt
+// back. Ports the TypeScript sessionBackground handler.
+func (s *Server) backgroundSession(w http.ResponseWriter, r *http.Request) {
+	sessionID := r.PathValue("sessionID")
+	promoted := s.Jobs.PromoteSession(sessionID)
+	writeJSON(w, http.StatusOK, map[string]any{"promoted": promoted})
+}
+
+type questionReplyRequest struct {
+	Answers [][]string `json:"answers"`
+}
+
+// listQuestions reports every question waiting on a user.
+func (s *Server) listQuestions(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, s.Questions.List())
+}
+
+func (s *Server) listSessionQuestions(w http.ResponseWriter, r *http.Request) {
+	pending := s.Questions.ForSession(r.PathValue("sessionID"))
+	if pending == nil {
+		pending = []question.Request{}
+	}
+	writeJSON(w, http.StatusOK, pending)
+}
+
+// replyQuestion answers a pending question, unblocking the tool call that
+// asked it.
+func (s *Server) replyQuestion(w http.ResponseWriter, r *http.Request) {
+	var body questionReplyRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	answers := make([]question.Answer, 0, len(body.Answers))
+	for _, answer := range body.Answers {
+		answers = append(answers, question.Answer(answer))
+	}
+	if err := s.Questions.Reply(r.PathValue("requestID"), answers); err != nil {
+		if errors.Is(err, question.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// rejectQuestion declines a pending question, failing the tool call.
+func (s *Server) rejectQuestion(w http.ResponseWriter, r *http.Request) {
+	if err := s.Questions.Reject(r.PathValue("requestID")); err != nil {
+		if errors.Is(err, question.ErrNotFound) {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// listSkills reports the discovered skills, without their bodies — the tool
+// is what injects a skill's content.
+func (s *Server) listSkills(w http.ResponseWriter, r *http.Request) {
+	infos := s.Skills.List()
+	out := make([]map[string]any, 0, len(infos))
+	for _, info := range infos {
+		out = append(out, map[string]any{
+			"name":        info.Name,
+			"description": info.Description,
+			"slash":       info.Slash,
+			"location":    info.Location,
+		})
+	}
+	writeJSON(w, http.StatusOK, out)
 }

@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/anomalyco/opencode-go/internal/llm"
 )
 
 const (
@@ -27,6 +29,10 @@ type Client struct {
 	APIKey  string
 	BaseURL string
 	HTTP    *http.Client
+	// Options carries provider-specific headers, body fields, model-id
+	// remapping and request signing, supplied by the provider transform layer.
+	// Bedrock and Vertex reach the Anthropic wire format through it.
+	Options llm.Options
 }
 
 func New(apiKey string) *Client {
@@ -37,8 +43,16 @@ func New(apiKey string) *Client {
 	}
 }
 
+// Source is the base64 payload of an image or document block.
+type Source struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
 type ContentBlock struct {
 	Type      string          `json:"type"`
+	Source    *Source         `json:"source,omitempty"`
 	Text      string          `json:"text,omitempty"`
 	Thinking  string          `json:"thinking,omitempty"`
 	Signature string          `json:"signature,omitempty"`
@@ -121,18 +135,30 @@ type StreamHandler struct {
 }
 
 func (c *Client) newRequest(ctx context.Context, req Request) (*http.Request, error) {
+	req.Model = c.Options.Model(req.Model)
 	body, err := json.Marshal(req)
 	if err != nil {
 		return nil, err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.messagesURL(), bytes.NewReader(body))
+	body, err = c.Options.MergeBody(body)
+	if err != nil {
+		return nil, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.messagesURL(req.Model), bytes.NewReader(body))
 	if err != nil {
 		return nil, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("x-api-key", c.APIKey)
 	httpReq.Header.Set("anthropic-version", apiVersion)
 	httpReq.Header.Set("anthropic-beta", betaHeader)
+	signed, err := c.Options.Authenticate(httpReq, body)
+	if err != nil {
+		return nil, err
+	}
+	if !signed {
+		httpReq.Header.Set("x-api-key", c.APIKey)
+	}
+	c.Options.ApplyHeaders(httpReq)
 	return httpReq, nil
 }
 
@@ -147,12 +173,12 @@ func (c *Client) baseURL() string {
 // conventions: host-style ("https://api.anthropic.com") and version-style
 // ("https://api.minimax.io/anthropic/v1", as shipped by the models.dev
 // catalog). The version is appended only when absent.
-func (c *Client) messagesURL() string {
+func (c *Client) messagesURL(model string) string {
 	base := c.baseURL()
 	if !strings.HasSuffix(base, "/v1") {
 		base += "/v1"
 	}
-	return base + "/messages"
+	return c.Options.URL(c.baseURL(), model, base+"/messages")
 }
 
 // Complete performs a non-streaming request and returns the full response.
@@ -162,7 +188,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Response, error) {
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.HTTP.Do(httpReq)
+	res, err := c.Options.HTTPClient(c.HTTP).Do(httpReq)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +215,7 @@ func (c *Client) streamHandler(ctx context.Context, req Request, handler StreamH
 	if err != nil {
 		return nil, err
 	}
-	res, err := c.HTTP.Do(httpReq)
+	res, err := c.Options.HTTPClient(c.HTTP).Do(httpReq)
 	if err != nil {
 		return nil, err
 	}

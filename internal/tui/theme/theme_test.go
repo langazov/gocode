@@ -3,7 +3,7 @@ package theme
 import (
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 // mirrors theme/index.ts's tint(base, overlay, alpha): base at alpha 0,

@@ -12,9 +12,10 @@ import (
 	"testing"
 	"time"
 
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/anomalyco/opencode-go/internal/tui/client"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 type renameCall struct {
@@ -39,6 +40,7 @@ type mockAPI struct {
 	models     []modelCall
 	forkedFrom string
 	mcpStatus  string // GET /api/mcp responds with this status for "test-server"; mutate mid-test to verify tickMsg re-fetches it
+	statsCalls int
 }
 
 func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
@@ -132,6 +134,7 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 		json.NewEncoder(w).Encode([]client.Session{{ID: "ses_child", Title: "child", Directory: "/tmp", Version: "1"}})
 	})
 	mux.HandleFunc("GET /api/session/{sessionID}/stats", func(w http.ResponseWriter, r *http.Request) {
+		api.statsCalls++
 		json.NewEncoder(w).Encode(map[string]any{
 			"cost": 0.5, "tokensInput": 10, "tokensOutput": 20,
 			"tokensReasoning": 0, "tokensCacheRead": 0, "tokensCacheWrite": 0, "messages": 2,
@@ -202,15 +205,15 @@ func runCmds(t *testing.T, app *App, cmd tea.Cmd, depth int) {
 // press feeds one keypress through the app, running any resulting commands.
 func press(t *testing.T, app *App, key string) {
 	t.Helper()
-	runes := []rune(key)
-	drive(t, app, tea.KeyMsg{Type: tea.KeyRunes, Runes: runes})
+	r := []rune(key)[0]
+	drive(t, app, tea.KeyPressMsg{Text: key, Code: r})
 }
 
 // armLeader presses the leader key, intentionally dropping the timeout
 // command the runtime would schedule.
 func armLeader(t *testing.T, app *App) {
 	t.Helper()
-	app.handleKey(tea.KeyMsg{Type: tea.KeyCtrlX})
+	app.handleKey(tea.KeyPressMsg{Code: 'x', Mod: tea.ModCtrl})
 }
 
 // openSession drives the leader+l overlay to open the seeded session.
@@ -219,7 +222,7 @@ func openSession(t *testing.T, app *App) {
 	driveCmd(t, app, app.loadSessionsCmd())
 	armLeader(t, app)
 	press(t, app, "l")
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
 // TestResumeSessionOpensChatView is the regression for "./opencode -s
@@ -325,7 +328,14 @@ func TestTickRefreshesMCPStatus(t *testing.T) {
 func TestHomeShowsLogoAndPrompt(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
-	view := app.View()
+	// lipgloss v2's Style.Render always emits real ANSI (v1 no-op'd styling
+	// when stdout wasn't a TTY, which is what let these plain-substring
+	// checks work unmodified); strip it back to plain text, since these
+	// assertions care about structure/content, not the escape codes — the
+	// logo in particular is rendered one rune at a time (renderLogoLine), so
+	// each rune now carries its own SGR wrapper that would otherwise split
+	// "█▀▀█" apart.
+	view := ansi.Strip(app.View())
 	if !strings.Contains(view, "█▀▀█") {
 		t.Fatalf("home should render the logo, got %q", view)
 	}
@@ -358,7 +368,7 @@ func TestLeaderLOpensSessionList(t *testing.T) {
 		t.Fatalf("session dialog should list sessions, got %q", view)
 	}
 
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if app.view != viewChat || app.overlay != nil {
 		t.Fatal("enter should open the selected session and close the dialog")
 	}
@@ -372,7 +382,7 @@ func TestHomePromptCreatesAndSends(t *testing.T) {
 	for _, r := range "fix the bug" {
 		press(t, app, string(r))
 	}
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if len(api.prompted) != 1 {
 		t.Fatalf("expected prompt sent to created session, got %v", api.prompted)
@@ -398,7 +408,7 @@ func TestChatSendAndTimeline(t *testing.T) {
 	for _, r := range "again" {
 		press(t, app, string(r))
 	}
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(api.prompted) != 1 || !strings.HasSuffix(api.prompted[0], "again") {
 		t.Fatalf("expected chat prompt sent, got %v", api.prompted)
 	}
@@ -407,23 +417,75 @@ func TestChatSendAndTimeline(t *testing.T) {
 	}
 }
 
+// feed folds events through the aggregator's tree and applies the resulting
+// snapshot, which is the path a real event takes since the multi-agent
+// rework: per-event work happens off the main goroutine, and Update only ever
+// sees a coalesced snapshot.
+func feed(app *App, events ...client.Event) bool {
+	state := newTree()
+	for _, e := range events {
+		state.apply(e)
+	}
+	return app.applySnapshot(state.snapshot(0))
+}
+
 func TestStreamingTextDeltas(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
+	openSession(t, app)
 
-	app.handleEvent(client.Event{Type: "session.next.step.started", Data: map[string]any{"sessionID": "ses_1"}})
-	app.handleEvent(client.Event{Type: "session.next.text.delta", Data: map[string]any{
-		"sessionID": "ses_1", "assistantMessageID": "msg_a1", "delta": "Hel",
-	}})
-	app.handleEvent(client.Event{Type: "session.next.text.delta", Data: map[string]any{
-		"sessionID": "ses_1", "assistantMessageID": "msg_a1", "delta": "lo",
-	}})
-	if got := app.streaming["msg_a1"].String(); got != "Hello" {
-		t.Fatalf("expected accumulated streaming text, got %q", got)
+	feed(app,
+		client.Event{Type: "session.next.step.started", Session: "ses_1"},
+		client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_a1", "delta": "Hel",
+		}},
+		client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_a1", "delta": "lo",
+		}},
+	)
+	if got := app.streaming["msg_a1"]; got == nil || got.String() != "Hello" {
+		t.Fatalf("expected accumulated streaming text, got %v", app.streaming["msg_a1"])
 	}
-	app.handleEvent(client.Event{Type: "session.next.step.ended", Data: map[string]any{"sessionID": "ses_1"}})
+	if !app.busy {
+		t.Fatal("step.started should mark the session busy")
+	}
+
+	feed(app, client.Event{Type: "session.next.step.ended", Session: "ses_1"})
 	if len(app.streaming) != 0 {
 		t.Fatal("streaming buffers should clear when the step ends")
+	}
+	if app.busy {
+		t.Fatal("step.ended should clear busy")
+	}
+}
+
+// TestSubagentEventsDoNotTouchParent is the phase 4 isolation guarantee: a
+// child session's deltas must never land in the parent's streaming text. The
+// old per-event path ignored the event's session entirely.
+func TestSubagentEventsDoNotTouchParent(t *testing.T) {
+	_, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+	openSession(t, app)
+
+	feed(app,
+		client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_parent", "delta": "parent text",
+		}},
+		client.Event{Type: "session.next.text.delta", Session: "ses_child", Data: map[string]any{
+			"assistantMessageID": "msg_child", "delta": "subagent text",
+		}},
+		client.Event{Type: "session.next.step.started", Session: "ses_child"},
+	)
+
+	if got := app.streaming["msg_parent"]; got == nil || got.String() != "parent text" {
+		t.Fatalf("parent text = %v, want %q", app.streaming["msg_parent"], "parent text")
+	}
+	if _, leaked := app.streaming["msg_child"]; leaked {
+		t.Fatal("a subagent's streamed text leaked into the parent's view")
+	}
+	subagents := app.activeSubagents()
+	if len(subagents) != 1 || subagents[0].ID != "ses_child" {
+		t.Fatalf("expected the child to show as a live subagent, got %+v", subagents)
 	}
 }
 
@@ -446,7 +508,7 @@ func TestPermissionDialogAndReply(t *testing.T) {
 		}
 	}
 
-	driveCmd(t, app, app.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}))
+	driveCmd(t, app, app.handleKey(tea.KeyPressMsg{Text: "y", Code: 'y'}))
 	if len(api.replies) != 1 || api.replies[0] != "once" {
 		t.Fatalf("expected once reply, got %v", api.replies)
 	}
@@ -461,13 +523,26 @@ func TestEscapeInterruptsBusySession(t *testing.T) {
 	openSession(t, app)
 	app.busy = true
 
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEscape})
+	// Interrupt is a two-press gesture upstream (prompt/index.tsx's
+	// session.interrupt increments a counter and only aborts at >= 2): the
+	// first escape arms it and repaints the footer hint, the second fires.
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if api.interrupts != 0 {
+		t.Fatalf("the first escape should only arm the interrupt, got %d interrupts", api.interrupts)
+	}
+	if app.interruptArmed != 1 {
+		t.Fatalf("the first escape should arm the interrupt, got %d", app.interruptArmed)
+	}
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
 	if api.interrupts != 1 {
-		t.Fatalf("escape should interrupt a busy session, got %d interrupts", api.interrupts)
+		t.Fatalf("the second escape should interrupt a busy session, got %d interrupts", api.interrupts)
+	}
+	if app.interruptArmed != 0 {
+		t.Fatalf("interrupting should disarm the gesture, got %d", app.interruptArmed)
 	}
 
 	// ctrl+c exits regardless of state.
-	drive(t, app, tea.KeyMsg{Type: tea.KeyCtrlC})
+	drive(t, app, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if !app.quitting {
 		t.Fatal("ctrl+c should exit the application")
 	}
@@ -505,7 +580,7 @@ func TestChatScrollKeepsPromptPinnedToBottom(t *testing.T) {
 		}
 	}
 
-	view := app.View()
+	view := ansi.Strip(app.View()) // see TestHomeShowsLogoAndPrompt's comment
 	if !strings.Contains(view, "Ask anything") {
 		t.Fatalf("prompt placeholder should remain visible while scrolled back, got:\n%s", view)
 	}
@@ -590,7 +665,7 @@ func TestShortConversationAnchorsPromptToBottom(t *testing.T) {
 		{ID: "msg_u", SessionID: "ses_1", Type: "user", Seq: 0, Data: json.RawMessage(`{"text":"hello"}`)},
 	}
 
-	view := app.View()
+	view := ansi.Strip(app.View()) // see TestHomeShowsLogoAndPrompt's comment
 	lines := strings.Split(view, "\n")
 	promptRow := -1
 	for i, line := range lines {
@@ -615,12 +690,26 @@ func TestShortConversationAnchorsPromptToBottom(t *testing.T) {
 func TestPageScrolling(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
+	// The scroll now clamps to the content above the viewport, so the
+	// timeline has to be longer than the screen for there to be anywhere to
+	// go — an empty one correctly refuses to scroll at all.
+	app.view = viewChat
+	app.active = &client.Session{ID: "ses_1", Directory: "/tmp"}
+	for i := range 40 {
+		app.timeline = append(app.timeline, settledAssistant(t, fmt.Sprintf("m%d", i), "line"))
+	}
+
 	before := app.scrollOffset
-	drive(t, app, tea.KeyMsg{Type: tea.KeyPgUp})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyPgUp})
 	if app.scrollOffset <= before {
 		t.Fatal("pageup should scroll the timeline up")
 	}
-	drive(t, app, tea.KeyMsg{Type: tea.KeyPgDown})
+	// messages_page_up is a *full* page upstream, not the half page this port
+	// used to scroll.
+	if app.scrollOffset != app.viewportHeight() {
+		t.Fatalf("pageup scrolled %d lines, want a full page of %d", app.scrollOffset, app.viewportHeight())
+	}
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyPgDown})
 	if app.scrollOffset != before {
 		t.Fatalf("pagedown should scroll back, got offset %d", app.scrollOffset)
 	}
@@ -648,7 +737,7 @@ func TestHeadlessProgramRun(t *testing.T) {
 		case <-deadline:
 			t.Fatal("program did not quit in time")
 		default:
-			p.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
+			p.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
@@ -658,7 +747,7 @@ func TestCommandPalette(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
 	app.width, app.height = 120, 80 // tall enough to list every command
-	drive(t, app, tea.KeyMsg{Type: tea.KeyCtrlP})
+	drive(t, app, tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 
 	if app.overlay == nil {
 		t.Fatal("ctrl+p should open the command palette")
@@ -686,16 +775,16 @@ func TestSlashCommandExecutes(t *testing.T) {
 	for _, r := range "/help" {
 		press(t, app, string(r))
 	}
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if app.overlay == nil || app.overlay.kind != overlayHelp {
 		t.Fatal("/help should open the help dialog")
 	}
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEscape})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
 
 	for _, r := range "/nope" {
 		press(t, app, string(r))
 	}
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if !strings.Contains(app.statusMsg, "unknown command") {
 		t.Fatalf("unknown slash command should report, got %q", app.statusMsg)
 	}
@@ -707,12 +796,12 @@ func TestRenameDialog(t *testing.T) {
 	app := newTestApp(t, server.URL)
 	openSession(t, app)
 
-	drive(t, app, tea.KeyMsg{Type: tea.KeyCtrlR})
+	drive(t, app, tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
 	if app.overlay == nil || app.overlay.kind != overlayInput {
 		t.Fatal("ctrl+r should open the rename dialog")
 	}
 	press(t, app, "!")
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if len(api.renamed) != 1 || api.renamed[0].title != "Test session!" {
 		t.Fatalf("expected rename submitted, got %+v", api.renamed)
 	}
@@ -739,7 +828,7 @@ func TestModelDialogSwitchesModel(t *testing.T) {
 	// select the first model
 	app.overlay.selected = 0
 	chosen := app.overlay.items[app.overlay.selected]
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	_ = chosen
 	if !app.activeModelSet() {
 		t.Fatal("choosing a model should set the session model")
@@ -764,7 +853,7 @@ func TestTimelineDialogForks(t *testing.T) {
 		t.Fatalf("timeline should list user prompts, got %q", view)
 	}
 
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if api.forkedFrom == "" {
 		t.Fatal("selecting a timeline entry should fork from that message")
 	}
@@ -786,7 +875,7 @@ func TestChildrenDialog(t *testing.T) {
 	if !strings.Contains(view, "child") {
 		t.Fatalf("children dialog should list forked sessions, got %q", view)
 	}
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if app.active == nil || app.active.ID != "ses_child" {
 		t.Fatalf("enter should open the child session, got %+v", app.active)
 	}
@@ -800,7 +889,7 @@ func TestCompactCommand(t *testing.T) {
 
 	armLeader(t, app)
 	press(t, app, "c")
-	drive(t, app, tea.KeyMsg{Type: tea.KeyEnter}) // flush
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter}) // flush
 	if api.compacts != 1 {
 		t.Fatalf("leader+c should call compact, got %d calls", api.compacts)
 	}
@@ -850,6 +939,8 @@ func TestStatusOverlay(t *testing.T) {
 func TestEventPumpKeepsFlowing(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
+	// Snapshots are applied against the active session, so open one first.
+	openSession(t, app)
 	p := tea.NewProgram(program{app: app}, tea.WithInput(nil), tea.WithOutput(io.Discard))
 	done := make(chan error, 1)
 	go func() {
@@ -858,17 +949,21 @@ func TestEventPumpKeepsFlowing(t *testing.T) {
 	}()
 
 	events := make(chan client.Event, 8)
-	go pumpEvents(p, events)
-	events <- client.Event{Type: "session.next.step.started", Data: map[string]any{"sessionID": "ses_1"}}
-	events <- client.Event{Type: "session.next.text.delta", Data: map[string]any{
-		"sessionID": "ses_1", "assistantMessageID": "msg_x", "delta": "Hel",
+	snapshots := make(chan Snapshot, 8)
+	ctx, stop := context.WithCancel(context.Background())
+	defer stop()
+	go Aggregate(ctx, events, snapshots, time.Millisecond)
+	go pumpSnapshots(p, snapshots, nil)
+	events <- client.Event{Type: "session.next.step.started", Session: "ses_1"}
+	events <- client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+		"assistantMessageID": "msg_x", "delta": "Hel",
 	}}
-	events <- client.Event{Type: "session.next.text.delta", Data: map[string]any{
-		"sessionID": "ses_1", "assistantMessageID": "msg_x", "delta": "lo",
+	events <- client.Event{Type: "session.next.text.delta", Session: "ses_1", Data: map[string]any{
+		"assistantMessageID": "msg_x", "delta": "lo",
 	}}
 
 	time.Sleep(500 * time.Millisecond) // allow the runtime to process the stream
-	p.Send(tea.KeyMsg{Type: tea.KeyCtrlC})
+	p.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 
 	select {
 	case <-done:

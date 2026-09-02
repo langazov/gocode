@@ -80,3 +80,23 @@ func (r *Registry) Execute(ctx context.Context, name string, input map[string]an
 	}
 	return tool.Execute(ctx, input)
 }
+
+// ExtraPermission is a permission check a tool's input implies beyond the
+// tool's own action.
+type ExtraPermission struct {
+	Action    string
+	Resources []string
+}
+
+// PermissionScoped is implemented by a tool whose input can require approval
+// under a second action.
+//
+// It exists for the shell: every file tool refuses a path outside the working
+// directory, but a shell command can reach anywhere, so the restriction is
+// only meaningful if the shell is held to it too. Rather than teach the runner
+// about shell syntax, the tool declares what its input would touch and the
+// runner asks. Ports the external_directory ask in
+// packages/opencode/src/tool/shell.ts.
+type PermissionScoped interface {
+	ExtraPermissions(input map[string]any) []ExtraPermission
+}

@@ -125,13 +125,33 @@ func parseThinking(reasoning map[string]any) *Thinking {
 	return &Thinking{Type: "enabled", BudgetTokens: budget}
 }
 
+// imageBlock lowers an image part. A PDF is a "document" block rather than an
+// "image" one; everything else Anthropic accepts is an image.
+func imageBlock(part llm.ContentPart) ContentBlock {
+	kind := "image"
+	if part.Mime == "application/pdf" {
+		kind = "document"
+	}
+	return ContentBlock{
+		Type: kind,
+		Source: &Source{
+			Type:      "base64",
+			MediaType: part.Mime,
+			Data:      part.Data,
+		},
+	}
+}
+
 func convertMessage(message llm.Message) []Message {
 	switch message.Role {
 	case llm.RoleUser:
 		blocks := make([]ContentBlock, 0, len(message.Content))
 		for _, part := range message.Content {
-			if part.Type == llm.PartText {
+			switch part.Type {
+			case llm.PartText:
 				blocks = append(blocks, ContentBlock{Type: "text", Text: part.Text})
+			case llm.PartImage:
+				blocks = append(blocks, imageBlock(part))
 			}
 		}
 		return []Message{{Role: "user", Content: blocks}}

@@ -1,6 +1,6 @@
 package tui
 
-import "github.com/charmbracelet/lipgloss"
+import "charm.land/lipgloss/v2"
 
 // styles mirrors the semantic style keys the TypeScript TUI reads from the
 // resolved theme (text, muted, primary, …).

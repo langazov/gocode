@@ -1,15 +1,12 @@
 package tui
 
 import (
-	"encoding/base64"
-	"fmt"
-	"os"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // This file ports packages/tui/src mouse support to Bubble Tea's cell-mouse
@@ -63,20 +60,22 @@ func (s *textSelection) ordered() (startRow, startCol, endRow, endCol int) {
 
 // handleMouse dispatches a tea.MouseMsg, mirroring the three opentui handlers
 // this port cares about: wheel scroll, drag-select, and dialog click/hover.
+// bubbletea v2 splits what v1 encoded as a single MouseMsg + Action field
+// into four concrete message types; the message's own type now says what
+// v1's Action field used to.
 func (a *App) handleMouse(msg tea.MouseMsg) tea.Cmd {
 	if a.quitting || a.width == 0 {
 		return nil
 	}
-	if msg.Button == tea.MouseButtonWheelUp || msg.Button == tea.MouseButtonWheelDown {
-		return a.handleWheel(msg)
-	}
-	switch msg.Action {
-	case tea.MouseActionPress:
-		return a.handleMousePress(msg)
-	case tea.MouseActionMotion:
-		return a.handleMouseMotion(msg)
-	case tea.MouseActionRelease:
-		return a.handleMouseRelease(msg)
+	switch msg := msg.(type) {
+	case tea.MouseWheelMsg:
+		return a.handleWheel(msg.Mouse())
+	case tea.MouseClickMsg:
+		return a.handleMousePress(msg.Mouse())
+	case tea.MouseMotionMsg:
+		return a.handleMouseMotion(msg.Mouse())
+	case tea.MouseReleaseMsg:
+		return a.handleMouseRelease(msg.Mouse())
 	}
 	return nil
 }
@@ -86,8 +85,8 @@ func (a *App) handleMouse(msg tea.MouseMsg) tea.Cmd {
 // affordance belongs here since Bubble Tea has no such native scrollbox) or,
 // with no dialog open, the chat timeline (pgup/pgdown's finer-grained mouse
 // equivalent).
-func (a *App) handleWheel(msg tea.MouseMsg) tea.Cmd {
-	up := msg.Button == tea.MouseButtonWheelUp
+func (a *App) handleWheel(msg tea.Mouse) tea.Cmd {
+	up := msg.Button == tea.MouseWheelUp
 	if a.overlay != nil {
 		if len(a.overlay.items) == 0 {
 			return nil
@@ -115,8 +114,8 @@ func (a *App) handleWheel(msg tea.MouseMsg) tea.Cmd {
 
 // handleMousePress starts a drag-selection and, over an open dialog's list,
 // preselects the row under the cursor (dialog-select.tsx's onMouseDown moveTo).
-func (a *App) handleMousePress(msg tea.MouseMsg) tea.Cmd {
-	if msg.Button != tea.MouseButtonLeft {
+func (a *App) handleMousePress(msg tea.Mouse) tea.Cmd {
+	if msg.Button != tea.MouseLeft {
 		return nil
 	}
 	a.selection.begin(msg.Y, msg.X)
@@ -130,7 +129,7 @@ func (a *App) handleMousePress(msg tea.MouseMsg) tea.Cmd {
 
 // handleMouseMotion extends an active drag-selection, or — with no button
 // held — preselects the dialog row under the cursor (onMouseOver moveTo).
-func (a *App) handleMouseMotion(msg tea.MouseMsg) tea.Cmd {
+func (a *App) handleMouseMotion(msg tea.Mouse) tea.Cmd {
 	if a.selection.active {
 		a.selection.extend(msg.Y, msg.X)
 		return nil
@@ -146,7 +145,7 @@ func (a *App) handleMouseMotion(msg tea.MouseMsg) tea.Cmd {
 // handleMouseRelease ends a drag: a real range copies to the clipboard
 // (util/selection.ts's copy) and consumes the click; otherwise it's a plain
 // click, dispatched to whatever is under the cursor.
-func (a *App) handleMouseRelease(msg tea.MouseMsg) tea.Cmd {
+func (a *App) handleMouseRelease(msg tea.Mouse) tea.Cmd {
 	dragged := a.selection.active && a.selection.hasRange()
 	a.selection.active = false
 	if dragged {
@@ -155,7 +154,7 @@ func (a *App) handleMouseRelease(msg tea.MouseMsg) tea.Cmd {
 		return cmd
 	}
 	a.selection.clear()
-	if msg.Button != tea.MouseButtonLeft {
+	if msg.Button != tea.MouseLeft {
 		return nil
 	}
 	return a.handleClick(msg.X, msg.Y)
@@ -166,9 +165,14 @@ func (a *App) handleMouseRelease(msg tea.MouseMsg) tea.Cmd {
 // onMouseUp toggle (see reasoningClickTarget).
 func (a *App) handleClick(x, y int) tea.Cmd {
 	if a.overlay == nil {
+		if href := a.linkAt(y, x); href != "" {
+			_ = openURL(href)
+			return nil
+		}
 		if a.view == viewChat {
 			if id, ok := a.reasoningClickTarget(y); ok {
 				a.expandedReasoning[id] = !a.expandedReasoning[id]
+				a.invalidateRenderCache()
 			}
 		}
 		return nil
@@ -183,6 +187,16 @@ func (a *App) handleClick(x, y int) tea.Cmd {
 		if sel, ok := o.selectedItem(); ok {
 			return o.actions[target.action].onTrigger(sel)
 		}
+	case overlayTargetButton:
+		// The buttons carry their own onMouseUp in dialog-alert.tsx and
+		// dialog-confirm.tsx; a confirm's row is [cancel, confirm].
+		if o.kind == overlayAlert {
+			return a.resolveOverlay(o.onConfirm)
+		}
+		if target.button == 0 {
+			return a.resolveOverlay(o.onCancel)
+		}
+		return a.resolveOverlay(o.onConfirm)
 	}
 	return nil
 }
@@ -218,12 +232,14 @@ const (
 	overlayTargetItem
 	overlayTargetEsc
 	overlayTargetAction
+	overlayTargetButton // an alert's ok, or a confirm's cancel/confirm
 )
 
 type overlayTarget struct {
 	kind   overlayTargetKind
 	item   int
 	action int
+	button int
 }
 
 // overlayMouseTarget resolves an absolute screen (row, col) against the
@@ -241,6 +257,13 @@ func (a *App) overlayMouseTarget(row, col int) overlayTarget {
 	}
 	if hits.escRow == localRow && localCol >= hits.escStart && localCol < hits.escEnd {
 		return overlayTarget{kind: overlayTargetEsc}
+	}
+	if hits.buttonRow == localRow {
+		for _, span := range hits.buttons {
+			if localCol >= span.start && localCol < span.end {
+				return overlayTarget{kind: overlayTargetButton, button: span.index}
+			}
+		}
 	}
 	if hits.actionRow == localRow {
 		for _, span := range hits.actions {
@@ -265,31 +288,39 @@ func (a *App) currentFrame() string {
 		return a.viewOverlay()
 	}
 	if a.view == viewHome {
-		return a.viewHome()
+		return a.compositeToast(a.viewHome())
 	}
-	return a.viewChat()
+	return a.compositeToast(a.viewChat())
 }
 
 // applySelectionHighlight reverse-videos the selected cell range on top of
 // an already-rendered frame, standing in for opentui's real text-selection
-// paint. ansi.Cut preserves/reapplies whatever SGR state is active at each
-// cut boundary, so wrapping the middle slice in reverse-video composes with
-// existing colors instead of clobbering them.
+// paint. The middle slice is ANSI-stripped before the reverse-video wrap
+// (rather than left in place, as a naive prefix/wrap/suffix composition
+// would do): glamour's chroma-highlighted code emits a full SGR reset after
+// nearly every token, and any such reset appearing inside the wrapped
+// span — trivially reachable once a selection spans more than one syntax
+// token — cancels the outer reverse-video attribute right there, so only
+// the first token would visibly highlight instead of the whole span.
+// Stripping first guarantees one uniform highlighted block regardless of
+// how many colored runs the original text was made of.
 func (a *App) applySelectionHighlight(content string) string {
 	if !a.selection.hasRange() {
 		return content
 	}
 	startRow, startCol, endRow, endCol := a.selection.ordered()
+	minCol, maxCol := a.selectionColumnBounds()
 	lines := strings.Split(content, "\n")
 	for row := max(startRow, 0); row <= endRow && row < len(lines); row++ {
 		line := lines[row]
-		width := ansi.StringWidth(line)
+		width := min(ansi.StringWidth(line), maxCol)
 		colStart, colEnd := selectionCols(row, startRow, startCol, endRow, endCol, width)
+		colStart = max(colStart, minCol)
 		if colStart >= colEnd {
 			continue
 		}
 		prefix := ansi.Cut(line, 0, colStart)
-		middle := ansi.Cut(line, colStart, colEnd)
+		middle := ansi.Strip(ansi.Cut(line, colStart, colEnd))
 		suffix := ansi.Cut(line, colEnd, width)
 		lines[row] = prefix + "\x1b[7m" + middle + "\x1b[27m" + suffix
 	}
@@ -303,19 +334,44 @@ func (a *App) selectedText() string {
 	if !a.selection.hasRange() {
 		return ""
 	}
-	return extractSelection(a.currentFrame(), a.selection)
+	minCol, maxCol := a.selectionColumnBounds()
+	return extractSelection(a.currentFrame(), a.selection, minCol, maxCol)
+}
+
+// selectionColumnBounds keeps a drag inside the column it started in.
+//
+// opentui's selection is per-renderable: dragging through the message list
+// selects the message list's text, not a rectangle of the screen. This port
+// works on the rendered frame instead, and without a bound a selection
+// spanning more than one row took the *whole screen width* for every row
+// between its ends — so copying a couple of lines of an answer came back
+// holding the sidebar's "$0.00 spent" and "LSP" and none of the answer.
+//
+// Splitting at the chat/sidebar boundary recovers the useful half of what
+// opentui does: those two are the only side-by-side regions this port has.
+func (a *App) selectionColumnBounds() (minCol, maxCol int) {
+	boundary := a.chatColumnEnd
+	if boundary <= 0 || boundary >= a.width {
+		return 0, a.width
+	}
+	// The drag's anchor decides which side owns it.
+	if a.selection.anchorCol < boundary {
+		return 0, boundary
+	}
+	return boundary, a.width
 }
 
 // extractSelection is selectedText's pure half, split out so the extraction
 // math is testable without rendering a full frame.
-func extractSelection(content string, sel textSelection) string {
+func extractSelection(content string, sel textSelection, minCol, maxCol int) string {
 	lines := strings.Split(content, "\n")
 	startRow, startCol, endRow, endCol := sel.ordered()
 	var out []string
 	for row := max(startRow, 0); row <= endRow && row < len(lines); row++ {
 		line := lines[row]
-		width := ansi.StringWidth(line)
+		width := min(ansi.StringWidth(line), maxCol)
 		colStart, colEnd := selectionCols(row, startRow, startCol, endRow, endCol, width)
+		colStart = max(colStart, minCol)
 		if colStart >= colEnd {
 			out = append(out, "")
 			continue
@@ -345,15 +401,20 @@ func selectionCols(row, startRow, startCol, endRow, endCol, width int) (colStart
 	return colStart, colEnd
 }
 
-// copySelectionCmd writes the selected text to the terminal clipboard via
-// OSC52 (the same mechanism as feature.go's copyTranscript) and toasts,
-// mirroring util/selection.ts's copy().
+// copySelectionCmd copies the selected text and toasts, mirroring
+// util/selection.ts's copy().
+//
+// The clipboard write goes through tea.SetClipboard, which emits the OSC52
+// through Bubble Tea's own renderer, in band with the frame. This used to
+// write the escape straight to os.Stdout while the program owned the terminal
+// — the same mistake as the background log line that ended up painted over the
+// footer, except here the casualty is the escape sequence itself: interleaved
+// into the middle of a frame's output it is no longer a well-formed OSC52, so
+// the terminal discards it and nothing reaches the clipboard.
 func (a *App) copySelectionCmd() tea.Cmd {
 	text := a.selectedText()
 	if strings.TrimSpace(text) == "" {
 		return nil
 	}
-	encoded := base64.StdEncoding.EncodeToString([]byte(text))
-	fmt.Fprintf(os.Stdout, "\033]52;c;%s\a", encoded)
-	return a.showToast("Copied to clipboard", false)
+	return copyToClipboard(a, text, "Copied to clipboard")
 }

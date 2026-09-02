@@ -2,23 +2,31 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/anomalyco/opencode-go/internal/agent"
+	"github.com/anomalyco/opencode-go/internal/background"
+	"github.com/anomalyco/opencode-go/internal/command"
 	"github.com/anomalyco/opencode-go/internal/config"
 	"github.com/anomalyco/opencode-go/internal/db"
 	"github.com/anomalyco/opencode-go/internal/event"
+	"github.com/anomalyco/opencode-go/internal/global"
 	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/anomalyco/opencode-go/internal/lsp"
 	"github.com/anomalyco/opencode-go/internal/mcp"
 	"github.com/anomalyco/opencode-go/internal/modelsdev"
 	"github.com/anomalyco/opencode-go/internal/modelstate"
 	"github.com/anomalyco/opencode-go/internal/permission"
 	"github.com/anomalyco/opencode-go/internal/provider"
+	"github.com/anomalyco/opencode-go/internal/question"
 	"github.com/anomalyco/opencode-go/internal/session"
+	"github.com/anomalyco/opencode-go/internal/skill"
 	"github.com/anomalyco/opencode-go/internal/tool"
 	"github.com/anomalyco/opencode-go/internal/tool/builtins"
 )
@@ -90,6 +98,21 @@ type stack struct {
 	// registry; exposed so CLI commands (mcp list/auth/logout) and the TUI
 	// status dialog can query live status.
 	MCP *mcp.Service
+	// Jobs tracks detached background subagents. nil unless background
+	// subagents are enabled.
+	Jobs *background.Registry
+	// Skills holds the discovered skills backing the skill tool and the
+	// available-skills prompt block.
+	Skills *skill.Registry
+	// Questions owns the pending ask/reply rounds from the question tool and
+	// plan mode.
+	Questions *question.Service
+	// LSP owns the running language servers backing edit/write diagnostics and
+	// the status view. Servers start lazily on the first file that needs one.
+	LSP *lsp.Service
+	// Commands holds the slash commands: built-ins, config entries, markdown
+	// definitions and skills.
+	Commands *command.Registry
 }
 
 // resolveModelFlag applies precedence: explicit flag wins, then config,
@@ -156,13 +179,47 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Skills are discovered from the project and the user's global config,
+	// project first so a local skill overrides a global one of the same name.
+	skills := skill.Discover(
+		filepath.Join(workdir, ".opencode"),
+		filepath.Join(global.Resolve().Config, "opencode"),
+	)
+	questions := question.NewService(question.Hooks{}, nil)
+
+	// Language servers are started lazily, on the first file that needs one, so
+	// boot stays fast and a project with none pays nothing.
+	lspService := lsp.New(workdir, cfg)
+
 	tools := tool.NewRegistry()
-	builtins.Register(tools, workdir, database)
+	// The agent switcher is bound after the session service exists; plan mode
+	// is registered below once it does.
+	builtins.RegisterWith(tools, workdir, builtins.Options{
+		Database:  database,
+		Skills:    skills,
+		Asker:     questions,
+		Diagnoser: lspService,
+	})
+
+	// Slash commands are assembled after skills are discovered, since a skill
+	// is one of their sources.
+	commands := command.Load(cfg, workdir, skills, []string{
+		filepath.Join(workdir, ".opencode"),
+		filepath.Join(global.Resolve().Config, "opencode"),
+	})
 
 	mcpServers, _ := mcp.ParseServers(cfg.MCP)
 	mcpService := mcp.NewService(workdir)
 	mcpService.SetRegistry(tools)
 	mcpService.LoadAsync(mcpServers)
+
+	// Markdown-defined agents (.opencode/agent/*.md) merge into the config's
+	// agent map before the registry is built, so both definition styles flow
+	// through one code path. JSON config wins on a name collision.
+	cfg.DiscoverAgents(
+		filepath.Join(workdir, ".opencode"),
+		filepath.Join(global.Resolve().Config, "opencode"),
+	)
 
 	agents := agent.NewRegistry()
 	// defaultPermissions mirrors agent.ts's `defaults` object, merged into
@@ -181,6 +238,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Mode:        "primary",
 		Permissions: buildPermissions,
 	})
+	registerBuiltinSubagents(agents, defaultPermissions)
 	if cfg.DefaultAgent != "" {
 		agents.SetDefault(cfg.DefaultAgent)
 	}
@@ -205,8 +263,11 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		}
 		agents.Update(info)
 	}
-	permissionEngine := permission.NewEngine(
-		&session.AgentRulesProvider{Agents: agents}, nil, permission.Hooks{}, nil)
+	// Bound late: the rules provider needs the session service, which is not
+	// constructed until below. Subagent sessions store a derived ruleset that
+	// must override their agent's stock one.
+	agentRules := &session.AgentRulesProvider{Agents: agents}
+	permissionEngine := permission.NewEngine(agentRules, nil, permission.Hooks{}, nil)
 
 	runner := &session.Runner{
 		DB:                database,
@@ -220,6 +281,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Permissions:       &session.EnginePermissionGate{Engine: permissionEngine},
 		ContextLimit:      defaultContextLimit,
 		ReasoningVariants: reasoningVariantsResolver(catalog),
+		Pricing:           pricingResolver(catalog),
 		Compactor: &session.Compactor{
 			Bus:      bus,
 			Provider: streamClient,
@@ -227,11 +289,14 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		},
 	}
 	execution := session.NewExecution(&session.DBSessionLookup{DB: database}, runner)
-	execution.ErrorLogger = func(sessionID string, err error) {
-		fmt.Fprintf(os.Stderr, "session %s drain failed: %v\n", sessionID, err)
-	}
+	execution.ErrorLogger = logDrainError
 	catalog.StartBackgroundRefresh(ctx)
 	service := session.NewService(database, bus)
+	// Plan mode needs both the question service and the session service, so it
+	// is registered here rather than in the builtins block above.
+	tools.Register(builtins.NewPlanEnterTool(questions, service))
+	tools.Register(builtins.NewPlanExitTool(questions, service))
+	agentRules.Sessions = service
 	service.Execution = execution
 	service.Compactor = &session.Compactor{
 		Bus:      bus,
@@ -239,6 +304,25 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Settings: session.DefaultCompactionSettings(),
 	}
 	service.DefaultModel = session.ModelRef{ProviderID: providerID, ID: modelID}
+	// The task tool closes the loop between the tool layer and the session
+	// layer through the tool.Spawner seam: builtins cannot import session
+	// (session imports tool), so the concrete spawner is injected here.
+	var jobs *background.Registry
+	subagentDepth := session.DefaultSubagentDepth
+	if cfg.SubagentDepth != nil {
+		subagentDepth = *cfg.SubagentDepth
+	}
+	if subagentDepth > 0 {
+		spawner := session.NewSpawner(service, execution, agents, subagentDepth)
+		// Background subagents stay opt-in, matching the TypeScript gate.
+		if os.Getenv("OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS") == "true" ||
+			os.Getenv("OPENCODE_EXPERIMENTAL") == "true" {
+			jobs = background.NewRegistry()
+			tools.Register(builtins.NewBackgroundTaskTool(spawner, jobs))
+		} else {
+			tools.Register(builtins.NewTaskTool(spawner))
+		}
+	}
 	return &stack{
 		Service:     service,
 		Bus:         bus,
@@ -250,6 +334,11 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		ModelID:     modelID,
 		Runner:      runner,
 		MCP:         mcpService,
+		Jobs:        jobs,
+		Skills:      skills,
+		Questions:   questions,
+		LSP:         lspService,
+		Commands:    commands,
 	}, nil
 }
 
@@ -266,4 +355,20 @@ func listenAddr(addr string) net.Listener {
 
 func resolveProvider(ctx context.Context, providerID string, cfg *config.Config) (llm.StreamClient, error) {
 	return provider.FromConfig(ctx, providerID, cfg)
+}
+
+// logDrainError reports an advisory drain failure.
+//
+// Two things it deliberately does not do. It does not report a cancellation:
+// an interrupted turn returns the very context error the user's own escape
+// produced, and calling that a failure is wrong. And it never writes to the
+// terminal — this runs on a background goroutine, and while the TUI is up it
+// owns the alternate screen, so a stray write is painted straight over the
+// rendered frame (it is how "drain failed: context canceled" ended up on top
+// of the footer). See internal/global/diag.go.
+func logDrainError(sessionID string, err error) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return
+	}
+	global.LogBackground("session %s drain failed: %v", sessionID, err)
 }

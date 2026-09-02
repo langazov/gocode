@@ -77,6 +77,19 @@ type UnknownError struct {
 	Message string `json:"message,omitempty"`
 }
 
+// Error types recorded on a settled assistant message. The TypeScript schema
+// names these instead (schema/src/v1/session.ts's `namedError`), and its whole
+// UI branches on `error.name === "MessageAbortedError"` to tell a user-ordered
+// interruption apart from a real failure — it suppresses the error block for
+// one and appends "· interrupted" to the settlement line. This port carries the
+// same distinction in the `type` field it already has.
+const (
+	ErrorTypeUnknown = "unknown"
+	// ErrorTypeAborted is the port's MessageAbortedError: the run context was
+	// canceled, i.e. the user interrupted the turn.
+	ErrorTypeAborted = "aborted"
+)
+
 // AssistantContent is the text | reasoning | tool tagged union.
 type AssistantContent struct {
 	Type     string       `json:"type"`

@@ -34,7 +34,7 @@ func runWebCommand(a *clix.Args) error {
 		return err
 	}
 	listener := listenAddr(addr)
-	srv := &server.Server{Session: stack.Service, Bus: stack.Bus, Permissions: stack.Permissions, Models: stack.Models, Agents: stack.Agents, Config: stack.Config, MCP: stack.MCP}
+	srv := &server.Server{Session: stack.Service, Bus: stack.Bus, Permissions: stack.Permissions, Models: stack.Models, Agents: stack.Agents, Config: stack.Config, MCP: stack.MCP, Jobs: stack.Jobs, Questions: stack.Questions, Skills: stack.Skills, LSP: stack.LSP, Commands: stack.Commands}
 	go server.ServeOn(listener, srv.Mux())
 
 	host, port, _ := net.SplitHostPort(listener.Addr().String())

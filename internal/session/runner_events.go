@@ -114,6 +114,13 @@ func projectStepStarted(ctx context.Context, tx *sql.Tx, payload event.Payload) 
 }
 
 func projectStepEnded(ctx context.Context, tx *sql.Tx, payload event.Payload) error {
+	// The session row carries the running totals the stats endpoint reports
+	// (and `session.cost`, which the sidebar shows as "spent"). Nothing used
+	// to write these columns, so every session reported 0 tokens and $0.00
+	// for its whole life.
+	if err := accumulateSessionUsage(ctx, tx, payload); err != nil {
+		return err
+	}
 	assistantMessageID, _ := payload.Data["assistantMessageID"].(string)
 	return updateAssistant(ctx, tx, assistantMessageID, func(message map[string]any) {
 		// Content parts are projected incrementally by the text, reasoning, and
@@ -340,5 +347,32 @@ func updateAssistant(ctx context.Context, tx *sql.Tx, assistantMessageID string,
 	_, err = tx.ExecContext(ctx,
 		`UPDATE session_message SET data = ?, time_updated = ? WHERE id = ?`,
 		string(encoded), time.Now().UnixMilli(), assistantMessageID)
+	return err
+}
+
+// accumulateSessionUsage adds one settled step's tokens and cost to the
+// session's running totals, inside the same transaction that commits the step.
+func accumulateSessionUsage(ctx context.Context, tx *sql.Tx, payload event.Payload) error {
+	sessionID, _ := payload.Data["sessionID"].(string)
+	if sessionID == "" {
+		return nil
+	}
+	tokens, _ := payload.Data["tokens"].(map[string]any)
+	cache, _ := tokens["cache"].(map[string]any)
+	cost, _ := payload.Data["cost"].(float64)
+
+	_, err := tx.ExecContext(ctx, `
+		UPDATE session SET
+			cost = cost + ?,
+			tokens_input = tokens_input + ?,
+			tokens_output = tokens_output + ?,
+			tokens_reasoning = tokens_reasoning + ?,
+			tokens_cache_read = tokens_cache_read + ?,
+			tokens_cache_write = tokens_cache_write + ?
+		WHERE id = ?`,
+		cost,
+		asInt64(tokens["input"]), asInt64(tokens["output"]), asInt64(tokens["reasoning"]),
+		asInt64(cache["read"]), asInt64(cache["write"]),
+		sessionID)
 	return err
 }

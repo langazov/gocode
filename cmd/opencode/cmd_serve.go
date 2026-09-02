@@ -40,6 +40,11 @@ func runServeCommand(a *clix.Args) error {
 		Agents:      stack.Agents,
 		Config:      stack.Config,
 		MCP:         stack.MCP,
+		Jobs:        stack.Jobs,
+		Questions:   stack.Questions,
+		Skills:      stack.Skills,
+		LSP:         stack.LSP,
+		Commands:    stack.Commands,
 	}
 	return server.ServeOn(listener, srv.Mux())
 }

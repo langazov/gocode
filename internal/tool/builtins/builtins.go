@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/anomalyco/opencode-go/internal/db"
+	"github.com/anomalyco/opencode-go/internal/skill"
 	"github.com/anomalyco/opencode-go/internal/tool"
 )
 
@@ -33,19 +34,53 @@ func (r Resolver) Resolve(input string) (string, error) {
 	return candidate, nil
 }
 
-// Register adds all built-in tools to the registry, scoped to root. The
-// database backs session-aware tools such as todowrite.
+// Options carries the optional services that gate the tools needing them.
+// A nil field disables the tools that depend on it rather than registering a
+// tool that would fail at call time.
+type Options struct {
+	// Database backs session-aware tools such as todowrite.
+	Database *db.DB
+	// Skills, when set, enables the skill tool.
+	Skills *skill.Registry
+	// Asker, when set, enables the question tool and plan mode.
+	Asker Asker
+	// AgentSwitcher, together with Asker, enables plan mode.
+	AgentSwitcher AgentSwitcher
+	// Diagnoser, when set, reports language-server diagnostics on the files the
+	// edit, write and patch tools change, and warms servers on read.
+	Diagnoser Diagnoser
+}
+
+// Register adds all built-in tools to the registry, scoped to root.
 func Register(registry *tool.Registry, root string, database *db.DB) {
+	RegisterWith(registry, root, Options{Database: database})
+}
+
+// RegisterWith adds the built-in tools, enabling the optional ones whose
+// services are supplied.
+func RegisterWith(registry *tool.Registry, root string, opts Options) {
 	resolver := Resolver{Root: root}
-	registry.Register(NewReadTool(resolver))
-	registry.Register(NewWriteTool(resolver))
-	registry.Register(NewEditTool(resolver))
+	registry.Register(NewReadToolWith(resolver, opts.Diagnoser))
+	registry.Register(NewWriteToolWith(resolver, opts.Diagnoser))
+	registry.Register(NewEditToolWith(resolver, opts.Diagnoser))
 	registry.Register(NewGlobTool(resolver))
 	registry.Register(NewGrepTool(resolver))
 	registry.Register(NewBashTool(resolver))
 	registry.Register(NewWebFetchTool())
-	if database != nil {
-		registry.Register(NewTodoTool(database))
+	registry.Register(NewWebSearchTool())
+	registry.Register(NewApplyPatchToolWith(resolver, opts.Diagnoser))
+	if opts.Database != nil {
+		registry.Register(NewTodoTool(opts.Database))
+	}
+	if opts.Skills != nil && len(opts.Skills.Names()) > 0 {
+		registry.Register(NewSkillTool(opts.Skills))
+	}
+	if opts.Asker != nil {
+		registry.Register(NewQuestionTool(opts.Asker))
+		if opts.AgentSwitcher != nil {
+			registry.Register(NewPlanEnterTool(opts.Asker, opts.AgentSwitcher))
+			registry.Register(NewPlanExitTool(opts.Asker, opts.AgentSwitcher))
+		}
 	}
 }
 

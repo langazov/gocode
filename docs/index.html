@@ -1,0 +1,487 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gocode — a single-binary coding agent</title>
+<meta name="description" content="A Go port of opencode: one self-contained binary with the agent loop, tools, LSP diagnostics, MCP, and a terminal interface.">
+<meta property="og:title" content="gocode">
+<meta property="og:description" content="A Go port of opencode — one self-contained binary, no runtime to install.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⌘</text></svg>">
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #fbfbfd;
+    --bg-raised: #ffffff;
+    --bg-sunken: #f2f2f6;
+    --text: #16161a;
+    --text-muted: #5b5b66;
+    --text-faint: #8a8a96;
+    --border: #e2e2e8;
+    --accent: #3b6ef6;
+    --accent-quiet: #eaf0ff;
+    --success: #1a7f4b;
+    --code-bg: #16161a;
+    --code-text: #e6e6ec;
+    --shadow: 0 1px 2px rgba(16,16,26,.05), 0 8px 24px -12px rgba(16,16,26,.18);
+    --radius: 12px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f0f12;
+      --bg-raised: #17171c;
+      --bg-sunken: #121216;
+      --text: #eeeef4;
+      --text-muted: #a2a2b0;
+      --text-faint: #6e6e7c;
+      --border: #26262e;
+      --accent: #7aa2ff;
+      --accent-quiet: #1a2138;
+      --success: #5ac489;
+      --code-bg: #0a0a0d;
+      --code-text: #e6e6ec;
+      --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.6);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f0f12; --bg-raised: #17171c; --bg-sunken: #121216;
+    --text: #eeeef4; --text-muted: #a2a2b0; --text-faint: #6e6e7c;
+    --border: #26262e; --accent: #7aa2ff; --accent-quiet: #1a2138;
+    --success: #5ac489; --code-bg: #0a0a0d; --code-text: #e6e6ec;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px -12px rgba(0,0,0,.6);
+  }
+
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.65 var(--sans);
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 24px; }
+
+  /* ---------- header ---------- */
+  header {
+    position: sticky; top: 0; z-index: 20;
+    backdrop-filter: saturate(180%) blur(12px);
+    background: color-mix(in srgb, var(--bg) 82%, transparent);
+    border-bottom: 1px solid var(--border);
+  }
+  .nav { display: flex; align-items: center; gap: 20px; height: 58px; }
+  .brand { font-weight: 650; letter-spacing: -.01em; display: flex; align-items: center; gap: 9px; color: var(--text); }
+  .brand .mark {
+    width: 22px; height: 22px; border-radius: 6px;
+    background: linear-gradient(135deg, var(--accent), color-mix(in srgb, var(--accent) 55%, #b06ef6));
+    display: grid; place-items: center; color: #fff; font-size: 12px; font-weight: 700;
+  }
+  .nav .spacer { flex: 1; }
+  .nav a.link { color: var(--text-muted); font-size: 14.5px; }
+  .nav a.link:hover { color: var(--text); text-decoration: none; }
+  @media (max-width: 620px) { .nav a.link.opt { display: none; } }
+
+  /* ---------- hero ---------- */
+  .hero { padding: 76px 0 8px; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 8px;
+    font-size: 13px; color: var(--text-muted);
+    background: var(--bg-raised); border: 1px solid var(--border);
+    padding: 5px 12px; border-radius: 999px; margin-bottom: 22px;
+  }
+  .eyebrow .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); }
+  h1 {
+    font-size: clamp(34px, 6vw, 56px); line-height: 1.06; letter-spacing: -.032em;
+    margin: 0 0 18px; font-weight: 700;
+  }
+  h1 .grad {
+    background: linear-gradient(120deg, var(--accent), color-mix(in srgb, var(--accent) 40%, #b06ef6));
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--text-muted); max-width: 62ch; margin: 0 0 30px; }
+  .cta { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px;
+    padding: 11px 20px; border-radius: 10px; font-weight: 560; font-size: 15px;
+    border: 1px solid transparent; cursor: pointer;
+  }
+  .btn-primary { background: var(--accent); color: #fff; }
+  .btn-primary:hover { text-decoration: none; filter: brightness(1.07); }
+  .btn-ghost { background: var(--bg-raised); border-color: var(--border); color: var(--text); }
+  .btn-ghost:hover { text-decoration: none; border-color: var(--text-faint); }
+
+  /* ---------- terminal ---------- */
+  .term {
+    margin: 46px 0 0; border-radius: var(--radius); overflow: hidden;
+    border: 1px solid var(--border); box-shadow: var(--shadow); background: var(--code-bg);
+  }
+  .term-bar { display: flex; align-items: center; gap: 7px; padding: 11px 14px; background: color-mix(in srgb, var(--code-bg) 80%, #fff 6%); }
+  .term-bar i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .term-bar .t { margin-left: 10px; color: #8a8a96; font: 12px var(--mono); }
+  .term pre {
+    margin: 0; padding: 18px 20px 22px; overflow-x: auto;
+    font: 13px/1.7 var(--mono); color: var(--code-text);
+  }
+  .term .c-dim { color: #6e6e7c; }
+  .term .c-accent { color: #7aa2ff; }
+  .term .c-ok { color: #5ac489; }
+  .term .c-warn { color: #e0af68; }
+
+  /* ---------- sections ---------- */
+  section { padding: 72px 0; }
+  section + section { border-top: 1px solid var(--border); }
+  h2 { font-size: clamp(24px, 3.4vw, 31px); letter-spacing: -.022em; margin: 0 0 10px; font-weight: 680; }
+  .sub { color: var(--text-muted); margin: 0 0 34px; max-width: 60ch; }
+
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(232px, 1fr)); }
+  .card {
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 22px;
+  }
+  .card h3 { margin: 0 0 7px; font-size: 16px; font-weight: 620; letter-spacing: -.005em; }
+  .card p { margin: 0; color: var(--text-muted); font-size: 14.5px; line-height: 1.6; }
+  .card .ico { font-size: 19px; margin-bottom: 12px; display: block; }
+
+  /* ---------- stats ---------- */
+  .stats { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+  .stat { background: var(--bg-sunken); border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+  .stat b { display: block; font-size: 27px; letter-spacing: -.02em; font-weight: 680; }
+  .stat span { color: var(--text-muted); font-size: 13.5px; }
+
+  /* ---------- downloads ---------- */
+  .dl-head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin-bottom: 22px; }
+  .tag {
+    font: 12.5px var(--mono); background: var(--accent-quiet); color: var(--accent);
+    padding: 3px 9px; border-radius: 999px; border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+  }
+  .dl-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .dl {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--bg-raised); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 15px 17px; color: var(--text);
+  }
+  .dl:hover { text-decoration: none; border-color: var(--accent); }
+  .dl .os { font-size: 21px; width: 26px; text-align: center; }
+  .dl .meta { flex: 1; min-width: 0; }
+  .dl .meta b { display: block; font-size: 15px; font-weight: 590; }
+  .dl .meta span { color: var(--text-faint); font-size: 12.5px; font-family: var(--mono); }
+  .dl .arrow { color: var(--text-faint); }
+  .note { color: var(--text-muted); font-size: 14px; margin-top: 20px; }
+
+  /* ---------- code blocks ---------- */
+  pre.code {
+    background: var(--code-bg); color: var(--code-text); border-radius: 10px;
+    padding: 15px 18px; overflow-x: auto; font: 13px/1.7 var(--mono); margin: 0 0 14px;
+    border: 1px solid var(--border);
+  }
+  code.inline {
+    font: .89em var(--mono); background: var(--bg-sunken);
+    padding: 2px 6px; border-radius: 5px; border: 1px solid var(--border);
+  }
+  .tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
+  .tab {
+    font: 13px var(--sans); padding: 6px 13px; border-radius: 8px; cursor: pointer;
+    background: var(--bg-raised); border: 1px solid var(--border); color: var(--text-muted);
+  }
+  .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+
+  table.compat { width: 100%; border-collapse: collapse; font-size: 14.5px; }
+  table.compat th, table.compat td { text-align: left; padding: 11px 13px; border-bottom: 1px solid var(--border); }
+  table.compat th { color: var(--text-muted); font-weight: 560; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
+  table.compat td:first-child { font-weight: 560; }
+  .yes { color: var(--success); }
+  .partial { color: #b8860b; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .partial { color: #e0af68; } }
+  :root[data-theme="dark"] .partial { color: #e0af68; }
+
+  footer { border-top: 1px solid var(--border); padding: 34px 0 54px; color: var(--text-faint); font-size: 14px; }
+  footer a { color: var(--text-muted); }
+  .foot-row { display: flex; gap: 20px; flex-wrap: wrap; align-items: center; }
+  .foot-row .spacer { flex: 1; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wrap nav">
+    <a class="brand" href="#top"><span class="mark">⌘</span> gocode</a>
+    <span class="spacer"></span>
+    <a class="link" href="#features">Features</a>
+    <a class="link opt" href="#install">Install</a>
+    <a class="link" href="#downloads">Downloads</a>
+    <a class="link opt" href="#parity">Parity</a>
+    <a class="link" data-gh="">GitHub</a>
+  </div>
+</header>
+
+<main id="top">
+  <div class="wrap hero">
+    <span class="eyebrow"><span class="dot"></span> Single binary · no runtime required</span>
+    <h1>A coding agent that ships as <span class="grad">one file</span>.</h1>
+    <p class="lede">
+      gocode is a Go port of opencode. The agent loop, the tools, language-server
+      diagnostics, MCP, and the full terminal interface compile into a single static
+      executable — nothing to install alongside it.
+    </p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#downloads">Download ↓</a>
+      <a class="btn btn-ghost" href="#install">Install instructions</a>
+    </div>
+
+    <div class="term">
+      <div class="term-bar">
+        <i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i>
+        <span class="t">opencode</span>
+      </div>
+<pre><span class="c-dim">$</span> opencode
+<span class="c-dim">┃</span> <span class="c-accent">/</span>review<span class="c-dim">                        review changes [commit|branch|pr]</span>
+<span class="c-dim">┃</span> <span class="c-accent">/</span>init<span class="c-dim">                          guided AGENTS.md setup</span>
+<span class="c-dim">┃</span> <span class="c-accent">/</span>models<span class="c-dim">                        Choose model</span>
+<span class="c-dim">┃</span>
+<span class="c-dim">┃</span> Ask anything... <span class="c-dim">"Fix a TODO in the codebase"</span>
+<span class="c-dim">┃</span> <span class="c-accent">Build</span> · claude-sonnet-4-5 <span class="c-dim">Anthropic</span>
+
+<span class="c-ok">▣</span> edit internal/lsp/client.go
+  <span class="c-warn">⚠</span> <span class="c-dim">LSP errors detected in this file, please fix:</span>
+  <span class="c-dim">ERROR [42:6] undefined: helper</span>
+</pre>
+    </div>
+  </div>
+
+  <section id="features">
+    <div class="wrap">
+      <h2>What is in the binary</h2>
+      <p class="sub">Everything below is compiled in. There is no Node, no Python, no package manager step.</p>
+      <div class="grid">
+        <div class="card">
+          <span class="ico">⌨</span>
+          <h3>Terminal interface</h3>
+          <p>Sessions, a scrollable timeline, model and agent pickers, permission prompts, inline <code class="inline">/</code> command and <code class="inline">@</code> file completion, mouse selection and copy.</p>
+        </div>
+        <div class="card">
+          <span class="ico">🔧</span>
+          <h3>14 built-in tools</h3>
+          <p>read, write, edit, apply_patch, glob, grep, bash, webfetch, websearch, todowrite, question, plan and skills — each behind a permission rule.</p>
+        </div>
+        <div class="card">
+          <span class="ico">🩺</span>
+          <h3>Language servers</h3>
+          <p>27 servers detected on <code class="inline">PATH</code>. Edits report their own diagnostics in the same turn, so a broken change says so immediately.</p>
+        </div>
+        <div class="card">
+          <span class="ico">🔌</span>
+          <h3>MCP client</h3>
+          <p>stdio and HTTP/SSE servers, OAuth with dynamic client registration, live reconnect, and their tools merged into the registry.</p>
+        </div>
+        <div class="card">
+          <span class="ico">🧠</span>
+          <h3>Any provider</h3>
+          <p>A models.dev catalog is embedded, so 212 providers resolve offline. Anthropic, OpenAI and Gemini wire formats, plus Copilot, Azure and ChatGPT sign-in.</p>
+        </div>
+        <div class="card">
+          <span class="ico">🛡</span>
+          <h3>Permissions that hold</h3>
+          <p>File tools are scoped to the working directory — and the shell is held to it too: a command writing outside it asks first.</p>
+        </div>
+      </div>
+
+      <div class="stats" style="margin-top:16px">
+        <div class="stat"><b>~36K</b><span>lines of Go</span></div>
+        <div class="stat"><b>~22K</b><span>lines of tests</span></div>
+        <div class="stat"><b>25 MB</b><span>static binary</span></div>
+        <div class="stat"><b>0</b><span>runtime dependencies</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="downloads">
+    <div class="wrap">
+      <div class="dl-head">
+        <h2 style="margin:0">Downloads</h2>
+        <span class="tag" id="release-tag">loading…</span>
+      </div>
+      <p class="sub" id="release-sub">Fetching the latest release from GitHub.</p>
+      <div class="dl-grid" id="downloads-grid"></div>
+      <p class="note">
+        Every release ships a <code class="inline">SHA256SUMS</code> file. Verify a download with
+        <code class="inline">sha256sum -c SHA256SUMS --ignore-missing</code>.
+        On macOS the binaries are unsigned — clear the quarantine flag with
+        <code class="inline">xattr -d com.apple.quarantine opencode</code>.
+      </p>
+    </div>
+  </section>
+
+  <section id="install">
+    <div class="wrap">
+      <h2>Install</h2>
+      <p class="sub">Unpack it, put it on your <code class="inline">PATH</code>, run it. That is the whole procedure.</p>
+      <div class="tabs" role="tablist">
+        <button class="tab" role="tab" aria-selected="true" data-os="unix">macOS &amp; Linux</button>
+        <button class="tab" role="tab" aria-selected="false" data-os="windows">Windows</button>
+        <button class="tab" role="tab" aria-selected="false" data-os="source">From source</button>
+      </div>
+      <pre class="code" id="install-unix"># download the archive for your platform from the Downloads section, then
+tar -xzf opencode-*-macos-arm64.tar.gz
+chmod +x opencode
+sudo mv opencode /usr/local/bin/
+
+opencode --version</pre>
+      <pre class="code" id="install-windows" hidden># in PowerShell, after downloading the .zip
+Expand-Archive .\opencode-*-windows-x64.zip -DestinationPath .
+# move opencode.exe somewhere on your PATH, then
+.\opencode.exe --version</pre>
+      <pre class="code" id="install-source" hidden>git clone <span data-gh-text="">…</span>.git
+cd gocode
+make build      <span style="color:#6e6e7c"># or: go build ./cmd/opencode</span>
+
+./opencode --version</pre>
+
+      <h2 style="margin-top:44px; font-size:20px">First run</h2>
+      <p class="sub">Sign in to a provider, then start a session.</p>
+      <pre class="code">opencode providers login    <span style="color:#6e6e7c"># pick a provider and a method</span>
+opencode                    <span style="color:#6e6e7c"># start the interface</span>
+opencode run "fix the failing test"   <span style="color:#6e6e7c"># one-shot, no interface</span></pre>
+    </div>
+  </section>
+
+  <section id="parity">
+    <div class="wrap">
+      <h2>Porting status</h2>
+      <p class="sub">
+        The port tracks the TypeScript original subsystem by subsystem. What is missing is
+        listed as plainly as what is done.
+      </p>
+      <table class="compat">
+        <thead><tr><th>Subsystem</th><th>Status</th><th>Notes</th></tr></thead>
+        <tbody>
+          <tr><td>Session engine</td><td class="yes">✓ Done</td><td>Streaming, tool settlement, compaction, todo, events</td></tr>
+          <tr><td>Terminal interface</td><td class="yes">✓ Done</td><td>Bubble Tea rewrite of the opentui original</td></tr>
+          <tr><td>Providers &amp; auth</td><td class="yes">✓ Done</td><td>Embedded catalog, OAuth device flows, ChatGPT sign-in</td></tr>
+          <tr><td>Tools</td><td class="yes">✓ Done</td><td>14 built-ins with permission rules</td></tr>
+          <tr><td>LSP</td><td class="yes">✓ Done</td><td>27 servers; auto-install of servers is not ported</td></tr>
+          <tr><td>MCP</td><td class="partial">◐ Partial</td><td>Tools and OAuth; prompts-as-commands not yet</td></tr>
+          <tr><td>Slash commands</td><td class="yes">✓ Done</td><td>Built-ins, config, markdown, skills</td></tr>
+          <tr><td>Bedrock / Vertex</td><td class="partial">◐ Planned</td><td>Wire formats ready; credential chains pending</td></tr>
+          <tr><td>Plugin host</td><td class="partial">✗ Not ported</td><td>Needs a JS runtime; out of scope for one binary</td></tr>
+        </tbody>
+      </table>
+      <p class="note">
+        The porting log records each subsystem as it lands, including what was
+        deliberately left out and why.
+      </p>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap foot-row">
+    <span>gocode — a Go port of <a href="https://github.com/anomalyco/opencode">opencode</a>.</span>
+    <span class="spacer"></span>
+    <a data-gh="/releases">Releases</a>
+    <a data-gh="/issues">Issues</a>
+    <a data-gh="">Source</a>
+  </div>
+</footer>
+
+<script>
+(function () {
+  // The owner/repo is derived from the Pages host so a fork's site points at
+  // the fork's own releases rather than hard-coding this one.
+  var owner = "langazov", repo = "gocode";
+  var host = location.hostname.match(/^([^.]+)\.github\.io$/);
+  if (host) {
+    owner = host[1];
+    var seg = location.pathname.split("/").filter(Boolean);
+    // A project page is /<repo>/; a user page (<owner>.github.io) is not.
+    if (seg.length) repo = seg[0];
+  }
+  var base = "https://github.com/" + owner + "/" + repo;
+
+  Array.prototype.forEach.call(document.querySelectorAll("[data-gh]"), function (el) {
+    el.setAttribute("href", base + el.getAttribute("data-gh"));
+  });
+  Array.prototype.forEach.call(document.querySelectorAll("[data-gh-text]"), function (el) {
+    el.textContent = base;
+  });
+
+  var PLATFORMS = [
+    { match: /macos-arm64/,   icon: "🍎", name: "macOS",   detail: "Apple silicon (arm64)" },
+    { match: /macos-x64/,     icon: "🍎", name: "macOS",   detail: "Intel (x64)" },
+    { match: /linux-x64/,     icon: "🐧", name: "Linux",   detail: "x86_64" },
+    { match: /linux-arm64/,   icon: "🐧", name: "Linux",   detail: "arm64" },
+    { match: /windows-x64/,   icon: "🪟", name: "Windows", detail: "x64" },
+    { match: /windows-arm64/, icon: "🪟", name: "Windows", detail: "arm64" }
+  ];
+
+  function size(bytes) {
+    if (!bytes) return "";
+    var mb = bytes / (1024 * 1024);
+    return mb >= 1 ? mb.toFixed(1) + " MB" : Math.round(bytes / 1024) + " KB";
+  }
+
+  function fallback(message) {
+    document.getElementById("release-tag").textContent = "see GitHub";
+    document.getElementById("release-sub").textContent = message;
+    document.getElementById("downloads-grid").innerHTML =
+      '<a class="dl" href="https://github.com/' + owner + '/' + repo + '/releases">' +
+      '<span class="os">📦</span><span class="meta"><b>All releases</b>' +
+      '<span>github.com/' + owner + '/' + repo + '/releases</span></span>' +
+      '<span class="arrow">→</span></a>';
+  }
+
+  fetch("https://api.github.com/repos/" + owner + "/" + repo + "/releases?per_page=10",
+        { headers: { Accept: "application/vnd.github+json" } })
+    .then(function (r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then(function (releases) {
+      var release = (releases || []).filter(function (r) { return !r.draft; })[0];
+      if (!release) { fallback("No tagged release yet — build from source below."); return; }
+
+      document.getElementById("release-tag").textContent = release.tag_name;
+      var when = new Date(release.published_at).toLocaleDateString(undefined,
+        { year: "numeric", month: "long", day: "numeric" });
+      document.getElementById("release-sub").textContent = "Released " + when + ".";
+
+      var grid = document.getElementById("downloads-grid");
+      grid.innerHTML = "";
+      PLATFORMS.forEach(function (platform) {
+        var asset = (release.assets || []).filter(function (a) {
+          return platform.match.test(a.name) && !/\.sha256$/.test(a.name);
+        })[0];
+        if (!asset) return;
+        var a = document.createElement("a");
+        a.className = "dl";
+        a.href = asset.browser_download_url;
+        a.innerHTML =
+          '<span class="os">' + platform.icon + '</span>' +
+          '<span class="meta"><b>' + platform.name + '</b><span>' +
+          platform.detail + " · " + size(asset.size) + '</span></span>' +
+          '<span class="arrow">↓</span>';
+        grid.appendChild(a);
+      });
+      if (!grid.children.length) fallback("This release has no published binaries yet.");
+    })
+    .catch(function () {
+      fallback("Could not reach the GitHub API — open the releases page directly.");
+    });
+
+  // Install tabs.
+  var panes = { unix: "install-unix", windows: "install-windows", source: "install-source" };
+  Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (tab) {
+    tab.addEventListener("click", function () {
+      Array.prototype.forEach.call(document.querySelectorAll(".tab"), function (other) {
+        other.setAttribute("aria-selected", String(other === tab));
+      });
+      Object.keys(panes).forEach(function (key) {
+        document.getElementById(panes[key]).hidden = key !== tab.dataset.os;
+      });
+    });
+  });
+})();
+</script>
+</body>
+</html>

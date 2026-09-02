@@ -1,0 +1,220 @@
+name: release
+
+# Cross-compiles for macOS, Linux and Windows and publishes a GitHub Release
+# with checksums.
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The dispatch input builds the same artifacts without tagging, for a dry run.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp into the binaries (no tag is created)"
+        required: false
+        type: string
+        default: "0.0.0-dev"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+            name: macos-arm64
+          - goos: darwin
+            goarch: amd64
+            name: macos-x64
+          - goos: linux
+            goarch: arm64
+            name: linux-arm64
+          - goos: linux
+            goarch: amd64
+            name: linux-x64
+          - goos: windows
+            goarch: amd64
+            name: windows-x64
+            extension: .exe
+          - goos: windows
+            goarch: arm64
+            name: windows-arm64
+            extension: .exe
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Resolve version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # refs/tags/v0.1.0 -> 0.1.0
+            version="${GITHUB_REF_NAME#v}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Building version $version"
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          # No cgo anywhere: the SQLite driver is modernc (pure Go), which is
+          # what makes cross-compiling from one runner possible at all.
+          CGO_ENABLED: "0"
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.version }}"
+          pkg="github.com/anomalyco/opencode-go/internal/installation"
+          mkdir -p dist
+          go build \
+            -trimpath \
+            -buildmode=exe \
+            -ldflags "-s -w -X ${pkg}.Version=${version} -X ${pkg}.Channel=release" \
+            -o "dist/opencode${{ matrix.extension }}" \
+            ./cmd/opencode
+
+      - name: Package
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          name="opencode-${{ steps.version.outputs.version }}-${{ matrix.name }}"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            zip -9 "${name}.zip" "opencode.exe"
+            archive="${name}.zip"
+          else
+            # Reproducible-ish tarball: fixed owner and sorted entries so the
+            # same input produces the same bytes.
+            tar --sort=name --owner=0 --group=0 --numeric-owner \
+                -czf "${name}.tar.gz" opencode
+            archive="${name}.tar.gz"
+          fi
+          sha256sum "$archive" > "${archive}.sha256"
+          ls -lh "$archive"
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: opencode-${{ matrix.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+  smoke:
+    # A cross-compiled binary that does not start is worse than no release.
+    # Each native runner runs the artifact it will actually ship.
+    name: smoke (${{ matrix.name }})
+    needs: build
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            runs-on: macos-latest
+          - name: linux-x64
+            runs-on: ubuntu-latest
+          - name: windows-x64
+            runs-on: windows-latest
+    runs-on: ${{ matrix.runs-on }}
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: opencode-${{ matrix.name }}
+          path: dist
+
+      - name: Unpack and run
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          if ls *.zip >/dev/null 2>&1; then
+            unzip -o ./*.zip
+            binary="./opencode.exe"
+          else
+            tar -xzf ./*.tar.gz
+            binary="./opencode"
+            chmod +x "$binary"
+          fi
+          echo "version: $("$binary" --version)"
+          # A release build must not report the development version.
+          if [ "$("$binary" --version)" = "local" ]; then
+            echo "::error::the binary reports 'local'; the version ldflag did not apply"
+            exit 1
+          fi
+          "$binary" --help > /dev/null
+
+  release:
+    name: publish release
+    needs: [build, smoke]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      # Creating the release is the only write this workflow needs.
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Collect checksums
+        run: |
+          set -euo pipefail
+          cd artifacts
+          cat ./*.sha256 > SHA256SUMS
+          rm -f ./*.sha256
+          echo "### Checksums" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat SHA256SUMS >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          draft: false
+          body: |
+            A single self-contained binary — no runtime to install.
+
+            ## Install
+
+            **macOS / Linux**
+            ```sh
+            # pick the archive for your platform, then
+            tar -xzf opencode-*-<platform>.tar.gz
+            chmod +x opencode
+            sudo mv opencode /usr/local/bin/
+            ```
+
+            **Windows** — unzip and put `opencode.exe` on your `PATH`.
+
+            Verify a download against `SHA256SUMS`:
+            ```sh
+            sha256sum -c SHA256SUMS --ignore-missing
+            ```
+
+            On macOS the binaries are unsigned, so Gatekeeper will quarantine
+            them on first run:
+            ```sh
+            xattr -d com.apple.quarantine opencode
+            ```

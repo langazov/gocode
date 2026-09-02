@@ -268,7 +268,7 @@ func TestMessagesURLConventions(t *testing.T) {
 	for _, c := range cases {
 		client := New("k")
 		client.BaseURL = c.base
-		if got := client.messagesURL(); got != c.want {
+		if got := client.messagesURL("m"); got != c.want {
 			t.Errorf("messagesURL(base=%q) = %q, want %q", c.base, got, c.want)
 		}
 	}
