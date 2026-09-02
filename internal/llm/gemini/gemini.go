@@ -21,6 +21,10 @@ type Client struct {
 	APIKey  string
 	BaseURL string
 	HTTP    *http.Client
+	// Options carries provider-specific headers, body fields, model-id
+	// remapping and request signing, supplied by the provider transform layer.
+	// Vertex reaches the Gemini wire format through it.
+	Options llm.Options
 }
 
 func New(apiKey string) *Client {
@@ -33,21 +37,32 @@ func New(apiKey string) *Client {
 
 // Stream implements llm.StreamClient for the Gemini streamGenerateContent API.
 func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.StreamEvent)) error {
+	request.ModelID = c.Options.Model(request.ModelID)
 	body := convertRequest(request)
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return err
 	}
-	endpoint := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", c.baseURL(), request.ModelID)
+	payload, err = c.Options.MergeBody(payload)
+	if err != nil {
+		return err
+	}
+	fallback := fmt.Sprintf("%s/models/%s:streamGenerateContent?alt=sse", c.baseURL(), request.ModelID)
+	endpoint := c.Options.URL(c.baseURL(), request.ModelID, fallback)
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
+	signed, err := c.Options.Authenticate(httpReq, payload)
+	if err != nil {
+		return err
+	}
+	if !signed && c.APIKey != "" {
 		httpReq.Header.Set("x-goog-api-key", c.APIKey)
 	}
-	res, err := c.HTTP.Do(httpReq)
+	c.Options.ApplyHeaders(httpReq)
+	res, err := c.Options.HTTPClient(c.HTTP).Do(httpReq)
 	if err != nil {
 		emit(llm.StreamEvent{Type: llm.EventProviderError, Error: err})
 		return err

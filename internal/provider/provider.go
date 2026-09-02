@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
 	"github.com/anomalyco/opencode-go/internal/modelsdev"
 )
 
@@ -45,7 +44,9 @@ func (s *Service) ResolveAPIKey(ctx context.Context, providerID string) (string,
 			return value, nil
 		}
 	}
-	info, err := auth.Get(providerID)
+	// ResolveCredential, not auth.Get: an OAuth token near expiry is renewed here
+	// rather than being sent stale and coming back as a 401.
+	info, err := ResolveCredential(ctx, providerID, catalog[providerID])
 	if err != nil {
 		return "", err
 	}

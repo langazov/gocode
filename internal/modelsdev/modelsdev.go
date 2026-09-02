@@ -88,12 +88,17 @@ func (s *Service) Get(ctx context.Context) (Catalog, error) {
 	return catalog, nil
 }
 
+// populate resolves the catalog in the same order as populate() in
+// packages/core/src/models-dev.ts: disk cache, then the build-time snapshot
+// compiled into the binary, then a live fetch.
 func (s *Service) populate(ctx context.Context) (Catalog, error) {
 	if catalog, ok := s.loadFromDisk(); ok {
 		return catalog, nil
 	}
 	if flag.DisableModelsFetch() {
-		return Catalog{}, nil
+		// Explicitly offline still means "stale catalog", not "no catalog":
+		// without the snapshot there would be no model list at all.
+		return snapshotOrEmpty(), nil
 	}
 	if err := os.MkdirAll(filepath.Dir(s.Filepath), 0o755); err != nil {
 		return nil, err
@@ -109,17 +114,29 @@ func (s *Service) populate(ctx context.Context) (Catalog, error) {
 	}
 	text, err := s.fetchAndWrite(ctx)
 	if err != nil {
-		// Offline or unreachable source: degrade to an empty catalog so the
-		// app still boots (keys still resolve via env/auth), matching the
+		// Offline or unreachable source: fall back to the embedded snapshot so
+		// the app still boots with a usable model list, matching the
 		// resilience of the TypeScript background refresh.
 		//
 		// Not stderr: Get() is reached from HTTP handlers, so this can fire
 		// while the TUI owns the terminal, where a stray write is painted on
 		// top of the rendered frame. See internal/global/diag.go.
-		global.LogBackground("modelsdev: fetch failed, continuing without catalog: %v", err)
-		return Catalog{}, nil
+		global.LogBackground("modelsdev: fetch failed, using embedded snapshot: %v", err)
+		return snapshotOrEmpty(), nil
 	}
 	return decode(text)
+}
+
+// snapshotOrEmpty degrades to an empty catalog if even the embedded snapshot
+// fails to decode — a corrupt build artifact must not stop the app booting,
+// since keys still resolve via env vars and auth.json without a catalog.
+func snapshotOrEmpty() Catalog {
+	catalog, err := Snapshot()
+	if err != nil {
+		global.LogBackground("modelsdev: embedded snapshot unusable: %v", err)
+		return Catalog{}
+	}
+	return catalog
 }
 
 func (s *Service) loadFromDisk() (Catalog, bool) {

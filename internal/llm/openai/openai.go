@@ -23,6 +23,9 @@ type Client struct {
 	APIKey  string
 	BaseURL string
 	HTTP    *http.Client
+	// Options carries provider-specific headers, body fields, model-id
+	// remapping and request signing, supplied by the provider transform layer.
+	Options llm.Options
 }
 
 func New(apiKey string) *Client {
@@ -35,6 +38,7 @@ func New(apiKey string) *Client {
 
 // Stream implements llm.StreamClient for the Chat Completions API.
 func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.StreamEvent)) error {
+	request.ModelID = c.Options.Model(request.ModelID)
 	body, err := convertRequest(request)
 	if err != nil {
 		return err
@@ -43,15 +47,24 @@ func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.
 	if err != nil {
 		return err
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL()+"/chat/completions", bytes.NewReader(payload))
+	payload, err = c.Options.MergeBody(payload)
+	if err != nil {
+		return err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint(request.ModelID), bytes.NewReader(payload))
 	if err != nil {
 		return err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
-	if c.APIKey != "" {
+	signed, err := c.Options.Authenticate(httpReq, payload)
+	if err != nil {
+		return err
+	}
+	if !signed && c.APIKey != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
 	}
-	res, err := c.HTTP.Do(httpReq)
+	c.Options.ApplyHeaders(httpReq)
+	res, err := c.Options.HTTPClient(c.HTTP).Do(httpReq)
 	if err != nil {
 		emit(llm.StreamEvent{Type: llm.EventProviderError, Error: err})
 		return err
@@ -71,6 +84,11 @@ func (c *Client) baseURL() string {
 		return DefaultBaseURL
 	}
 	return strings.TrimRight(c.BaseURL, "/")
+}
+
+func (c *Client) endpoint(model string) string {
+	base := c.baseURL()
+	return c.Options.URL(base, model, base+"/chat/completions")
 }
 
 type chatMessage struct {

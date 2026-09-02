@@ -383,6 +383,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
+	catalog = resolveCatalog(r.Context(), catalog)
 	out := []modelEntry{}
 	seen := map[string]bool{}
 	// Only providers the user can actually reach — see available.go. The
@@ -412,8 +413,8 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, entry)
 	}
-	for providerID, provider := range catalog {
-		for modelID, model := range provider.Models {
+	for providerID, entry := range catalog {
+		for modelID, model := range providerModels(r.Context(), providerID, entry, s.Config) {
 			appendModel(providerID, config.Provider{}, modelID, model)
 		}
 	}

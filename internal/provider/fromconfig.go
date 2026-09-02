@@ -89,10 +89,18 @@ func resolveBaseURL(providerID string, providerConfig *config.Provider, entry mo
 	return providerBaseURL(providerID)
 }
 
-// FromConfig builds the stream client for a provider, honoring config
-// (options.apiKey/baseURL, api protocol), known defaults, and env overrides —
-// the runtime half of the provider config consumption.
-func FromConfig(ctx context.Context, providerID string, cfg *config.Config) (llm.StreamClient, error) {
+// Resolve produces a provider's fully-materialized configuration: the
+// models.dev catalog entry and the user's config block, layered as
+// resolveBaseURL/ResolveAPIKey describe, and then handed to every matching
+// Transform.
+//
+// It is separate from Client so that callers which only want to inspect a
+// provider — its models, its login methods — do not need a usable credential
+// to do so. Credential validation happens in Client, after transforms have
+// run, because a transform may be the thing that supplies the credential
+// (github-copilot exchanges a GitHub token) or replace the need for one
+// entirely (bedrock signs with AWS credentials instead).
+func Resolve(ctx context.Context, providerID string, cfg *config.Config) (*Resolved, error) {
 	service := New(modelsdev.New())
 	key, keyErr := service.ResolveAPIKey(ctx, providerID)
 
@@ -106,7 +114,7 @@ func FromConfig(ctx context.Context, providerID string, cfg *config.Config) (llm
 		}
 	}
 
-	protocol := "openai"
+	protocol := ProtocolOpenAI
 	if providerConfig != nil && providerConfig.API != "" {
 		protocol = Protocol(providerConfig.API)
 	}
@@ -123,58 +131,81 @@ func FromConfig(ctx context.Context, providerID string, cfg *config.Config) (llm
 		}
 	}
 
-	switch providerID {
-	case "anthropic":
-		protocol = "anthropic"
-	case "google", "gemini", "google-vertex":
-		protocol = "gemini"
+	baseURL, _ := resolveBaseURL(providerID, providerConfig, entry)
+
+	resolved := &Resolved{
+		ID:       providerID,
+		Name:     entry.Name,
+		Protocol: protocol,
+		BaseURL:  baseURL,
+		APIKey:   key,
+		Entry:    entry,
+		Config:   providerConfig,
+		Models:   entry.Models,
+		keyErr:   keyErr,
+	}
+	if resolved.Name == "" {
+		resolved.Name = providerID
+	}
+	if err := applyTransforms(ctx, resolved); err != nil {
+		return nil, err
+	}
+	return resolved, nil
+}
+
+// Client builds the stream client for a resolved provider.
+func (r *Resolved) Client() (llm.StreamClient, error) {
+	// A transform that signs requests or supplied its own key has met the
+	// credential requirement; so has a local endpoint that wants none.
+	needsKey := r.APIKey == "" && r.Options.Sign == nil && !keylessProvider(r.ID)
+	if needsKey && r.keyErr != nil {
+		return nil, r.keyErr
 	}
 
-	baseURL, haveBase := resolveBaseURL(providerID, providerConfig, entry)
-
-	if keyErr != nil && !keylessProvider(providerID) && (providerConfig == nil || providerConfig.Options.APIKey == "") {
-		return nil, keyErr
-	}
-
-	switch protocol {
-	case "anthropic":
-		if keyErr != nil {
-			return nil, keyErr
-		}
-		client := anthropic.New(key)
-		if baseURL != "" {
-			client.BaseURL = baseURL
+	switch r.Protocol {
+	case ProtocolAnthropic:
+		client := anthropic.New(r.APIKey)
+		client.Options = r.Options
+		if r.BaseURL != "" {
+			client.BaseURL = r.BaseURL
 		} else if envBase := os.Getenv("ANTHROPIC_BASE_URL"); envBase != "" {
 			client.BaseURL = envBase
 		}
 		return client, nil
-	case "gemini":
-		if keyErr != nil {
-			return nil, keyErr
-		}
-		client := gemini.New(key)
-		if baseURL != "" {
-			client.BaseURL = baseURL
+	case ProtocolGemini:
+		client := gemini.New(r.APIKey)
+		client.Options = r.Options
+		if r.BaseURL != "" {
+			client.BaseURL = r.BaseURL
 		} else if envBase := os.Getenv("GEMINI_BASE_URL"); envBase != "" {
 			client.BaseURL = envBase
 		}
 		return client, nil
 	default:
-		if keyErr != nil && !keylessProvider(providerID) {
-			return nil, keyErr
-		}
 		// Never fall through to openai.DefaultBaseURL for a provider that is
 		// not OpenAI. Doing so used to post the user's key for one provider to
 		// another company's API — silently, and with a 401 as the only clue.
-		if !haveBase {
+		if r.BaseURL == "" {
 			return nil, fmt.Errorf(
 				"provider %q: no API endpoint known (models.dev lists no `api` for it and its SDK %q is not one this port implements) — set provider.%s.options.baseURL in opencode.json",
-				providerID, entry.NPM, providerID)
+				r.ID, r.Entry.NPM, r.ID)
 		}
-		client := openai.New(key)
-		client.BaseURL = baseURL
+		client := openai.New(r.APIKey)
+		client.Options = r.Options
+		client.BaseURL = r.BaseURL
 		return client, nil
 	}
+}
+
+// FromConfig builds the stream client for a provider, honoring config
+// (options.apiKey/baseURL, api protocol), known defaults, and env overrides —
+// the runtime half of the provider config consumption.
+func FromConfig(ctx context.Context, providerID string, cfg *config.Config) (llm.StreamClient, error) {
+	resolved, err := Resolve(ctx, providerID, cfg)
+	if err != nil {
+		return nil, err
+	}
+	return resolved.Client()
 }
 
 // Fallback finds an available provider when the configured one has no

@@ -12,11 +12,7 @@ import (
 // TestBootStackUsesConfigModel is the regression for "TUI ignores config":
 // with no --model flag, the config default model/provider must win.
 func TestBootStackUsesConfigModel(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "true")
+	testCatalog(t)
 	t.Setenv("OPENCODE_CONFIG_CONTENT", `{
 		"model": "zhipuai/glm-5.3-flash",
 		"provider": {
@@ -48,11 +44,7 @@ func TestBootStackUsesConfigModel(t *testing.T) {
 // a restart resumes with the last-used model, beating the config default.
 func TestBootStackPrefersLastUsedModel(t *testing.T) {
 	workdir := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "true")
+	testCatalog(t)
 	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"model":"minimax-coding-plan/MiniMax-M3"}`)
 
 	original, _ := os.Getwd()
@@ -100,11 +92,7 @@ func TestBootStackPrefersLastUsedModel(t *testing.T) {
 // config at all) and for a custom agent that has no permission block of
 // its own.
 func TestBootStackDefaultPermissionsMatchTS(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "true")
+	testCatalog(t)
 	t.Setenv("OPENCODE_CONFIG_CONTENT", `{
 		"agent": {"reviewer": {"description": "reviews code"}}
 	}`)
@@ -139,11 +127,7 @@ func TestBootStackDefaultPermissionsMatchTS(t *testing.T) {
 // whole ruleset instead of merging, unlike TS's Permission.merge(defaults,
 // user)).
 func TestBootStackExplicitPermissionMergesWithDefaults(t *testing.T) {
-	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("XDG_STATE_HOME", t.TempDir())
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "true")
+	testCatalog(t)
 	t.Setenv("OPENCODE_CONFIG_CONTENT", `{"permission": {"bash": "ask"}}`)
 
 	stack, err := bootStack(context.Background(), "")
