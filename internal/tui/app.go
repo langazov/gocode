@@ -34,6 +34,10 @@ type App struct {
 	theme  theme.Theme
 	ctx    context.Context
 
+	// models holds the recent/favorite lists behind the model dialog's
+	// sections, shared with the TypeScript client via <state>/model.json.
+	models *modelStore
+
 	view      int
 	width     int
 	height    int
@@ -104,6 +108,13 @@ type App struct {
 	// getting-started card asks whether any provider beyond the bundled free
 	// one is reachable.
 	providers []client.Provider
+	// agentList is the cached agent list, so the agent dialog opens without a
+	// round trip. (Distinct from `agents`, the subagent aggregator snapshot.)
+	agentList []client.Agent
+	// catalogModels is the last-fetched model list, the port of TS's
+	// sync.data.provider: the dialogs render from it immediately instead of
+	// waiting on a request, and a refresh lands through catalogMsg.
+	catalogModels []client.Model
 	// modelCosts maps "provider/model" to the catalog's cost.input, the other
 	// half of that same question.
 	modelCosts map[string]float64
@@ -223,6 +234,7 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 	return &App{
 		ctx:               ctx,
 		client:            c,
+		models:            newModelStore(),
 		theme:             resolved,
 		view:              viewHome,
 		sidebar:           true, // the original shows the sidebar by default
@@ -370,7 +382,13 @@ type promptSentMsg struct {
 	text      string
 }
 type sessionRefreshedMsg struct{ session *client.Session }
-type statusMsg struct{ text string }
+type statusMsg struct {
+	text string
+	// isErr marks a message as an error explicitly. Without it the toast
+	// variant is inferred from the wording, which misses messages that are
+	// errors without saying "failed".
+	isErr bool
+}
 
 // staticMsg turns a ready message into a command.
 func staticMsg(msg tea.Msg) tea.Cmd {
@@ -516,6 +534,10 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		}
 		a.providerNames = map[string]string{}
 		a.providers = msg.providers
+		a.catalogModels = msg.models
+		// A dialog open before the catalog arrived is showing a stale or empty
+		// list; refresh it in place now that there is one.
+		a.refreshOpenCatalogDialog()
 		// settlementLine resolves a model's display name through this
 		// catalog, and messages rendered before it arrived cached the raw
 		// model ID.
@@ -625,9 +647,47 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			cmds = append(cmds, a.loadMessages(a.active.ID))
 		}
 		return tea.Batch(cmds...)
+	case agentListMsg:
+		a.agentList = msg.agents
+		if o := a.overlay; o != nil && o.kind == overlayList && o.title == "Select agent" {
+			filter, selected := o.filter, a.selectedOverlayValue()
+			a.openAgentDialog(a.agentList)
+			a.restoreOverlaySelection(filter, selected)
+		}
+		return nil
+	case providerListMsg:
+		a.providers = msg.providers
+		a.providerNames = map[string]string{}
+		for _, provider := range msg.providers {
+			a.providerNames[provider.ID] = provider.Name
+		}
+		a.refreshOpenCatalogDialog()
+		return nil
+	case providerConnectedMsg:
+		a.closeOverlay()
+		return tea.Batch(
+			a.showToast("Connected "+msg.name, false),
+			a.modelsOverlay(),
+		)
+	case oauthPollMsg:
+		return a.pollOAuth(msg)
+	case oauthDoneMsg:
+		a.closeOverlay()
+		return tea.Batch(
+			a.showToast("Connected "+msg.name, false),
+			a.modelsOverlay(),
+		)
+	case oauthFailedMsg:
+		a.closeOverlay()
+		text := "login failed"
+		if msg.err != "" {
+			text += ": " + msg.err
+		}
+		return a.showToast(text, true)
 	case statusMsg:
 		a.statusMsg = msg.text
-		isError := strings.HasPrefix(msg.text, "failed") ||
+		isError := msg.isErr ||
+			strings.HasPrefix(msg.text, "failed") ||
 			strings.Contains(msg.text, "failed:") ||
 			strings.Contains(msg.text, "error")
 		return a.showToast(msg.text, isError)

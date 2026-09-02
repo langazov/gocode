@@ -316,6 +316,35 @@ type Model struct {
 type Provider struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
+	// Connected reports a stored credential; Available that the provider is
+	// usable right now (a credential, or env vars, or config).
+	Connected bool `json:"connected,omitempty"`
+	Available bool `json:"available,omitempty"`
+}
+
+// AuthMethod is one way to log in to a provider, as served by
+// GET /api/provider/{id}/auth.
+type AuthMethod struct {
+	Type      string       `json:"type"`
+	Label     string       `json:"label"`
+	Env       []string     `json:"env,omitempty"`
+	Satisfied bool         `json:"satisfied,omitempty"`
+	Prompts   []AuthPrompt `json:"prompts,omitempty"`
+}
+
+type AuthPrompt struct {
+	Key     string   `json:"key"`
+	Label   string   `json:"label"`
+	Options []string `json:"options,omitempty"`
+}
+
+// OAuthAttempt is an in-flight device or browser login.
+type OAuthAttempt struct {
+	ID     string `json:"id"`
+	URL    string `json:"url"`
+	Code   string `json:"code"`
+	Status string `json:"status"`
+	Error  string `json:"error"`
 }
 
 type Agent struct {
@@ -341,6 +370,51 @@ func (c *Client) Providers(ctx context.Context) ([]Provider, error) {
 	var out []Provider
 	err := c.do(ctx, http.MethodGet, "/api/provider", nil, &out)
 	return out, err
+}
+
+// AllProviders lists every catalog provider, including ones with no
+// credential yet — what the connect dialog needs, as opposed to the usable
+// subset the model picker shows.
+func (c *Client) AllProviders(ctx context.Context) ([]Provider, error) {
+	var out []Provider
+	err := c.do(ctx, "GET", "/api/provider?all=true", nil, &out)
+	return out, err
+}
+
+// AuthMethods lists a provider's login methods.
+func (c *Client) AuthMethods(ctx context.Context, providerID string) ([]AuthMethod, error) {
+	var out []AuthMethod
+	err := c.do(ctx, "GET", "/api/provider/"+providerID+"/auth", nil, &out)
+	return out, err
+}
+
+// SetProviderKey stores a pasted API key for a provider.
+func (c *Client) SetProviderKey(ctx context.Context, providerID, key string) error {
+	return c.do(ctx, "POST", "/api/provider/"+providerID+"/auth", map[string]string{"key": key}, nil)
+}
+
+// LogoutProvider removes a provider's stored credential.
+func (c *Client) LogoutProvider(ctx context.Context, providerID string) error {
+	return c.do(ctx, "DELETE", "/api/provider/"+providerID+"/auth", nil, nil)
+}
+
+// StartOAuth begins an OAuth login and returns the code to display.
+func (c *Client) StartOAuth(ctx context.Context, providerID, method string, answers map[string]string) (*OAuthAttempt, error) {
+	var out OAuthAttempt
+	body := map[string]any{"method": method, "answers": answers}
+	if err := c.do(ctx, "POST", "/api/provider/"+providerID+"/auth/oauth", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// OAuthStatus polls an in-flight login.
+func (c *Client) OAuthStatus(ctx context.Context, attemptID string) (*OAuthAttempt, error) {
+	var out OAuthAttempt
+	if err := c.do(ctx, "GET", "/api/provider/auth/oauth/"+attemptID, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
 }
 
 func (c *Client) Agents(ctx context.Context) ([]Agent, error) {

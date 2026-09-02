@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/anomalyco/opencode-go/internal/auth"
 	"github.com/anomalyco/opencode-go/internal/installation"
@@ -77,7 +79,73 @@ func (copilotTransform) FetchModels(ctx context.Context, r *Resolved) (map[strin
 	if r.APIKey == "" {
 		return nil, fmt.Errorf("github-copilot: not logged in")
 	}
-	return copilotModels(ctx, r.BaseURL, r.APIKey)
+	return copilotModelCache.get(ctx, r.BaseURL, r.APIKey)
+}
+
+// copilotModelTTL bounds how stale the published model list may get. It
+// matches the models.dev catalog's own freshness window; Copilot's list
+// changes on the order of weeks, so this is about not re-fetching within a
+// session rather than about staleness.
+const copilotModelTTL = 5 * time.Minute
+
+// modelCache memoizes a provider's published model list.
+//
+// Without it every model-list request re-fetches over the network. That is
+// paid on the interface's hot path: opening the model dialog calls
+// /api/model, which measured 140ms+ per open against ~3ms for a provider with
+// no published list. The failure case matters just as much — an unusable
+// credential means a round trip that fails slowly, every single time.
+type modelCache struct {
+	mu      sync.Mutex
+	entries map[string]modelCacheEntry
+}
+
+type modelCacheEntry struct {
+	models  map[string]modelsdev.Model
+	err     error
+	fetched time.Time
+}
+
+var copilotModelCache = &modelCache{}
+
+func (c *modelCache) get(ctx context.Context, baseURL, token string) (map[string]modelsdev.Model, error) {
+	// Key on the credential as well as the endpoint: logging in as someone
+	// else must not serve the previous account's models.
+	key := baseURL + "\x00" + token
+
+	c.mu.Lock()
+	entry, ok := c.entries[key]
+	fresh := ok && time.Since(entry.fetched) < copilotModelTTL
+	c.mu.Unlock()
+	if fresh {
+		return entry.models, entry.err
+	}
+
+	models, err := copilotModels(ctx, baseURL, token)
+
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = map[string]modelCacheEntry{}
+	}
+	// A failure is cached too, deliberately: a bad credential otherwise costs
+	// a slow failing round trip on every dialog open.
+	c.entries[key] = modelCacheEntry{models: models, err: err, fetched: time.Now()}
+	c.mu.Unlock()
+	return models, err
+}
+
+// invalidate drops the cache, called when credentials change.
+func (c *modelCache) invalidate() {
+	c.mu.Lock()
+	c.entries = nil
+	c.mu.Unlock()
+}
+
+// InvalidateModelCaches clears memoized provider model lists. Call it after a
+// login or logout, or the interface keeps showing the previous account's
+// models until the TTL lapses.
+func InvalidateModelCaches() {
+	copilotModelCache.invalidate()
 }
 
 // AuthMethods advertises the device flow, so `opencode providers login`
@@ -123,7 +191,11 @@ func copilotLogin(ctx context.Context, answers map[string]string) (Credential, e
 	if err != nil {
 		return Credential{}, err
 	}
-	fmt.Printf("\nOpen %s and enter code: %s\n\nWaiting for authorization...\n", code.VerificationURI, code.UserCode)
+	promptLogin(ctx, LoginPrompt{
+		URL:     code.VerificationURI,
+		Code:    code.UserCode,
+		Message: fmt.Sprintf("Open %s and enter code: %s\n\nWaiting for authorization...", code.VerificationURI, code.UserCode),
+	})
 
 	token, err := flow.Poll(ctx, code)
 	if err != nil {

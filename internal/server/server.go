@@ -37,6 +37,11 @@ type Server struct {
 	Questions *question.Service
 	// Skills holds the discovered skills.
 	Skills *skill.Registry
+
+	// oauth tracks in-flight provider logins started from the interface. A
+	// device flow outlives the request that begins it, so the attempt is
+	// parked here and polled.
+	oauth oauthAttempts
 }
 
 // Mux builds the HTTP route tree. The TypeScript server exposes GET /api/health
@@ -58,6 +63,11 @@ func (s *Server) Mux() *http.ServeMux {
 	if s.Models != nil {
 		mux.HandleFunc("GET /api/model", s.listModels)
 		mux.HandleFunc("GET /api/provider", s.listProviders)
+		mux.HandleFunc("GET /api/provider/{providerID}/auth", s.listProviderAuth)
+		mux.HandleFunc("POST /api/provider/{providerID}/auth", s.setProviderKey)
+		mux.HandleFunc("DELETE /api/provider/{providerID}/auth", s.logoutProvider)
+		mux.HandleFunc("POST /api/provider/{providerID}/auth/oauth", s.startProviderOAuth)
+		mux.HandleFunc("GET /api/provider/auth/oauth/{attemptID}", s.providerOAuthStatus)
 	}
 	if s.Agents != nil {
 		mux.HandleFunc("GET /api/agent", s.listAgents)
@@ -444,14 +454,32 @@ func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
 	type providerEntry struct {
 		ID   string `json:"id"`
 		Name string `json:"name"`
+		// Connected reports a stored credential, which the connect dialog
+		// ticks. Env-var credentials count too: they are equally usable.
+		Connected bool `json:"connected,omitempty"`
+		// Available reports that the provider can be used right now. The
+		// connect dialog lists every catalog provider, including ones with no
+		// credential yet, and uses this to tell them apart.
+		Available bool `json:"available,omitempty"`
 	}
 	out := []providerEntry{}
 	availability := newProviderAvailability(s.Config)
+	connected := connectedProviders()
+	all := r.URL.Query().Get("all") == "true"
 	for id, provider := range catalog {
-		if !availability.available(id, provider) {
+		usable := availability.available(id, provider)
+		if !usable && !all {
 			continue
 		}
-		out = append(out, providerEntry{ID: id, Name: provider.Name})
+		if !availability.allowed(id) {
+			continue
+		}
+		out = append(out, providerEntry{
+			ID:        id,
+			Name:      provider.Name,
+			Connected: connected[id],
+			Available: usable,
+		})
 	}
 	// A config-declared provider need not exist in the catalog at all.
 	if s.Config != nil {
@@ -463,7 +491,7 @@ func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {
 			if name == "" {
 				name = id
 			}
-			out = append(out, providerEntry{ID: id, Name: name})
+			out = append(out, providerEntry{ID: id, Name: name, Connected: connected[id], Available: true})
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })

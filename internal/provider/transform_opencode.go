@@ -117,7 +117,11 @@ func zenLogin(ctx context.Context, _ map[string]string) (Credential, error) {
 	if target == "" {
 		target = code.VerificationURI
 	}
-	fmt.Printf("\nOpen %s and enter code: %s\n\nWaiting for authorization...\n", target, code.UserCode)
+	promptLogin(ctx, LoginPrompt{
+		URL:     target,
+		Code:    code.UserCode,
+		Message: fmt.Sprintf("Open %s and enter code: %s\n\nWaiting for authorization...", target, code.UserCode),
+	})
 
 	token, err := flow.Poll(ctx, code)
 	if err != nil {

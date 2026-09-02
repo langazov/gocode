@@ -111,8 +111,11 @@ func chatgptLogin(ctx context.Context, _ map[string]string) (Credential, error) 
 	go server.Serve(listener)
 	defer server.Close()
 
-	fmt.Printf("\nOpen this URL to sign in to ChatGPT:\n\n%s\n\nWaiting for the browser to complete authorization...\n",
-		chatgptAuthorizeURL(redirect, challenge, state))
+	authorizeURL := chatgptAuthorizeURL(redirect, challenge, state)
+	promptLogin(ctx, LoginPrompt{
+		URL:     authorizeURL,
+		Message: "Open this URL to sign in to ChatGPT:\n\n" + authorizeURL + "\n\nWaiting for the browser to complete authorization...",
+	})
 
 	var code string
 	select {

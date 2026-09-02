@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 
 	"github.com/anomalyco/opencode-go/internal/modelsdev"
@@ -201,5 +202,99 @@ func TestEnvSatisfied(t *testing.T) {
 	t.Setenv("TEST_PROVIDER_KEY", "value")
 	if !method.EnvSatisfied() {
 		t.Error("EnvSatisfied should be true once the variable is set")
+	}
+}
+
+// TestCopilotModelCacheAvoidsRefetch is the regression for "the dialogs are
+// shown with delays": the model list is fetched over the network, and
+// /api/model is on the interface's hot path — opening the model dialog
+// measured 140ms+ with a copilot credential against ~3ms without one.
+func TestCopilotModelCacheAvoidsRefetch(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Write([]byte(`{"data":[{"id":"m","name":"M","model_picker_enabled":true,
+			"capabilities":{"family":"gpt","limits":{},"supports":{"tool_calls":true}}}]}`))
+	}))
+	defer server.Close()
+
+	copilotModelCache.invalidate()
+	t.Cleanup(copilotModelCache.invalidate)
+
+	for i := 0; i < 5; i++ {
+		models, err := copilotModelCache.get(context.Background(), server.URL, "tok")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(models) != 1 {
+			t.Fatalf("call %d returned %d models, want 1", i, len(models))
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("hit the network %d times, want 1 — the list must be memoized", got)
+	}
+}
+
+// TestCopilotModelCacheKeysOnCredential: a different token is a different
+// account, and must not be served the first account's models.
+func TestCopilotModelCacheKeysOnCredential(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	copilotModelCache.invalidate()
+	t.Cleanup(copilotModelCache.invalidate)
+
+	copilotModelCache.get(context.Background(), server.URL, "token-a")
+	copilotModelCache.get(context.Background(), server.URL, "token-b")
+	if got := calls.Load(); got != 2 {
+		t.Errorf("made %d requests for two different tokens, want 2", got)
+	}
+}
+
+// TestCopilotModelCacheMemoizesFailure: an unusable credential otherwise costs
+// a slow failing round trip on every dialog open.
+func TestCopilotModelCacheMemoizesFailure(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	copilotModelCache.invalidate()
+	t.Cleanup(copilotModelCache.invalidate)
+
+	for i := 0; i < 3; i++ {
+		if _, err := copilotModelCache.get(context.Background(), server.URL, "bad"); err == nil {
+			t.Fatal("expected the failure to surface")
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Errorf("retried a failing credential %d times, want 1", got)
+	}
+}
+
+// TestInvalidateModelCaches: after a login the previous account's models must
+// not linger.
+func TestInvalidateModelCaches(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Write([]byte(`{"data":[]}`))
+	}))
+	defer server.Close()
+
+	copilotModelCache.invalidate()
+	t.Cleanup(copilotModelCache.invalidate)
+
+	copilotModelCache.get(context.Background(), server.URL, "tok")
+	InvalidateModelCaches()
+	copilotModelCache.get(context.Background(), server.URL, "tok")
+	if got := calls.Load(); got != 2 {
+		t.Errorf("made %d requests, want 2 — invalidation must force a refetch", got)
 	}
 }

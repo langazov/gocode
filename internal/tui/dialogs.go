@@ -45,6 +45,13 @@ type overlayItem struct {
 	value    string
 	category string
 	footer   string
+	// gutter is a glyph drawn in the bullet column (DialogSelectOption's
+	// `gutter` slot), used for the connect dialog's ✓ on providers that
+	// already have a credential. The current-item bullet wins over it.
+	gutter string
+	// gutterOK colors the gutter glyph with the success color rather than the
+	// title color, matching `<text fg={theme.success}>✓</text>`.
+	gutterOK bool
 	action   func() tea.Msg
 }
 
@@ -935,12 +942,21 @@ func (a *App) listRow(o *overlay, item overlayItem, index, width int) string {
 	}
 
 	var b strings.Builder
-	if current {
+	switch {
+	case current:
 		// paddingLeft 1, the bullet gutter, then the row's gap={1}.
 		b.WriteString(fill(1))
 		b.WriteString(segment(titleFg, false, "●"))
 		b.WriteString(fill(1))
-	} else {
+	case item.gutter != "":
+		gutterFg := titleFg
+		if item.gutterOK {
+			gutterFg = a.theme.Success
+		}
+		b.WriteString(fill(1))
+		b.WriteString(segment(gutterFg, false, item.gutter))
+		b.WriteString(fill(1))
+	default:
 		b.WriteString(fill(3))
 	}
 	b.WriteString(fill(3)) // the title text's own paddingLeft
@@ -1223,76 +1239,55 @@ func (a *App) renameSessionAction(item overlayItem) tea.Cmd {
 	return nil
 }
 
-func (a *App) modelsOverlay() tea.Cmd {
-	c := a.client
-	return func() tea.Msg {
-		models, err := c.Models(a.ctx)
-		if err != nil {
-			return statusMsg{text: "failed to load models: " + err.Error()}
-		}
-		items := make([]overlayItem, 0, len(models))
-		for _, model := range models {
-			provider := a.providerName(model.ProviderID)
-			label := model.ProviderID + "/" + model.ID
-			title := model.Name
-			if title == "" {
-				title = label
-			}
-			model := model
-			items = append(items, overlayItem{
-				label:    title,
-				value:    label,
-				category: provider,
-				action: func() tea.Msg {
-					if a.active == nil {
-						return statusMsg{text: "open a session first"}
-					}
-					if err := a.client.SetModel(a.ctx, a.active.ID, model.ProviderID, model.ID); err != nil {
-						return statusMsg{text: "model switch failed: " + err.Error()}
-					}
-					a.activeModel = label
-					return statusMsg{text: "model: " + label}
-				},
-			})
-		}
-		a.openList("Select model", items)
-		o := a.overlay
-		o.current = a.currentModelLabel()
-		return nil
+// agentsOverlay opens the agent dialog from the cached list and refreshes in
+// the background, for the same reason modelsOverlay does.
+func (a *App) agentsOverlay() tea.Cmd {
+	a.openAgentDialog(a.agentList)
+	return a.loadAgentListCmd()
+}
+
+func (a *App) openAgentDialog(agents []client.Agent) {
+	items := make([]overlayItem, 0, len(agents))
+	for _, agent := range agents {
+		agent := agent
+		items = append(items, overlayItem{
+			label: agent.ID,
+			hint:  agent.Description,
+			value: agent.ID,
+			action: func() tea.Msg {
+				if a.active == nil {
+					return statusMsg{text: "open a session first"}
+				}
+				if err := a.client.SetAgent(a.ctx, a.active.ID, agent.ID); err != nil {
+					return statusMsg{text: "agent switch failed: " + err.Error()}
+				}
+				a.activeAgent = agent.ID
+				return statusMsg{text: "agent: " + agent.ID}
+			},
+		})
+	}
+	a.openList("Select agent", items)
+	a.overlay.current = a.activeAgentOr("build")
+	if len(agents) == 0 {
+		a.overlay.emptyTitle = "Loading agents"
+		a.overlay.emptyBody = "Fetching the agent list..."
 	}
 }
 
-func (a *App) agentsOverlay() tea.Cmd {
+// loadAgentListCmd refreshes the agent list.
+func (a *App) loadAgentListCmd() tea.Cmd {
 	c := a.client
 	return func() tea.Msg {
 		agents, err := c.Agents(a.ctx)
 		if err != nil {
-			return statusMsg{text: "failed to load agents: " + err.Error()}
+			return nil
 		}
-		items := make([]overlayItem, 0, len(agents))
-		for _, agent := range agents {
-			agent := agent
-			items = append(items, overlayItem{
-				label: agent.ID,
-				hint:  agent.Description,
-				value: agent.ID,
-				action: func() tea.Msg {
-					if a.active == nil {
-						return statusMsg{text: "open a session first"}
-					}
-					if err := a.client.SetAgent(a.ctx, a.active.ID, agent.ID); err != nil {
-						return statusMsg{text: "agent switch failed: " + err.Error()}
-					}
-					a.activeAgent = agent.ID
-					return statusMsg{text: "agent: " + agent.ID}
-				},
-			})
-		}
-		a.openList("Select agent", items)
-		a.overlay.current = a.activeAgentOr("build")
-		return nil
+		return agentListMsg{agents: agents}
 	}
 }
+
+// agentListMsg carries a refreshed agent list.
+type agentListMsg struct{ agents []client.Agent }
 
 func (a *App) themesOverlay() {
 	themes := []string{"opencode-dark", "opencode-light"}
