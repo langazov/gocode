@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/anomalyco/opencode-go/internal/clix"
@@ -13,6 +15,7 @@ import (
 	"github.com/anomalyco/opencode-go/internal/db"
 	"github.com/anomalyco/opencode-go/internal/global"
 	"github.com/anomalyco/opencode-go/internal/installation"
+	"github.com/anomalyco/opencode-go/internal/lsp"
 )
 
 // processStart is used by "debug startup" to print elapsed process time,
@@ -265,7 +268,7 @@ func debugLSPCommand() *clix.Command {
 		Sub: []*clix.Command{
 			{Name: "diagnostics", Describe: "get diagnostics for a file",
 				Positionals: []clix.Positional{{Name: "file", Required: true}},
-				Run:         func(a *clix.Args) error { return notImplemented("opencode debug lsp diagnostics") }},
+				Run:         runDebugLSPDiagnostics},
 			{Name: "symbols", Describe: "search workspace symbols",
 				Positionals: []clix.Positional{{Name: "query", Required: true}},
 				Run:         func(a *clix.Args) error { return notImplemented("opencode debug lsp symbols") }},
@@ -274,4 +277,62 @@ func debugLSPCommand() *clix.Command {
 				Run:         func(a *clix.Args) error { return notImplemented("opencode debug lsp document-symbols") }},
 		},
 	}
+}
+
+// runDebugLSPDiagnostics starts the language servers for one file and prints
+// what they report — the CLI view of what the edit and write tools append to
+// their output.
+func runDebugLSPDiagnostics(a *clix.Args) error {
+	file := a.PositionalOr("file", "")
+	if file == "" {
+		return &usageError{msg: "a file is required"}
+	}
+	workdir, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+
+	service := lsp.New(workdir, cfg)
+	defer service.Shutdown()
+	if !service.Enabled() {
+		fmt.Println("LSP is disabled by config")
+		return nil
+	}
+
+	target := file
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(workdir, target)
+	}
+
+	ctx := context.Background()
+	service.Touch(ctx, target, true)
+
+	status := service.Status()
+	if len(status) == 0 {
+		fmt.Printf("no language server started for %s\n", file)
+		if available := service.Available(); len(available) > 0 {
+			fmt.Printf("installed servers: %s\n", strings.Join(available, ", "))
+		} else {
+			fmt.Println("no language servers are installed on PATH")
+		}
+		return nil
+	}
+	for _, item := range status {
+		fmt.Printf("%s (%s) %s\n", item.Name, item.Root, item.Status)
+	}
+
+	diagnostics := service.DiagnosticsFor(target)
+	if len(diagnostics) == 0 {
+		fmt.Printf("\nno diagnostics for %s\n", file)
+		return nil
+	}
+	fmt.Println()
+	for _, item := range diagnostics {
+		fmt.Println(item.Pretty())
+	}
+	return nil
 }

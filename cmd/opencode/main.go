@@ -17,6 +17,7 @@ import (
 	"github.com/anomalyco/opencode-go/internal/event"
 	"github.com/anomalyco/opencode-go/internal/global"
 	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/anomalyco/opencode-go/internal/lsp"
 	"github.com/anomalyco/opencode-go/internal/mcp"
 	"github.com/anomalyco/opencode-go/internal/modelsdev"
 	"github.com/anomalyco/opencode-go/internal/modelstate"
@@ -105,6 +106,9 @@ type stack struct {
 	// Questions owns the pending ask/reply rounds from the question tool and
 	// plan mode.
 	Questions *question.Service
+	// LSP owns the running language servers backing edit/write diagnostics and
+	// the status view. Servers start lazily on the first file that needs one.
+	LSP *lsp.Service
 }
 
 // resolveModelFlag applies precedence: explicit flag wins, then config,
@@ -179,13 +183,18 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	)
 	questions := question.NewService(question.Hooks{}, nil)
 
+	// Language servers are started lazily, on the first file that needs one, so
+	// boot stays fast and a project with none pays nothing.
+	lspService := lsp.New(workdir, cfg)
+
 	tools := tool.NewRegistry()
 	// The agent switcher is bound after the session service exists; plan mode
 	// is registered below once it does.
 	builtins.RegisterWith(tools, workdir, builtins.Options{
-		Database: database,
-		Skills:   skills,
-		Asker:    questions,
+		Database:  database,
+		Skills:    skills,
+		Asker:     questions,
+		Diagnoser: lspService,
 	})
 
 	mcpServers, _ := mcp.ParseServers(cfg.MCP)
@@ -317,6 +326,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Jobs:        jobs,
 		Skills:      skills,
 		Questions:   questions,
+		LSP:         lspService,
 	}, nil
 }
 

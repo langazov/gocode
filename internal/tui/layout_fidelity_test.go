@@ -166,16 +166,44 @@ func TestSidebarHasNoMCPSectionWhenNoneConfigured(t *testing.T) {
 	}
 }
 
-func TestSidebarAlwaysShowsLSPDisabled(t *testing.T) {
-	app := newTestApp(t, "http://example.invalid")
-	app.width, app.height = 140, 40
-	app.view = viewChat
-	app.active = &client.Session{ID: "ses_1", Title: "Test"}
-	app.sidebar = true
+// TestSidebarLSPStates covers the three states ported from
+// feature-plugins/sidebar/lsp.tsx. It used to assert the hardcoded
+// "LSPs are disabled" line, from when this port had no LSP client.
+func TestSidebarLSPStates(t *testing.T) {
+	cases := []struct {
+		name  string
+		state *client.LSPState
+		want  string
+	}{
+		{"not fetched yet", nil, "Loading..."},
+		{"disabled by config", &client.LSPState{Enabled: false}, "LSPs are disabled"},
+		{"none started yet", &client.LSPState{Enabled: true}, "LSPs will activate as files are read"},
+		{
+			name: "a running server",
+			state: &client.LSPState{
+				Enabled: true,
+				Servers: []client.LSPServer{{ID: "gopls", Name: "gopls", Root: ".", Status: "connected"}},
+			},
+			want: "gopls",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			app := newTestApp(t, "http://example.invalid")
+			app.width, app.height = 140, 40
+			app.view = viewChat
+			app.active = &client.Session{ID: "ses_1", Title: "Test"}
+			app.sidebar = true
+			app.lsp = c.state
 
-	view := app.sidebarView()
-	if !strings.Contains(view, "LSP") || !strings.Contains(view, "LSPs are disabled") {
-		t.Fatalf("sidebar should always show the LSP-disabled line (this port has no LSP client), got:\n%s", view)
+			view := app.sidebarView()
+			if !strings.Contains(view, "LSP") {
+				t.Fatalf("sidebar is missing the LSP section:\n%s", view)
+			}
+			if !strings.Contains(view, c.want) {
+				t.Fatalf("sidebar should show %q, got:\n%s", c.want, view)
+			}
+		})
 	}
 }
 

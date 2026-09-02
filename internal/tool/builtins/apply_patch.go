@@ -17,10 +17,18 @@ import (
 // written, so a patch that fails partway through leaves no half-applied state.
 type ApplyPatchTool struct {
 	resolver Resolver
+	// diagnoser, when set, appends the language servers' verdict on every
+	// patched file.
+	diagnoser Diagnoser
 }
 
 func NewApplyPatchTool(resolver Resolver) *ApplyPatchTool {
 	return &ApplyPatchTool{resolver: resolver}
+}
+
+// NewApplyPatchToolWith adds LSP diagnostics reporting to apply_patch.
+func NewApplyPatchToolWith(resolver Resolver, diagnoser Diagnoser) *ApplyPatchTool {
+	return &ApplyPatchTool{resolver: resolver, diagnoser: diagnoser}
 }
 
 func (t *ApplyPatchTool) Name() string { return "apply_patch" }
@@ -202,6 +210,17 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 	if combined.Len() > 0 {
 		out += "\n\n```diff\n" + strings.Join(
 			truncateDiff(combined.String(), maxPatchDiffLines), "\n") + "\n```"
+	}
+	// A patch can touch several files, so each one is reported separately. A
+	// deleted file has nothing to diagnose, and a moved one is diagnosed at
+	// its new path.
+	for _, change := range changes {
+		switch change.kind {
+		case "add", "update":
+			out += diagnosticsFooter(ctx, t.diagnoser, change.path)
+		case "move":
+			out += diagnosticsFooter(ctx, t.diagnoser, change.movePath)
+		}
 	}
 	return out, nil
 }

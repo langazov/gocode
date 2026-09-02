@@ -46,6 +46,9 @@ type Options struct {
 	Asker Asker
 	// AgentSwitcher, together with Asker, enables plan mode.
 	AgentSwitcher AgentSwitcher
+	// Diagnoser, when set, reports language-server diagnostics on the files the
+	// edit, write and patch tools change, and warms servers on read.
+	Diagnoser Diagnoser
 }
 
 // Register adds all built-in tools to the registry, scoped to root.
@@ -57,15 +60,15 @@ func Register(registry *tool.Registry, root string, database *db.DB) {
 // services are supplied.
 func RegisterWith(registry *tool.Registry, root string, opts Options) {
 	resolver := Resolver{Root: root}
-	registry.Register(NewReadTool(resolver))
-	registry.Register(NewWriteTool(resolver))
-	registry.Register(NewEditTool(resolver))
+	registry.Register(NewReadToolWith(resolver, opts.Diagnoser))
+	registry.Register(NewWriteToolWith(resolver, opts.Diagnoser))
+	registry.Register(NewEditToolWith(resolver, opts.Diagnoser))
 	registry.Register(NewGlobTool(resolver))
 	registry.Register(NewGrepTool(resolver))
 	registry.Register(NewBashTool(resolver))
 	registry.Register(NewWebFetchTool())
 	registry.Register(NewWebSearchTool())
-	registry.Register(NewApplyPatchTool(resolver))
+	registry.Register(NewApplyPatchToolWith(resolver, opts.Diagnoser))
 	if opts.Database != nil {
 		registry.Register(NewTodoTool(opts.Database))
 	}

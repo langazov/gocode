@@ -630,11 +630,24 @@ func (a *App) sidebarView() string {
 		}
 	}
 
-	// LSP (order 300): this port has no LSP client, so unlike TS's
-	// conditional "disabled"/"will activate as files are read"/live server
-	// list, it is unconditionally disabled — which is simply true today.
-	rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("LSP"),
-		a.onPanel(a.theme.TextMuted, false).Render("LSPs are disabled"))
+	// LSP (order 300), porting feature-plugins/sidebar/lsp.tsx's three states:
+	// disabled outright, none started yet, or the live server list.
+	rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("LSP"))
+	switch {
+	case a.lsp == nil:
+		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("Loading..."))
+	case !a.lsp.Enabled:
+		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("LSPs are disabled"))
+	case len(a.lsp.Servers) == 0:
+		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("LSPs will activate as files are read"))
+	default:
+		for _, server := range a.lsp.Servers {
+			dot := lipgloss.NewStyle().Foreground(a.theme.Success).Render("•")
+			rows = append(rows, dot+" "+
+				a.onPanel(a.theme.Text, false).Render(server.Name)+" "+
+				a.onPanel(a.theme.TextMuted, false).Render(server.Root))
+		}
+	}
 
 	if len(a.sidebarTodos) > 0 && a.hasOpenTodos() {
 		rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("Todo"))

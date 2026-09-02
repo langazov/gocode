@@ -108,6 +108,9 @@ type App struct {
 	// getting-started card asks whether any provider beyond the bundled free
 	// one is reachable.
 	providers []client.Provider
+	// lsp is the latest language-server status, refreshed on the tick like
+	// mcpServers. nil until the first fetch lands.
+	lsp *client.LSPState
 	// agentList is the cached agent list, so the agent dialog opens without a
 	// round trip. (Distinct from `agents`, the subagent aggregator snapshot.)
 	agentList []client.Agent
@@ -262,7 +265,7 @@ type leaderTimeoutMsg struct{}
 
 func (a *App) Init() tea.Cmd {
 	a.windowTitle = a.desiredWindowTitle()
-	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadAgentsCmd(0), a.tick()}
+	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadAgentsCmd(0), a.tick()}
 	if a.resumeSessionID != "" {
 		cmds = append(cmds, a.resumeSessionCmd(a.resumeSessionID))
 	}
@@ -368,6 +371,9 @@ type catalogMsg struct {
 }
 type mcpMsg struct{ servers []client.MCPServer }
 
+// lspMsg carries the language-server status for the sidebar.
+type lspMsg struct{ state *client.LSPState }
+
 // subagentSiblingsMsg carries the children of the open session's parent, the
 // list the subagent footer counts for its "(2 of 5)" position.
 type subagentSiblingsMsg struct {
@@ -441,6 +447,20 @@ func (a *App) loadCatalogCmd() tea.Cmd {
 // fetch error, returns nil (no message) rather than an empty server list,
 // so a transient hiccup talking to the local API doesn't blank out the
 // last-known-good status.
+// loadLSPCmd refreshes the language-server status. Re-run on the tick, like
+// MCP: servers start lazily as files are read, so the list grows during a
+// session rather than being fixed at boot.
+func (a *App) loadLSPCmd() tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		state, err := c.LSP(a.ctx)
+		if err != nil {
+			return nil
+		}
+		return lspMsg{state: state}
+	}
+}
+
 func (a *App) loadMCPCmd() tea.Cmd {
 	c := a.client
 	return func() tea.Msg {
@@ -493,7 +513,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.input.SetWidth(a.inputWidth())
 		return nil
 	case tickMsg:
-		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd()}
+		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd(), a.loadLSPCmd()}
 		if a.active != nil {
 			cmds = append(cmds, a.loadPermissions(a.active.ID))
 			cmds = append(cmds, a.loadStats(a.active.ID))
@@ -556,6 +576,9 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		)
 	case mcpMsg:
 		a.mcpServers = msg.servers
+		return nil
+	case lspMsg:
+		a.lsp = msg.state
 		return nil
 	case agentsLoadedMsg:
 		a.agents2 = msg.agents

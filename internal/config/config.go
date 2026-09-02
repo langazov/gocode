@@ -23,6 +23,7 @@ type Config struct {
 	Agent             map[string]Agent    `json:"agent,omitempty"`
 	Provider          map[string]Provider `json:"provider,omitempty"`
 	MCP               map[string]any      `json:"mcp,omitempty"`
+	LSP               LSPConfig           `json:"lsp,omitempty"`
 	Permission        Permission          `json:"permission,omitempty"`
 	Keybinds          map[string]string   `json:"keybinds,omitempty"`
 	Tools             map[string]bool     `json:"tools,omitempty"`

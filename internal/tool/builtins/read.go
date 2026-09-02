@@ -16,10 +16,18 @@ const (
 
 type ReadTool struct {
 	resolver Resolver
+	// diagnoser, when set, warms the language servers for files that are read,
+	// so a later edit does not pay for server startup.
+	diagnoser Diagnoser
 }
 
 func NewReadTool(resolver Resolver) *ReadTool {
 	return &ReadTool{resolver: resolver}
+}
+
+// NewReadToolWith warms LSP servers on read.
+func NewReadToolWith(resolver Resolver, diagnoser Diagnoser) *ReadTool {
+	return &ReadTool{resolver: resolver, diagnoser: diagnoser}
 }
 
 func (t *ReadTool) Name() string { return "read" }
@@ -69,6 +77,7 @@ func (t *ReadTool) Execute(ctx context.Context, input map[string]any) (string, e
 	if isDir(target) {
 		return listDirectory(target, offset, limit)
 	}
+	warmDiagnostics(ctx, t.diagnoser, target)
 	return readFile(target, offset, limit)
 }
 

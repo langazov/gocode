@@ -11,10 +11,18 @@ import (
 
 type EditTool struct {
 	resolver Resolver
+	// diagnoser, when set, appends the language servers' verdict on the edited
+	// file to the tool output.
+	diagnoser Diagnoser
 }
 
 func NewEditTool(resolver Resolver) *EditTool {
 	return &EditTool{resolver: resolver}
+}
+
+// NewEditToolWith adds LSP diagnostics reporting to the edit tool.
+func NewEditToolWith(resolver Resolver, diagnoser Diagnoser) *EditTool {
+	return &EditTool{resolver: resolver, diagnoser: diagnoser}
 }
 
 func (t *EditTool) Name() string { return "edit" }
@@ -91,7 +99,7 @@ func (t *EditTool) Execute(ctx context.Context, input map[string]any) (string, e
 	if err := os.WriteFile(target, []byte(output), 0o644); err != nil {
 		return "", fmt.Errorf("Unable to edit %s", path)
 	}
-	return formatEditOutput(target, replacements, text, replaced), nil
+	return formatEditOutput(target, replacements, text, replaced) + diagnosticsFooter(ctx, t.diagnoser, target), nil
 }
 
 func splitBOM(text string) (bool, string) {

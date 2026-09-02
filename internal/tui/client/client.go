@@ -417,6 +417,29 @@ func (c *Client) OAuthStatus(ctx context.Context, attemptID string) (*OAuthAttem
 	return &out, nil
 }
 
+// LSPState is the language-server status shown in the sidebar.
+type LSPState struct {
+	Enabled   bool        `json:"enabled"`
+	Servers   []LSPServer `json:"servers"`
+	Available []string    `json:"available"`
+}
+
+type LSPServer struct {
+	ID     string `json:"id"`
+	Name   string `json:"name"`
+	Root   string `json:"root"`
+	Status string `json:"status"`
+}
+
+// LSP fetches the language-server status.
+func (c *Client) LSP(ctx context.Context) (*LSPState, error) {
+	var out LSPState
+	if err := c.do(ctx, "GET", "/api/lsp", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	var out []Agent
 	err := c.do(ctx, http.MethodGet, "/api/agent", nil, &out)
