@@ -1,0 +1,48 @@
+name: pages
+
+# Publishes docs/ to GitHub Pages.
+#
+# One-time setup: Settings → Pages → Source → "GitHub Actions".
+# (The alternative, "Deploy from a branch" with the /docs folder, also works
+# without this workflow — the site is a single static file with no build step.)
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  # Re-publish after a release so the site's download links are regenerated
+  # even though its own files did not change.
+  workflow_run:
+    workflows: [release]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: pages
+  # Never cancel a deploy midway; let the running one finish.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: docs
+
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

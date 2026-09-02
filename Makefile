@@ -3,9 +3,13 @@ MAIN    := ./cmd/opencode
 GO      ?= go
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS := -s -w -X main.version=$(VERSION)
+# The version and channel live in internal/installation, not package main.
+# `-X main.version` named a symbol that does not exist, so every build — the
+# release target included — reported "local".
+VERSION_PKG := github.com/anomalyco/opencode-go/internal/installation
+LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION)
 RELEASE_DIR := dist
-RELEASE_LDFLAGS := $(LDFLAGS) -X main.buildMode=release
+RELEASE_LDFLAGS := $(LDFLAGS) -X $(VERSION_PKG).Channel=release
 
 CGO_ENABLED ?= 0
 
