@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/langazov/gocode-go/internal/auth"
 	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 )
@@ -152,6 +153,69 @@ func TestZenAccountPicksOrgAlphabetically(t *testing.T) {
 	}
 }
 
+// TestZenOrgIDPrefersMetadata: a stored org id must never trigger a network
+// call — most requests take this path.
+func TestZenOrgIDPrefersMetadata(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true }))
+	defer server.Close()
+
+	info := &auth.Info{Type: "oauth", Metadata: map[string]string{"orgID": "org-cached"}}
+	got := zenOrgID(context.Background(), server.URL, "tok", info)
+	if got != "org-cached" {
+		t.Errorf("orgID = %q, want the cached one", got)
+	}
+	if called {
+		t.Error("zenOrgID hit the network despite having a cached org id")
+	}
+}
+
+// TestZenOrgIDResolvesLiveForOAuthWithoutMetadata: an OAuth credential
+// stored before this session's metadata fix existed has no org id on disk
+// yet, but its session token is still valid against /api/orgs, so it should
+// self-heal on the next call rather than staying broken until a re-login.
+func TestZenOrgIDResolvesLiveForOAuthWithoutMetadata(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/user":
+			w.Write([]byte(`{"id":"user-1","email":"a@example.com"}`))
+		case "/api/orgs":
+			w.Write([]byte(`[{"id":"org-live","name":"Acme"}]`))
+		}
+	}))
+	defer server.Close()
+
+	info := &auth.Info{Type: "oauth"}
+	got := zenOrgID(context.Background(), server.URL, "tok-live", info)
+	if got != "org-live" {
+		t.Errorf("orgID = %q, want the live-resolved one", got)
+	}
+}
+
+// TestZenOrgIDNeverAttemptsLiveResolutionForAPIKey: opencode.ai's console
+// API (api/user, api/orgs, api/config) answers a plain Zen API key with a
+// flat 401 Unauthorized — confirmed directly against the real account, not
+// assumed. Attempting the live path for an "api"-type credential can only
+// waste a request every cache window, so it must never even try.
+func TestZenOrgIDNeverAttemptsLiveResolutionForAPIKey(t *testing.T) {
+	called := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"_tag":"Unauthorized"}`))
+	}))
+	defer server.Close()
+
+	info := &auth.Info{Type: "api", Key: "sk-test"}
+	got := zenOrgID(context.Background(), server.URL, "sk-test", info)
+	if got != "" {
+		t.Errorf("orgID = %q, want empty (no org is resolvable for an API key)", got)
+	}
+	if called {
+		t.Error("zenOrgID attempted a live fetch for an API-key credential, which the console API can never accept")
+	}
+}
+
 // TestResolveMergesRegisteredOverlays is the other half of the chat-request
 // bug: Resolve() used to look up a provider straight from the public
 // models.dev catalog, so a CatalogOverlay (the opencode/Zen account's own
@@ -278,6 +342,75 @@ func TestZenConfigTreats404AsNoOverrides(t *testing.T) {
 	}
 	if len(catalog) != 0 {
 		t.Errorf("catalog = %v, want empty", catalog)
+	}
+}
+
+// TestZenModelList covers the API-key fallback: opencode.ai's console API
+// (/api/config) rejects a plain Zen API key outright, but the inference
+// gateway's own GET /models — a standard OpenAI-compatible listing endpoint
+// — accepts it, and is the only way an API-key-authenticated account can
+// learn which models it may actually use.
+func TestZenModelList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" {
+			t.Errorf("path = %s, want /models", r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer sk-test" {
+			t.Errorf("Authorization = %q, want the bearer key", r.Header.Get("Authorization"))
+		}
+		if !strings.HasPrefix(r.Header.Get("User-Agent"), "opencode/") {
+			t.Errorf("User-Agent = %q, want it to start with opencode/", r.Header.Get("User-Agent"))
+		}
+		w.Write([]byte(`{"object":"list","data":[{"id":"big-pickle","object":"model"},{"id":"claude-opus-5","object":"model"}]}`))
+	}))
+	defer server.Close()
+
+	ids, err := zenModelList(context.Background(), server.URL, "sk-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"big-pickle", "claude-opus-5"}
+	if len(ids) != len(want) || ids[0] != want[0] || ids[1] != want[1] {
+		t.Errorf("ids = %v, want %v", ids, want)
+	}
+}
+
+// TestOverlayFallsBackToModelListForAPIKey is the end-to-end version of
+// TestZenModelList: when /api/config fails for an "api"-type credential,
+// Overlay must still prune the picker using the /models fallback rather
+// than giving up and leaving the account showing the full, unfiltered
+// public catalog.
+func TestOverlayFallsBackToModelListForAPIKey(t *testing.T) {
+	writeAuth(t, map[string]any{
+		"opencode": map[string]any{"type": "api", "key": "sk-test"},
+	})
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"_tag":"Unauthorized"}`))
+	}))
+	defer console.Close()
+	t.Setenv("GOCODE_CONSOLE_SERVER", console.URL)
+
+	inference := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"data":[{"id":"big-pickle"},{"id":"claude-opus-5"}]}`))
+	}))
+	defer inference.Close()
+
+	previous := zenPublicBaseURL
+	zenPublicBaseURL = inference.URL
+	defer func() { zenPublicBaseURL = previous }()
+
+	catalog, err := (opencodeTransform{}).Overlay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := catalog["opencode"]
+	if !ok {
+		t.Fatalf("expected an opencode overlay entry, got %v", catalog)
+	}
+	want := []string{"big-pickle", "claude-opus-5"}
+	if len(entry.Whitelist) != len(want) || entry.Whitelist[0] != want[0] || entry.Whitelist[1] != want[1] {
+		t.Errorf("whitelist = %v, want %v", entry.Whitelist, want)
 	}
 }
 

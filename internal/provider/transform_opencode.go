@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -56,7 +57,7 @@ func (opencodeTransform) Apply(ctx context.Context, r *Resolved) error {
 	// the account's org on every request — without it a real bearer token is
 	// rejected outright ("Workspace selection is required"), which is why a
 	// freshly authorized login otherwise looks identical to an invalid key.
-	if orgID := info.Metadata["orgID"]; orgID != "" {
+	if orgID := zenOrgID(ctx, zenServer(info), r.APIKey, info); orgID != "" {
 		r.Header("x-opencode-org-id", orgID)
 	}
 	// opencode.ai fronts both zen/v1 and inference/openai/v1 with a rule that
@@ -121,7 +122,7 @@ func (opencodeTransform) Overlay(ctx context.Context) (modelsdev.Catalog, error)
 		return nil, nil
 	}
 	server := zenServer(info)
-	orgID := info.Metadata["orgID"]
+	orgID := zenOrgID(ctx, server, token, info)
 	key := server + "|" + orgID + "|" + token
 
 	zenOverlayCache.Lock()
@@ -133,12 +134,129 @@ func (opencodeTransform) Overlay(ctx context.Context) (modelsdev.Catalog, error)
 	zenOverlayCache.Unlock()
 
 	catalog, fetchErr := zenConfig(ctx, server, token, orgID)
+	// A plain API key can never reach /api/config (opencode.ai answers it,
+	// like /api/user and /api/orgs, with a flat 401 — confirmed directly
+	// against the account API; only an OAuth session token is accepted
+	// there). Per-model routing still works for these accounts, because the
+	// public models.dev catalog already carries each model's `provider`
+	// override independent of any account — see model_route.go. What is
+	// lost is knowing which of the catalog's models this specific key may
+	// actually use, so fall back to the inference gateway's own model
+	// listing (a standard OpenAI-compatible GET /models, which a plain key
+	// *can* call) purely to prune the picker to that set.
+	if (fetchErr != nil || len(catalog) == 0) && info.Type == "api" {
+		if ids, listErr := zenModelList(ctx, zenPublicBaseURL, token); listErr == nil && len(ids) > 0 {
+			catalog = modelsdev.Catalog{"opencode": {ID: "opencode", Whitelist: ids}}
+			fetchErr = nil
+		}
+	}
 
 	zenOverlayCache.Lock()
 	zenOverlayCache.key, zenOverlayCache.catalog, zenOverlayCache.err, zenOverlayCache.at = key, catalog, fetchErr, time.Now()
 	zenOverlayCache.Unlock()
 
 	return catalog, fetchErr
+}
+
+// zenPublicBaseURL is the default, accountless endpoint models.dev's public
+// catalog declares for the "opencode" provider (entry.API) — stable and
+// documented, unlike opencode.ai's console API. It is the base an API-key
+// credential's requests already resolve to (see resolveBaseURL), so it is
+// also where that key's own /models listing lives. A var, not a const, so
+// tests can point it at an httptest server.
+var zenPublicBaseURL = "https://opencode.ai/zen/v1"
+
+// zenModelList calls the inference gateway's own GET /models — the one
+// endpoint on opencode.ai a plain Zen API key can actually call — and
+// returns the ids it lists. Unlike /api/config this carries no per-model
+// routing detail, only which ids exist for this key; see Overlay's fallback.
+func zenModelList(ctx context.Context, base, token string) ([]string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(base, "/")+"/models", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("User-Agent", "opencode/"+installation.Version)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("opencode: %s/models returned %d", base, res.StatusCode)
+	}
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(payload.Data))
+	for _, model := range payload.Data {
+		ids = append(ids, model.ID)
+	}
+	return ids, nil
+}
+
+var zenOrgIDCache struct {
+	sync.Mutex
+	token string
+	orgID string
+	at    time.Time
+}
+
+// zenOrgID returns the account's org id: from stored metadata when present
+// (populated at OAuth login time by zenAccount), or resolved live via
+// /api/orgs for an OAuth session token that predates that fix. It is not
+// resolvable at all for a plain API-key credential (MethodKey, the generic
+// "paste your key" login every provider gets) — confirmed directly against
+// the account API: opencode.ai's /api/user, /api/orgs and /api/config all
+// answer a Zen API key with a flat 401 Unauthorized, unlike an OAuth session
+// token. That is a real, permanent gap: without an org id, Overlay's
+// /api/config fetch fails outright, so a key-authenticated account falls
+// back to the full public catalog (unpruned to what it is actually entitled
+// to) rather than the account's real model list. There is nothing this port
+// can do about it short of the account re-authenticating via the OAuth
+// method ("OpenCode Console account"), which is the only login path Zen's
+// console API accepts.
+func zenOrgID(ctx context.Context, server, token string, info *auth.Info) string {
+	if info != nil {
+		if orgID := info.Metadata["orgID"]; orgID != "" {
+			return orgID
+		}
+	}
+	if token == "" || info == nil || info.Type != "oauth" {
+		return ""
+	}
+
+	zenOrgIDCache.Lock()
+	if zenOrgIDCache.token == token && time.Since(zenOrgIDCache.at) < zenOverlayTTL {
+		orgID := zenOrgIDCache.orgID
+		zenOrgIDCache.Unlock()
+		return orgID
+	}
+	zenOrgIDCache.Unlock()
+
+	account, err := zenAccount(ctx, server, token)
+	orgID := ""
+	if err == nil {
+		orgID = account["orgID"]
+	}
+
+	zenOrgIDCache.Lock()
+	zenOrgIDCache.token, zenOrgIDCache.orgID, zenOrgIDCache.at = token, orgID, time.Now()
+	zenOrgIDCache.Unlock()
+
+	return orgID
 }
 
 func zenServer(info *auth.Info) string {
