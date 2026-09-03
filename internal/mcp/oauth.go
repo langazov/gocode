@@ -30,7 +30,7 @@ type oauthMode int
 
 const (
 	modePassive     oauthMode = iota // status probing: never opens a browser
-	modeInteractive                  // `opencode mcp auth <name>`: opens one and waits
+	modeInteractive                  // `gocode mcp auth <name>`: opens one and waits
 )
 
 // defaultCallbackPort/messagePath mirror the default port/path
@@ -81,7 +81,7 @@ func newOAuthHandler(name string, cfg ServerConfig, mode oauthMode, onAuthURL fu
 		} else {
 			handlerCfg.DynamicClientRegistrationConfig = &sdkauth.DynamicClientRegistrationConfig{
 				Metadata: &oauthex.ClientRegistrationMetadata{
-					ClientName:    "opencode",
+					ClientName:    "gocode",
 					ClientURI:     "https://opencode.ai",
 					RedirectURIs:  []string{redirectURL},
 					GrantTypes:    []string{"authorization_code", "refresh_token"},

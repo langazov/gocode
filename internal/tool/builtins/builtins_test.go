@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/db"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 func newRoot(t *testing.T) (Resolver, string) {

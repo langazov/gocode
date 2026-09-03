@@ -10,23 +10,23 @@ import (
 func TestResolveXdgDefaults(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("OPENCODE_TEST_HOME", "")
+	t.Setenv("GOCODE_TEST_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")
 	t.Setenv("XDG_CACHE_HOME", "")
 	t.Setenv("XDG_STATE_HOME", "")
 
 	paths := Resolve()
-	if paths.Data != filepath.Join(home, ".local", "share", "opencode") {
+	if paths.Data != filepath.Join(home, ".local", "share", "gocode") {
 		t.Fatalf("unexpected data path: %s", paths.Data)
 	}
-	if paths.Config != filepath.Join(home, ".config", "opencode") {
+	if paths.Config != filepath.Join(home, ".config", "gocode") {
 		t.Fatalf("unexpected config path: %s", paths.Config)
 	}
-	if paths.Cache != filepath.Join(home, ".cache", "opencode") {
+	if paths.Cache != filepath.Join(home, ".cache", "gocode") {
 		t.Fatalf("unexpected cache path: %s", paths.Cache)
 	}
-	if paths.State != filepath.Join(home, ".local", "state", "opencode") {
+	if paths.State != filepath.Join(home, ".local", "state", "gocode") {
 		t.Fatalf("unexpected state path: %s", paths.State)
 	}
 	if paths.Bin != filepath.Join(paths.Cache, "bin") {
@@ -38,7 +38,7 @@ func TestResolveXdgDefaults(t *testing.T) {
 	if paths.Repos != filepath.Join(paths.Data, "repos") {
 		t.Fatalf("unexpected repos path: %s", paths.Repos)
 	}
-	if !strings.HasSuffix(paths.Tmp, "opencode") {
+	if !strings.HasSuffix(paths.Tmp, "gocode") {
 		t.Fatalf("unexpected tmp path: %s", paths.Tmp)
 	}
 }
@@ -47,22 +47,22 @@ func TestResolveXdgOverrides(t *testing.T) {
 	data := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", data)
 	paths := Resolve()
-	if paths.Data != filepath.Join(data, "opencode") {
+	if paths.Data != filepath.Join(data, "gocode") {
 		t.Fatalf("expected XDG_DATA_HOME override, got %s", paths.Data)
 	}
 }
 
 func TestResolveTestHome(t *testing.T) {
 	home := t.TempDir()
-	t.Setenv("OPENCODE_TEST_HOME", home)
+	t.Setenv("GOCODE_TEST_HOME", home)
 	if got := Resolve().Home; got != home {
-		t.Fatalf("expected OPENCODE_TEST_HOME %s, got %s", home, got)
+		t.Fatalf("expected GOCODE_TEST_HOME %s, got %s", home, got)
 	}
 }
 
 func TestMakeAppliesConfigDirFlag(t *testing.T) {
 	dir := t.TempDir()
-	t.Setenv("OPENCODE_CONFIG_DIR", dir)
+	t.Setenv("GOCODE_CONFIG_DIR", dir)
 	if got := Make().Config; got != dir {
 		t.Fatalf("expected config dir %s, got %s", dir, got)
 	}

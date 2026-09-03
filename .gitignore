@@ -1,5 +1,5 @@
 # Build output.
-/opencode
+/gocode
 /build/
 /dist/
 /go/

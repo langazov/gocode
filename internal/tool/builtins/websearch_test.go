@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 func TestParseMCPSearchResponsePlainJSON(t *testing.T) {
@@ -53,11 +53,11 @@ func TestSelectWebSearchProviderIsStable(t *testing.T) {
 		t.Fatalf("unexpected provider %q", first)
 	}
 
-	t.Setenv("OPENCODE_WEBSEARCH_PROVIDER", "parallel")
+	t.Setenv("GOCODE_WEBSEARCH_PROVIDER", "parallel")
 	if got := SelectWebSearchProvider("ses_abc"); got != "parallel" {
 		t.Fatalf("override ignored: %q", got)
 	}
-	t.Setenv("OPENCODE_WEBSEARCH_PROVIDER", "exa")
+	t.Setenv("GOCODE_WEBSEARCH_PROVIDER", "exa")
 	if got := SelectWebSearchProvider("ses_abc"); got != "exa" {
 		t.Fatalf("override ignored: %q", got)
 	}

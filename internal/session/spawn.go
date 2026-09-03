@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/agent"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/agent"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // DefaultSubagentDepth matches the TypeScript default (config subagent_depth,

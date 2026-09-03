@@ -43,7 +43,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // Breakpoints from cli/cmd/run/footer.width.ts. Kept as named constants in
@@ -584,7 +584,7 @@ func (a *App) gettingStartedCard(width int) []string {
 	lines := []string{
 		spread(on(a.theme.Text, true).Render("Getting started"), on(a.theme.TextMuted, false).Render("✕")),
 	}
-	lines = append(lines, wrapOnBackground(a, "OpenCode includes free models so you can start immediately.", body)...)
+	lines = append(lines, wrapOnBackground(a, "GoCode includes free models so you can start immediately.", body)...)
 	lines = append(lines, wrapOnBackground(a,
 		"Connect from 75+ providers to use other models, including Claude, GPT, Gemini etc", body)...)
 	lines = append(lines, spread(

@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 func TestZenConfigConvertsRemoteProviders(t *testing.T) {
@@ -155,7 +155,7 @@ func TestApplyOverlaysSurvivesFailure(t *testing.T) {
 // account, so nothing should change and nothing should be fetched.
 func TestApplyOverlaysNoopWithoutCredential(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("OPENCODE_AUTH_CONTENT", "")
+	t.Setenv("GOCODE_AUTH_CONTENT", "")
 	base := modelsdev.Catalog{"acme": {ID: "acme", Name: "Acme"}}
 	merged := ApplyOverlays(context.Background(), base)
 	if len(merged) != 1 {

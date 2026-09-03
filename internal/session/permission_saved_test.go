@@ -8,10 +8,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/permission"
-	"github.com/anomalyco/opencode-go/internal/tool"
-	"github.com/anomalyco/opencode-go/internal/tool/builtins"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/tool/builtins"
 )
 
 // TestExternalDirectoryAlwaysIsAskedOnce is the regression for "the access
@@ -109,7 +109,7 @@ func TestExternalDirectoryAlwaysIsAskedOnce(t *testing.T) {
 
 // TestSavedPermissionsSurviveANewProcess: the grant has to be on disk, not in
 // the engine. A store built fresh against the same database — which is what
-// the next `opencode` run does — must see it.
+// the next `gocode` run does — must see it.
 func TestSavedPermissionsSurviveANewProcess(t *testing.T) {
 	_, database := setup(t)
 	workdir := t.TempDir()

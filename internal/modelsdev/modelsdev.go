@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/flag"
-	"github.com/anomalyco/opencode-go/internal/flock"
-	"github.com/anomalyco/opencode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/flag"
+	"github.com/langazov/gocode-go/internal/flock"
+	"github.com/langazov/gocode-go/internal/global"
 )
 
 const (
@@ -61,7 +61,7 @@ func New() *Service {
 	return &Service{
 		Source:    source,
 		Filepath:  path,
-		UserAgent: "opencode/dev/" + flag.Client(),
+		UserAgent: "gocode/dev/" + flag.Client(),
 		client:    &http.Client{Timeout: 10 * time.Second},
 	}
 }

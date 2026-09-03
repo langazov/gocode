@@ -47,7 +47,7 @@ type DeviceCode struct {
 	UserCode        string `json:"user_code"`
 	VerificationURI string `json:"verification_uri"`
 	// VerificationURIComplete embeds the user code in the URL so the user can
-	// skip typing it. The opencode console returns only this form.
+	// skip typing it. The gocode console returns only this form.
 	VerificationURIComplete string `json:"verification_uri_complete"`
 	Interval                int    `json:"interval"`
 	ExpiresIn               int    `json:"expires_in"`

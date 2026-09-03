@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/anomalyco/opencode-go/internal/id"
+	"github.com/langazov/gocode-go/internal/id"
 )
 
 type Effect string

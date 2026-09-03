@@ -5,8 +5,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/anomalyco/opencode-go/internal/flock"
-	"github.com/anomalyco/opencode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/flock"
+	"github.com/langazov/gocode-go/internal/global"
 )
 
 // Entry mirrors mcp/auth.ts's per-server Entry: OAuth client registration

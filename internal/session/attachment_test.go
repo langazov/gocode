@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 // TestAttachmentsReachTheModel is the point of the whole chain: Prompt.Files

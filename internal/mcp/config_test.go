@@ -10,7 +10,7 @@ func TestParseServersLocalAndRemote(t *testing.T) {
 	raw := map[string]any{
 		"fs": map[string]any{
 			"type":        "local",
-			"command":     []any{"opencode", "x", "@modelcontextprotocol/server-filesystem"},
+			"command":     []any{"gocode", "x", "@modelcontextprotocol/server-filesystem"},
 			"environment": map[string]any{"FOO": "bar"},
 		},
 		"remote": map[string]any{

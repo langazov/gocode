@@ -4,10 +4,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/anomalyco/opencode-go/internal/flag"
+	"github.com/langazov/gocode-go/internal/flag"
 )
 
-const app = "opencode"
+const app = "gocode"
 
 type Paths struct {
 	Home   string
@@ -36,7 +36,7 @@ func xdg(env, fallback string) string {
 // call time so tests can override them; the package-level Path is a snapshot
 // taken at load, mirroring the TypeScript module.
 func Resolve() Paths {
-	home := os.Getenv("OPENCODE_TEST_HOME")
+	home := os.Getenv("GOCODE_TEST_HOME")
 	if home == "" {
 		var err error
 		home, err = os.UserHomeDir()
@@ -74,7 +74,7 @@ func Init() error {
 }
 
 // Make returns the effective paths, applying overrides. The config directory
-// respects OPENCODE_CONFIG_DIR, matching the TypeScript Global service.
+// respects GOCODE_CONFIG_DIR, matching the TypeScript Global service.
 func Make(overrides ...Paths) Paths {
 	paths := Resolve()
 	if dir := flag.ConfigDir(); dir != "" {

@@ -3,9 +3,9 @@ package configpaths
 import (
 	"path/filepath"
 
-	"github.com/anomalyco/opencode-go/internal/flag"
-	"github.com/anomalyco/opencode-go/internal/fsutil"
-	"github.com/anomalyco/opencode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/flag"
+	"github.com/langazov/gocode-go/internal/fsutil"
+	"github.com/langazov/gocode-go/internal/global"
 )
 
 // Files searches upward from directory toward worktree for config files named
@@ -30,9 +30,9 @@ func Directories(directory string, worktree ...string) []string {
 	paths := global.Resolve()
 	result := []string{paths.Config}
 	if !flag.DisableProjectConfig() {
-		result = append(result, fsutil.Up([]string{".opencode"}, directory, stop)...)
+		result = append(result, fsutil.Up([]string{".gocode"}, directory, stop)...)
 	}
-	result = append(result, fsutil.Up([]string{".opencode"}, paths.Home, paths.Home)...)
+	result = append(result, fsutil.Up([]string{".gocode"}, paths.Home, paths.Home)...)
 	if dir := flag.ConfigDir(); dir != "" {
 		result = append(result, dir)
 	}

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // blockingProvider stalls inside the stream until its run context is canceled,

@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // TestGeneratePKCE checks the two properties the flow depends on: the verifier

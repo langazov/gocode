@@ -43,7 +43,7 @@ func (azureTransform) Apply(_ context.Context, r *Resolved) error {
 	if base == "" {
 		// Same failure the TS plugin raises, with the same two remedies.
 		return fmt.Errorf(
-			"provider %q: AZURE_RESOURCE_NAME is missing — set it in the environment, or set provider.azure.options.resourceName or options.baseURL in opencode.json",
+			"provider %q: AZURE_RESOURCE_NAME is missing — set it in the environment, or set provider.azure.options.resourceName or options.baseURL in gocode.json",
 			r.ID)
 	}
 	r.BaseURL = base

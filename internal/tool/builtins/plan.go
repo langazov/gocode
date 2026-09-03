@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/question"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/question"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // AgentSwitcher changes the agent a session runs under. Implemented by

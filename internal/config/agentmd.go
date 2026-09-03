@@ -10,14 +10,14 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/anomalyco/opencode-go/internal/markdown"
+	"github.com/langazov/gocode-go/internal/markdown"
 )
 
 // AgentMarkdown is one agent defined by a markdown file: YAML frontmatter for
 // the settings, body for the system prompt.
 //
 // Ports the markdown half of the TypeScript agent loader — an agent can be
-// declared either in opencode.json's `agent` map or as `.opencode/agent/<name>.md`.
+// declared either in gocode.json's `agent` map or as `.gocode/agent/<name>.md`.
 type AgentMarkdown struct {
 	Name  string
 	Agent Agent
@@ -211,7 +211,7 @@ func appendField(node *yaml.Node, key string, present bool, value any) {
 }
 
 // permissionFromAny reuses the JSON permission decoder for frontmatter, so
-// markdown and opencode.json accept exactly the same shapes rather than
+// markdown and gocode.json accept exactly the same shapes rather than
 // drifting through two parallel parsers.
 func permissionFromAny(raw any) Permission {
 	encoded, err := json.Marshal(raw)

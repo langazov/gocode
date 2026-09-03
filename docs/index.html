@@ -242,9 +242,9 @@
     <div class="term">
       <div class="term-bar">
         <i style="background:#ff5f57"></i><i style="background:#febc2e"></i><i style="background:#28c840"></i>
-        <span class="t">opencode</span>
+        <span class="t">gocode</span>
       </div>
-<pre><span class="c-dim">$</span> opencode
+<pre><span class="c-dim">$</span> gocode
 <span class="c-dim">┃</span> <span class="c-accent">/</span>review<span class="c-dim">                        review changes [commit|branch|pr]</span>
 <span class="c-dim">┃</span> <span class="c-accent">/</span>init<span class="c-dim">                          guided AGENTS.md setup</span>
 <span class="c-dim">┃</span> <span class="c-accent">/</span>models<span class="c-dim">                        Choose model</span>
@@ -317,7 +317,7 @@
         Every release ships a <code class="inline">SHA256SUMS</code> file. Verify a download with
         <code class="inline">sha256sum -c SHA256SUMS --ignore-missing</code>.
         On macOS the binaries are unsigned — clear the quarantine flag with
-        <code class="inline">xattr -d com.apple.quarantine opencode</code>.
+        <code class="inline">xattr -d com.apple.quarantine gocode</code>.
       </p>
     </div>
   </section>
@@ -332,26 +332,26 @@
         <button class="tab" role="tab" aria-selected="false" data-os="source">From source</button>
       </div>
       <pre class="code" id="install-unix"># download the archive for your platform from the Downloads section, then
-tar -xzf opencode-*-macos-arm64.tar.gz
-chmod +x opencode
-sudo mv opencode /usr/local/bin/
+tar -xzf gocode-*-macos-arm64.tar.gz
+chmod +x gocode
+sudo mv gocode /usr/local/bin/
 
-opencode --version</pre>
+gocode --version</pre>
       <pre class="code" id="install-windows" hidden># in PowerShell, after downloading the .zip
-Expand-Archive .\opencode-*-windows-x64.zip -DestinationPath .
-# move opencode.exe somewhere on your PATH, then
-.\opencode.exe --version</pre>
+Expand-Archive .\gocode-*-windows-x64.zip -DestinationPath .
+# move gocode.exe somewhere on your PATH, then
+.\gocode.exe --version</pre>
       <pre class="code" id="install-source" hidden>git clone <span data-gh-text="">…</span>.git
 cd gocode
-make build      <span style="color:#6e6e7c"># or: go build ./cmd/opencode</span>
+make build      <span style="color:#6e6e7c"># or: go build ./cmd/gocode</span>
 
-./opencode --version</pre>
+./gocode --version</pre>
 
       <h2 style="margin-top:44px; font-size:20px">First run</h2>
       <p class="sub">Sign in to a provider, then start a session.</p>
-      <pre class="code">opencode providers login    <span style="color:#6e6e7c"># pick a provider and a method</span>
-opencode                    <span style="color:#6e6e7c"># start the interface</span>
-opencode run "fix the failing test"   <span style="color:#6e6e7c"># one-shot, no interface</span></pre>
+      <pre class="code">gocode providers login    <span style="color:#6e6e7c"># pick a provider and a method</span>
+gocode                    <span style="color:#6e6e7c"># start the interface</span>
+gocode run "fix the failing test"   <span style="color:#6e6e7c"># one-shot, no interface</span></pre>
     </div>
   </section>
 

@@ -16,7 +16,7 @@ import (
 // substring check across an escape sequence.
 
 func testMDApp() *App {
-	return &App{width: 100, height: 30, theme: themeResolve("opencode-dark")}
+	return &App{width: 100, height: 30, theme: themeResolve("gocode-dark")}
 }
 
 func TestMarkdownHeaderRendersWithLevelPrefix(t *testing.T) {

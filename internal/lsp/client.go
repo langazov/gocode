@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/global"
 )
 
 // Timeouts ported from client.ts.

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/config"
 )
 
 // newFakeService builds a service whose only server is the fake, so the tests
@@ -195,7 +195,7 @@ func TestBrokenServerIsNotRetried(t *testing.T) {
 		servers: []Server{{
 			ID:         "missing",
 			Extensions: []string{".fake"},
-			Command:    []string{"opencode-no-such-language-server"},
+			Command:    []string{"gocode-no-such-language-server"},
 		}},
 	}
 	t.Cleanup(service.Shutdown)
@@ -541,8 +541,8 @@ func TestDiagnoseExplainsMissingBinary(t *testing.T) {
 		spawning:  map[string]*sync.WaitGroup{},
 		enabled:   true,
 		servers: []Server{
-			{ID: "missing", Extensions: []string{".fake"}, Command: []string{"opencode-no-such-server"}},
-			{ID: "other", Extensions: []string{".rs"}, Command: []string{"opencode-no-such-server"}},
+			{ID: "missing", Extensions: []string{".fake"}, Command: []string{"gocode-no-such-server"}},
+			{ID: "other", Extensions: []string{".rs"}, Command: []string{"gocode-no-such-server"}},
 		},
 	}
 	t.Cleanup(service.Shutdown)
@@ -562,7 +562,7 @@ func TestDiagnoseExplainsMissingBinary(t *testing.T) {
 	if byID["missing"].Installed {
 		t.Error("a binary that does not exist must report as not installed")
 	}
-	if byID["missing"].Command != "opencode-no-such-server" {
+	if byID["missing"].Command != "gocode-no-such-server" {
 		t.Errorf("the command must be named so a PATH problem is actionable, got %q", byID["missing"].Command)
 	}
 	if byID["other"].Handles {

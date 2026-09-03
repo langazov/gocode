@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/question"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/question"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // stubAsker captures the ask and returns a scripted answer.

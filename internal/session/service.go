@@ -10,11 +10,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/db"
-	"github.com/anomalyco/opencode-go/internal/event"
-	"github.com/anomalyco/opencode-go/internal/id"
-	"github.com/anomalyco/opencode-go/internal/identifier"
-	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/id"
+	"github.com/langazov/gocode-go/internal/identifier"
+	"github.com/langazov/gocode-go/internal/permission"
 )
 
 // Service is the application seam over the durable session core: creating
@@ -253,7 +253,7 @@ func (s *Service) ensureProject(ctx context.Context, directory string) (string, 
 }
 
 // EnsureProject returns the project row for a worktree, creating it if this is
-// the first time opencode has been run there. Exported because anything keyed
+// the first time gocode has been run there. Exported because anything keyed
 // by project — saved permissions, for one — needs the same ID before a session
 // exists to create it.
 func EnsureProject(ctx context.Context, database *db.DB, directory string) (string, error) {

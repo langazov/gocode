@@ -10,7 +10,7 @@ import (
 )
 
 // snapshotGz is the models.dev catalog captured at build time, the Go
-// analogue of the OPENCODE_MODELS_DEV bundler define that
+// analogue of the GOCODE_MODELS_DEV bundler define that
 // packages/opencode/script/build.ts injects into the TypeScript build.
 //
 // It is stored gzipped because the catalog is ~4.2MB of JSON that compresses

@@ -9,7 +9,7 @@ import (
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // This file tests the local (stdio) connect path against a *real*
@@ -18,7 +18,7 @@ import (
 // TS's tests would spawn a real local MCP server rather than mocking the
 // transport.
 
-const stdioServerEnv = "OPENCODE_MCP_TEST_STDIO_SERVER"
+const stdioServerEnv = "GOCODE_MCP_TEST_STDIO_SERVER"
 
 func TestMain(m *testing.M) {
 	if os.Getenv(stdioServerEnv) == "1" {

@@ -65,7 +65,7 @@ type Theme struct {
 
 func Dark() Theme {
 	return Theme{
-		Name:            "opencode-dark",
+		Name:            "gocode-dark",
 		Dark:            true,
 		ThinkingOpacity: 0.6,
 		Colors: Colors{
@@ -90,7 +90,7 @@ func Dark() Theme {
 
 func Light() Theme {
 	return Theme{
-		Name:            "opencode-light",
+		Name:            "gocode-light",
 		Dark:            false,
 		ThinkingOpacity: 0.6,
 		Colors: Colors{
@@ -176,7 +176,7 @@ func clamp255(v int) int {
 func Resolve(name string) Theme {
 	var t Theme
 	switch name {
-	case "opencode-light", "light":
+	case "gocode-light", "light":
 		t = Light()
 	default:
 		t = Dark()

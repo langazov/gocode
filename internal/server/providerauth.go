@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
-	"github.com/anomalyco/opencode-go/internal/identifier"
-	"github.com/anomalyco/opencode-go/internal/provider"
+	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/identifier"
+	"github.com/langazov/gocode-go/internal/provider"
 )
 
 // This file backs the interface's "Connect a provider" dialog, the port of

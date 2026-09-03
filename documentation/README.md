@@ -30,7 +30,7 @@ before anything destructive.
 
 Three facts explain most of the design:
 
-**1. The TUI is an HTTP client, always.** Even when you run `opencode` with no
+**1. The TUI is an HTTP client, always.** Even when you run `gocode` with no
 arguments, it boots a full server on an ephemeral loopback port and connects
 over HTTP. There is no "local mode" that bypasses the API, so `attach` to a
 remote machine exercises the exact same code path.

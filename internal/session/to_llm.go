@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 // ToLLMMessages translates projected V2 session history into canonical LLM

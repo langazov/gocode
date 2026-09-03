@@ -7,7 +7,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 func selectionApp(t *testing.T) *App {
@@ -39,7 +39,7 @@ func TestMultiRowSelectionStaysInTheChatColumn(t *testing.T) {
 	app.handleMouse(tea.MouseMotionMsg{X: 30, Y: 12, Button: tea.MouseLeft})
 
 	got := app.selectedText()
-	for _, leaked := range []string{"spent", "LSP", "Context", "OpenCode"} {
+	for _, leaked := range []string{"spent", "LSP", "Context", "GoCode"} {
 		if strings.Contains(got, leaked) {
 			t.Fatalf("the sidebar leaked into a chat selection (%q):\n%s", leaked, got)
 		}

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 func newTestClient(t *testing.T, handler http.HandlerFunc) *Client {
@@ -45,7 +45,7 @@ func TestRequestShape(t *testing.T) {
 	err := client.Stream(context.Background(), llm.Request{
 		ProviderID: "google",
 		ModelID:    "gemini-2.5-pro",
-		System:     []string{"You are opencode."},
+		System:     []string{"You are gocode."},
 		Messages:   []llm.Message{llm.UserText("m1", "hello")},
 	}, func(event llm.StreamEvent) {})
 	if err != nil {

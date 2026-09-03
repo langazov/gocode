@@ -12,7 +12,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // Dialog panel widths, from the size prop in ui/dialog.tsx.
@@ -1330,7 +1330,7 @@ func (a *App) loadAgentListCmd() tea.Cmd {
 type agentListMsg struct{ agents []client.Agent }
 
 func (a *App) themesOverlay() {
-	themes := []string{"opencode-dark", "opencode-light"}
+	themes := []string{"gocode-dark", "gocode-light"}
 	items := make([]overlayItem, 0, len(themes))
 	for _, name := range themes {
 		name := name

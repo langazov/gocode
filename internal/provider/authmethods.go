@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // Method types, matching the `type` discriminator on the auth methods that

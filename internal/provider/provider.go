@@ -8,7 +8,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 type Service struct {

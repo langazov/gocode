@@ -9,8 +9,8 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/anomalyco/opencode-go/internal/installation"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/installation"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 var appVersion = installation.Version

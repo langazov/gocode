@@ -9,10 +9,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/global"
 )
 
-const OauthDummyKey = "opencode-oauth-dummy-key"
+const OauthDummyKey = "gocode-oauth-dummy-key"
 
 // Info is the OAuth | Api | WellKnown union, discriminated by Type.
 type Info struct {
@@ -43,7 +43,7 @@ func file() string {
 
 // All returns every stored provider auth entry.
 func All() (map[string]Info, error) {
-	if content := os.Getenv("OPENCODE_AUTH_CONTENT"); content != "" {
+	if content := os.Getenv("GOCODE_AUTH_CONTENT"); content != "" {
 		var parsed map[string]Info
 		if err := json.Unmarshal([]byte(content), &parsed); err == nil {
 			return filterValid(parsed), nil

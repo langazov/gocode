@@ -1,9 +1,9 @@
 package provider
 
 import (
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // Wire protocols this port speaks. Every provider resolves to one of them;

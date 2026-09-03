@@ -94,7 +94,7 @@ func (s ServerConfig) TimeoutOr(def int) int {
 }
 
 // ParseServers decodes the config package's raw `mcp` map (map[string]any,
-// as loaded from opencode.json) into typed ServerConfig entries. Invalid
+// as loaded from gocode.json) into typed ServerConfig entries. Invalid
 // entries are dropped with an error collected per-name rather than failing
 // the whole catalog, so one bad entry doesn't take down every other server.
 func ParseServers(raw map[string]any) (map[string]ServerConfig, map[string]error) {

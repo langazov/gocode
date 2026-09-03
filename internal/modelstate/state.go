@@ -1,5 +1,5 @@
 // Package modelstate persists the last-used model per directory, mirroring
-// the original opencode behavior: after switching models in the interface,
+// the original gocode behavior: after switching models in the interface,
 // restarts resume with the last-used model instead of the config default.
 package modelstate
 
@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"github.com/anomalyco/opencode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/global"
 )
 
 type Ref struct {

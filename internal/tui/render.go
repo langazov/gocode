@@ -12,10 +12,10 @@ import (
 	"unicode/utf8"
 
 	"charm.land/lipgloss/v2"
-	"github.com/anomalyco/opencode-go/internal/diff"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
-	"github.com/anomalyco/opencode-go/internal/tui/theme"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/langazov/gocode-go/internal/diff"
+	"github.com/langazov/gocode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/theme"
 )
 
 // toolState is an alias (not a new type) for the anonymous tool-state shape

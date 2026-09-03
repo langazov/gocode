@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/agent"
-	"github.com/anomalyco/opencode-go/internal/db"
-	"github.com/anomalyco/opencode-go/internal/event"
-	"github.com/anomalyco/opencode-go/internal/id"
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/agent"
+	"github.com/langazov/gocode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/id"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // MaxStepsPrompt matches packages/core/src/session/runner/max-steps.ts.

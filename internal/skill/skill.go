@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/anomalyco/opencode-go/internal/markdown"
+	"github.com/langazov/gocode-go/internal/markdown"
 )
 
 // Info is one discovered skill.
@@ -140,7 +140,7 @@ func Load(location string) (Info, error) {
 	}, nil
 }
 
-// Scan discovers skills under root, following the layout opencode uses:
+// Scan discovers skills under root, following the layout gocode uses:
 // `<root>/skill/**/SKILL.md`, `<root>/skills/**/SKILL.md`, and top-level
 // `<root>/*.md`. Unreadable files are skipped rather than failing the scan —
 // a single malformed skill must not hide every other one.

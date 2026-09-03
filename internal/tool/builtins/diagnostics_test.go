@@ -8,7 +8,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/lsp"
+	"github.com/langazov/gocode-go/internal/lsp"
 )
 
 // fakeDiagnoser stands in for a running language server: it records what was

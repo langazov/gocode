@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/diff"
-	"github.com/anomalyco/opencode-go/internal/patch"
+	"github.com/langazov/gocode-go/internal/diff"
+	"github.com/langazov/gocode-go/internal/patch"
 )
 
-// ApplyPatchTool applies a multi-file patch in opencode's own patch format.
+// ApplyPatchTool applies a multi-file patch in gocode's own patch format.
 //
 // Every hunk is parsed and resolved against the filesystem before anything is
 // written, so a patch that fails partway through leaves no half-applied state.

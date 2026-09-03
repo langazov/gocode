@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm/anthropic"
-	"github.com/anomalyco/opencode-go/internal/llm/openai"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/llm/anthropic"
+	"github.com/langazov/gocode-go/internal/llm/openai"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 const fallbackFixture = `{
@@ -57,10 +57,10 @@ func fallbackEnv(t *testing.T, authContent string) {
 	t.Helper()
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("OPENCODE_MODELS_PATH", "")
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "")
-	t.Setenv("OPENCODE_MODELS_URL", "http://127.0.0.1:1")
-	t.Setenv("OPENCODE_AUTH_CONTENT", authContent)
+	t.Setenv("GOCODE_MODELS_PATH", "")
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "")
+	t.Setenv("GOCODE_MODELS_URL", "http://127.0.0.1:1")
+	t.Setenv("GOCODE_AUTH_CONTENT", authContent)
 	// Seed the catalog cache at the service's computed path (custom source
 	// URLs hash the filename).
 	catalog := modelsdev.New()

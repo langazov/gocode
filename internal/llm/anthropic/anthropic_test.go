@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 func newTestServer(t *testing.T, handler http.HandlerFunc) *Client {
@@ -179,7 +179,7 @@ func TestStreamClientInterface(t *testing.T) {
 	request := llm.Request{
 		ProviderID: "anthropic",
 		ModelID:    "claude-sonnet-4-5",
-		System:     []string{"You are opencode."},
+		System:     []string{"You are gocode."},
 		Messages:   []llm.Message{llm.UserText("msg_1", "run ls")},
 		Tools: []llm.ToolDefinition{{
 			Name:        "bash",

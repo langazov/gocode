@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/permission"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 const (

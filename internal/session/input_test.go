@@ -5,8 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/db"
-	"github.com/anomalyco/opencode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/event"
 )
 
 func setup(t *testing.T) (*event.Bus, *db.DB) {

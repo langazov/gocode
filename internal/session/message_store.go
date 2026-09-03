@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/db"
 )
 
 // StoredMessage is a projected session_message row.

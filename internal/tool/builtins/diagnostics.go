@@ -3,7 +3,7 @@ package builtins
 import (
 	"context"
 
-	"github.com/anomalyco/opencode-go/internal/lsp"
+	"github.com/langazov/gocode-go/internal/lsp"
 )
 
 // Diagnoser is the slice of the LSP service the tools need. It is an interface

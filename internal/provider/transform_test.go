@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // TestTransformRegistryMatches confirms the registry dispatches by provider id

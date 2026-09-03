@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // These tests guard the session-view fixes made to match
@@ -85,7 +85,7 @@ func TestToolRowOnlySpinsForBashAndRead(t *testing.T) {
 // on unrelated rendering (see markdown_test.go's note). This just guards
 // the title text survives.
 func TestCompactionSeparatorHasTitle(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark")}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark")}
 	line := app.compactionSeparator()
 	if !strings.Contains(line, "Compaction") {
 		t.Fatalf("compaction separator missing title, got %q", line)
@@ -111,7 +111,7 @@ func TestContentWidthMatchesChatWidth(t *testing.T) {
 // renderMarkdown's wrap width, which needs its existing spare column of
 // margin — see renderMarkdown's and assistantTextBlock's doc comments).
 func TestAssistantTextBlockMatchesMessageBlockWidth(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark")}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark")}
 	want := app.contentWidth() - 1
 
 	msg := client.Message{ID: "m1"}

@@ -8,7 +8,7 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // This file ports pastedFilepath, readLocalAttachment and pasteAttachment from

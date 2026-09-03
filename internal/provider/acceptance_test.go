@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 // TestAcceptanceConfigProvider is the P0 acceptance criterion: a config
@@ -35,7 +35,7 @@ func TestAcceptanceConfigProvider(t *testing.T) {
 	os.Unsetenv("ZHIPUAI_API_KEY")
 	os.Unsetenv("OPENAI_API_KEY")
 	os.Unsetenv("ANTHROPIC_API_KEY")
-	t.Setenv("OPENCODE_CONFIG_CONTENT", `{
+	t.Setenv("GOCODE_CONFIG_CONTENT", `{
 		"provider": {
 			"zhipuai": {
 				"options": {"apiKey": "cfg-key-123", "baseURL": "`+srv.URL+`"},

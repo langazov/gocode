@@ -1,4 +1,4 @@
-// Package patch parses and applies opencode's file-oriented patch format,
+// Package patch parses and applies gocode's file-oriented patch format,
 // porting packages/core/src/patch.ts.
 //
 // The format is a stripped-down envelope:

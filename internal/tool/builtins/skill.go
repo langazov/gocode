@@ -8,8 +8,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/skill"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/skill"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // skillFileLimit caps how many supporting files are listed for a skill,

@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/installation"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/installation"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // Web search runs through the provider's public MCP endpoint rather than a
@@ -130,7 +130,7 @@ func (t *WebSearchTool) ExecuteWithContext(ctx context.Context, input map[string
 		if exec.SessionID != "" {
 			args["session_id"] = exec.SessionID
 		}
-		headers["User-Agent"] = "opencode/" + installation.Version
+		headers["User-Agent"] = "gocode/" + installation.Version
 		if key := os.Getenv("PARALLEL_API_KEY"); key != "" {
 			headers["Authorization"] = "Bearer " + key
 		}
@@ -167,11 +167,11 @@ func exaEndpoint() string {
 }
 
 // SelectWebSearchProvider picks a provider for a session. An explicit
-// OPENCODE_WEBSEARCH_PROVIDER wins; otherwise the session ID is hashed so a
+// GOCODE_WEBSEARCH_PROVIDER wins; otherwise the session ID is hashed so a
 // given session always gets the same provider, matching
 // selectWebSearchProvider in websearch.ts.
 func SelectWebSearchProvider(sessionID string) string {
-	switch os.Getenv("OPENCODE_WEBSEARCH_PROVIDER") {
+	switch os.Getenv("GOCODE_WEBSEARCH_PROVIDER") {
 	case "exa":
 		return "exa"
 	case "parallel":

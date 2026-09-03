@@ -5,9 +5,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/llm/openai"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/llm/openai"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 func baseOf(t *testing.T, client any) string {

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/skill"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/skill"
 )
 
 func configFrom(t *testing.T, document string) *config.Config {
@@ -74,7 +74,7 @@ func TestConfigCommands(t *testing.T) {
 	}
 }
 
-// TestMarkdownCommands: `.opencode/command/**/*.md` defines commands, and a
+// TestMarkdownCommands: `.gocode/command/**/*.md` defines commands, and a
 // nested path namespaces the name rather than colliding.
 func TestMarkdownCommands(t *testing.T) {
 	dir := t.TempDir()

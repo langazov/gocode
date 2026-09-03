@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/background"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/background"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // TaskTool spawns a subagent to handle a delegated unit of work.
@@ -20,7 +20,7 @@ import (
 type TaskTool struct {
 	spawner tool.Spawner
 	// jobs enables background mode. nil keeps the tool foreground-only, which
-	// is the default until OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS is set.
+	// is the default until GOCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS is set.
 	jobs *background.Registry
 }
 
@@ -134,7 +134,7 @@ func (t *TaskTool) ExecuteWithContext(ctx context.Context, input map[string]any,
 
 	wantsBackground, _ := input["background"].(bool)
 	if wantsBackground && t.jobs == nil {
-		return "", fmt.Errorf("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
+		return "", fmt.Errorf("Background subagents require GOCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true")
 	}
 
 	childID, done, err := t.spawner.Spawn(ctx, tool.SpawnRequest{

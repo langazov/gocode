@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/identifier"
+	"github.com/langazov/gocode-go/internal/identifier"
 )
 
 type Kind string

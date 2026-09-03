@@ -7,11 +7,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/agent"
-	"github.com/anomalyco/opencode-go/internal/event"
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/permission"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/agent"
+	"github.com/langazov/gocode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 type fakeProvider struct {
@@ -64,7 +64,7 @@ func newRunnerFixture(t *testing.T, provider *fakeProvider, tools *tool.Registry
 		Provider: provider,
 		Tools:    tools,
 		Agent:    "build",
-		System:   "You are opencode.",
+		System:   "You are gocode.",
 		Model:    ModelRef{ProviderID: "anthropic", ID: "claude-sonnet-4-5"},
 	}, bus
 }
@@ -120,7 +120,7 @@ func TestRunnerSingleTurn(t *testing.T) {
 	}
 
 	request := provider.requests[0]
-	if request.System[0] != "You are opencode." {
+	if request.System[0] != "You are gocode." {
 		t.Fatalf("unexpected system: %v", request.System)
 	}
 	if len(request.Messages) != 1 || request.Messages[0].Content[0].Text != "say hello" {

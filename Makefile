@@ -1,12 +1,12 @@
-BINARY  := opencode
-MAIN    := ./cmd/opencode
+BINARY  := gocode
+MAIN    := ./cmd/gocode
 GO      ?= go
 
 VERSION := $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 # The version and channel live in internal/installation, not package main.
 # `-X main.version` named a symbol that does not exist, so every build — the
 # release target included — reported "local".
-VERSION_PKG := github.com/anomalyco/opencode-go/internal/installation
+VERSION_PKG := github.com/langazov/gocode-go/internal/installation
 LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION)
 RELEASE_DIR := dist
 RELEASE_LDFLAGS := $(LDFLAGS) -X $(VERSION_PKG).Channel=release
@@ -22,7 +22,7 @@ GO_WASM_EXEC := $(shell $(GO) env GOROOT)/misc/wasm/wasm_exec.js
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build the opencode binary
+build: ## Build the gocode binary
 	$(GO) build -ldflags '$(LDFLAGS)' -o $(BINARY) $(MAIN)
 
 release: vet test ## Build optimized release binary into dist/
@@ -32,7 +32,7 @@ release: vet test ## Build optimized release binary into dist/
 		-o $(RELEASE_DIR)/$(BINARY) $(MAIN)
 	@echo "Release binary: $(RELEASE_DIR)/$(BINARY)"
 
-run: ## Build and run opencode
+run: ## Build and run gocode
 	$(GO) run $(MAIN)
 
 install: ## Install binary to $GOPATH/bin
@@ -70,7 +70,7 @@ wasm-run: wasm ## Build for WebAssembly and serve it in the browser
 	printf '%s\n' \
 		'<!DOCTYPE html>' \
 		'<html>' \
-		'<head><meta charset="utf-8"><title>opencode wasm</title></head>' \
+		'<head><meta charset="utf-8"><title>gocode wasm</title></head>' \
 		'<body>' \
 		'<script src="wasm_exec.js"></script>' \
 		'<script>' \

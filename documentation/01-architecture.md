@@ -16,7 +16,7 @@ sequenceDiagram
   participant S as HTTP server
   participant T as TUI
 
-  U->>M: opencode
+  U->>M: gocode
   M->>M: bootStack() — config, db, bus, tools, providers
   M->>S: net.Listen("127.0.0.1:0")
   Note over S: ephemeral port, loopback only
@@ -26,8 +26,8 @@ sequenceDiagram
   S-->>T: stream of session events
 ```
 
-`cmd/opencode/cmd_tui.go` is where this happens. The consequence worth
-internalising: **`opencode attach http://other-host:4096` runs the identical
+`cmd/gocode/cmd_tui.go` is where this happens. The consequence worth
+internalising: **`gocode attach http://other-host:4096` runs the identical
 TUI code path.** Local is just a server you didn't have to start yourself.
 
 This is why the API is not an afterthought. If a feature isn't reachable over
@@ -35,7 +35,7 @@ HTTP, the TUI cannot use it.
 
 ## Boot sequence
 
-`bootStack()` in `cmd/opencode/main.go` assembles everything in dependency
+`bootStack()` in `cmd/gocode/main.go` assembles everything in dependency
 order. Roughly:
 
 ```mermaid
@@ -87,7 +87,7 @@ flowchart TD
   subgraph L4["Interface"]
     tui["tui"]
     server["server"]
-    cmd["cmd/opencode"]
+    cmd["cmd/gocode"]
   end
   subgraph L3["Orchestration"]
     session["session"]
@@ -122,17 +122,17 @@ flowchart TD
 | **Foundation** | `db` `event` `config` `global` `id` `identifier` `flock` `fsutil` | No knowledge of agents, models, or sessions. Pure infrastructure. |
 | **Domain** | `llm` `provider` `permission` `agent` `command` `skill` `markdown` `diff` `patch` `credential` `auth` `modelsdev` | Model the problem. No I/O orchestration. |
 | **Orchestration** | `session` `tool` `mcp` `lsp` `background` `question` | Wire the domain together and drive it. |
-| **Interface** | `tui` `server` `cmd/opencode` `clix` | Present it. Contain no business logic. |
+| **Interface** | `tui` `server` `cmd/gocode` `clix` | Present it. Contain no business logic. |
 
 ## The three entry points
 
 | Entry | Path | Used by |
 |---|---|---|
-| **TUI** | `tui.Run()` → HTTP → `server.Mux()` → service | `opencode`, `opencode tui`, `opencode attach` |
-| **Headless server** | `server.ServeOn()` → service | `opencode serve`, `opencode web` |
-| **Direct CLI** | service in-process, no HTTP | `opencode run`, `export`, `stats`, `db` |
+| **TUI** | `tui.Run()` → HTTP → `server.Mux()` → service | `gocode`, `gocode tui`, `gocode attach` |
+| **Headless server** | `server.ServeOn()` → service | `gocode serve`, `gocode web` |
+| **Direct CLI** | service in-process, no HTTP | `gocode run`, `export`, `stats`, `db` |
 
-`opencode run` is the exception that skips HTTP — it drives the session
+`gocode run` is the exception that skips HTTP — it drives the session
 service directly and streams to stdout, because there's no interactive client
 to serve.
 
@@ -169,7 +169,7 @@ flowchart LR
 ## Where things live
 
 ```
-cmd/opencode/          entry point; one file per subcommand
+cmd/gocode/          entry point; one file per subcommand
   main.go              bootStack() — the assembly point
   cli.go               argument parsing and dispatch
 

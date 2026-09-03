@@ -8,11 +8,11 @@ Everything persists to one SQLite file. There is no server, no cache tier, and
 no second source of truth.
 
 ```
-$XDG_DATA_HOME/opencode/opencode.db          release builds
-$XDG_DATA_HOME/opencode/opencode-dev.db      dev builds (channel-suffixed)
+$XDG_DATA_HOME/gocode/gocode.db          release builds
+$XDG_DATA_HOME/gocode/gocode-dev.db      dev builds (channel-suffixed)
 ```
 
-Resolved by `internal/db/path.go`; overridable with `OPENCODE_DB`. The channel
+Resolved by `internal/db/path.go`; overridable with `GOCODE_DB`. The channel
 suffix means a dev build cannot corrupt your real session history.
 
 ## Event sourcing, concretely

@@ -8,8 +8,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
-	"github.com/anomalyco/opencode-go/internal/tui/theme"
+	"github.com/langazov/gocode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/theme"
 )
 
 // frame applies the screen's 1-column side margin and crops to the terminal
@@ -686,7 +686,7 @@ func mcpDotColor(t theme.Theme, status string) color.Color {
 
 // mcpStatusLabel mirrors sidebar/mcp.tsx's <Switch> status label exactly
 // (dialog-status.tsx additionally prefixes the needs_auth case with a "run:
-// opencode mcp auth <name>" hint, folded in here too since both callers
+// gocode mcp auth <name>" hint, folded in here too since both callers
 // want it), plus a "connecting" case for the Go-port-only placeholder
 // status (see mcpDotColor).
 func mcpStatusLabel(s client.MCPServer) string {
@@ -701,7 +701,7 @@ func mcpStatusLabel(s client.MCPServer) string {
 	case "disabled":
 		return "Disabled"
 	case "needs_auth":
-		return "Needs authentication (run: opencode mcp auth " + s.Name + ")"
+		return "Needs authentication (run: gocode mcp auth " + s.Name + ")"
 	case "needs_client_registration":
 		if s.Error != "" {
 			return s.Error
@@ -739,7 +739,7 @@ func mcpHasFailure(servers []client.MCPServer) bool {
 
 // sidebarView mirrors the Sidebar: a 42-column backgroundPanel filling the
 // terminal height with the session title, Context usage, the todo list, and
-// the "• OpenCode version" footer pinned to the bottom.
+// the "• GoCode version" footer pinned to the bottom.
 func (a *App) sidebarView() string {
 	if !a.sidebar || a.active == nil {
 		return ""
@@ -811,7 +811,7 @@ func (a *App) sidebarView() string {
 
 	// Footer pinned to the bottom, mirroring the sidebar-footer plugin: the
 	// abbreviated directory (+ git branch) with its last segment brighter,
-	// then the "• OpenCode version" line.
+	// then the "• GoCode version" line.
 	card := a.gettingStartedCard(width)
 	pathLine := a.sidebarPathLine(width - 4)
 	versionLine := a.onPanel(a.theme.Success, false).Render("•") + " " +

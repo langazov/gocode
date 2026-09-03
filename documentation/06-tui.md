@@ -162,7 +162,7 @@ was work happening inside `Update` rather than in a `tea.Cmd`.
 `theme.Theme` carries semantic colours (`Text`, `TextMuted`, `Primary`,
 `Border`, `BackgroundElement`, `BackgroundMenu`, …) rather than literal ones,
 so a component asks for "muted text" and the theme decides. Default is
-`opencode-dark`; set `"theme"` in config.
+`gocode-dark`; set `"theme"` in config.
 
 ## The mini interface
 

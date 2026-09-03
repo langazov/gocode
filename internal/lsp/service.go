@@ -7,8 +7,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/global"
 )
 
 // Status is one connected server, as the status view and sidebar show it.

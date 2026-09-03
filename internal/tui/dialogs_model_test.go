@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 func testApp(t *testing.T) *App {
@@ -15,7 +15,7 @@ func testApp(t *testing.T) *App {
 	t.Setenv("XDG_STATE_HOME", t.TempDir())
 	return &App{
 		models: newModelStore(),
-		theme:  themeResolve("opencode-dark"),
+		theme:  themeResolve("gocode-dark"),
 		// update() drives these on catalogMsg; New() builds them, so a
 		// hand-rolled App has to as well.
 		agentMetaFade: newFadeAnim(false),
@@ -209,7 +209,7 @@ func TestParseModelLabel(t *testing.T) {
 func TestModelStoreSharesFileWithTypeScript(t *testing.T) {
 	state := t.TempDir()
 	t.Setenv("XDG_STATE_HOME", state)
-	path := filepath.Join(state, "opencode", "model.json")
+	path := filepath.Join(state, "gocode", "model.json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}

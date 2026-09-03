@@ -13,28 +13,28 @@ Later sources win, merged key by key (`internal/config/loader.go`):
 
 ```mermaid
 flowchart TD
-  A["1 · global<br/><i>config.json → opencode.json → opencode.jsonc</i>"] --> B
-  B["2 · $OPENCODE_CONFIG"] --> C
-  C["3 · project opencode.json(c)<br/><i>discovered upward to the worktree root</i>"] --> D
-  D["4 · .opencode dirs + $OPENCODE_CONFIG_DIR"] --> E
-  E["5 · $OPENCODE_CONFIG_CONTENT<br/><i>inline override</i>"] --> F["merged config"]
+  A["1 · global<br/><i>config.json → gocode.json → gocode.jsonc</i>"] --> B
+  B["2 · $GOCODE_CONFIG"] --> C
+  C["3 · project gocode.json(c)<br/><i>discovered upward to the worktree root</i>"] --> D
+  D["4 · .gocode dirs + $GOCODE_CONFIG_DIR"] --> E
+  E["5 · $GOCODE_CONFIG_CONTENT<br/><i>inline override</i>"] --> F["merged config"]
 
   style F fill:#065f46,stroke:#047857,color:#ecfdf5
 ```
 
-Global lives under `$XDG_CONFIG_HOME/opencode/` (`~/.config/opencode/` by
+Global lives under `$XDG_CONFIG_HOME/gocode/` (`~/.config/gocode/` by
 default).
 
 Two behaviours worth knowing:
 
 - **Project config is discovered upward** to the worktree root, so running in
-  `repo/src/deep/dir` still picks up `repo/opencode.json`.
+  `repo/src/deep/dir` still picks up `repo/gocode.json`.
 - **Errors in global config are tolerated**; errors in project config are not.
   A broken file in your home directory shouldn't make every project unusable,
   but a broken file in *this* project should be reported rather than silently
   half-applied.
 
-`OPENCODE_DISABLE_PROJECT_CONFIG=1` skips project sources entirely.
+`GOCODE_DISABLE_PROJECT_CONFIG=1` skips project sources entirely.
 
 The merge is a **deep merge**: setting one key under `permission` in project
 config doesn't discard the global `permission` block.
@@ -64,7 +64,7 @@ Two token forms, applied before parsing:
 The asymmetry is deliberate: an unset environment variable is a normal
 condition, but a config pointing at a file that isn't there is a mistake.
 
-Keeping secrets in `{env:...}` is what lets `opencode.json` be committed.
+Keeping secrets in `{env:...}` is what lets `gocode.json` be committed.
 
 ## Reference
 
@@ -78,7 +78,7 @@ Keeping secrets in `{env:...}` is what lets `opencode.json` be committed.
   "default_agent": "build",
 
   // ── interface ───────────────────────────────────────────
-  "theme": "opencode-dark",
+  "theme": "gocode-dark",
   "username": "you",
   "shell": "/bin/zsh",
   "keybinds": { "leader": "ctrl+x" },
@@ -194,7 +194,7 @@ Agents are named configurations — model, prompt, permissions, tool set:
 }
 ```
 
-Equivalently as markdown in `.opencode/agent/reviewer.md`, with the same fields
+Equivalently as markdown in `.gocode/agent/reviewer.md`, with the same fields
 as YAML frontmatter and the body as the prompt. Both forms accept exactly the
 same shapes.
 
@@ -214,7 +214,7 @@ Custom slash commands:
 }
 ```
 
-Or as markdown under `.opencode/command/`, where nesting namespaces them:
+Or as markdown under `.gocode/command/`, where nesting namespaces them:
 `command/git/commit.md` becomes `/git/commit`.
 
 Template substitution (`internal/command/expand.go`):
@@ -241,11 +241,11 @@ Paths follow the XDG spec (`internal/global/global.go`):
 
 | Path | Holds |
 |---|---|
-| `$XDG_CONFIG_HOME/opencode/` | `opencode.json`, `auth.json` |
-| `$XDG_DATA_HOME/opencode/` | `opencode.db`, `log/`, `repos/` |
-| `$XDG_CACHE_HOME/opencode/` | models.dev cache, `bin/` |
-| `$XDG_STATE_HOME/opencode/` | per-directory state (last model, …) |
-| `./.opencode/` | project agents, commands, skills |
+| `$XDG_CONFIG_HOME/gocode/` | `gocode.json`, `auth.json` |
+| `$XDG_DATA_HOME/gocode/` | `gocode.db`, `log/`, `repos/` |
+| `$XDG_CACHE_HOME/gocode/` | models.dev cache, `bin/` |
+| `$XDG_STATE_HOME/gocode/` | per-directory state (last model, …) |
+| `./.gocode/` | project agents, commands, skills |
 | `./AGENTS.md` | project instructions |
 
 On macOS and Linux these default to `~/.config`, `~/.local/share`,

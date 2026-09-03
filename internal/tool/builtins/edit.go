@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/diff"
+	"github.com/langazov/gocode-go/internal/diff"
 )
 
 type EditTool struct {

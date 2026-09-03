@@ -7,13 +7,13 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/llm/anthropic"
-	"github.com/anomalyco/opencode-go/internal/llm/gemini"
-	"github.com/anomalyco/opencode-go/internal/llm/openai"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm/anthropic"
+	"github.com/langazov/gocode-go/internal/llm/gemini"
+	"github.com/langazov/gocode-go/internal/llm/openai"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // keylessProvider lists local OpenAI-compatible endpoints that need no auth.
@@ -187,7 +187,7 @@ func (r *Resolved) Client() (llm.StreamClient, error) {
 		// another company's API — silently, and with a 401 as the only clue.
 		if r.BaseURL == "" {
 			return nil, fmt.Errorf(
-				"provider %q: no API endpoint known (models.dev lists no `api` for it and its SDK %q is not one this port implements) — set provider.%s.options.baseURL in opencode.json",
+				"provider %q: no API endpoint known (models.dev lists no `api` for it and its SDK %q is not one this port implements) — set provider.%s.options.baseURL in gocode.json",
 				r.ID, r.Entry.NPM, r.ID)
 		}
 		client := openai.New(r.APIKey)

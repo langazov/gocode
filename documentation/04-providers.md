@@ -71,7 +71,7 @@ Implemented transforms:
 | `transform_azure.go` | Azure deployment-name URL shape |
 | `transform_copilot.go` | GitHub Copilot — device flow, live model list |
 | `transform_snowflake.go` | Snowflake Cortex |
-| `transform_opencode.go` | the opencode hosted gateway |
+| `transform_opencode.go` | the opencode Zen hosted gateway |
 
 `ApplyOverlays` composes them: a provider can rewrite base URLs, inject
 headers, add models, or hide models it can't serve — without the generic client
@@ -106,10 +106,10 @@ Three method types (`authmethods.go`):
 ```mermaid
 sequenceDiagram
   participant U as You
-  participant C as opencode
+  participant C as gocode
   participant P as Provider
 
-  U->>C: opencode providers login
+  U->>C: gocode providers login
   C->>U: pick a provider, pick a method
   alt OAuth device flow (RFC 8628)
     C->>P: POST /device/code

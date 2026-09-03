@@ -3,7 +3,7 @@ package configpaths
 import (
 	"path/filepath"
 
-	"github.com/anomalyco/opencode-go/internal/fsutil"
+	"github.com/langazov/gocode-go/internal/fsutil"
 )
 
 // Worktree resolves the worktree boundary for project config discovery: the

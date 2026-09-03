@@ -6,7 +6,7 @@ import (
 
 func TestSetGetRemove(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("OPENCODE_AUTH_CONTENT", "")
+	t.Setenv("GOCODE_AUTH_CONTENT", "")
 
 	if err := Set("anthropic", Info{Type: "api", Key: "sk-ant-123"}); err != nil {
 		t.Fatal(err)
@@ -41,7 +41,7 @@ func TestSetGetRemove(t *testing.T) {
 
 func TestSetNormalizesTrailingSlash(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("OPENCODE_AUTH_CONTENT", "")
+	t.Setenv("GOCODE_AUTH_CONTENT", "")
 
 	if err := Set("openai/", Info{Type: "api", Key: "sk-x"}); err != nil {
 		t.Fatal(err)
@@ -57,14 +57,14 @@ func TestSetNormalizesTrailingSlash(t *testing.T) {
 
 func TestInvalidInfoRejected(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("OPENCODE_AUTH_CONTENT", "")
+	t.Setenv("GOCODE_AUTH_CONTENT", "")
 	if err := Set("anthropic", Info{Type: "api"}); err == nil {
 		t.Fatal("expected error for api entry without key")
 	}
 }
 
 func TestAuthContentEnv(t *testing.T) {
-	t.Setenv("OPENCODE_AUTH_CONTENT", `{"anthropic":{"type":"api","key":"env-key"}}`)
+	t.Setenv("GOCODE_AUTH_CONTENT", `{"anthropic":{"type":"api","key":"env-key"}}`)
 	got, err := Get("anthropic")
 	if err != nil {
 		t.Fatal(err)
@@ -76,7 +76,7 @@ func TestAuthContentEnv(t *testing.T) {
 
 func TestOAuthRoundtrip(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("OPENCODE_AUTH_CONTENT", "")
+	t.Setenv("GOCODE_AUTH_CONTENT", "")
 	info := Info{Type: "oauth", Refresh: "r", Access: "a", Expires: 123}
 	if err := Set("github", info); err != nil {
 		t.Fatal(err)

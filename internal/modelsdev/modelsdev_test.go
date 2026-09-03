@@ -65,8 +65,8 @@ const fixture = `{
 func testService(t *testing.T) *Service {
 	t.Helper()
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("OPENCODE_MODELS_PATH", "")
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "")
+	t.Setenv("GOCODE_MODELS_PATH", "")
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api.json" {
 			http.NotFound(w, r)
@@ -78,7 +78,7 @@ func testService(t *testing.T) *Service {
 		w.Write([]byte(fixture))
 	}))
 	t.Cleanup(srv.Close)
-	t.Setenv("OPENCODE_MODELS_URL", srv.URL)
+	t.Setenv("GOCODE_MODELS_URL", srv.URL)
 	return New()
 }
 
@@ -139,9 +139,9 @@ func TestCacheWrittenToDisk(t *testing.T) {
 func TestLoadFromDiskWithoutNetwork(t *testing.T) {
 	cache := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cache)
-	t.Setenv("OPENCODE_MODELS_PATH", "")
-	t.Setenv("OPENCODE_MODELS_URL", "http://127.0.0.1:1")
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "")
+	t.Setenv("GOCODE_MODELS_PATH", "")
+	t.Setenv("GOCODE_MODELS_URL", "http://127.0.0.1:1")
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "")
 	service := New()
 	if err := os.MkdirAll(filepath.Dir(service.Filepath), 0o755); err != nil {
 		t.Fatal(err)
@@ -182,9 +182,9 @@ func TestCorruptCacheIsDroppedAndRefetched(t *testing.T) {
 // list at all.
 func TestDisableModelsFetch(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("OPENCODE_MODELS_PATH", "")
-	t.Setenv("OPENCODE_MODELS_URL", "http://127.0.0.1:1")
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "true")
+	t.Setenv("GOCODE_MODELS_PATH", "")
+	t.Setenv("GOCODE_MODELS_URL", "http://127.0.0.1:1")
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "true")
 	catalog, err := New().Get(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -198,9 +198,9 @@ func TestDisableModelsFetch(t *testing.T) {
 // fetch is allowed but the source is unreachable.
 func TestUnreachableSourceFallsBackToSnapshot(t *testing.T) {
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("OPENCODE_MODELS_PATH", "")
-	t.Setenv("OPENCODE_MODELS_URL", "http://127.0.0.1:1")
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "")
+	t.Setenv("GOCODE_MODELS_PATH", "")
+	t.Setenv("GOCODE_MODELS_URL", "http://127.0.0.1:1")
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "")
 	catalog, err := New().Get(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -234,15 +234,15 @@ func TestModelsPathOverride(t *testing.T) {
 	if err := os.WriteFile(path, []byte(fixture), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("OPENCODE_MODELS_PATH", path)
-	t.Setenv("OPENCODE_MODELS_URL", "http://127.0.0.1:1")
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "")
+	t.Setenv("GOCODE_MODELS_PATH", path)
+	t.Setenv("GOCODE_MODELS_URL", "http://127.0.0.1:1")
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "")
 	catalog, err := New().Get(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(catalog) != 2 {
-		t.Fatalf("expected 2 providers from OPENCODE_MODELS_PATH, got %d", len(catalog))
+		t.Fatalf("expected 2 providers from GOCODE_MODELS_PATH, got %d", len(catalog))
 	}
 }
 

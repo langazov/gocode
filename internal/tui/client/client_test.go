@@ -7,13 +7,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/db"
-	"github.com/anomalyco/opencode-go/internal/event"
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/permission"
-	"github.com/anomalyco/opencode-go/internal/server"
-	"github.com/anomalyco/opencode-go/internal/session"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/server"
+	"github.com/langazov/gocode-go/internal/session"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // TestRoundTripAgainstServer exercises the TUI client against the real
@@ -39,7 +39,7 @@ func TestRoundTripAgainstServer(t *testing.T) {
 		Provider: provider,
 		Tools:    tool.NewRegistry(),
 		Agent:    "build",
-		System:   "You are opencode.",
+		System:   "You are gocode.",
 		Model:    session.ModelRef{ProviderID: "anthropic", ID: "claude-sonnet-4-5"},
 	}
 	execution := session.NewExecution(&session.DBSessionLookup{DB: database}, runner)

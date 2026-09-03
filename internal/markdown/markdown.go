@@ -1,5 +1,5 @@
 // Package markdown parses YAML-frontmatter markdown documents, the format
-// opencode uses for skills (SKILL.md) and markdown-defined agents.
+// gocode uses for skills (SKILL.md) and markdown-defined agents.
 //
 // Frontmatter is decoded with gopkg.in/yaml.v3. When strict YAML rejects the
 // header, it is retried through Sanitize — the same fallback the TypeScript

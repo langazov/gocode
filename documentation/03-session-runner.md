@@ -231,7 +231,7 @@ token classes:
 | `cache_write` | establishing a cache entry — typically more than input |
 
 Costs accumulate onto the session and surface in the TUI footer and
-`opencode stats`. Cache classes are tracked separately because with prompt
+`gocode stats`. Cache classes are tracked separately because with prompt
 caching they dominate the bill, and conflating them into "input" makes the
 number wrong by an order of magnitude.
 

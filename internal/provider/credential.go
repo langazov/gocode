@@ -3,9 +3,9 @@ package provider
 import (
 	"context"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
-	"github.com/anomalyco/opencode-go/internal/global"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // Refresher is the optional half of the Transform contract for providers whose

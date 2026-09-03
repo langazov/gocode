@@ -8,7 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // benchApp builds a session the size and shape of a real one: markdown with
@@ -16,7 +16,7 @@ import (
 // expensive (glamour parses it and chroma highlights every fence).
 func benchApp(tb testing.TB, n int) *App {
 	tb.Setenv("XDG_STATE_HOME", tb.TempDir()+"/state")
-	app := New(context.Background(), client.New("http://example.invalid"), "opencode-dark")
+	app := New(context.Background(), client.New("http://example.invalid"), "gocode-dark")
 	app.width, app.height = 160, 50
 	app.view = viewChat
 	app.active = &client.Session{ID: "ses_1", Directory: "/tmp/p"}

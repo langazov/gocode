@@ -101,7 +101,7 @@ func TestExpandShellSubstitution(t *testing.T) {
 // TestExpandShellFailureIsEmpty: upstream runs these with nothrow, so a
 // template referencing a missing tool still produces a usable prompt.
 func TestExpandShellFailureIsEmpty(t *testing.T) {
-	got := Expand(context.Background(), "x!`opencode-no-such-command-xyz`y", "", "/bin/sh")
+	got := Expand(context.Background(), "x!`gocode-no-such-command-xyz`y", "", "/bin/sh")
 	if got != "xy" {
 		t.Errorf("Expand = %q, want the failed substitution to be empty", got)
 	}

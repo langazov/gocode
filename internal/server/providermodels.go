@@ -3,9 +3,9 @@ package server
 import (
 	"context"
 
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
-	"github.com/anomalyco/opencode-go/internal/provider"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/provider"
 )
 
 // resolveCatalog returns the models.dev catalog with every registered overlay

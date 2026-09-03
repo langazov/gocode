@@ -6,7 +6,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 const fixture = `{
@@ -21,13 +21,13 @@ const fixture = `{
 func newCatalog(t *testing.T) *modelsdev.Service {
 	t.Helper()
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-	t.Setenv("OPENCODE_MODELS_PATH", "")
-	t.Setenv("OPENCODE_DISABLE_MODELS_FETCH", "")
+	t.Setenv("GOCODE_MODELS_PATH", "")
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Write([]byte(fixture))
 	}))
 	t.Cleanup(srv.Close)
-	t.Setenv("OPENCODE_MODELS_URL", srv.URL)
+	t.Setenv("GOCODE_MODELS_URL", srv.URL)
 	return modelsdev.New()
 }
 
@@ -46,7 +46,7 @@ func TestResolveKeyFromEnv(t *testing.T) {
 func TestResolveKeyMissing(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("OPENCODE_AUTH_CONTENT", "")
+	t.Setenv("GOCODE_AUTH_CONTENT", "")
 	service := New(newCatalog(t))
 	if _, err := service.ResolveAPIKey(context.Background(), "anthropic"); err == nil {
 		t.Fatal("expected error when no credentials available")
@@ -55,7 +55,7 @@ func TestResolveKeyMissing(t *testing.T) {
 
 func TestResolveKeyFromAuthStore(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
-	t.Setenv("OPENCODE_AUTH_CONTENT", `{"anthropic":{"type":"api","key":"sk-ant-stored"}}`)
+	t.Setenv("GOCODE_AUTH_CONTENT", `{"anthropic":{"type":"api","key":"sk-ant-stored"}}`)
 	service := New(newCatalog(t))
 	key, err := service.ResolveAPIKey(context.Background(), "anthropic")
 	if err != nil {

@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/event"
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // gateTool blocks in Execute until its release channel is closed, recording

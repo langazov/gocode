@@ -9,7 +9,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // spinnerFrames is component/spinner.tsx's SPINNER_FRAMES, the inline
@@ -365,7 +365,7 @@ func (a *App) exportToEditor() tea.Cmd {
 	if editor == "" {
 		editor = "vi"
 	}
-	tmp, err := os.CreateTemp("", "opencode-prompt-*.md")
+	tmp, err := os.CreateTemp("", "gocode-prompt-*.md")
 	if err != nil {
 		return staticMsg(statusMsg{text: err.Error()})
 	}

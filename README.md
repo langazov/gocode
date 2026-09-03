@@ -18,7 +18,7 @@ One statically linked binary. No Node, no Bun, no runtime to install.
 ---
 
 ```
-┌─ opencode ────────────────────────────────────── gpt-5 · build ─┐
+┌─ gocode ────────────────────────────────────── gpt-5 · build ─┐
 │                                                                  │
 │  › refactor the auth middleware to use the new token store       │
 │                                                                  │
@@ -60,20 +60,20 @@ Every platform ships twice — a bare executable and an archive of the same buil
 
 ```sh
 # replace <platform> with e.g. macos-arm64, linux-x64
-curl -fsSL -o opencode \
-  https://github.com/langazov/gocode/releases/latest/download/opencode-<version>-<platform>
-chmod +x opencode
-sudo mv opencode /usr/local/bin/
+curl -fsSL -o gocode \
+  https://github.com/langazov/gocode/releases/latest/download/gocode-<version>-<platform>
+chmod +x gocode
+sudo mv gocode /usr/local/bin/
 ```
 
 macOS binaries are unsigned, so Gatekeeper quarantines them on first run:
 
 ```sh
-xattr -d com.apple.quarantine /usr/local/bin/opencode
+xattr -d com.apple.quarantine /usr/local/bin/gocode
 ```
 
-**Windows** — download `opencode-<version>-windows-x64.exe`, rename it to
-`opencode.exe`, and put it on your `PATH`.
+**Windows** — download `gocode-<version>-windows-x64.exe`, rename it to
+`gocode.exe`, and put it on your `PATH`.
 
 Verify any download against the release's `SHA256SUMS`:
 
@@ -88,12 +88,12 @@ Requires Go 1.27+.
 ```sh
 git clone https://github.com/langazov/gocode
 cd gocode
-make build      # -> ./opencode
+make build      # -> ./gocode
 ```
 
 | Target | Does |
 |---|---|
-| `make build` | build `./opencode` with a git-derived version |
+| `make build` | build `./gocode` with a git-derived version |
 | `make test` | run the full suite |
 | `make fmt` | format the tree |
 | `make check` | fmt-check + vet + test — what CI runs |
@@ -104,24 +104,24 @@ make build      # -> ./opencode
 ## Quick start
 
 ```sh
-opencode                       # interactive TUI in the current directory
-opencode /path/to/project      # ...or somewhere else
+gocode                       # interactive TUI in the current directory
+gocode /path/to/project      # ...or somewhere else
 ```
 
 First run will ask you to connect a provider:
 
 ```sh
-opencode providers login       # OAuth or API key, stored in the local keyring
-opencode models                # list everything you can now reach
+gocode providers login       # OAuth or API key, stored in the local keyring
+gocode models                # list everything you can now reach
 ```
 
 Then use it:
 
 ```sh
-opencode run "add a health check endpoint"   # one-shot, no TUI
-opencode -c                                  # continue the last session
-opencode serve --port 4096                   # headless server
-opencode attach http://box:4096              # drive a remote server from your terminal
+gocode run "add a health check endpoint"   # one-shot, no TUI
+gocode -c                                  # continue the last session
+gocode serve --port 4096                   # headless server
+gocode attach http://box:4096              # drive a remote server from your terminal
 ```
 
 <details>
@@ -130,7 +130,7 @@ opencode attach http://box:4096              # drive a remote server from your t
 ```
 acp          start ACP (Agent Client Protocol) server
 agent        manage agents
-attach       attach to a running opencode server
+attach       attach to a running gocode server
 completion   generate shell completion script
 db           database tools
 debug        debugging and troubleshooting tools
@@ -140,24 +140,24 @@ import       import session data from JSON file or URL
 mcp          manage MCP (Model Context Protocol) servers
 models       list all available models
 plugin       install plugin and update config
-pr           fetch and checkout a GitHub PR branch, then run opencode
+pr           fetch and checkout a GitHub PR branch, then run gocode
 providers    manage AI providers and credentials
-run          run opencode with a message
-serve        starts a headless opencode server
+run          run gocode with a message
+serve        starts a headless gocode server
 session      manage sessions
 stats        show token usage and cost statistics
 tui          start the interactive terminal interface
-upgrade      upgrade opencode to the latest or a specific version
-web          start opencode server and open web interface
+upgrade      upgrade gocode to the latest or a specific version
+web          start gocode server and open web interface
 ```
 
 </details>
 
 ## How it fits together
 
-The TUI is **always** an HTTP client — even locally. `opencode` boots the
+The TUI is **always** an HTTP client — even locally. `gocode` boots the
 service stack, starts a server on an ephemeral loopback port, and connects to
-it. `opencode attach` is the identical path pointed at a different host, which
+it. `gocode attach` is the identical path pointed at a different host, which
 is why remote and local behave the same.
 
 ```mermaid
@@ -189,14 +189,14 @@ model, the runner loop, providers, tools, the TUI, and the HTTP API.
 Config is JSON, merged from global and project scope:
 
 ```
-~/.config/opencode/opencode.json     global
-./opencode.json                      project (overrides global)
+~/.config/gocode/gocode.json     global
+./gocode.json                      project (overrides global)
 ```
 
 ```jsonc
 {
   "model": "anthropic/claude-sonnet-5",
-  "theme": "opencode-dark",
+  "theme": "gocode-dark",
   "permission": {
     "bash": "ask",
     "external_directory": "ask"
@@ -214,7 +214,7 @@ every key.
 ## Project layout
 
 ```
-cmd/opencode/       CLI entry point and subcommands
+cmd/gocode/       CLI entry point and subcommands
 internal/
   session/          the agent loop: runner, coordinator, compaction
   llm/              provider clients (anthropic, openai, gemini)

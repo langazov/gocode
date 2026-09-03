@@ -3,7 +3,7 @@ package provider
 import (
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // outputTokenMax mirrors OUTPUT_TOKEN_MAX in provider/transform.ts: the cap

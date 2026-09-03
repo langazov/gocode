@@ -1,4 +1,4 @@
-module github.com/anomalyco/opencode-go
+module github.com/langazov/gocode-go
 
 go 1.27
 

@@ -1,5 +1,5 @@
 // Package client is the TUI's API client, the Go equivalent of the
-// TypeScript TUI's SDK usage against the opencode server.
+// TypeScript TUI's SDK usage against the gocode server.
 package client
 
 import (

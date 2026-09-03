@@ -108,10 +108,10 @@ func TestLoadWorktreeBoundary(t *testing.T) {
 	above := t.TempDir()
 
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	t.Setenv("OPENCODE_CONFIG", "")
-	t.Setenv("OPENCODE_CONFIG_CONTENT", "")
-	t.Setenv("OPENCODE_CONFIG_DIR", "")
-	t.Setenv("OPENCODE_DISABLE_PROJECT_CONFIG", "")
+	t.Setenv("GOCODE_CONFIG", "")
+	t.Setenv("GOCODE_CONFIG_CONTENT", "")
+	t.Setenv("GOCODE_CONFIG_DIR", "")
+	t.Setenv("GOCODE_DISABLE_PROJECT_CONFIG", "")
 
 	write := func(dir, name, model string) {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -122,13 +122,13 @@ func TestLoadWorktreeBoundary(t *testing.T) {
 		}
 	}
 
-	// "git repo": a .git marker at repo root; opencode.json at repo root.
+	// "git repo": a .git marker at repo root; gocode.json at repo root.
 	if err := os.MkdirAll(filepath.Join(root, "repo", ".git"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	write(filepath.Join(root, "repo"), "opencode.json", "inside/repo")
+	write(filepath.Join(root, "repo"), "gocode.json", "inside/repo")
 	// A stray config above the repo must be ignored.
-	write(above, "opencode.json", "outside/repo")
+	write(above, "gocode.json", "outside/repo")
 
 	if err := os.MkdirAll(sub, 0o755); err != nil {
 		t.Fatal(err)
@@ -146,7 +146,7 @@ func TestLoadWorktreeBoundary(t *testing.T) {
 	}
 
 	// cwd config overrides the repo root.
-	write(sub, "opencode.json", "inside/sub")
+	write(sub, "gocode.json", "inside/sub")
 	got, err = Load()
 	if err != nil {
 		t.Fatal(err)

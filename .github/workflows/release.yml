@@ -83,21 +83,21 @@ jobs:
         run: |
           set -euo pipefail
           version="${{ steps.version.outputs.version }}"
-          pkg="github.com/anomalyco/opencode-go/internal/installation"
+          pkg="github.com/langazov/gocode-go/internal/installation"
           mkdir -p dist
           go build \
             -trimpath \
             -buildmode=exe \
             -ldflags "-s -w -X ${pkg}.Version=${version} -X ${pkg}.Channel=release" \
-            -o "dist/opencode${{ matrix.extension }}" \
-            ./cmd/opencode
+            -o "dist/gocode${{ matrix.extension }}" \
+            ./cmd/gocode
 
       - name: Package
         working-directory: dist
         run: |
           set -euo pipefail
-          name="opencode-${{ steps.version.outputs.version }}-${{ matrix.name }}"
-          binary="opencode${{ matrix.extension }}"
+          name="gocode-${{ steps.version.outputs.version }}-${{ matrix.name }}"
+          binary="gocode${{ matrix.extension }}"
 
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip -9 "${name}.zip" "$binary"
@@ -106,13 +106,13 @@ jobs:
             # Reproducible-ish tarball: fixed owner and sorted entries so the
             # same input produces the same bytes.
             tar --sort=name --owner=0 --group=0 --numeric-owner \
-                -czf "${name}.tar.gz" opencode
+                -czf "${name}.tar.gz" gocode
             archive="${name}.tar.gz"
           fi
 
           # Ship the bare executable next to the archive as well, so a download
           # is directly runnable with no unpacking step. The archive keeps the
-          # plain `opencode` name inside it; this copy carries the platform in
+          # plain `gocode` name inside it; this copy carries the platform in
           # its filename because release assets share one flat namespace.
           cp "$binary" "${name}${{ matrix.extension }}"
 
@@ -121,9 +121,9 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: opencode-${{ matrix.name }}
+          name: gocode-${{ matrix.name }}
           path: |
-            dist/opencode-*
+            dist/gocode-*
           # The build output itself must not be uploaded under its bare name;
           # only the versioned copies above are release assets.
           if-no-files-found: error
@@ -148,7 +148,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: opencode-${{ matrix.name }}
+          name: gocode-${{ matrix.name }}
           path: dist
 
       - name: Verify checksums
@@ -186,20 +186,20 @@ jobs:
           }
 
           # 1. The executable shipped as a bare release asset.
-          if ls opencode-*.exe >/dev/null 2>&1; then
-            run "./$(ls opencode-*.exe | head -1)" "bare binary"
+          if ls gocode-*.exe >/dev/null 2>&1; then
+            run "./$(ls gocode-*.exe | head -1)" "bare binary"
           else
-            run "./$(ls opencode-* | grep -vE '\.(tar\.gz|zip|sha256)$' | head -1)" "bare binary"
+            run "./$(ls gocode-* | grep -vE '\.(tar\.gz|zip|sha256)$' | head -1)" "bare binary"
           fi
 
           # 2. The same executable as unpacked from the archive.
           mkdir -p unpacked && cd unpacked
           if ls ../*.zip >/dev/null 2>&1; then
             unzip -o ../*.zip
-            run "./opencode.exe" "archive"
+            run "./gocode.exe" "archive"
           else
             tar -xzf ../*.tar.gz
-            run "./opencode" "archive"
+            run "./gocode" "archive"
           fi
 
   release:
@@ -241,29 +241,29 @@ jobs:
 
             | Platform | Bare binary | Archive |
             |---|---|---|
-            | macOS Apple silicon | `opencode-*-macos-arm64` | `.tar.gz` |
-            | macOS Intel | `opencode-*-macos-x64` | `.tar.gz` |
-            | Linux x86_64 | `opencode-*-linux-x64` | `.tar.gz` |
-            | Linux arm64 | `opencode-*-linux-arm64` | `.tar.gz` |
-            | Windows x64 | `opencode-*-windows-x64.exe` | `.zip` |
-            | Windows arm64 | `opencode-*-windows-arm64.exe` | `.zip` |
+            | macOS Apple silicon | `gocode-*-macos-arm64` | `.tar.gz` |
+            | macOS Intel | `gocode-*-macos-x64` | `.tar.gz` |
+            | Linux x86_64 | `gocode-*-linux-x64` | `.tar.gz` |
+            | Linux arm64 | `gocode-*-linux-arm64` | `.tar.gz` |
+            | Windows x64 | `gocode-*-windows-x64.exe` | `.zip` |
+            | Windows arm64 | `gocode-*-windows-arm64.exe` | `.zip` |
 
             ## Install
 
             **macOS / Linux** — straight from the bare binary:
             ```sh
-            chmod +x opencode-*-<platform>
-            sudo mv opencode-*-<platform> /usr/local/bin/opencode
+            chmod +x gocode-*-<platform>
+            sudo mv gocode-*-<platform> /usr/local/bin/gocode
             ```
 
             Or from the archive:
             ```sh
-            tar -xzf opencode-*-<platform>.tar.gz
-            chmod +x opencode
-            sudo mv opencode /usr/local/bin/
+            tar -xzf gocode-*-<platform>.tar.gz
+            chmod +x gocode
+            sudo mv gocode /usr/local/bin/
             ```
 
-            **Windows** — rename `opencode-*-windows-x64.exe` to `opencode.exe`
+            **Windows** — rename `gocode-*-windows-x64.exe` to `gocode.exe`
             and put it on your `PATH` (or unzip the archive, which already
             contains it under that name).
 
@@ -275,5 +275,5 @@ jobs:
             On macOS the binaries are unsigned, so Gatekeeper will quarantine
             them on first run:
             ```sh
-            xattr -d com.apple.quarantine opencode
+            xattr -d com.apple.quarantine gocode
             ```

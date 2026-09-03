@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 // TestThinkingConfigSentAndThoughtPartsRouteToReasoning is the regression

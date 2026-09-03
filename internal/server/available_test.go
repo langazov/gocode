@@ -6,8 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 func testCatalog() modelsdev.Catalog {
@@ -38,7 +38,7 @@ func testCatalog() modelsdev.Catalog {
 func isolate(t *testing.T) {
 	t.Helper()
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	t.Setenv("OPENCODE_AUTH_CONTENT", "")
+	t.Setenv("GOCODE_AUTH_CONTENT", "")
 	for _, name := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "CO_API_KEY", "BESPOKE_API_KEY"} {
 		t.Setenv(name, "")
 	}
@@ -89,10 +89,10 @@ func TestConventionalEnvNameIsHonoured(t *testing.T) {
 	}
 }
 
-// source: "api" — anything stored by `opencode auth login`.
+// source: "api" — anything stored by `gocode auth login`.
 func TestStoredAuthMakesAProviderAvailable(t *testing.T) {
 	isolate(t)
-	t.Setenv("OPENCODE_AUTH_CONTENT", `{"openai":{"type":"api","key":"sk-stored"}}`)
+	t.Setenv("GOCODE_AUTH_CONTENT", `{"openai":{"type":"api","key":"sk-stored"}}`)
 
 	got := availabilityOf(t, nil)
 	if !got["openai"] {
@@ -105,7 +105,7 @@ func TestStoredAuthMakesAProviderAvailable(t *testing.T) {
 
 func TestStoredOAuthMakesAProviderAvailable(t *testing.T) {
 	isolate(t)
-	t.Setenv("OPENCODE_AUTH_CONTENT",
+	t.Setenv("GOCODE_AUTH_CONTENT",
 		`{"anthropic":{"type":"oauth","access":"tok","refresh":"r","expires":99999999999999}}`)
 	if !availabilityOf(t, nil)["anthropic"] {
 		t.Fatal("an oauth entry should make the provider available")

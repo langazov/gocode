@@ -5,9 +5,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/db"
-	"github.com/anomalyco/opencode-go/internal/id"
-	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/id"
+	"github.com/langazov/gocode-go/internal/permission"
 )
 
 // SavedPermissions persists "always" replies to the permission table, porting

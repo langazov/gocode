@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/db"
 )
 
 var testDef = Definition{

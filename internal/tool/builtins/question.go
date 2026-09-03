@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/question"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/question"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // Asker is the seam the question tool needs. internal/question does not

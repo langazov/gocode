@@ -7,7 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // customProviderID ports CUSTOM_PROVIDER_ID in dialog-provider.tsx.
@@ -116,8 +116,8 @@ func (a *App) promptCustomProvider() tea.Msg {
 			}
 		}
 		// This only stores a credential; the provider itself still has to be
-		// described in opencode.json. Same caveat the original prints.
-		return a.promptAPIKey(id, id+" (configure the provider in opencode.json to use it)")
+		// described in gocode.json. Same caveat the original prints.
+		return a.promptAPIKey(id, id+" (configure the provider in gocode.json to use it)")
 	})
 	return nil
 }

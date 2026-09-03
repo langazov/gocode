@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/event"
-	"github.com/anomalyco/opencode-go/internal/id"
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/id"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 // errContextOverflow signals that a provider turn failed because the context

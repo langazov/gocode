@@ -13,7 +13,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/anomalyco/opencode-go/internal/id"
+	"github.com/langazov/gocode-go/internal/id"
 )
 
 // ErrRejected reports a question the user declined to answer.

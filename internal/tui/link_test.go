@@ -8,7 +8,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/anomalyco/opencode-go/internal/tui/theme"
+	"github.com/langazov/gocode-go/internal/tui/theme"
 )
 
 // These tests cover the ui/spinner.ts, ui/toast.tsx, and ui/link.tsx ports:

@@ -5,10 +5,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/llm/anthropic"
-	"github.com/anomalyco/opencode-go/internal/llm/gemini"
-	"github.com/anomalyco/opencode-go/internal/llm/openai"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm/anthropic"
+	"github.com/langazov/gocode-go/internal/llm/gemini"
+	"github.com/langazov/gocode-go/internal/llm/openai"
 )
 
 // These tests capture the request body each client actually sends, because an

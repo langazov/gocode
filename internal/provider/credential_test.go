@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // writeAuth isolates the credential store to this test and seeds it.
@@ -18,12 +18,12 @@ func writeAuth(t *testing.T, entries map[string]any) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dir)
-	t.Setenv("OPENCODE_AUTH_CONTENT", "")
+	t.Setenv("GOCODE_AUTH_CONTENT", "")
 	payload, err := json.Marshal(entries)
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "opencode")
+	path := filepath.Join(dir, "gocode")
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
 	}

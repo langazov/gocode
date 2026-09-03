@@ -1,8 +1,8 @@
 package session
 
 import (
-	"github.com/anomalyco/opencode-go/internal/agent"
-	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/agent"
+	"github.com/langazov/gocode-go/internal/permission"
 )
 
 // SubagentDeniedTools are the tools a subagent may not use unless its own

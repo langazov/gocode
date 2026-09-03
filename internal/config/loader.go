@@ -6,8 +6,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/anomalyco/opencode-go/internal/configpaths"
-	"github.com/anomalyco/opencode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/configpaths"
+	"github.com/langazov/gocode-go/internal/global"
 )
 
 // Source records one config file consulted during Load, in merge order
@@ -22,11 +22,11 @@ type Source struct {
 // LoadTraced merges every config source in the TypeScript order and returns
 // the result together with the trace of consulted files:
 //
-//  1. global config.json -> opencode.json -> opencode.jsonc (errors tolerated)
-//  2. OPENCODE_CONFIG file
-//  3. project opencode.json(c) discovered upward to the worktree root
-//  4. .opencode dirs and OPENCODE_CONFIG_DIR: opencode.json, opencode.jsonc
-//  5. OPENCODE_CONFIG_CONTENT inline override
+//  1. global config.json -> gocode.json -> gocode.jsonc (errors tolerated)
+//  2. GOCODE_CONFIG file
+//  3. project gocode.json(c) discovered upward to the worktree root
+//  4. .gocode dirs and GOCODE_CONFIG_DIR: gocode.json, gocode.jsonc
+//  5. GOCODE_CONFIG_CONTENT inline override
 func LoadTraced() (*Config, []Source, error) {
 	merged := map[string]any{}
 	var sources []Source
@@ -54,38 +54,38 @@ func LoadTraced() (*Config, []Source, error) {
 		}
 	}
 	mergeContent := func(text, kind string) {
-		sources = append(sources, Source{Path: "OPENCODE_CONFIG_CONTENT", Kind: kind, Found: true})
+		sources = append(sources, Source{Path: "GOCODE_CONFIG_CONTENT", Kind: kind, Found: true})
 		if err := mergeText(merged, text, ""); err != nil {
 			sources[len(sources)-1].Error = err.Error()
 		}
 	}
 
-	for _, name := range []string{"config.json", "opencode.json", "opencode.jsonc"} {
+	for _, name := range []string{"config.json", "gocode.json", "gocode.jsonc"} {
 		mergeFile(filepath.Join(global.Resolve().Config, name), "global", true)
 	}
 
-	if path := os.Getenv("OPENCODE_CONFIG"); path != "" {
+	if path := os.Getenv("GOCODE_CONFIG"); path != "" {
 		mergeFile(path, "env-file", false)
 	}
 
 	if !disableProjectConfig() {
 		directory, _ := os.Getwd()
 		worktree := configpaths.Worktree(directory)
-		for _, file := range configpaths.Files("opencode", directory, worktree) {
+		for _, file := range configpaths.Files("gocode", directory, worktree) {
 			mergeFile(file, "project", false)
 		}
 		dirs := configpaths.Directories(directory, worktree)
 		for _, dir := range dirs {
-			if filepath.Base(dir) != ".opencode" && dir != os.Getenv("OPENCODE_CONFIG_DIR") {
+			if filepath.Base(dir) != ".gocode" && dir != os.Getenv("GOCODE_CONFIG_DIR") {
 				continue
 			}
-			for _, name := range []string{"opencode.json", "opencode.jsonc"} {
+			for _, name := range []string{"gocode.json", "gocode.jsonc"} {
 				mergeFile(filepath.Join(dir, name), "project-dir", false)
 			}
 		}
 	}
 
-	if content := os.Getenv("OPENCODE_CONFIG_CONTENT"); content != "" {
+	if content := os.Getenv("GOCODE_CONFIG_CONTENT"); content != "" {
 		mergeContent(content, "content")
 	}
 
@@ -132,6 +132,6 @@ func mergeText(merged map[string]any, text string, configDir string) error {
 }
 
 func disableProjectConfig() bool {
-	value := os.Getenv("OPENCODE_DISABLE_PROJECT_CONFIG")
+	value := os.Getenv("GOCODE_DISABLE_PROJECT_CONFIG")
 	return value == "true" || value == "1"
 }

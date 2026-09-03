@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/installation"
+	"github.com/langazov/gocode-go/internal/installation"
 )
 
 func openTemp(t *testing.T) *DB {
@@ -89,29 +89,29 @@ func TestLegacyDrizzleJournalSeeding(t *testing.T) {
 func TestPathFlagAndChannel(t *testing.T) {
 	data := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", data)
-	t.Setenv("OPENCODE_DB", "")
-	t.Setenv("OPENCODE_DISABLE_CHANNEL_DB", "")
+	t.Setenv("GOCODE_DB", "")
+	t.Setenv("GOCODE_DISABLE_CHANNEL_DB", "")
 
 	installation.Channel = "latest"
-	if got := Path(); got != filepath.Join(data, "opencode", "opencode.db") {
+	if got := Path(); got != filepath.Join(data, "gocode", "gocode.db") {
 		t.Fatalf("unexpected path for latest channel: %s", got)
 	}
 
 	installation.Channel = "dev/feature"
-	if got := Path(); got != filepath.Join(data, "opencode", "opencode-dev-feature.db") {
+	if got := Path(); got != filepath.Join(data, "gocode", "gocode-dev-feature.db") {
 		t.Fatalf("unexpected sanitized channel path: %s", got)
 	}
 	installation.Channel = "local"
 
-	t.Setenv("OPENCODE_DB", "custom.db")
-	if got := Path(); got != filepath.Join(data, "opencode", "custom.db") {
-		t.Fatalf("unexpected OPENCODE_DB relative path: %s", got)
+	t.Setenv("GOCODE_DB", "custom.db")
+	if got := Path(); got != filepath.Join(data, "gocode", "custom.db") {
+		t.Fatalf("unexpected GOCODE_DB relative path: %s", got)
 	}
-	t.Setenv("OPENCODE_DB", ":memory:")
+	t.Setenv("GOCODE_DB", ":memory:")
 	if got := Path(); got != ":memory:" {
 		t.Fatalf("expected :memory:, got %s", got)
 	}
-	t.Setenv("OPENCODE_DB", "/abs/path.db")
+	t.Setenv("GOCODE_DB", "/abs/path.db")
 	if got := Path(); got != "/abs/path.db" {
 		t.Fatalf("expected absolute passthrough, got %s", got)
 	}

@@ -10,7 +10,7 @@ import (
 	"net/http"
 	"net/url"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/auth"
 )
 
 func init() {
@@ -216,7 +216,7 @@ func randomURLSafe(size int) (string, error) {
 func respondCallback(w http.ResponseWriter, status int, message string) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.WriteHeader(status)
-	fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>opencode</title>"+
+	fmt.Fprintf(w, "<!doctype html><meta charset=utf-8><title>gocode</title>"+
 		"<body style=\"font:16px system-ui;padding:3rem;text-align:center\"><p>%s</p></body>", message)
 }
 

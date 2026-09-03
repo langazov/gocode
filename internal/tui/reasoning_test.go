@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 func assistantWithReasoning(t *testing.T, json_ string) client.AssistantData {
@@ -60,7 +60,7 @@ func TestNextThinkingMode(t *testing.T) {
 }
 
 func TestReasoningBlockRunningShowsSpinnerAndTitle(t *testing.T) {
-	app := &App{width: 100, height: 30, busy: true, theme: themeResolve("opencode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
+	app := &App{width: 100, height: 30, busy: true, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
 	data := assistantWithReasoning(t, `{"agent":"build","content":[{"type":"reasoning","id":"r1","text":"**Investigating**\n\nlooking into it"}]}`)
 	block, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, true)
 	got := plain(block)
@@ -73,7 +73,7 @@ func TestReasoningBlockRunningShowsSpinnerAndTitle(t *testing.T) {
 }
 
 func TestReasoningBlockCollapsedByDefault(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
 		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
 	]}`)
@@ -91,7 +91,7 @@ func TestReasoningBlockCollapsedByDefault(t *testing.T) {
 }
 
 func TestReasoningBlockExpandedShowsBodyWithExtraIndent(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{"r1": true}}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{"r1": true}}
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
 		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
 	]}`)
@@ -115,7 +115,7 @@ func TestReasoningBlockExpandedShowsBodyWithExtraIndent(t *testing.T) {
 }
 
 func TestReasoningBlockShowModeAlwaysOpenNoPrefix(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark"), thinkingMode: "show", expandedReasoning: map[string]bool{}}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "show", expandedReasoning: map[string]bool{}}
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
 		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
 	]}`)
@@ -141,7 +141,7 @@ func TestReasoningBlockShowModeAlwaysOpenNoPrefix(t *testing.T) {
 }
 
 func TestReasoningBlockRedactedPlaceholderStripped(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[{"type":"reasoning","id":"r1","text":"[REDACTED]"}]}`)
 	block, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
 	if block != "" && strings.Contains(block, "Thought") {
@@ -155,7 +155,7 @@ func TestReasoningBlockRedactedPlaceholderStripped(t *testing.T) {
 // into the full timeline (spacer row + per-message blank-line separators),
 // not just within reasoningBlock's own isolated output.
 func TestBuildTimelineLocatesReasoningHeaderRow(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
 	app.timeline = []client.Message{
 		{ID: "m1", Type: "assistant", Data: json.RawMessage(`{"agent":"build","finish":"end_turn","content":[
 			{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
@@ -244,7 +244,7 @@ func TestThinkingSlashCommandCyclesMode(t *testing.T) {
 // warning brightness while collapsed — inverted from what you'd expect, but
 // that's the original's exact behavior.
 func TestReasoningHeaderColorFadesOnceOpen(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[{"type":"reasoning","id":"r1","text":"plain body","time":{"created":1000,"completed":1500}}]}`)
 
 	closedBlock, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)

@@ -4,9 +4,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // Provider availability, ported from `Provider.list()` in
@@ -87,7 +87,7 @@ func (p providerAvailability) available(providerID string, entry modelsdev.Provi
 			return true
 		}
 	}
-	// source: "api" — anything stored by `opencode auth login`, including the
+	// source: "api" — anything stored by `gocode auth login`, including the
 	// oauth entries the console flow writes.
 	if _, ok := p.auths[providerID]; ok {
 		return true

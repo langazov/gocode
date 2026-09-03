@@ -5,13 +5,13 @@
 #
 # This is the Go analogue of packages/opencode/script/generate.ts, which
 # fetches the same document at build time and bakes it into the JS bundle as
-# the OPENCODE_MODELS_DEV define. The difference is that the snapshot is
+# the GOCODE_MODELS_DEV define. The difference is that the snapshot is
 # checked in here rather than fetched during every build, so a build never
 # depends on models.dev being reachable — run this script to refresh it.
 #
 # Usage:
 #   script/generate-catalog.sh                    # fetch from models.dev
-#   OPENCODE_MODELS_URL=http://localhost:3000 \
+#   GOCODE_MODELS_URL=http://localhost:3000 \
 #     script/generate-catalog.sh                  # fetch from a mirror
 #   MODELS_DEV_API_JSON=/path/to/api.json \
 #     script/generate-catalog.sh                  # use a local file
@@ -19,7 +19,7 @@ set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 out="$root/internal/modelsdev/catalog.json.gz"
-source_url="${OPENCODE_MODELS_URL:-https://models.dev}/api.json"
+source_url="${GOCODE_MODELS_URL:-https://models.dev}/api.json"
 
 tmp="$(mktemp)"
 trap 'rm -f "$tmp"' EXIT

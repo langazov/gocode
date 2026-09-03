@@ -5,8 +5,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/anomalyco/opencode-go/internal/command"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/command"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 func slashApp(t *testing.T) *App {

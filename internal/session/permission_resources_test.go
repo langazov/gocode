@@ -3,10 +3,10 @@ package session
 import (
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/permission"
-	"github.com/anomalyco/opencode-go/internal/tool"
-	"github.com/anomalyco/opencode-go/internal/tool/builtins"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/tool/builtins"
 )
 
 // TestPermissionResourcesMatchTheToolInput pins the field each tool's

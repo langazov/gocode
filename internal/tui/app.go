@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/command"
-	"github.com/anomalyco/opencode-go/internal/global"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
-	"github.com/anomalyco/opencode-go/internal/tui/theme"
+	"github.com/langazov/gocode-go/internal/command"
+	"github.com/langazov/gocode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/theme"
 
 	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
@@ -269,7 +269,7 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 		contextLimits:     map[string]int{},
 		modelCosts:        map[string]float64{},
 		history:           loadPromptHistory(filepath.Join(global.Resolve().State, promptHistoryFile)),
-		windowTitle:       "OpenCode",
+		windowTitle:       "GoCode",
 		thinkingMode:      "hide",
 		expandedReasoning: map[string]bool{},
 	}
@@ -288,7 +288,7 @@ func (a *App) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
-// desiredWindowTitle mirrors app.tsx's terminal-title effect: "OpenCode" on
+// desiredWindowTitle mirrors app.tsx's terminal-title effect: "GoCode" on
 // the home route or while a session's title is still its creation
 // placeholder, else "OC | <title>" (truncated at 40 chars). TS's default-
 // title check is a regex over its own "New session - <ISO time>" format;
@@ -296,11 +296,11 @@ func (a *App) Init() tea.Cmd {
 // internal/session/service.go), so the check is against that.
 func (a *App) desiredWindowTitle() string {
 	if a.view != viewChat || a.active == nil {
-		return "OpenCode"
+		return "GoCode"
 	}
 	title := strings.TrimSpace(a.active.Title)
 	if title == "" || title == filepath.Base(a.active.Directory) {
-		return "OpenCode"
+		return "GoCode"
 	}
 	if len(title) > 40 {
 		title = title[:37] + "..."

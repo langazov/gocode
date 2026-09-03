@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/skill"
+	"github.com/langazov/gocode-go/internal/skill"
 )
 
 func newSkillFixture(t *testing.T) (*SkillTool, *skill.Registry, string) {

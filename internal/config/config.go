@@ -1,4 +1,4 @@
-// Package config ports the opencode configuration system
+// Package config ports the gocode configuration system
 // (packages/core/src/v1/config + packages/opencode/src/config): JSONC config
 // files, TS merge order, and typed access for the runtime.
 package config

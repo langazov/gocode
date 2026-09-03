@@ -5,7 +5,7 @@ import (
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // This file ports packages/tui/src/component/dialog-model.tsx and
@@ -36,7 +36,7 @@ var providerBlurb = map[string]string{
 
 // customProviderValue marks the "Other" row, ported from
 // CUSTOM_PROVIDER_OPTION_VALUE.
-const customProviderValue = "__opencode_custom_provider__"
+const customProviderValue = "__gocode_custom_provider__"
 
 // connected ports useConnected(): the user has a provider beyond the free
 // opencode tier — either a different provider entirely, or a paid opencode

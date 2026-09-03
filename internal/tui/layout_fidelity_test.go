@@ -6,8 +6,8 @@ import (
 	"testing"
 
 	"charm.land/lipgloss/v2"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // These tests guard the additional session-view fidelity fixes: the
@@ -85,7 +85,7 @@ func firstOrEmpty(lines []string) string {
 }
 
 func TestFileAttachmentPillsRenderNameAndKind(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark")}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark")}
 	message := client.Message{ID: "m1", Type: "user"}
 	data := client.UserData{
 		Text: "see attached",
@@ -235,24 +235,24 @@ func TestSidebarFooterShowsPathAndVersion(t *testing.T) {
 	if !strings.Contains(view, "~/project") {
 		t.Fatalf("sidebar footer should show the abbreviated path, got:\n%s", view)
 	}
-	if !strings.Contains(view, "OpenCode") {
-		t.Fatalf("sidebar footer should still show the OpenCode version line, got:\n%s", view)
+	if !strings.Contains(view, "GoCode") {
+		t.Fatalf("sidebar footer should still show the GoCode version line, got:\n%s", view)
 	}
 }
 
 // --- window title -----------------------------------------------------------
 
-func TestWindowTitleHomeIsPlainOpenCode(t *testing.T) {
+func TestWindowTitleHomeIsPlainGoCode(t *testing.T) {
 	app := &App{view: viewHome}
-	if got := app.desiredWindowTitle(); got != "OpenCode" {
-		t.Fatalf("home window title = %q, want %q", got, "OpenCode")
+	if got := app.desiredWindowTitle(); got != "GoCode" {
+		t.Fatalf("home window title = %q, want %q", got, "GoCode")
 	}
 }
 
-func TestWindowTitlePlaceholderSessionIsPlainOpenCode(t *testing.T) {
+func TestWindowTitlePlaceholderSessionIsPlainGoCode(t *testing.T) {
 	app := &App{view: viewChat, active: &client.Session{Title: "go", Directory: "/x/go"}}
-	if got := app.desiredWindowTitle(); got != "OpenCode" {
-		t.Fatalf("placeholder-titled session window title = %q, want %q", got, "OpenCode")
+	if got := app.desiredWindowTitle(); got != "GoCode" {
+		t.Fatalf("placeholder-titled session window title = %q, want %q", got, "GoCode")
 	}
 }
 
@@ -276,7 +276,7 @@ func TestWindowTitleTruncatesLongTitles(t *testing.T) {
 }
 
 func TestSyncWindowTitleOnlyReportsRealChanges(t *testing.T) {
-	app := &App{view: viewHome, windowTitle: "OpenCode"}
+	app := &App{view: viewHome, windowTitle: "GoCode"}
 	if _, changed := app.syncWindowTitle(); changed {
 		t.Fatalf("syncWindowTitle reported a change when the title didn't move")
 	}
@@ -289,7 +289,7 @@ func TestSyncWindowTitleOnlyReportsRealChanges(t *testing.T) {
 }
 
 func TestFileAttachmentPillsWrapAtWidth(t *testing.T) {
-	app := &App{width: 100, height: 30, theme: themeResolve("opencode-dark")}
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark")}
 	files := []client.FileAttachment{
 		{Mime: "text/plain", Name: "aaaaaaaaaaaaaaaaaaaa"},
 		{Mime: "text/plain", Name: "bbbbbbbbbbbbbbbbbbbb"},

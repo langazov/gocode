@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/tool"
-	"github.com/anomalyco/opencode-go/internal/tool/builtins"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/tool/builtins"
 )
 
 // TestRunnerEndToEndWithBuiltins drives the full durable loop with a real

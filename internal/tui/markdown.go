@@ -4,7 +4,7 @@ import (
 	"image/color"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/tui/theme"
+	"github.com/langazov/gocode-go/internal/tui/theme"
 
 	"charm.land/glamour/v2"
 	"charm.land/glamour/v2/ansi"

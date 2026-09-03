@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/agent"
-	"github.com/anomalyco/opencode-go/internal/llm"
-	"github.com/anomalyco/opencode-go/internal/permission"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/agent"
+	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // gatedProvider serves a scripted turn per session, blocking each session's

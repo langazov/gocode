@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/permission"
 )
 
 func TestParseAgentMarkdown(t *testing.T) {
@@ -68,7 +68,7 @@ func TestParseAgentMarkdownDefaultsMode(t *testing.T) {
 }
 
 // TestParseAgentMarkdownPermissions checks that frontmatter permissions go
-// through the same decoder as opencode.json rather than a parallel one.
+// through the same decoder as gocode.json rather than a parallel one.
 func TestParseAgentMarkdownPermissions(t *testing.T) {
 	parsed, err := ParseAgentMarkdown("/tmp/locked.md", strings.Join([]string{
 		"---",

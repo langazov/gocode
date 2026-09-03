@@ -3,8 +3,8 @@ package session
 import (
 	"context"
 
-	"github.com/anomalyco/opencode-go/internal/agent"
-	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/agent"
+	"github.com/langazov/gocode-go/internal/permission"
 )
 
 // EnginePermissionGate adapts a permission.Engine to the Runner's

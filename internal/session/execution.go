@@ -6,7 +6,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/anomalyco/opencode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/db"
 )
 
 // SessionRunner drains eligible durable work for one session. It mirrors

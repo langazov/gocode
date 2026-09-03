@@ -36,7 +36,7 @@ func LogBackground(format string, args ...any) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return
 	}
-	file, err := os.OpenFile(filepath.Join(dir, "opencode.log"),
+	file, err := os.OpenFile(filepath.Join(dir, "gocode.log"),
 		os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 	if err != nil {
 		return

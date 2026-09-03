@@ -7,7 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 func settledAssistant(t *testing.T, id, text string) client.Message {
@@ -62,7 +62,7 @@ func TestRenderCacheInvalidatesOnEveryRenderInput(t *testing.T) {
 		{"message data", func(a *App) {
 			a.timeline[0] = settledAssistant(t, "m1", "## One\n\nedited")
 		}},
-		{"theme", func(a *App) { a.theme = themeResolve("opencode-light"); a.invalidateRenderCache() }},
+		{"theme", func(a *App) { a.theme = themeResolve("gocode-light"); a.invalidateRenderCache() }},
 		{"thinking mode", func(a *App) { a.thinkingMode = "show"; a.invalidateRenderCache() }},
 		{"model catalog", func(a *App) {
 			a.modelNames = map[string]string{"anthropic/claude": "Claude"}

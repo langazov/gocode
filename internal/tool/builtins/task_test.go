@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/background"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/background"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // stubSpawner records spawns and hands each one a channel the test controls.
@@ -129,7 +129,7 @@ func TestTaskToolRejectsBackgroundWhenDisabled(t *testing.T) {
 	task := NewTaskTool(newStubSpawner())
 	_, err := task.ExecuteWithContext(context.Background(),
 		taskInput(map[string]any{"background": true}), taskExec)
-	if err == nil || !strings.Contains(err.Error(), "OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS") {
+	if err == nil || !strings.Contains(err.Error(), "GOCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS") {
 		t.Fatalf("expected background mode to be gated, got %v", err)
 	}
 }

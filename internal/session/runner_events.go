@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/event"
 )
 
 // Durable runner events, mirroring the Step and Tool namespaces in

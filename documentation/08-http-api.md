@@ -8,7 +8,7 @@ The API is the only entry to the core. The TUI uses nothing else, so anything
 the TUI can do, a script can do.
 
 ```sh
-opencode serve --port 4096
+gocode serve --port 4096
 ```
 
 Binds `127.0.0.1` by default. `--hostname 0.0.0.0` exposes it —

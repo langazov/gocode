@@ -11,14 +11,14 @@ Go 1.27+ and nothing else. No code generation, no protobuf, no C toolchain.
 ```sh
 git clone https://github.com/langazov/gocode
 cd gocode
-make build && ./opencode --version
+make build && ./gocode --version
 ```
 
 ## Make targets
 
 | Target | Does |
 |---|---|
-| `build` | `./opencode`, version from `git describe` |
+| `build` | `./gocode`, version from `git describe` |
 | `run` | build and run |
 | `install` | into `$GOPATH/bin` |
 | `test` | the full suite |
@@ -39,7 +39,7 @@ run means a green CI run.
 Version and channel are injected into `internal/installation`:
 
 ```make
-VERSION_PKG := github.com/anomalyco/opencode-go/internal/installation
+VERSION_PKG := github.com/langazov/gocode-go/internal/installation
 LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION)
 ```
 
@@ -73,7 +73,7 @@ go test -race ./...                             # what CI runs
   ```
   A year later that comment is what tells you whether the test still matters.
 - **Fixtures are pinned.** `testCatalog(t)` pins a models.dev fixture via
-  `OPENCODE_MODELS_PATH` — a real bug hid here, where a test passed only
+  `GOCODE_MODELS_PATH` — a real bug hid here, where a test passed only
   because the catalog was empty, and a populated one let a developer's real
   `GITHUB_TOKEN` become a fallback candidate.
 
@@ -190,7 +190,7 @@ don't collide with the published site.
 | A provider | config first; a transform only if it needs structure ([Providers](04-providers.md)) |
 | An LSP server | `internal/lsp/servers.go`, or config |
 | An API route | `internal/server/server.go` `Mux()` |
-| A slash command | `.opencode/command/*.md` — no Go needed |
+| A slash command | `.gocode/command/*.md` — no Go needed |
 | A durable event | define it, register a projector, **then** publish it |
 
 That last one has an order that matters: an event published with no registered

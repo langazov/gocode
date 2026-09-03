@@ -28,7 +28,7 @@ import (
 
 	"charm.land/lipgloss/v2"
 
-	"github.com/anomalyco/opencode-go/internal/tui/theme"
+	"github.com/langazov/gocode-go/internal/tui/theme"
 )
 
 // createFrames' defaults (width 8, trailSteps 6, holdStart 30, holdEnd 9) plus

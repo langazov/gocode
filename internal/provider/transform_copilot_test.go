@@ -10,7 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // copilotAuth writes an auth.json holding a Copilot OAuth entry, isolated to
@@ -19,12 +19,12 @@ func copilotAuth(t *testing.T, entry map[string]any) {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dir)
-	t.Setenv("OPENCODE_AUTH_CONTENT", "")
+	t.Setenv("GOCODE_AUTH_CONTENT", "")
 	payload, err := json.Marshal(map[string]any{"github-copilot": entry})
 	if err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, "opencode")
+	path := filepath.Join(dir, "gocode")
 	if err := os.MkdirAll(path, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -358,7 +358,7 @@ func HelpRequested(argv []string) bool {
 
 // ResolveForHelp walks argv the same way dispatch does, without running any
 // handler, and returns the deepest command reached plus the path to it. Used
-// to print contextual help for "opencode <sub> ... --help".
+// to print contextual help for "gocode <sub> ... --help".
 func ResolveForHelp(root *Command, argv []string) (*Command, []string) {
 	cmd := root
 	path := []string{root.Name}

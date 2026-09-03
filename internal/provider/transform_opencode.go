@@ -9,8 +9,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 func init() {
@@ -95,7 +95,7 @@ func zenServer(info *auth.Info) string {
 			return server
 		}
 	}
-	if server := os.Getenv("OPENCODE_CONSOLE_SERVER"); server != "" {
+	if server := os.Getenv("GOCODE_CONSOLE_SERVER"); server != "" {
 		return server
 	}
 	return zenDefaultServer

@@ -3,7 +3,7 @@ package provider
 import (
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 func strPtr(s string) *string   { return &s }

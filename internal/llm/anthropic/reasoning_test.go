@@ -3,7 +3,7 @@ package anthropic
 import (
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 // TestConvertRequestAppliesThinking is the regression for "I can't see

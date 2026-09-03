@@ -6,9 +6,9 @@ import (
 	"path/filepath"
 	"regexp"
 
-	"github.com/anomalyco/opencode-go/internal/flag"
-	"github.com/anomalyco/opencode-go/internal/global"
-	"github.com/anomalyco/opencode-go/internal/installation"
+	"github.com/langazov/gocode-go/internal/flag"
+	"github.com/langazov/gocode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/installation"
 )
 
 var channelSanitizer = regexp.MustCompile(`[^a-zA-Z0-9._-]`)
@@ -24,13 +24,13 @@ func Path() string {
 	data := global.Resolve().Data
 	switch installation.Channel {
 	case "latest", "beta", "prod":
-		return filepath.Join(data, "opencode.db")
+		return filepath.Join(data, "gocode.db")
 	}
-	if v := os.Getenv("OPENCODE_DISABLE_CHANNEL_DB"); v == "1" || v == "true" {
-		return filepath.Join(data, "opencode.db")
+	if v := os.Getenv("GOCODE_DISABLE_CHANNEL_DB"); v == "1" || v == "true" {
+		return filepath.Join(data, "gocode.db")
 	}
 	channel := channelSanitizer.ReplaceAllString(installation.Channel, "-")
-	return filepath.Join(data, "opencode-"+channel+".db")
+	return filepath.Join(data, "gocode-"+channel+".db")
 }
 
 // OpenDefault opens the database at Path() and applies migrations.

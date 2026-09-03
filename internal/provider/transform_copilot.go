@@ -10,9 +10,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/auth"
-	"github.com/anomalyco/opencode-go/internal/installation"
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/installation"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 func init() {
@@ -148,7 +148,7 @@ func InvalidateModelCaches() {
 	copilotModelCache.invalidate()
 }
 
-// AuthMethods advertises the device flow, so `opencode providers login`
+// AuthMethods advertises the device flow, so `gocode providers login`
 // offers it instead of only asking for a pasted key.
 func (copilotTransform) AuthMethods() []Method {
 	return []Method{{

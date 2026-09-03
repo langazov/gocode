@@ -4,7 +4,7 @@ import (
 	"context"
 	"sort"
 
-	"github.com/anomalyco/opencode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 // Transform adjusts a Resolved provider for quirks the models.dev catalog
@@ -221,7 +221,7 @@ func (r *Resolved) LiveModels(ctx context.Context) map[string]modelsdev.Model {
 }
 
 // TransformedProviders lists the provider ids that have a dedicated transform,
-// for `opencode debug providers` and tests. Ids come from idMatcher-based
+// for `gocode debug providers` and tests. Ids come from idMatcher-based
 // transforms only, since a transform matching on npm package covers an
 // open-ended set.
 func TransformedProviders() []string {

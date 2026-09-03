@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/permission"
 )
 
 func newPermissionServer(t *testing.T) (*Server, *permission.Engine) {

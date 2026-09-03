@@ -16,8 +16,8 @@ import (
 	sdkauth "github.com/modelcontextprotocol/go-sdk/auth"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/anomalyco/opencode-go/internal/global"
-	"github.com/anomalyco/opencode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 // defaultTimeout mirrors DEFAULT_TIMEOUT in mcp/index.ts — the code
@@ -73,10 +73,10 @@ type Service struct {
 	reconnectMaxBackoff time.Duration
 }
 
-// NewService creates the shared MCP client identity ("opencode", matching
+// NewService creates the shared MCP client identity ("gocode", matching
 // createClient in index.ts) and registers directory as the sole root.
 func NewService(directory string) *Service {
-	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "opencode", Version: "0.1.0"}, nil)
+	client := sdkmcp.NewClient(&sdkmcp.Implementation{Name: "gocode", Version: "0.1.0"}, nil)
 	client.AddRoots(&sdkmcp.Root{URI: "file://" + directory})
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	return &Service{
@@ -523,7 +523,7 @@ func (s *Service) RegisterTools(registry *tool.Registry) {
 
 // Authenticate mirrors authenticate() in index.ts: a full interactive
 // reconnect (opens a browser, waits for the OAuth redirect, then
-// reconnects and re-lists tools), used by `opencode mcp auth <name>`.
+// reconnects and re-lists tools), used by `gocode mcp auth <name>`.
 func (s *Service) Authenticate(ctx context.Context, name string, cfg ServerConfig, onAuthURL func(string)) (Status, error) {
 	if cfg.Type != "remote" {
 		return Status{}, fmt.Errorf("mcp server %s is not a remote server", name)

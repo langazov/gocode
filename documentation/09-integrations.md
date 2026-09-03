@@ -160,8 +160,8 @@ being refreshed again on every start.
 ### Connection lifecycle
 
 Servers are connected at boot and **reconnected with backoff** on failure. A
-dead MCP server degrades the tool set; it does not stop opencode from starting.
-`GET /api/mcp` and `opencode mcp` report status.
+dead MCP server degrades the tool set; it does not stop gocode from starting.
+`GET /api/mcp` and `gocode mcp` report status.
 
 ## Skills
 
@@ -169,7 +169,7 @@ Adjacent to both: **skills** are markdown files describing a capability, loaded
 on demand by the `skill` tool rather than sitting in the system prompt.
 
 ```
-.opencode/skill/deploy.md
+.gocode/skill/deploy.md
 ```
 
 Discovered by `skill.Discover` and also exposed as slash commands — a skill

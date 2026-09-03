@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 const DefaultBaseURL = "https://api.openai.com/v1"
@@ -398,7 +398,7 @@ type streamChunk struct {
 		Delta struct {
 			Content string `json:"content"`
 			// Reasoning field name is not standardized across
-			// openai-compatible backends; TS's opencode reads whichever of
+			// openai-compatible backends; TS's gocode reads whichever of
 			// these three is present (reasoning | reasoning_content |
 			// reasoning_text).
 			Reasoning        string `json:"reasoning"`

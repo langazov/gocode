@@ -14,8 +14,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/anomalyco/opencode-go/internal/tui/client"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 type renameCall struct {
@@ -164,9 +164,9 @@ func newTestApp(t *testing.T, baseURL string) *App {
 	t.Helper()
 	// Isolate prompt-history.jsonl reads/writes (New loads it from
 	// global.Resolve().State) so tests never touch the real machine's
-	// opencode state directory.
+	// gocode state directory.
 	t.Setenv("XDG_STATE_HOME", filepath.Join(t.TempDir(), "state"))
-	app := New(context.Background(), client.New(baseURL), "opencode-dark")
+	app := New(context.Background(), client.New(baseURL), "gocode-dark")
 	app.width, app.height = 100, 30
 	return app
 }
@@ -225,7 +225,7 @@ func openSession(t *testing.T, app *App) {
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 }
 
-// TestResumeSessionOpensChatView is the regression for "./opencode -s
+// TestResumeSessionOpensChatView is the regression for "./gocode -s
 // <sessionID> doesn't resume the session": RunOptions.SessionID must open
 // straight into that session's chat view instead of the home screen. Drives
 // resumeSessionCmd directly (rather than the full Init() batch) to avoid the
@@ -719,7 +719,7 @@ func TestPageScrolling(t *testing.T) {
 // renders frames, and quits — catching startup/render panics.
 func TestHeadlessProgramRun(t *testing.T) {
 	_, server := newMockAPI(t)
-	app := New(context.Background(), client.New(server.URL), "opencode-dark")
+	app := New(context.Background(), client.New(server.URL), "gocode-dark")
 	p := tea.NewProgram(program{app: app}, tea.WithInput(nil), tea.WithOutput(io.Discard))
 	done := make(chan error, 1)
 	go func() {

@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/llm"
 )
 
 const DefaultBaseURL = "https://generativelanguage.googleapis.com/v1beta"

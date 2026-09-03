@@ -14,7 +14,7 @@ const (
 	maxWebFetchBytes    = 5 * 1024 * 1024
 	defaultWebFetchSecs = 30
 	maxWebFetchTimeout  = 120
-	webFetchUserAgent   = "opencode-go/1.0"
+	webFetchUserAgent   = "gocode-go/1.0"
 )
 
 type WebFetchTool struct {

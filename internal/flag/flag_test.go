@@ -24,33 +24,33 @@ func TestTruthy(t *testing.T) {
 }
 
 func TestClientDefault(t *testing.T) {
-	t.Setenv("OPENCODE_CLIENT", "")
+	t.Setenv("GOCODE_CLIENT", "")
 	if got := Client(); got != "cli" {
 		t.Fatalf("expected cli, got %s", got)
 	}
-	t.Setenv("OPENCODE_CLIENT", "tui")
+	t.Setenv("GOCODE_CLIENT", "tui")
 	if got := Client(); got != "tui" {
 		t.Fatalf("expected tui, got %s", got)
 	}
 }
 
 func TestExperimentalFallback(t *testing.T) {
-	prev, hadPrev := os.LookupEnv("OPENCODE_EXPERIMENTAL_WORKSPACES")
+	prev, hadPrev := os.LookupEnv("GOCODE_EXPERIMENTAL_WORKSPACES")
 	t.Cleanup(func() {
 		if hadPrev {
-			os.Setenv("OPENCODE_EXPERIMENTAL_WORKSPACES", prev)
+			os.Setenv("GOCODE_EXPERIMENTAL_WORKSPACES", prev)
 		} else {
-			os.Unsetenv("OPENCODE_EXPERIMENTAL_WORKSPACES")
+			os.Unsetenv("GOCODE_EXPERIMENTAL_WORKSPACES")
 		}
 	})
 
-	t.Setenv("OPENCODE_EXPERIMENTAL", "true")
-	os.Unsetenv("OPENCODE_EXPERIMENTAL_WORKSPACES")
+	t.Setenv("GOCODE_EXPERIMENTAL", "true")
+	os.Unsetenv("GOCODE_EXPERIMENTAL_WORKSPACES")
 	if !ExperimentalWorkspaces() {
-		t.Fatalf("expected fallback to OPENCODE_EXPERIMENTAL when key unset")
+		t.Fatalf("expected fallback to GOCODE_EXPERIMENTAL when key unset")
 	}
 
-	os.Setenv("OPENCODE_EXPERIMENTAL_WORKSPACES", "false")
+	os.Setenv("GOCODE_EXPERIMENTAL_WORKSPACES", "false")
 	if ExperimentalWorkspaces() {
 		t.Fatalf("explicit false should win over experimental fallback")
 	}

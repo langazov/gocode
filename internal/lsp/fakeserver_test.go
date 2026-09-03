@@ -17,7 +17,7 @@ import (
 // exercises the real spawn, the real pipes and the real Content-Length
 // framing, which is where a client like this actually goes wrong. It stands in
 // for test/fixture/lsp/fake-lsp-server.js on the TypeScript side.
-const fakeServerEnv = "OPENCODE_LSP_FAKE_SERVER"
+const fakeServerEnv = "GOCODE_LSP_FAKE_SERVER"
 
 // TestMain lets the test binary re-exec itself as the fake server.
 func TestMain(m *testing.M) {

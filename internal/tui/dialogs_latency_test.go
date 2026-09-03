@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/anomalyco/opencode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
 // slowServer stands in for a backend that is not instant, and counts the

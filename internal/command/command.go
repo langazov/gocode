@@ -14,9 +14,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/anomalyco/opencode-go/internal/config"
-	"github.com/anomalyco/opencode-go/internal/markdown"
-	"github.com/anomalyco/opencode-go/internal/skill"
+	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/markdown"
+	"github.com/langazov/gocode-go/internal/skill"
 )
 
 // Source records where a command came from, matching the `source` field.

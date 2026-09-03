@@ -6,7 +6,7 @@ import (
 	"sort"
 	"sync"
 
-	"github.com/anomalyco/opencode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/permission"
 )
 
 const DefaultID = "build"
