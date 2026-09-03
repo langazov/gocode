@@ -50,27 +50,26 @@ render() {
 class Gocode < Formula
   desc "Terminal-based AI coding agent"
   homepage "https://github.com/langazov/gocode"
-  version "${version}"
   license "MIT"
 
   on_macos do
     on_arm do
-      url "https://github.com/langazov/gocode/releases/download/v#{version}/gocode-#{version}-macos-arm64.tar.gz"
+      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-macos-arm64.tar.gz"
       sha256 "${macos_arm64}"
     end
     on_intel do
-      url "https://github.com/langazov/gocode/releases/download/v#{version}/gocode-#{version}-macos-x64.tar.gz"
+      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-macos-x64.tar.gz"
       sha256 "${macos_x64}"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/langazov/gocode/releases/download/v#{version}/gocode-#{version}-linux-arm64.tar.gz"
+      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-linux-arm64.tar.gz"
       sha256 "${linux_arm64}"
     end
     on_intel do
-      url "https://github.com/langazov/gocode/releases/download/v#{version}/gocode-#{version}-linux-x64.tar.gz"
+      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-linux-x64.tar.gz"
       sha256 "${linux_x64}"
     end
   end
