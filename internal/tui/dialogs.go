@@ -1424,6 +1424,9 @@ func (a *App) commandsRegistry() []overlayItem {
 		{label: "agent.list", slash: "agents", hint: "Choose agent", category: "Agent", footer: "ctrl+x a", action: func() tea.Msg {
 			return a.agentsOverlay()
 		}},
+		{label: "skill.list", slash: "skills", hint: "Browse skills", category: "System", action: func() tea.Msg {
+			return a.skillsOverlay()
+		}},
 		{label: "theme.list", slash: "themes", hint: "Choose theme", category: "Theme", footer: "ctrl+x t", action: func() tea.Msg {
 			a.themesOverlay()
 			return nil

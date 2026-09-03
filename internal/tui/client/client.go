@@ -449,6 +449,25 @@ func (c *Client) Commands(ctx context.Context) ([]Command, error) {
 	return out, err
 }
 
+// Skill is one discovered skill, mirroring listSkills' response shape
+// (server.go) — the same skill.Info fields Load/Scan populate, minus the
+// markdown body: the skills dialog is a browser/launcher, not a viewer, and
+// every skill is already reachable as a slash command (command.Load adds
+// every discovered skill regardless of this Slash flag) — see dialogs_skill.go.
+type Skill struct {
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	Slash       bool   `json:"slash,omitempty"`
+	Location    string `json:"location"`
+}
+
+// Skills lists the discovered skills.
+func (c *Client) Skills(ctx context.Context) ([]Skill, error) {
+	var out []Skill
+	err := c.do(ctx, "GET", "/api/skill", nil, &out)
+	return out, err
+}
+
 // LSPState is the language-server status shown in the sidebar.
 type LSPState struct {
 	Enabled   bool        `json:"enabled"`

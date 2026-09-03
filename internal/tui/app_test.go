@@ -118,6 +118,12 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 			{ProviderID: "anthropic", ID: "claude-opus-4-5", Name: "Claude Opus 4.5"},
 		})
 	})
+	mux.HandleFunc("GET /api/skill", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]client.Skill{
+			{Name: "chunk-sidecar", Description: "Validate on a remote sidecar", Location: "/tmp/skill/chunk-sidecar/SKILL.md"},
+			{Name: "artifact-design", Description: "Design guidance for Artifacts", Slash: true, Location: "/tmp/skill/artifact-design/SKILL.md"},
+		})
+	})
 	mux.HandleFunc("POST /api/session/{sessionID}/compact", func(w http.ResponseWriter, r *http.Request) {
 		api.compacts++
 		w.Write([]byte(`{"compacted":true}`))
@@ -888,6 +894,85 @@ func TestModelDialogFromHomeAppliesToNewSession(t *testing.T) {
 	}
 	if len(api.models) != 1 || api.models[0].sessionID != app.active.ID {
 		t.Fatalf("expected one SetModel call pinning the new session, got %+v", api.models)
+	}
+}
+
+// TestSkillsDialogOpensViaSlashCommand covers "/skills" reaching the picker
+// the same way a user would type it: through the palette command table
+// (dialogs.go's commandsRegistry), not by calling skillsOverlay directly.
+func TestSkillsDialogOpensViaSlashCommand(t *testing.T) {
+	_, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+
+	var entry overlayItem
+	for _, item := range app.commandsRegistry() {
+		if item.slash == "skills" {
+			entry = item
+			break
+		}
+	}
+	if entry.action == nil {
+		t.Fatal("expected a \"skills\" palette entry with slash=\"skills\"")
+	}
+	driveCmd(t, app, runItemAction(entry))
+
+	if app.overlay == nil || app.overlay.title != "Skills" {
+		t.Fatalf("expected the Skills dialog to open, got overlay %+v", app.overlay)
+	}
+	view := app.View()
+	if !strings.Contains(view, "chunk-sidecar") || !strings.Contains(view, "artifact-design") {
+		t.Fatalf("skills dialog should list discovered skills, got %q", view)
+	}
+	if !strings.Contains(view, "Validate on a remote sidecar") {
+		t.Fatalf("skills dialog should show descriptions, got %q", view)
+	}
+}
+
+// TestSkillDialogSelectionInsertsSlashCommand: selecting a skill writes
+// "/<name> " into the prompt — the same convention as any other custom
+// slash command — rather than running it immediately or inserting an
+// @mention. Every discovered skill is command-invocable this way regardless
+// of its Slash frontmatter flag (see internal/command's skill merge), so the
+// dialog does not filter or badge on it.
+func TestSkillDialogSelectionInsertsSlashCommand(t *testing.T) {
+	_, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+
+	driveCmd(t, app, app.skillsOverlay())
+	if app.overlay == nil {
+		t.Fatal("expected skills dialog")
+	}
+	// Skills are sorted by name: "artifact-design" before "chunk-sidecar".
+	app.overlay.selected = 0
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if got := app.input.Value(); got != "/artifact-design " {
+		t.Fatalf("prompt = %q, want \"/artifact-design \"", got)
+	}
+	if app.overlay != nil {
+		t.Error("selecting a skill should close the dialog")
+	}
+}
+
+// TestSkillsDialogShowsLoadError mirrors DialogSkill's error state: a failed
+// fetch must not just render an empty "no skills found" list, which reads as
+// "this project genuinely has none" rather than "the request failed".
+func TestSkillsDialogShowsLoadError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+	app := newTestApp(t, server.URL)
+
+	driveCmd(t, app, app.skillsOverlay())
+	if app.overlay == nil {
+		t.Fatal("expected skills dialog")
+	}
+	if app.overlay.emptyTitle != "Could not load skills" {
+		t.Errorf("emptyTitle = %q, want the load-failure message", app.overlay.emptyTitle)
+	}
+	if !app.overlay.locked {
+		t.Error("a failed load should lock the dialog rather than let it look searchable")
 	}
 }
 

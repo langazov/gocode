@@ -130,6 +130,11 @@ type App struct {
 	// agentList is the cached agent list, so the agent dialog opens without a
 	// round trip. (Distinct from `agents`, the subagent aggregator snapshot.)
 	agentList []client.Agent
+	// skillList is the cached skill list, so the skills dialog opens without a
+	// round trip; a background refresh lands through skillListMsg.
+	skillList       []client.Skill
+	skillListLoaded bool
+	skillListErr    string
 	// catalogModels is the last-fetched model list, the port of TS's
 	// sync.data.provider: the dialogs render from it immediately instead of
 	// waiting on a request, and a refresh lands through catalogMsg.
@@ -785,6 +790,20 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		if o := a.overlay; o != nil && o.kind == overlayList && o.title == "Select agent" {
 			filter, selected := o.filter, a.selectedOverlayValue()
 			a.openAgentDialog(a.agentList)
+			a.restoreOverlaySelection(filter, selected)
+		}
+		return nil
+	case skillListMsg:
+		if msg.err != nil {
+			a.skillListErr = msg.err.Error()
+		} else {
+			a.skillListErr = ""
+			a.skillListLoaded = true
+			a.skillList = msg.skills
+		}
+		if o := a.overlay; o != nil && o.kind == overlayList && o.title == "Skills" {
+			filter, selected := o.filter, a.selectedOverlayValue()
+			a.openSkillDialog(a.skillList)
 			a.restoreOverlaySelection(filter, selected)
 		}
 		return nil
