@@ -250,6 +250,11 @@ jobs:
 
             ## Install
 
+            **Homebrew** (macOS / Linux):
+            ```sh
+            brew install langazov/tap/gocode
+            ```
+
             **macOS / Linux** — straight from the bare binary:
             ```sh
             chmod +x gocode-*-<platform>
@@ -277,3 +282,57 @@ jobs:
             ```sh
             xattr -d com.apple.quarantine gocode
             ```
+
+  homebrew:
+    name: update homebrew tap
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out gocode
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Check out the tap
+        id: tap
+        env:
+          # GITHUB_TOKEN is scoped to this repository, so pushing to the tap
+          # needs a separate PAT with `repo` on langazov/homebrew-tap. The job
+          # no-ops instead of failing when it is absent, so a release still
+          # publishes on a fork or before the secret is configured.
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${TAP_TOKEN:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping tap update"
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git clone --depth 1 \
+            "https://x-access-token:${TAP_TOKEN}@github.com/langazov/homebrew-tap.git" tap
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+
+      - name: Render and commit the formula
+        if: steps.tap.outputs.skipped == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          # SHA256SUMS is assembled by the release job from every matrix leg,
+          # so it is the one place that already has each archive's checksum.
+          gh release download "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir .
+
+          script/brew-formula.sh "$version" SHA256SUMS tap/Formula/gocode.rb
+
+          cd tap
+          if git diff --quiet -- Formula/gocode.rb; then
+            echo "formula already up to date"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/gocode.rb
+          git commit -m "gocode ${version}"
+          git push

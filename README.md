@@ -51,6 +51,15 @@ installed.
 
 ## Install
 
+### Homebrew (macOS / Linux)
+
+```sh
+brew install langazov/tap/gocode
+```
+
+Upgrades come through `brew upgrade gocode` once the tap is added. Homebrew
+does not quarantine formula downloads, so no `xattr` step is needed.
+
 ### Download a binary
 
 Grab one from the [latest release](https://github.com/langazov/gocode/releases/latest).
