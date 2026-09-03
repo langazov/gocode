@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -238,7 +239,11 @@ func TestBash(t *testing.T) {
 	if strings.TrimSpace(out) != "hello" {
 		t.Fatalf("unexpected bash output: %q", out)
 	}
-	out, err = bash.Execute(context.Background(), map[string]any{"command": "pwd", "workdir": "."})
+	pwd := "pwd"
+	if runtime.GOOS == "windows" {
+		pwd = "cd"
+	}
+	out, err = bash.Execute(context.Background(), map[string]any{"command": pwd, "workdir": "."})
 	if err != nil {
 		t.Fatal(err)
 	}

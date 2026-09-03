@@ -3,6 +3,7 @@ package command
 import (
 	"context"
 	"os/exec"
+	"path/filepath"
 	"regexp"
 	"runtime"
 	"strings"
@@ -104,11 +105,16 @@ func expandShell(ctx context.Context, template, shell string) string {
 	if !strings.Contains(template, "!`") {
 		return template
 	}
+	flag := "-c"
 	if shell == "" {
 		shell = "/bin/sh"
 		if runtime.GOOS == "windows" {
 			shell = "cmd"
 		}
+	}
+	if base := filepath.Base(shell); strings.EqualFold(base, "cmd") || strings.EqualFold(base, "cmd.exe") {
+		// cmd.exe takes /C, not the POSIX shells' -c.
+		flag = "/C"
 	}
 	return shellPattern.ReplaceAllStringFunc(template, func(match string) string {
 		inner := shellPattern.FindStringSubmatch(match)
@@ -117,7 +123,7 @@ func expandShell(ctx context.Context, template, shell string) string {
 		}
 		runCtx, cancel := context.WithTimeout(ctx, shellTimeout)
 		defer cancel()
-		out, err := exec.CommandContext(runCtx, shell, "-c", inner[1]).Output()
+		out, err := exec.CommandContext(runCtx, shell, flag, inner[1]).Output()
 		if err != nil {
 			return ""
 		}

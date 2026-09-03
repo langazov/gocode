@@ -141,11 +141,18 @@ func externalDirectory(path, root string) (string, bool) {
 			return "", false
 		}
 	}
-	if !filepath.IsAbs(path) {
-		if !strings.Contains(path, "..") {
-			return "", false
-		}
+	switch {
+	case filepath.IsAbs(path):
+		// Already absolute; canonicalize below as-is.
+	case isRootedPath(path):
+		// A path like "/tmp/x" is not filepath.IsAbs on Windows (that needs
+		// a volume too), but it is still rooted against the current drive,
+		// not against root — exactly the kind of path this scan exists to
+		// catch, so treat it the same as an absolute one.
+	case strings.Contains(path, ".."):
 		path = filepath.Join(root, path)
+	default:
+		return "", false
 	}
 	// Canonicalize the same way as the root before comparing. Without this,
 	// every absolute path inside the project is reported as external on macOS,
@@ -163,6 +170,14 @@ func externalDirectory(path, root string) (string, bool) {
 		return path, true
 	}
 	return filepath.Dir(path), true
+}
+
+// isRootedPath reports whether path starts with a path separator without
+// being filepath.IsAbs — the Windows case for a Unix-style path like "/tmp/x"
+// or a UNC-less "\tmp\x", which Windows still resolves against a drive root
+// rather than against the working directory.
+func isRootedPath(path string) bool {
+	return len(path) > 0 && (path[0] == '/' || path[0] == '\\')
 }
 
 // canonicalPath resolves symlinks as far down as the path exists, then

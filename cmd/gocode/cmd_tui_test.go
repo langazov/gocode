@@ -54,10 +54,7 @@ func testEnv(t *testing.T) {
 func TestResolveExistingSessionBySessionFlag(t *testing.T) {
 	testEnv(t)
 	ctx := context.Background()
-	stack, err := bootStack(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := bootStackT(t, ctx, "")
 	created, err := stack.Service.Create(ctx, session.CreateInput{Directory: t.TempDir(), Title: "resume me"})
 	if err != nil {
 		t.Fatal(err)
@@ -81,10 +78,7 @@ func TestResolveExistingSessionBySessionFlag(t *testing.T) {
 func TestResolveExistingSessionUnknownID(t *testing.T) {
 	testEnv(t)
 	ctx := context.Background()
-	stack, err := bootStack(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := bootStackT(t, ctx, "")
 	args := &clix.Args{Strings: map[string]string{"session": "ses_does_not_exist"}, Bools: map[string]bool{}}
 	if _, _, err := resolveExistingSession(ctx, stack, args); err == nil {
 		t.Fatal("expected an error for an unknown session id")
@@ -97,10 +91,7 @@ func TestResolveExistingSessionUnknownID(t *testing.T) {
 func TestResolveExistingSessionNoFlagsIsNotOK(t *testing.T) {
 	testEnv(t)
 	ctx := context.Background()
-	stack, err := bootStack(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := bootStackT(t, ctx, "")
 	args := &clix.Args{Strings: map[string]string{}, Bools: map[string]bool{}}
 	id, ok, err := resolveExistingSession(ctx, stack, args)
 	if err != nil {

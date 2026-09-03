@@ -815,7 +815,7 @@ func (a *App) sidebarView() string {
 	card := a.gettingStartedCard(width)
 	pathLine := a.sidebarPathLine(width - 4)
 	versionLine := a.onPanel(a.theme.Success, false).Render("•") + " " +
-		a.onPanel(a.theme.Text, true).Render("Open") +
+		a.onPanel(a.theme.Text, true).Render("Go") +
 		a.onPanel(a.theme.Text, true).Render("Code") + " " +
 		a.onPanel(a.theme.TextMuted, false).Render(appVersion)
 	// lipgloss's Width/Height are border-box (the declared value is the

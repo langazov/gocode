@@ -23,7 +23,7 @@ type Resolver struct {
 // Resolve returns the absolute path for input, keeping it within the root.
 func (r Resolver) Resolve(input string) (string, error) {
 	candidate := input
-	if !filepath.IsAbs(candidate) {
+	if !filepath.IsAbs(candidate) && !isRootedPath(candidate) {
 		candidate = filepath.Join(r.Root, candidate)
 	}
 	candidate = filepath.Clean(candidate)

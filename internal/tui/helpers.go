@@ -41,7 +41,9 @@ func abbreviateHome(input, home string) string {
 	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(rel) {
 		return input
 	}
-	return "~" + string(filepath.Separator) + rel
+	// Display always uses "/", regardless of the host's native separator —
+	// this is status-bar text, not a filesystem path.
+	return "~/" + filepath.ToSlash(rel)
 }
 
 // gitBranch walks up from dir to the repository root and returns the

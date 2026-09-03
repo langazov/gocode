@@ -23,7 +23,7 @@ func TestExpandPositionalPlaceholders(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := Expand(ctx, c.template, c.arguments, "/bin/sh"); got != c.want {
+			if got := Expand(ctx, c.template, c.arguments, ""); got != c.want {
 				t.Errorf("Expand(%q, %q) = %q, want %q", c.template, c.arguments, got, c.want)
 			}
 		})
@@ -34,25 +34,25 @@ func TestExpandPositionalPlaceholders(t *testing.T) {
 // highest-numbered placeholder takes every remaining argument, so a template
 // with one placeholder never silently drops the rest of what was typed.
 func TestExpandLastPlaceholderIsGreedy(t *testing.T) {
-	got := Expand(context.Background(), "$1", "one two three", "/bin/sh")
+	got := Expand(context.Background(), "$1", "one two three", "")
 	if got != "one two three" {
 		t.Errorf("Expand = %q, want all three arguments", got)
 	}
 
 	// With $1 and $2, only $2 is greedy.
-	got = Expand(context.Background(), "[$1][$2]", "a b c d", "/bin/sh")
+	got = Expand(context.Background(), "[$1][$2]", "a b c d", "")
 	if got != "[a][b c d]" {
 		t.Errorf("Expand = %q, want [a][b c d]", got)
 	}
 }
 
 func TestExpandArgumentsPlaceholder(t *testing.T) {
-	got := Expand(context.Background(), "review this:\n$ARGUMENTS", "the whole string", "/bin/sh")
+	got := Expand(context.Background(), "review this:\n$ARGUMENTS", "the whole string", "")
 	if !strings.Contains(got, "the whole string") {
 		t.Errorf("Expand = %q, want $ARGUMENTS substituted", got)
 	}
 	// $ARGUMENTS is the raw string, not the tokenized form.
-	got = Expand(context.Background(), "$ARGUMENTS", `"quoted stays quoted"`, "/bin/sh")
+	got = Expand(context.Background(), "$ARGUMENTS", `"quoted stays quoted"`, "")
 	if got != `"quoted stays quoted"` {
 		t.Errorf("Expand = %q, want the raw argument string", got)
 	}
@@ -61,23 +61,23 @@ func TestExpandArgumentsPlaceholder(t *testing.T) {
 // TestExpandAppendsBareArguments: a template with no placeholders would
 // otherwise ignore what the user typed after the command name.
 func TestExpandAppendsBareArguments(t *testing.T) {
-	got := Expand(context.Background(), "do the thing", "with this context", "/bin/sh")
+	got := Expand(context.Background(), "do the thing", "with this context", "")
 	if got != "do the thing\n\nwith this context" {
 		t.Errorf("Expand = %q, want the arguments appended after a blank line", got)
 	}
 
 	// Nothing to append.
-	if got := Expand(context.Background(), "do the thing", "", "/bin/sh"); got != "do the thing" {
+	if got := Expand(context.Background(), "do the thing", "", ""); got != "do the thing" {
 		t.Errorf("Expand = %q, want the template unchanged", got)
 	}
 	// A template that uses $ARGUMENTS must not also get them appended. The
 	// marker is deliberately not a substring of the template.
-	got = Expand(context.Background(), "context: $ARGUMENTS", "ZZmarker", "/bin/sh")
+	got = Expand(context.Background(), "context: $ARGUMENTS", "ZZmarker", "")
 	if count := strings.Count(got, "ZZmarker"); count != 1 {
 		t.Errorf("Expand = %q, arguments appear %d times, want 1", got, count)
 	}
 	// Likewise for a positional placeholder.
-	got = Expand(context.Background(), "run $1", "ZZmarker", "/bin/sh")
+	got = Expand(context.Background(), "run $1", "ZZmarker", "")
 	if count := strings.Count(got, "ZZmarker"); count != 1 {
 		t.Errorf("Expand = %q, arguments appear %d times, want 1", got, count)
 	}
@@ -86,13 +86,13 @@ func TestExpandAppendsBareArguments(t *testing.T) {
 // TestExpandShellSubstitution covers !`cmd`, which is how a template pulls in
 // live state such as the current branch.
 func TestExpandShellSubstitution(t *testing.T) {
-	got := Expand(context.Background(), "branch is !`echo main`", "", "/bin/sh")
+	got := Expand(context.Background(), "branch is !`echo main`", "", "")
 	if got != "branch is main" {
 		t.Errorf("Expand = %q, want the command output substituted", got)
 	}
 
 	// Several substitutions in one template.
-	got = Expand(context.Background(), "!`echo a` and !`echo b`", "", "/bin/sh")
+	got = Expand(context.Background(), "!`echo a` and !`echo b`", "", "")
 	if got != "a and b" {
 		t.Errorf("Expand = %q, want both substituted", got)
 	}
@@ -101,7 +101,7 @@ func TestExpandShellSubstitution(t *testing.T) {
 // TestExpandShellFailureIsEmpty: upstream runs these with nothrow, so a
 // template referencing a missing tool still produces a usable prompt.
 func TestExpandShellFailureIsEmpty(t *testing.T) {
-	got := Expand(context.Background(), "x!`gocode-no-such-command-xyz`y", "", "/bin/sh")
+	got := Expand(context.Background(), "x!`gocode-no-such-command-xyz`y", "", "")
 	if got != "xy" {
 		t.Errorf("Expand = %q, want the failed substitution to be empty", got)
 	}
@@ -110,7 +110,7 @@ func TestExpandShellFailureIsEmpty(t *testing.T) {
 // TestExpandImagePlaceholderIsOneToken: the argument tokenizer keeps a pasted
 // "[Image 1]" together rather than splitting it in two.
 func TestExpandImagePlaceholderIsOneToken(t *testing.T) {
-	got := Expand(context.Background(), "look at $1 please", "[Image 1]", "/bin/sh")
+	got := Expand(context.Background(), "look at $1 please", "[Image 1]", "")
 	if got != "look at [Image 1] please" {
 		t.Errorf("Expand = %q, want the image placeholder kept whole", got)
 	}

@@ -10,6 +10,8 @@ import (
 func TestResolveXdgDefaults(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// os.UserHomeDir reads %USERPROFILE% on Windows, not $HOME.
+	t.Setenv("USERPROFILE", home)
 	t.Setenv("GOCODE_TEST_HOME", "")
 	t.Setenv("XDG_DATA_HOME", "")
 	t.Setenv("XDG_CONFIG_HOME", "")

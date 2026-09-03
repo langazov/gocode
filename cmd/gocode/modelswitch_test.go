@@ -87,10 +87,7 @@ func TestModelSwitchRoutesToNewProvider(t *testing.T) {
 	}
 	t.Setenv("GOCODE_MODELS_PATH", catalogPath)
 
-	stack, err := bootStack(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := bootStackT(t, context.Background(), "")
 
 	info, err := stack.Service.Create(context.Background(), session.CreateInput{Directory: t.TempDir()})
 	if err != nil {

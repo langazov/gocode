@@ -121,11 +121,12 @@ func TestMarkdownOverridesConfig(t *testing.T) {
 
 // TestSkillsBecomeCommands, and yield to a command of the same name.
 func TestSkillsBecomeCommands(t *testing.T) {
+	location := filepath.Join(string(filepath.Separator), "skills", "brainstorm", "SKILL.md")
 	skills := skill.NewRegistry()
 	skills.Add(skill.Info{
 		Name:        "brainstorm",
 		Description: "think out loud",
-		Location:    "/skills/brainstorm/SKILL.md",
+		Location:    location,
 		Content:     "Brainstorm about the topic.",
 	})
 	skills.Add(skill.Info{Name: "review", Description: "shadowed", Content: "should not win"})
@@ -143,8 +144,8 @@ func TestSkillsBecomeCommands(t *testing.T) {
 		t.Errorf("template = %q", brainstorm.Template)
 	}
 	// The base-directory note lets relative paths in the skill resolve.
-	if !strings.Contains(brainstorm.Template, "/skills/brainstorm") {
-		t.Errorf("template should name the skill's base directory: %q", brainstorm.Template)
+	if wantDir := filepath.Dir(location); !strings.Contains(brainstorm.Template, wantDir) {
+		t.Errorf("template should name the skill's base directory %q: %q", wantDir, brainstorm.Template)
 	}
 
 	// review is a built-in command; the skill must not displace it.

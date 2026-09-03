@@ -22,19 +22,13 @@ func TestBootStackUsesConfigModel(t *testing.T) {
 		}
 	}`)
 
-	stack, err := bootStack(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := bootStackT(t, context.Background(), "")
 	if stack.ProviderID != "zhipuai" || stack.ModelID != "glm-5.3-flash" {
 		t.Fatalf("expected config model zhipuai/glm-5.3-flash, got %s/%s", stack.ProviderID, stack.ModelID)
 	}
 
 	// Explicit flag still wins over config.
-	stack, err = bootStack(context.Background(), "anthropic/claude-sonnet-4-5")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack = bootStackT(t, context.Background(), "anthropic/claude-sonnet-4-5")
 	if stack.ProviderID != "anthropic" {
 		t.Fatalf("explicit flag must override config, got %s", stack.ProviderID)
 	}
@@ -54,10 +48,7 @@ func TestBootStackPrefersLastUsedModel(t *testing.T) {
 	}
 
 	// No state: config default wins.
-	stack, err := bootStack(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := bootStackT(t, context.Background(), "")
 	if stack.ProviderID != "minimax-coding-plan" || stack.ModelID != "MiniMax-M3" {
 		t.Fatalf("expected config default, got %s/%s", stack.ProviderID, stack.ModelID)
 	}
@@ -66,19 +57,13 @@ func TestBootStackPrefersLastUsedModel(t *testing.T) {
 	if err := modelstate.Save(workdir, modelstate.Ref{ProviderID: "zai-coding-plan", ModelID: "glm-5.3"}); err != nil {
 		t.Fatal(err)
 	}
-	stack, err = bootStack(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack = bootStackT(t, context.Background(), "")
 	if stack.ProviderID != "zai-coding-plan" || stack.ModelID != "glm-5.3" {
 		t.Fatalf("expected last-used model to win, got %s/%s", stack.ProviderID, stack.ModelID)
 	}
 
 	// Explicit flag beats everything.
-	stack, err = bootStack(context.Background(), "anthropic/claude-sonnet-4-5")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack = bootStackT(t, context.Background(), "anthropic/claude-sonnet-4-5")
 	if stack.ProviderID != "anthropic" {
 		t.Fatalf("flag must beat last-used, got %s/%s", stack.ProviderID, stack.ModelID)
 	}
@@ -97,10 +82,7 @@ func TestBootStackDefaultPermissionsMatchTS(t *testing.T) {
 		"agent": {"reviewer": {"description": "reviews code"}}
 	}`)
 
-	stack, err := bootStack(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := bootStackT(t, context.Background(), "")
 
 	build, ok := stack.Agents.Resolve("build")
 	if !ok {
@@ -130,10 +112,7 @@ func TestBootStackExplicitPermissionMergesWithDefaults(t *testing.T) {
 	testCatalog(t)
 	t.Setenv("GOCODE_CONFIG_CONTENT", `{"permission": {"bash": "ask"}}`)
 
-	stack, err := bootStack(context.Background(), "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := bootStackT(t, context.Background(), "")
 
 	build, ok := stack.Agents.Resolve("build")
 	if !ok {

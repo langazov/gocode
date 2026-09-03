@@ -78,8 +78,9 @@ func TestDirectoriesRespectsDisableProjectConfig(t *testing.T) {
 }
 
 func TestFileInDirectory(t *testing.T) {
-	got := FileInDirectory("/dir", "gocode")
-	want := []string{"/dir/gocode.json", "/dir/gocode.jsonc"}
+	dir := filepath.Join(string(filepath.Separator), "dir")
+	got := FileInDirectory(dir, "gocode")
+	want := []string{filepath.Join(dir, "gocode.json"), filepath.Join(dir, "gocode.jsonc")}
 	if got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("expected %v, got %v", want, got)
 	}

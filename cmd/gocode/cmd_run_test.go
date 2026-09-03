@@ -171,10 +171,7 @@ func TestRunCommandVariantEnablesThinking(t *testing.T) {
 	// The reasoning text must be retrievable from storage — this is exactly
 	// what the TUI's reasoningBlock reads to render "Thought: ...".
 	ctx := context.Background()
-	stack, err := bootStack(ctx, "")
-	if err != nil {
-		t.Fatal(err)
-	}
+	stack := bootStackT(t, ctx, "")
 	sessions, err := stack.Service.List(ctx)
 	if err != nil || len(sessions) == 0 {
 		t.Fatalf("expected a session to exist, err=%v sessions=%v", err, sessions)

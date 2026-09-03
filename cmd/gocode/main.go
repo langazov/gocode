@@ -113,6 +113,17 @@ type stack struct {
 	// Commands holds the slash commands: built-ins, config entries, markdown
 	// definitions and skills.
 	Commands *command.Registry
+	// Database is the connection bootStack opened. The running CLI leaves it
+	// open for the process lifetime, but tests that boot multiple stacks
+	// must close it themselves — on Windows an open sqlite handle blocks
+	// t.TempDir's cleanup from deleting the file.
+	Database *db.DB
+}
+
+// Close releases the resources bootStack opened. Only tests need this: a
+// running command exits the process instead, which reclaims everything.
+func (s *stack) Close() error {
+	return s.Database.Close()
 }
 
 // resolveModelFlag applies precedence: explicit flag wins, then config,
@@ -343,6 +354,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Questions:   questions,
 		LSP:         lspService,
 		Commands:    commands,
+		Database:    database,
 	}, nil
 }
 

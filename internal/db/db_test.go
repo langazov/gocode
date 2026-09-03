@@ -111,8 +111,9 @@ func TestPathFlagAndChannel(t *testing.T) {
 	if got := Path(); got != ":memory:" {
 		t.Fatalf("expected :memory:, got %s", got)
 	}
-	t.Setenv("GOCODE_DB", "/abs/path.db")
-	if got := Path(); got != "/abs/path.db" {
+	absPath := filepath.Join(t.TempDir(), "abs", "path.db")
+	t.Setenv("GOCODE_DB", absPath)
+	if got := Path(); got != absPath {
 		t.Fatalf("expected absolute passthrough, got %s", got)
 	}
 }
