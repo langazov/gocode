@@ -127,6 +127,7 @@ func expandShell(ctx context.Context, template, shell string) string {
 		if err != nil {
 			return ""
 		}
-		return strings.TrimRight(string(out), "\n")
+		// cmd.exe's output ends "\r\n"; POSIX shells just "\n".
+		return strings.TrimRight(string(out), "\r\n")
 	})
 }

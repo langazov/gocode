@@ -120,9 +120,12 @@ func TestBashToolDeclaresExternalDirectory(t *testing.T) {
 	if extras[0].Action != permission.ExternalDirectoryAction {
 		t.Errorf("action = %q, want %q", extras[0].Action, permission.ExternalDirectoryAction)
 	}
-	// A glob over the directory, so approving once covers it rather than one file.
-	if len(extras[0].Resources) != 1 || extras[0].Resources[0] != filepath.Join(canonicalPath("/tmp/test"), "*") {
-		t.Errorf("resources = %v, want a glob over %s", extras[0].Resources, canonicalPath("/tmp/test"))
+	// A glob over the directory, so approving once covers it rather than one
+	// file. Resources are always forward-slash, regardless of host — see
+	// ExtraPermissions's ToSlash.
+	want := filepath.ToSlash(filepath.Join(canonicalPath("/tmp/test"), "*"))
+	if len(extras[0].Resources) != 1 || extras[0].Resources[0] != want {
+		t.Errorf("resources = %v, want a glob over %s", extras[0].Resources, want)
 	}
 }
 

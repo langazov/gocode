@@ -111,6 +111,12 @@ func runRunCommand(a *clix.Args) error {
 	if err != nil {
 		return err
 	}
+	// "run" is one-shot: release the database as soon as this command is
+	// done rather than leaving it for the process exit that follows a
+	// moment later. In-process callers (the tests) never get that process
+	// exit, so on Windows the held file handle would otherwise block their
+	// t.TempDir cleanup.
+	defer stack.Close()
 	if auto {
 		stack.Runner.Permissions = nil
 	}

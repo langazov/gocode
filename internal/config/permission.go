@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"sort"
 
 	"github.com/langazov/gocode-go/internal/permission"
 )
@@ -51,8 +52,22 @@ func (p Permission) Ruleset() (permission.Ruleset, error) {
 		}
 		return permission.Ruleset{{Action: "*", Resource: "*", Effect: effect}}, nil
 	}
+	// permission.Evaluate is last-match-wins, so the order rules are appended
+	// in is significant: a map range is randomized per Go's spec, which made
+	// this nondeterministic — a "*": deny key could land after or before a
+	// specific "read": allow one depending on the run, letting the wildcard
+	// randomly clobber the specific rule. Sorting fixes the order; "*" sorts
+	// before every letter and digit, so it always lands first and the
+	// specific rules that follow correctly override it.
+	actions := make([]string, 0, len(p.Raw))
+	for action := range p.Raw {
+		actions = append(actions, action)
+	}
+	sort.Strings(actions)
+
 	var out permission.Ruleset
-	for action, raw := range p.Raw {
+	for _, action := range actions {
+		raw := p.Raw[action]
 		var effectStr string
 		if err := json.Unmarshal(raw, &effectStr); err == nil {
 			effect, err := parseEffect(effectStr)
@@ -66,8 +81,13 @@ func (p Permission) Ruleset() (permission.Ruleset, error) {
 		if err := json.Unmarshal(raw, &resourceMap); err != nil {
 			return nil, fmt.Errorf("config: invalid permission rule for %q: %w", action, err)
 		}
-		for resource, effectValue := range resourceMap {
-			effect, err := parseEffect(effectValue)
+		resources := make([]string, 0, len(resourceMap))
+		for resource := range resourceMap {
+			resources = append(resources, resource)
+		}
+		sort.Strings(resources)
+		for _, resource := range resources {
+			effect, err := parseEffect(resourceMap[resource])
 			if err != nil {
 				return nil, fmt.Errorf("config: invalid permission rule for %q: %w", action, err)
 			}

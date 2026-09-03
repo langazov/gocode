@@ -20,6 +20,12 @@ var pathCommands = map[string]bool{
 	"install": true, "rsync": true, "shred": true,
 }
 
+// dirCommands is the subset of pathCommands whose argument names the
+// directory itself rather than a file within it.
+var dirCommands = map[string]bool{
+	"cd": true, "pushd": true, "popd": true,
+}
+
 // ScanExternalPaths returns the directories a shell command would touch
 // outside root, so the caller can ask for approval before running it.
 //
@@ -47,12 +53,12 @@ func ScanExternalPaths(command, root string) []string {
 	root = canonicalRoot(root)
 	found := map[string]bool{}
 
-	note := func(word *syntax.Word) {
+	note := func(word *syntax.Word, isDir bool) {
 		literal, ok := literalWord(word)
 		if !ok {
 			return
 		}
-		if dir, outside := externalDirectory(literal, root); outside {
+		if dir, outside := externalDirectory(literal, root, isDir); outside {
 			found[dir] = true
 		}
 	}
@@ -63,7 +69,7 @@ func ScanExternalPaths(command, root string) []string {
 			// Every redirect target is a path, whatever the command: this is
 			// the `cat > /tmp/x` case that motivated the check.
 			if typed.Word != nil {
-				note(typed.Word)
+				note(typed.Word, false)
 			}
 		case *syntax.CallExpr:
 			if len(typed.Args) == 0 {
@@ -73,12 +79,17 @@ func ScanExternalPaths(command, root string) []string {
 			if !ok || !pathCommands[filepath.Base(name)] {
 				return true
 			}
+			// cd/pushd/popd name the directory itself, not a file in it — so
+			// the argument is the answer even when nothing exists there yet
+			// to confirm it with os.Stat (an empty /tmp on the Windows
+			// runners this scan also has to work on).
+			isDir := dirCommands[filepath.Base(name)]
 			for _, arg := range typed.Args[1:] {
 				literal, ok := literalWord(arg)
 				if !ok || strings.HasPrefix(literal, "-") {
 					continue // a flag, not a path
 				}
-				note(arg)
+				note(arg, isDir)
 			}
 		}
 		return true
@@ -128,7 +139,7 @@ func literalWord(word *syntax.Word) (string, bool) {
 // Only absolute paths and explicit parent traversals are considered: a plain
 // relative path resolves inside the working directory, which is what the
 // command's own permission already covers.
-func externalDirectory(path, root string) (string, bool) {
+func externalDirectory(path, root string, isDir bool) (string, bool) {
 	if path == "" {
 		return "", false
 	}
@@ -164,8 +175,14 @@ func externalDirectory(path, root string) (string, bool) {
 		return "", false
 	}
 	// Report the directory, matching the TypeScript scan, which asks for a
-	// directory rather than each file in it. A path that is itself a directory
-	// is its own answer; anything else contributes its parent.
+	// directory rather than each file in it. A path that is itself a
+	// directory is its own answer; anything else contributes its parent.
+	// isDir trusts the calling command (cd, pushd, popd) over the
+	// filesystem: the directory need not exist yet — or at all, on a runner
+	// with no /tmp — for `cd /tmp` to mean the directory itself.
+	if isDir {
+		return path, true
+	}
 	if info, err := os.Stat(path); err == nil && info.IsDir() {
 		return path, true
 	}
