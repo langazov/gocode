@@ -191,10 +191,16 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		return nil, err
 	}
 	// Skills are discovered from the project and the user's global config,
-	// project first so a local skill overrides a global one of the same name.
+	// project first so a local skill overrides a global one of the same
+	// name. .agents is a cross-tool convention other agent CLIs also write
+	// skills into (see packages/opencode/src/skill/index.ts's external-dirs
+	// scan); gocode's own dir is listed first at each scope so a same-named
+	// gocode-specific skill still wins over a shared one.
 	skills := skill.Discover(
 		filepath.Join(workdir, ".gocode"),
+		filepath.Join(workdir, ".agents"),
 		filepath.Join(global.Resolve().Config, "gocode"),
+		filepath.Join(global.Resolve().Home, ".agents"),
 	)
 	questions := question.NewService(question.Hooks{}, nil)
 

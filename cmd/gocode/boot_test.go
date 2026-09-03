@@ -3,11 +3,58 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/langazov/gocode-go/internal/modelstate"
 	"github.com/langazov/gocode-go/internal/permission"
 )
+
+// TestBootStackDiscoversAgentsSkills covers .agents/skills, the convention
+// other agent CLIs (Claude Code, etc.) also write skills into — real ones on
+// a developer's machine live at ~/.agents/skills, entirely missed before
+// this: skill.Discover only scanned .gocode (project) and the gocode config
+// dir (global). Checks both scopes, project and global (home), the way
+// .gocode/<config>/gocode already are.
+func TestBootStackDiscoversAgentsSkills(t *testing.T) {
+	testCatalog(t)
+
+	workdir := t.TempDir()
+	original, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(original) })
+	if err := os.Chdir(workdir); err != nil {
+		t.Fatal(err)
+	}
+
+	writeSkill := func(dir, name, description string) {
+		t.Helper()
+		full := filepath.Join(dir, name)
+		if err := os.MkdirAll(full, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		content := "---\nname: " + name + "\ndescription: " + description + "\n---\n\nBody.\n"
+		if err := os.WriteFile(filepath.Join(full, "SKILL.md"), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeSkill(filepath.Join(workdir, ".agents", "skills"), "project-skill", "a project-scoped skill")
+
+	home := t.TempDir()
+	t.Setenv("GOCODE_TEST_HOME", home)
+	writeSkill(filepath.Join(home, ".agents", "skills"), "global-skill", "a global-scoped skill")
+
+	stack := bootStackT(t, context.Background(), "")
+	found := map[string]bool{}
+	for _, info := range stack.Skills.List() {
+		found[info.Name] = true
+	}
+	if !found["project-skill"] {
+		t.Error("expected the project .agents/skills entry to be discovered")
+	}
+	if !found["global-skill"] {
+		t.Error("expected the global ~/.agents/skills entry to be discovered")
+	}
+}
 
 // TestBootStackUsesConfigModel is the regression for "TUI ignores config":
 // with no --model flag, the config default model/provider must win.
