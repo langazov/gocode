@@ -296,19 +296,26 @@ jobs:
         id: tap
         env:
           # GITHUB_TOKEN is scoped to this repository, so pushing to the tap
-          # needs a separate PAT with `repo` on langazov/homebrew-tap. The job
-          # no-ops instead of failing when it is absent, so a release still
-          # publishes on a fork or before the secret is configured.
-          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          # needs its own credential: a deploy key added to
+          # langazov/homebrew-tap (write access, that repo only — narrower
+          # than a personal-access-token, which would reach every repo the
+          # account owns). The job no-ops instead of failing when it is
+          # absent, so a release still publishes on a fork or before the
+          # secret is configured.
+          TAP_DEPLOY_KEY: ${{ secrets.HOMEBREW_TAP_DEPLOY_KEY }}
         run: |
           set -euo pipefail
-          if [ -z "${TAP_TOKEN:-}" ]; then
-            echo "::warning::HOMEBREW_TAP_TOKEN is not set; skipping tap update"
+          if [ -z "${TAP_DEPLOY_KEY:-}" ]; then
+            echo "::warning::HOMEBREW_TAP_DEPLOY_KEY is not set; skipping tap update"
             echo "skipped=true" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          git clone --depth 1 \
-            "https://x-access-token:${TAP_TOKEN}@github.com/langazov/homebrew-tap.git" tap
+          mkdir -p ~/.ssh
+          printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_deploy_key
+          chmod 600 ~/.ssh/tap_deploy_key
+          ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
+          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/tap_deploy_key -o IdentitiesOnly=yes" >> "$GITHUB_ENV"
+          git clone --depth 1 git@github.com:langazov/homebrew-tap.git tap
           echo "skipped=false" >> "$GITHUB_OUTPUT"
 
       - name: Render and commit the formula
