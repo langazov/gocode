@@ -364,7 +364,9 @@ func TestDialogPanelIsNotDimmed(t *testing.T) {
 	app := listApp(t, overlayItem{label: "alpha", value: "a"})
 	app.view = viewChat
 	view := app.viewOverlay()
-	if !strings.Contains(view, "192;202;245") {
+	// 238;238;238 is #eeeeee, this app's default theme's text color (see
+	// theme.Dark).
+	if !strings.Contains(view, "238;238;238") {
 		t.Fatal("the panel's own text should keep its undimmed colour")
 	}
 }

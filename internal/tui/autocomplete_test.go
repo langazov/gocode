@@ -266,10 +266,12 @@ func TestSelectedRowIsHighlighted(t *testing.T) {
 		t.Fatal("expected several rows")
 	}
 	// The first row carries the primary background; the second does not.
-	if !strings.Contains(lines[0], "48;2;122;162;247") {
+	// 48;2;250;178;131 is #fab283, this app's default theme's primary color
+	// (see theme.Dark).
+	if !strings.Contains(lines[0], "48;2;250;178;131") {
 		t.Errorf("the selected row should be filled with the primary color:\n%q", lines[0])
 	}
-	if strings.Contains(lines[1], "48;2;122;162;247") {
+	if strings.Contains(lines[1], "48;2;250;178;131") {
 		t.Errorf("an unselected row should not be filled:\n%q", lines[1])
 	}
 }

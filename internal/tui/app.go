@@ -177,6 +177,12 @@ type App struct {
 	// recall submitted prompts (see historyKey below).
 	history *promptHistory
 
+	// themeStatePath is where setTheme persists the active theme (see
+	// themestate.go); resolved once in New so tests that don't care about
+	// persistence (most of them) can leave it at its zero value "" and have
+	// saveThemeState no-op.
+	themeStatePath string
+
 	// selection is the mouse drag-to-select range (see mouse.go), the port's
 	// stand-in for opentui's renderer-level text selection.
 	selection textSelection
@@ -250,6 +256,27 @@ var placeholders = []string{
 	"Fix broken tests",
 }
 
+// inputStyles builds the prompt textarea's Styles for t. The textarea's own
+// defaults would paint over the prompt box's backgroundElement tint: the
+// default cursor line has a solid (theme-independent) background and the
+// viewport pads the row with unstyled spaces. Give the cursor line the box
+// tint instead and mute the placeholder like the original.
+//
+// This has to be re-derived and re-applied (see setTheme) every time the
+// active theme changes, not just baked in once at construction: it closes
+// over t's colors by value, so a stale *App.theme swap alone leaves the
+// input still painted in whatever theme was active when New built this.
+func inputStyles(t theme.Theme) textarea.Styles {
+	element := lipgloss.NewStyle().Background(t.BackgroundElement)
+	muted := lipgloss.NewStyle().Foreground(t.TextMuted)
+	styles := textarea.DefaultStyles(t.Dark)
+	styles.Focused.CursorLine = element
+	styles.Blurred.CursorLine = element
+	styles.Focused.Placeholder = muted
+	styles.Blurred.Placeholder = muted
+	return styles
+}
+
 func New(ctx context.Context, c *client.Client, themeName string) *App {
 	resolved := theme.Resolve(themeName)
 	input := textarea.New()
@@ -260,18 +287,7 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 	input.SetHeight(1)
 	input.ShowLineNumbers = false
 	input.KeyMap.InsertNewline.SetEnabled(false)
-	// The textarea's own styles would paint over the prompt box's
-	// backgroundElement tint: the default cursor line has a solid background
-	// and the viewport pads the row with unstyled spaces. Give the cursor line
-	// the box tint instead and mute the placeholder like the original.
-	element := lipgloss.NewStyle().Background(resolved.BackgroundElement)
-	muted := lipgloss.NewStyle().Foreground(resolved.TextMuted)
-	taStyles := textarea.DefaultStyles(resolved.Dark)
-	taStyles.Focused.CursorLine = element
-	taStyles.Blurred.CursorLine = element
-	taStyles.Focused.Placeholder = muted
-	taStyles.Blurred.Placeholder = muted
-	input.SetStyles(taStyles)
+	input.SetStyles(inputStyles(resolved))
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
 	return &App{
@@ -293,6 +309,7 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 		contextLimits:     map[string]int{},
 		modelCosts:        map[string]float64{},
 		history:           loadPromptHistory(filepath.Join(global.Resolve().State, promptHistoryFile)),
+		themeStatePath:    ThemeStatePath(),
 		windowTitle:       "GoCode",
 		thinkingMode:      "hide",
 		expandedReasoning: map[string]bool{},
@@ -1410,17 +1427,55 @@ func (p program) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // with. AllMotion (not just CellMotion) so dialog rows preselect on hover
 // with no button held, matching dialog-select.tsx's onMouseMove/onMouseOver
 // (same rationale as the removed Run() options it replaces).
+//
+// BackgroundColor/ForegroundColor set the terminal's own default colors (an
+// OSC 11/10 the renderer sends once per change, not a per-cell fill) to the
+// theme's, the same way opentui's renderer paints its root surface: none of
+// this app's components fill the *whole* screen themselves — home's empty
+// space above the prompt, and any cell no component's style happens to
+// touch, is left to whatever the terminal's own default colors are. Every
+// bundled theme's dark background happens to read fine against a typical
+// terminal's own (usually dark) default, which is what made this go
+// unnoticed until a light theme sat light-on-dark text over a terminal
+// still defaulting to black.
 func (p program) View() tea.View {
 	v := tea.NewView(p.app.View())
 	v.AltScreen = true
 	v.MouseMode = tea.MouseModeAllMotion
 	v.WindowTitle = p.app.windowTitle
+	// lipgloss.NoColor marks a theme (lucent-orng) that deliberately leaves
+	// background transparent to let the terminal's own color/wallpaper show
+	// through; forcing it here would paint over that on every such theme.
+	if _, transparent := p.app.theme.Background.(lipgloss.NoColor); !transparent {
+		v.BackgroundColor = p.app.theme.Background
+	}
+	v.ForegroundColor = p.app.theme.Text
 	return v
 }
 
 type quitMsg struct{}
 
 func themeResolve(name string) theme.Theme { return theme.Resolve(name) }
+
+// setTheme swaps the active theme and re-syncs everything derived from it
+// once at construction time rather than read live off a.theme on every
+// render — currently just the prompt textarea's baked-in Styles (see
+// inputStyles). Every a.theme reassignment should go through this, not a
+// bare field set, or it silently reproduces the bug that motivated it: the
+// theme picker's live preview used to set a.theme directly, so the input box
+// kept rendering with whichever theme was active when the app started until
+// a full restart, background and placeholder color included.
+//
+// It also persists the pick (see themestate.go), same as theme/index.ts's
+// set() calling kv.set("theme", theme) on every change — including a live
+// preview as the theme dialog's selection moves, not just a confirmed pick;
+// canceling the dialog calls this again with the pre-dialog theme (see
+// themesOverlay's onCancel), which corrects the persisted value right back.
+func (a *App) setTheme(t theme.Theme) {
+	a.theme = t
+	a.input.SetStyles(inputStyles(t))
+	saveThemeState(a.themeStatePath, t.Name)
+}
 
 // runSlashCommand executes "/name" from the editor. Names may be the full
 // command ("session.new") or a namespace prefix ("/help" -> "help.show").

@@ -336,7 +336,8 @@ func runInteractiveViaTUI(ctx context.Context, stack *stack, sessionID string, a
 		server.ServeOn(listener, srv.Mux())
 	}()
 	opts := tui.RunOptions{DefaultModel: stack.ProviderID + "/" + stack.ModelID, SessionID: sessionID}
-	if err := tui.Run(ctx, client.New("http://"+listener.Addr().String()), "gocode-dark", opts); err != nil {
+	themeName := tui.ResolveStartupTheme(stack.Config.Theme, tui.ThemeStatePath())
+	if err := tui.Run(ctx, client.New("http://"+listener.Addr().String()), themeName, opts); err != nil {
 		return fmt.Errorf("tui: %w", err)
 	}
 	return nil

@@ -202,7 +202,7 @@ func (a *App) renderMessage(message client.Message, isLast bool) (string, []reas
 // comment) rather than being pushed out to fill a wider box.
 func (a *App) userBlock(message client.Message, data client.UserData) string {
 	body := wrapText(data.Text, a.contentWidth()-4)
-	lines := []string{a.styles().Text.Render(body)}
+	lines := []string{renderLines(a.styles().Text, body)}
 	if len(data.Files) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, a.fileAttachmentRows(data.Files, a.contentWidth()-4)...)
@@ -351,7 +351,7 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 			PaddingBottom(1).
 			PaddingLeft(2).
 			Width(borderBoxWidth(a.contentWidth() - 2))
-		appendBlock(errBlock.Render(a.styles().Muted.Render(data.Error.Message)))
+		appendBlock(errBlock.Render(renderLines(a.styles().Muted, data.Error.Message)))
 	}
 
 	final := data.Finish != "" && data.Finish != "tool-calls" && data.Finish != "unknown"
@@ -617,6 +617,29 @@ func (a *App) blockToolStyle() lipgloss.Style {
 		Width(borderBoxWidth(a.contentWidth() - 2))
 }
 
+// renderLines applies style to each line of text independently rather than
+// handing the whole (possibly multi-line) string to a single Style.Render
+// call. lipgloss v2's Render pads every line of multi-line content out to
+// the block's own longest line so they measure evenly — necessary chrome
+// for width/border math — but that padding is only colored when the style
+// being rendered has its own Background set (see colorWhitespace's use in
+// style.go: it only reaches the padding when `bg != noColor`); a
+// foreground-only style like Text or Muted leaves it as bare, uncolored
+// spaces. That is invisible on its own, but every caller here immediately
+// embeds the result inside a *different* style's own Background (bashBlock's
+// blockToolStyle, userBlock's panel, errBlock) — and that outer fill can't
+// retroactively color cells an inner Render already emitted plain, so each
+// shorter line inside the block showed a stray patch of the page background
+// punched through its own panel. Rendering line by line — each one on its
+// own single-line Render call — never triggers that padding pass at all.
+func renderLines(style lipgloss.Style, text string) string {
+	lines := strings.Split(text, "\n")
+	for i, line := range lines {
+		lines[i] = style.Render(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
 // bashBlock mirrors Shell's BlockTool: the command line (spinner while
 // running, "$ " once settled) followed by the collapsed output, once
 // there's more to show than the one-line summary.
@@ -635,7 +658,7 @@ func (a *App) bashBlock(state *toolState) string {
 	if output := strings.TrimSpace(ansi.Strip(state.Output)); output != "" {
 		maxChars := 10 * max(20, a.contentWidth()-6)
 		limited, overflow := collapseToolOutput(output, 10, maxChars)
-		lines = append(lines, "", a.styles().Text.Render(limited))
+		lines = append(lines, "", renderLines(a.styles().Text, limited))
 		if overflow {
 			lines = append(lines, a.styles().Muted.Render("(truncated)"))
 		}

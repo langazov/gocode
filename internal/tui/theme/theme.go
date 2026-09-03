@@ -63,27 +63,33 @@ type Theme struct {
 	ThinkingOpacity float64
 }
 
+// Dark and Light mirror packages/tui/src/theme/assets/opencode.json — the
+// TS TUI's actual default ("opencode") theme, resolved for each mode — so
+// this port's default palette matches upstream instead of an unrelated
+// hand-picked scheme. Values are copied straight from that file's defs:
+// primary/accent/etc. come from its darkStep9/darkAccent/... refs, and the
+// background/panel/element/border ramp comes from its darkStep1/2/3/6/7/8.
 func Dark() Theme {
 	return Theme{
 		Name:            "gocode-dark",
 		Dark:            true,
 		ThinkingOpacity: 0.6,
 		Colors: Colors{
-			Primary:           lipgloss.Color("#7aa2f7"),
-			Secondary:         lipgloss.Color("#bb9af7"),
-			Accent:            lipgloss.Color("#9ece6a"),
-			Info:              lipgloss.Color("#7dcfff"),
-			Error:             lipgloss.Color("#f7768e"),
-			Warning:           lipgloss.Color("#e0af68"),
-			Success:           lipgloss.Color("#9ece6a"),
-			Text:              lipgloss.Color("#c0caf5"),
-			TextMuted:         lipgloss.Color("#565f89"),
-			Background:        lipgloss.Color("#1a1b26"),
-			BackgroundPanel:   lipgloss.Color("#16161e"),
-			BackgroundElement: lipgloss.Color("#24283b"),
-			Border:            lipgloss.Color("#2f334d"),
-			BorderActive:      lipgloss.Color("#565f89"),
-			BorderSubtle:      lipgloss.Color("#1f2335"),
+			Primary:           lipgloss.Color("#fab283"),
+			Secondary:         lipgloss.Color("#5c9cf5"),
+			Accent:            lipgloss.Color("#9d7cd8"),
+			Info:              lipgloss.Color("#56b6c2"),
+			Error:             lipgloss.Color("#e06c75"),
+			Warning:           lipgloss.Color("#f5a742"),
+			Success:           lipgloss.Color("#7fd88f"),
+			Text:              lipgloss.Color("#eeeeee"),
+			TextMuted:         lipgloss.Color("#808080"),
+			Background:        lipgloss.Color("#0a0a0a"),
+			BackgroundPanel:   lipgloss.Color("#141414"),
+			BackgroundElement: lipgloss.Color("#1e1e1e"),
+			Border:            lipgloss.Color("#484848"),
+			BorderActive:      lipgloss.Color("#606060"),
+			BorderSubtle:      lipgloss.Color("#3c3c3c"),
 		},
 	}
 }
@@ -94,21 +100,21 @@ func Light() Theme {
 		Dark:            false,
 		ThinkingOpacity: 0.6,
 		Colors: Colors{
-			Primary:           lipgloss.Color("#2d5f9e"),
-			Secondary:         lipgloss.Color("#7c4dbe"),
-			Accent:            lipgloss.Color("#3d9a57"),
-			Info:              lipgloss.Color("#0e7490"),
-			Error:             lipgloss.Color("#c23a4b"),
-			Warning:           lipgloss.Color("#b26d1b"),
+			Primary:           lipgloss.Color("#3b7dd8"),
+			Secondary:         lipgloss.Color("#7b5bb6"),
+			Accent:            lipgloss.Color("#d68c27"),
+			Info:              lipgloss.Color("#318795"),
+			Error:             lipgloss.Color("#d1383d"),
+			Warning:           lipgloss.Color("#d68c27"),
 			Success:           lipgloss.Color("#3d9a57"),
-			Text:              lipgloss.Color("#394052"),
-			TextMuted:         lipgloss.Color("#8b93a7"),
-			Background:        lipgloss.Color("#f7f8fa"),
-			BackgroundPanel:   lipgloss.Color("#eceef2"),
-			BackgroundElement: lipgloss.Color("#e2e5eb"),
-			Border:            lipgloss.Color("#d5d9e0"),
-			BorderActive:      lipgloss.Color("#8b93a7"),
-			BorderSubtle:      lipgloss.Color("#e8eaf0"),
+			Text:              lipgloss.Color("#1a1a1a"),
+			TextMuted:         lipgloss.Color("#8a8a8a"),
+			Background:        lipgloss.Color("#ffffff"),
+			BackgroundPanel:   lipgloss.Color("#fafafa"),
+			BackgroundElement: lipgloss.Color("#f5f5f5"),
+			Border:            lipgloss.Color("#b8b8b8"),
+			BorderActive:      lipgloss.Color("#a0a0a0"),
+			BorderSubtle:      lipgloss.Color("#d4d4d4"),
 		},
 	}
 }
@@ -172,15 +178,26 @@ func clamp255(v int) int {
 	return v
 }
 
-// Resolve picks a theme by name; unknown names fall back to dark.
+// Resolve picks a theme by name: "gocode-dark"/"gocode-light" (or the bare
+// "dark"/"light") are this port's hand-ported default (see Dark/Light);
+// anything else is looked up in the bundled catalog (see catalog.go, and
+// Names for the full list); an unrecognized name falls back to dark, same
+// as an empty one.
 func Resolve(name string) Theme {
-	var t Theme
 	switch name {
 	case "gocode-light", "light":
-		t = Light()
-	default:
-		t = Dark()
+		t := Light()
+		t.Colors = t.Colors.Normalize()
+		return t
+	case "gocode-dark", "dark":
+		t := Dark()
+		t.Colors = t.Colors.Normalize()
+		return t
 	}
+	if t, ok := catalog[name]; ok {
+		return t
+	}
+	t := Dark()
 	t.Colors = t.Colors.Normalize()
 	return t
 }

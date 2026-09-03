@@ -73,13 +73,17 @@ func (a *App) markdownRenderer(width int) *glamour.TermRenderer {
 // silently keep whichever theme rendered a code block *first* for the rest
 // of the process — breaking this app's live dark/light theme toggle. Using
 // one of chroma's pre-registered named styles instead sidesteps that
-// entirely, and tokyonight-night/tokyonight-day are literal, exact matches
-// for this app's Dark()/Light() palettes (Dark() *is* Tokyo Night).
+// entirely. monokai/github are the closest bundled matches to this app's
+// Dark()/Light() palettes (ported from the TS TUI's default "opencode"
+// theme, see Dark()/Light()'s doc comment) — a near-black background with
+// orange/purple accents for dark, a white background with blue/red accents
+// for light — though, being pre-built styles rather than a literal mapping
+// of theme colors onto chroma's roles, neither is an exact match.
 func codeBlockTheme(t theme.Theme) string {
 	if t.Dark {
-		return "tokyonight-night"
+		return "monokai"
 	}
-	return "tokyonight-day"
+	return "github"
 }
 
 // glamourStyleConfig builds a glamour ansi.StyleConfig from the app's own
@@ -132,9 +136,15 @@ func glamourStyleConfig(t theme.Theme) ansi.StyleConfig {
 		Image:     ansi.StylePrimitive{Color: hex(c.Primary), Underline: yes()},
 		ImageText: ansi.StylePrimitive{Color: hex(c.Accent)},
 
+		// TS's markup.raw.inline scope (theme/index.ts's getSyntaxRules) sets
+		// background to theme.background, not backgroundElement: on an opaque
+		// background that's a no-op (inline code just renders as plain
+		// colored text, no highlight box), which is what this mirrors —
+		// backgroundElement here painted a visible box behind every inline
+		// code span that the original theme never draws.
 		Code: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{
 			Color:           hex(c.Accent),
-			BackgroundColor: hex(c.BackgroundElement),
+			BackgroundColor: hex(c.Background),
 		}},
 		CodeBlock: ansi.StyleCodeBlock{
 			StyleBlock: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: hex(c.Text)}},

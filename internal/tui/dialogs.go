@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/langazov/gocode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/theme"
 )
 
 // Dialog panel widths, from the size prop in ui/dialog.tsx.
@@ -354,8 +355,12 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 	// did) made them impossible to search for.
 	switch key {
 	case "esc":
-		a.closeOverlay()
-		return nil
+		// onCancel lets a list dialog undo a live preview it applied as the
+		// selection moved (themesOverlay's theme swap, mirroring
+		// dialog-theme-list.tsx's onCleanup restoring theme.selected when
+		// the dialog closes unconfirmed) — nil for every other list dialog,
+		// where this is just the old plain close.
+		return a.resolveOverlay(o.onCancel)
 	case "up", "ctrl+p":
 		a.moveSelection(o, -1)
 		return nil
@@ -1330,7 +1335,7 @@ func (a *App) loadAgentListCmd() tea.Cmd {
 type agentListMsg struct{ agents []client.Agent }
 
 func (a *App) themesOverlay() {
-	themes := []string{"gocode-dark", "gocode-light"}
+	themes := theme.Names()
 	items := make([]overlayItem, 0, len(themes))
 	for _, name := range themes {
 		name := name
@@ -1345,9 +1350,18 @@ func (a *App) themesOverlay() {
 	a.openList("Themes", items)
 	o := a.overlay
 	o.current = a.theme.Name
+	initial := a.theme
 	o.onMove = func(item overlayItem) {
-		a.theme = themeResolve(item.value) // live preview like DialogThemeList
+		a.setTheme(themeResolve(item.value)) // live preview like DialogThemeList
 		a.invalidateRenderCache()
+	}
+	// dialog-theme-list.tsx's onCleanup: escaping without confirming puts
+	// the pre-dialog theme back, undoing whatever the live preview above
+	// applied (and persisted) while browsing.
+	o.onCancel = func() tea.Msg {
+		a.setTheme(initial)
+		a.invalidateRenderCache()
+		return nil
 	}
 }
 

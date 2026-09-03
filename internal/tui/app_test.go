@@ -166,6 +166,30 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 	return api, server
 }
 
+// TestSetThemeRefreshesInputStyles guards the bug where switching themes
+// (the theme picker's live preview, dialogs.go's themesOverlay) left the
+// prompt textarea's cursor-line background and placeholder color on
+// whatever theme was active when New built it: input.SetStyles bakes the
+// theme's colors into the textarea's own Styles once, so a bare `a.theme =`
+// reassignment elsewhere never touched them again. setTheme exists so every
+// theme change goes through one place that re-derives them too.
+func TestSetThemeRefreshesInputStyles(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.setTheme(themeResolve("gocode-light"))
+
+	rendered := app.promptBox(app.sessionPromptBoxWidth())
+	// #1e1e1e, gocode-dark's backgroundElement (the theme New actually
+	// built the input with) — must not survive the switch.
+	if strings.Contains(rendered, "48;2;30;30;30") {
+		t.Fatalf("prompt box still carries gocode-dark's backgroundElement after setTheme(gocode-light):\n%q", rendered)
+	}
+	// #f5f5f5, gocode-light's backgroundElement — must be what's actually
+	// painted now.
+	if !strings.Contains(rendered, "48;2;245;245;245") {
+		t.Fatalf("prompt box is missing gocode-light's backgroundElement after setTheme(gocode-light):\n%q", rendered)
+	}
+}
+
 func newTestApp(t *testing.T, baseURL string) *App {
 	t.Helper()
 	// Isolate prompt-history.jsonl reads/writes (New loads it from

@@ -58,7 +58,6 @@ func runRootTui(a *clix.Args) error {
 		addr = fmt.Sprintf("127.0.0.1:%d", a.IntOr("port", 0))
 	}
 	model := a.String("model")
-	themeName := "gocode-dark"
 
 	project := a.PositionalOr("project", "")
 	directory := resolveThreadDirectory(project)
@@ -70,6 +69,7 @@ func runRootTui(a *clix.Args) error {
 	if err != nil {
 		return err
 	}
+	themeName := tui.ResolveStartupTheme(stack.Config.Theme, tui.ThemeStatePath())
 	if auto {
 		stack.Runner.Permissions = nil
 	}
