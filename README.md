@@ -51,14 +51,52 @@ installed.
 
 ## Install
 
-### Homebrew (macOS / Linux)
+### Homebrew (macOS and Linux)
+
+The shortest path on either platform. The formula lives in
+[langazov/homebrew-tap](https://github.com/langazov/homebrew-tap) and covers
+macOS on Apple silicon and Intel, and Linux on x86_64 and arm64.
 
 ```sh
 brew install langazov/tap/gocode
 ```
 
-Upgrades come through `brew upgrade gocode` once the tap is added. Homebrew
-does not quarantine formula downloads, so no `xattr` step is needed.
+That one command taps the repository and installs in a single step. To tap
+once and refer to the formula by its short name afterwards:
+
+```sh
+brew tap langazov/tap
+brew install gocode
+```
+
+Either way `gocode` lands on your `PATH` — under `/opt/homebrew/bin` on Apple
+silicon, `/usr/local/bin` on Intel macOS, and
+`/home/linuxbrew/.linuxbrew/bin` on Linux. Check it with:
+
+```sh
+gocode --version
+```
+
+Homebrew does not quarantine what a *formula* downloads, so the
+`xattr -d com.apple.quarantine` step needed for a hand-downloaded binary does
+not apply here.
+
+Later versions arrive through the usual commands — the tap is refreshed by
+`brew update`, which `brew upgrade` runs for you:
+
+```sh
+brew upgrade gocode
+```
+
+To remove it:
+
+```sh
+brew uninstall gocode
+brew untap langazov/tap   # optional, drops the tap as well
+```
+
+Homebrew itself is a prerequisite. If you do not have it, see
+[brew.sh](https://brew.sh) — the same installer covers macOS and Linux.
 
 ### Download a binary
 
