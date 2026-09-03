@@ -314,7 +314,11 @@ jobs:
           printf '%s\n' "$TAP_DEPLOY_KEY" > ~/.ssh/tap_deploy_key
           chmod 600 ~/.ssh/tap_deploy_key
           ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts 2>/dev/null
-          echo "GIT_SSH_COMMAND=ssh -i $HOME/.ssh/tap_deploy_key -o IdentitiesOnly=yes" >> "$GITHUB_ENV"
+          # GITHUB_ENV only takes effect starting with the *next* step, so it
+          # must also be exported here for this step's own `git clone` to
+          # pick it up.
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/tap_deploy_key -o IdentitiesOnly=yes"
+          echo "GIT_SSH_COMMAND=$GIT_SSH_COMMAND" >> "$GITHUB_ENV"
           git clone --depth 1 git@github.com:langazov/homebrew-tap.git tap
           echo "skipped=false" >> "$GITHUB_OUTPUT"
 
