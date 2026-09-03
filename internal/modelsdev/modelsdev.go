@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
-	"sync"
 	"time"
 
 	"github.com/langazov/gocode-go/internal/flag"
@@ -26,6 +25,15 @@ const (
 
 var ErrDisabled = errors.New("modelsdev: fetch disabled")
 
+// cacheEntry is the in-memory catalog cache's state. It travels between
+// goroutines by value over Service.cache rather than being shared and
+// locked, per Go's "share memory by communicating" idiom — see the field
+// comment on cache for how that works.
+type cacheEntry struct {
+	catalog Catalog
+	loaded  bool
+}
+
 type Service struct {
 	Source    string
 	Filepath  string
@@ -33,15 +41,23 @@ type Service struct {
 
 	client *http.Client
 
-	mu     sync.Mutex
-	cached Catalog
-	loaded bool
+	// cache holds exactly one cacheEntry at rest (it is created with that
+	// one value already sent). Get, Refresh/invalidate and the background
+	// refresher coordinate by receiving the entry — taking exclusive
+	// ownership of it — acting on it, and sending it back; there is no
+	// mutex. A goroutine that is mid-populate() simply hasn't sent the
+	// entry back yet, so a concurrent Get on the same Service blocks on the
+	// receive until the first one finishes, which gives concurrent
+	// first-load callers single-flight behavior for free.
+	cache chan cacheEntry
 }
 
 // NewWithCatalog returns a service pre-populated with a fixed catalog and no
 // source to fetch from, for callers (and tests) that already have one.
 func NewWithCatalog(catalog Catalog) *Service {
-	return &Service{cached: catalog, loaded: true}
+	s := &Service{cache: make(chan cacheEntry, 1)}
+	s.cache <- cacheEntry{catalog: catalog, loaded: true}
+	return s
 }
 
 func New() *Service {
@@ -58,33 +74,32 @@ func New() *Service {
 	if path == "" {
 		path = filepath.Join(global.Resolve().Cache, name)
 	}
-	return &Service{
+	s := &Service{
 		Source:    source,
 		Filepath:  path,
 		UserAgent: "gocode/dev/" + flag.Client(),
 		client:    &http.Client{Timeout: 10 * time.Second},
+		cache:     make(chan cacheEntry, 1),
 	}
+	s.cache <- cacheEntry{}
+	return s
 }
 
 // Get returns the catalog, populating it on first call. The result is cached
 // for the process lifetime, matching cachedGet in the TypeScript service.
 func (s *Service) Get(ctx context.Context) (Catalog, error) {
-	s.mu.Lock()
-	if s.loaded {
-		catalog := s.cached
-		s.mu.Unlock()
-		return catalog, nil
+	entry := <-s.cache
+	if entry.loaded {
+		s.cache <- entry
+		return entry.catalog, nil
 	}
-	s.mu.Unlock()
 
 	catalog, err := s.populate(ctx)
 	if err != nil {
+		s.cache <- entry // hand back the same (still-unloaded) entry
 		return nil, err
 	}
-	s.mu.Lock()
-	s.cached = catalog
-	s.loaded = true
-	s.mu.Unlock()
+	s.cache <- cacheEntry{catalog: catalog, loaded: true}
 	return catalog, nil
 }
 
@@ -214,10 +229,17 @@ func (s *Service) Refresh(ctx context.Context, force bool) error {
 	if _, err := s.fetchAndWrite(ctx); err != nil {
 		return err
 	}
-	s.mu.Lock()
-	s.loaded = false
-	s.mu.Unlock()
+	s.invalidate()
 	return nil
+}
+
+// invalidate marks the in-memory cache stale after a successful on-disk
+// refresh, via the same channel handoff Get uses: take the entry, send back
+// an empty (unloaded) one. The next Get then re-populates from the file
+// Refresh just wrote instead of serving what it had cached before.
+func (s *Service) invalidate() {
+	<-s.cache
+	s.cache <- cacheEntry{}
 }
 
 func (s *Service) fresh() bool {
@@ -228,9 +250,25 @@ func (s *Service) fresh() bool {
 	return time.Since(info.ModTime()) < ttl
 }
 
-// StartBackgroundRefresh mirrors the TypeScript 60-minute refresh loop.
+// StartBackgroundRefresh mirrors packages/core/src/models-dev.ts's
+// `refresh().pipe(Effect.repeat(Schedule.spaced("60 minutes")))`: Effect's
+// `repeat` runs the effect once immediately and only then starts spacing
+// further runs, so the very first refresh happens at process start, not an
+// hour into it. A time.Ticker has no equivalent first tick, so without this
+// every gocode start used whatever was already on disk — even days-stale —
+// until a session happened to stay open for 60 minutes.
+//
+// Refresh itself still no-ops when the on-disk cache is within the 5-minute
+// TTL (see fresh()), so this costs a network round trip only when the
+// catalog actually needs it.
 func (s *Service) StartBackgroundRefresh(ctx context.Context) {
+	if flag.DisableModelsFetch() {
+		return
+	}
 	go func() {
+		if err := s.Refresh(ctx, false); err != nil && !errors.Is(err, context.Canceled) {
+			global.LogBackground("modelsdev: startup refresh failed: %v", err)
+		}
 		ticker := time.NewTicker(60 * time.Minute)
 		defer ticker.Stop()
 		for {

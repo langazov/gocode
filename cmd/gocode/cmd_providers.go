@@ -146,11 +146,12 @@ func runProvidersLogin(a *clix.Args) error {
 			return err
 		}
 		info := auth.Info{
-			Type:    credential.Type,
-			Key:     credential.Key,
-			Access:  credential.Access,
-			Refresh: credential.Refresh,
-			Expires: credential.Expires,
+			Type:     credential.Type,
+			Key:      credential.Key,
+			Access:   credential.Access,
+			Refresh:  credential.Refresh,
+			Expires:  credential.Expires,
+			Metadata: credential.Metadata,
 		}
 		if domain := answers["enterpriseUrl"]; domain != "" && answers["deploymentType"] == "enterprise" {
 			info.EnterpriseURL = domain

@@ -157,6 +157,40 @@ func TestDeviceFlowPollStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+// TestDeviceFlowPollSucceedsWithPendingAsHTTP400 covers the opencode console:
+// its device-token endpoint answers a routine "authorization_pending" with a
+// 400 status rather than 200. A strict status check would abort the poll
+// loop on the very first request, which is what happened before postPoll
+// started decoding the body regardless of status.
+func TestDeviceFlowPollSucceedsWithPendingAsHTTP400(t *testing.T) {
+	var calls atomic.Int32
+	flow, _ := newTestFlow(t, func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) < 3 {
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]any{
+				"_tag":              "DeviceTokenError",
+				"error":             "authorization_pending",
+				"error_description": "The authorization request is still pending",
+			})
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"access_token": "zen_token"})
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	token, err := flow.Poll(ctx, &DeviceCode{DeviceCode: "dev", Interval: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token.AccessToken != "zen_token" {
+		t.Errorf("access token = %q, want zen_token", token.AccessToken)
+	}
+	if got := calls.Load(); got != 3 {
+		t.Errorf("polled %d times, want 3", got)
+	}
+}
+
 func TestDeviceFlowSurfacesHTTPFailure(t *testing.T) {
 	flow, _ := newTestFlow(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)

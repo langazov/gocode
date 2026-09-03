@@ -76,9 +76,9 @@ func RefreshGrant(ctx context.Context, client *http.Client, endpoint, clientID, 
 	return &out, nil
 }
 
-// postToken posts to an OAuth endpoint, form-encoded by default and JSON when
-// the provider expects it (GitHub's device endpoints do).
-func postToken(ctx context.Context, client *http.Client, endpoint, userAgent string, jsonBody bool, body map[string]string, out any) error {
+// doPost sends the request body and returns the raw status and bytes,
+// leaving status interpretation to the caller.
+func doPost(ctx context.Context, client *http.Client, endpoint, userAgent string, jsonBody bool, body map[string]string) (int, []byte, error) {
 	var (
 		payload     io.Reader
 		contentType string
@@ -86,7 +86,7 @@ func postToken(ctx context.Context, client *http.Client, endpoint, userAgent str
 	if jsonBody {
 		encoded, err := json.Marshal(body)
 		if err != nil {
-			return err
+			return 0, nil, err
 		}
 		payload, contentType = bytes.NewReader(encoded), "application/json"
 	} else {
@@ -99,7 +99,7 @@ func postToken(ctx context.Context, client *http.Client, endpoint, userAgent str
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, payload)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", contentType)
@@ -112,17 +112,48 @@ func postToken(ctx context.Context, client *http.Client, endpoint, userAgent str
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return err
+		return 0, nil, err
 	}
 	defer res.Body.Close()
 	data, err := io.ReadAll(res.Body)
 	if err != nil {
+		return 0, nil, err
+	}
+	return res.StatusCode, data, nil
+}
+
+// postToken posts to an OAuth endpoint, form-encoded by default and JSON when
+// the provider expects it (GitHub's device endpoints do).
+func postToken(ctx context.Context, client *http.Client, endpoint, userAgent string, jsonBody bool, body map[string]string, out any) error {
+	status, data, err := doPost(ctx, client, endpoint, userAgent, jsonBody, body)
+	if err != nil {
 		return err
 	}
-	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return fmt.Errorf("auth: %s returned %d: %s", endpoint, res.StatusCode, strings.TrimSpace(string(data)))
+	if status < 200 || status >= 300 {
+		return fmt.Errorf("auth: %s returned %d: %s", endpoint, status, strings.TrimSpace(string(data)))
 	}
 	return json.Unmarshal(data, out)
+}
+
+// postPoll posts to a device-token polling endpoint and decodes the body
+// regardless of HTTP status. RFC 8628 servers signal "authorization_pending"
+// and "slow_down" in the JSON body; the opencode console's device endpoint
+// (and others) send those with a 400 status rather than 200, so a strict
+// status check would abort the poll loop before ever reading the verdict —
+// the TS reference (account.ts) parses the body the same way, unconditional
+// on status.
+func postPoll(ctx context.Context, client *http.Client, endpoint, userAgent string, jsonBody bool, body map[string]string, out any) error {
+	status, data, err := doPost(ctx, client, endpoint, userAgent, jsonBody, body)
+	if err != nil {
+		return err
+	}
+	if unmarshalErr := json.Unmarshal(data, out); unmarshalErr != nil {
+		if status < 200 || status >= 300 {
+			return fmt.Errorf("auth: %s returned %d: %s", endpoint, status, strings.TrimSpace(string(data)))
+		}
+		return unmarshalErr
+	}
+	return nil
 }
 
 // JWTClaim reads a single string claim out of a JWT payload without verifying

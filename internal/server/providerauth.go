@@ -202,11 +202,12 @@ func (s *Server) startProviderOAuth(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		info := auth.Info{
-			Type:    credential.Type,
-			Key:     credential.Key,
-			Access:  credential.Access,
-			Refresh: credential.Refresh,
-			Expires: credential.Expires,
+			Type:     credential.Type,
+			Key:      credential.Key,
+			Access:   credential.Access,
+			Refresh:  credential.Refresh,
+			Expires:  credential.Expires,
+			Metadata: credential.Metadata,
 		}
 		if domain := body.Answers["enterpriseUrl"]; domain != "" && body.Answers["deploymentType"] == "enterprise" {
 			info.EnterpriseURL = domain

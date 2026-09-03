@@ -4,10 +4,184 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 )
+
+// TestResolveVerificationURI covers the console's device-code response,
+// which sends verification_uri_complete as a path relative to its own
+// origin (e.g. "/console/device?..."); zenLogin must resolve it against the
+// server before showing it to the user, or the printed prompt is unusable.
+func TestResolveVerificationURI(t *testing.T) {
+	cases := []struct {
+		name   string
+		server string
+		target string
+		want   string
+	}{
+		{
+			name:   "relative path against console server",
+			server: "https://opencode.ai/console",
+			target: "/console/device?user_code=ZSMX-RKCG&client_id=opencode-cli",
+			want:   "https://opencode.ai/console/device?user_code=ZSMX-RKCG&client_id=opencode-cli",
+		},
+		{
+			name:   "already absolute",
+			server: "https://opencode.ai/console",
+			target: "https://opencode.ai/console/device?user_code=ABCD-1234",
+			want:   "https://opencode.ai/console/device?user_code=ABCD-1234",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := resolveVerificationURI(tc.server, tc.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Errorf("resolveVerificationURI(%q, %q) = %q, want %q", tc.server, tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestOpencodeApplySendsOrgHeaderFromMetadata covers the actual chat-request
+// bug: opencode.ai's inference gateway rejects an otherwise-valid bearer
+// token with "Workspace selection is required" unless every request also
+// carries x-opencode-org-id. That id lives in the credential's metadata
+// (set at login by zenAccount), so Apply must forward it as a header.
+func TestOpencodeApplySendsOrgHeaderFromMetadata(t *testing.T) {
+	writeAuth(t, map[string]any{
+		"opencode": map[string]any{
+			"type": "oauth", "access": "tok", "refresh": "r",
+			"expires":  time.Now().Add(time.Hour).UnixMilli(),
+			"metadata": map[string]string{"orgID": "org-123"},
+		},
+	})
+	r := &Resolved{ID: "opencode"}
+	if err := (opencodeTransform{}).Apply(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if r.APIKey != "tok" {
+		t.Errorf("APIKey = %q, want the stored access token", r.APIKey)
+	}
+	if got := r.Options.Headers["x-opencode-org-id"]; got != "org-123" {
+		t.Errorf("x-opencode-org-id header = %q, want org-123", got)
+	}
+}
+
+// TestOpencodeApplyOmitsOrgHeaderWithoutMetadata: a credential from before
+// this metadata existed (or a plain API key) must not crash or send a junk
+// header.
+func TestOpencodeApplyOmitsOrgHeaderWithoutMetadata(t *testing.T) {
+	writeAuth(t, map[string]any{
+		"opencode": map[string]any{"type": "api", "key": "sk-test"},
+	})
+	r := &Resolved{ID: "opencode"}
+	if err := (opencodeTransform{}).Apply(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	if r.APIKey != "sk-test" {
+		t.Errorf("APIKey = %q, want the stored key", r.APIKey)
+	}
+	if _, ok := r.Options.Headers["x-opencode-org-id"]; ok {
+		t.Errorf("headers = %v, want no org header without metadata", r.Options.Headers)
+	}
+}
+
+// TestOpencodeApplySendsBrandedUserAgent: confirmed by packet-capturing the
+// real TS client — opencode.ai's edge rejects any request to zen/v1 or
+// inference/openai/v1 whose User-Agent does not start with "opencode/",
+// answering with a fabricated "FreeUsageLimitError: Rate limit exceeded"
+// regardless of whether the credential is valid. Every other provider's
+// default (or Go's bare "Go-http-client/1.1") trips this, which is why a
+// correctly authenticated request could still come back looking exactly
+// like an invalid key.
+func TestOpencodeApplySendsBrandedUserAgent(t *testing.T) {
+	writeAuth(t, map[string]any{
+		"opencode": map[string]any{"type": "api", "key": "sk-test"},
+	})
+	r := &Resolved{ID: "opencode"}
+	if err := (opencodeTransform{}).Apply(context.Background(), r); err != nil {
+		t.Fatal(err)
+	}
+	got := r.Options.Headers["User-Agent"]
+	if !strings.HasPrefix(got, "opencode/") {
+		t.Errorf("User-Agent = %q, want a value starting with \"opencode/\"", got)
+	}
+}
+
+// TestZenAccountPicksOrgAlphabetically ports credential()'s org selection:
+// when an account belongs to several orgs, the one used (and the one whose
+// id becomes x-opencode-org-id on every request) is the alphabetically
+// first by name, then by id.
+func TestZenAccountPicksOrgAlphabetically(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			t.Errorf("Authorization = %q, want the bearer token", r.Header.Get("Authorization"))
+		}
+		switch r.URL.Path {
+		case "/api/user":
+			w.Write([]byte(`{"id":"user-1","email":"a@example.com"}`))
+		case "/api/orgs":
+			w.Write([]byte(`[{"id":"org-b","name":"Zeta"},{"id":"org-a","name":"Acme"}]`))
+		default:
+			t.Errorf("unexpected path %s", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	metadata, err := zenAccount(context.Background(), server.URL, "tok")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]string{
+		"accountID": "user-1",
+		"email":     "a@example.com",
+		"orgID":     "org-a",
+		"orgName":   "Acme",
+	}
+	for key, value := range want {
+		if metadata[key] != value {
+			t.Errorf("metadata[%q] = %q, want %q", key, metadata[key], value)
+		}
+	}
+}
+
+// TestResolveMergesRegisteredOverlays is the other half of the chat-request
+// bug: Resolve() used to look up a provider straight from the public
+// models.dev catalog, so a CatalogOverlay (the opencode/Zen account's own
+// endpoint and models) never reached the client actually used to send a
+// message — only the separate model-listing path saw it. A connected
+// account kept resolving to the public, unauthenticated endpoint no matter
+// what the overlay said.
+func TestResolveMergesRegisteredOverlays(t *testing.T) {
+	// Isolate from any real opencode/Zen credential on this machine, for the
+	// same reason as TestApplyOverlaysMergesWithoutLosingCatalogFields.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	t.Setenv("ZENOVERLAYTEST_API_KEY", "secret")
+	before := len(registry)
+	Register(stubOverlay{byID: byID{"zen-overlay-stub"}, catalog: modelsdev.Catalog{
+		"zenoverlaytest": {
+			ID:  "zenoverlaytest",
+			NPM: "@ai-sdk/openai-compatible",
+			API: "https://overlay.example.com/v1",
+		},
+	}})
+	t.Cleanup(func() { registry = registry[:before] })
+
+	client, err := FromConfig(context.Background(), "zenoverlaytest", &config.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := baseOf(t, client); got != "https://overlay.example.com/v1" {
+		t.Errorf("base = %q, want the overlay's endpoint", got)
+	}
+}
 
 func TestZenConfigConvertsRemoteProviders(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,6 +226,44 @@ func TestZenConfigConvertsRemoteProviders(t *testing.T) {
 	}
 }
 
+// TestZenConfigDecodesPerModelProviderOverride: opencode.ai routes some
+// models (Claude, Gemini, most of GPT-5-family/Grok/Muse-Spark) through a
+// different upstream API than the account's default OpenAI-compatible Chat
+// Completions endpoint, named per model by a `provider` object. Without
+// decoding it, those requests went to the wrong endpoint entirely and came
+// back as a bare "Endpoint is unavailable" with no indication why.
+func TestZenConfigDecodesPerModelProviderOverride(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"config":{"provider":{
+			"opencode":{"name":"OpenCode","npm":"@ai-sdk/openai-compatible","api":"https://opencode.ai/inference/openai/v1",
+				"models":{
+					"claude-haiku-4-5":{"name":"Claude Haiku 4.5","provider":{"npm":"@ai-sdk/anthropic","api":"https://opencode.ai/inference/anthropic/v1"}},
+					"gpt-5":{"name":"GPT-5","provider":{"npm":"@ai-sdk/openai"}},
+					"big-pickle":{"name":"Big Pickle"}
+				}}
+		}}}`))
+	}))
+	defer server.Close()
+
+	catalog, err := zenConfig(context.Background(), server.URL, "tok", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	models := catalog["opencode"].Models
+
+	claude := models["claude-haiku-4-5"].Provider
+	if claude == nil || claude.NPM != "@ai-sdk/anthropic" || claude.API != "https://opencode.ai/inference/anthropic/v1" {
+		t.Errorf("claude-haiku-4-5.Provider = %+v, want the anthropic override", claude)
+	}
+	gpt5 := models["gpt-5"].Provider
+	if gpt5 == nil || gpt5.NPM != "@ai-sdk/openai" || gpt5.API != "" {
+		t.Errorf("gpt-5.Provider = %+v, want the openai (Responses) override with no api of its own", gpt5)
+	}
+	if models["big-pickle"].Provider != nil {
+		t.Errorf("big-pickle.Provider = %+v, want nil (no override -> the provider's own default protocol)", models["big-pickle"].Provider)
+	}
+}
+
 // TestZenConfigTreats404AsNoOverrides: an account with no overrides is the
 // normal case, not an error.
 func TestZenConfigTreats404AsNoOverrides(t *testing.T) {
@@ -83,6 +295,11 @@ func (s stubOverlay) Overlay(context.Context) (modelsdev.Catalog, error) {
 }
 
 func TestApplyOverlaysMergesWithoutLosingCatalogFields(t *testing.T) {
+	// Isolate from any real opencode/Zen credential on this machine: the
+	// always-registered opencodeTransform is also a CatalogOverlay, and
+	// without this it would make a live network call and add its own
+	// entries on top of the stub's.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	base := modelsdev.Catalog{
 		"acme": {
 			ID:   "acme",
@@ -137,9 +354,58 @@ func TestApplyOverlaysMergesWithoutLosingCatalogFields(t *testing.T) {
 	}
 }
 
+// TestApplyOverlaysPrunesToWhitelist: opencode.ai's /api/config returns a
+// `whitelist` alongside its model map — confirmed against the real
+// account's data that the two are always the same set, i.e. the server
+// already filters `models` to the account's entitlement. Without pruning
+// the merged catalog to that whitelist, the picker offered every
+// publicly-listed model regardless of what this account can actually use,
+// which is indistinguishable from a bug until a non-entitled model is
+// tried and the inference gateway rejects it.
+func TestApplyOverlaysPrunesToWhitelist(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+	base := modelsdev.Catalog{
+		"acme": {
+			ID:   "acme",
+			Name: "Acme",
+			Models: map[string]modelsdev.Model{
+				"public-only":  {ID: "public-only", Name: "Not entitled"},
+				"entitled-one": {ID: "entitled-one", Name: "Public name"},
+			},
+		},
+	}
+	before := len(registry)
+	Register(stubOverlay{byID: byID{"zen-stub"}, catalog: modelsdev.Catalog{
+		"acme": {
+			Whitelist: []string{"entitled-one", "entitled-two"},
+			Models: map[string]modelsdev.Model{
+				"entitled-two": {ID: "entitled-two", Name: "Org-only entitlement"},
+			},
+		},
+	}})
+	t.Cleanup(func() { registry = registry[:before] })
+
+	merged := ApplyOverlays(context.Background(), base)
+
+	acme := merged["acme"]
+	if _, ok := acme.Models["public-only"]; ok {
+		t.Error("a model outside the whitelist survived pruning")
+	}
+	if got, ok := acme.Models["entitled-one"]; !ok || got.Name != "Public name" {
+		t.Errorf("entitled-one = %+v, ok=%v, want the whitelisted public model kept", got, ok)
+	}
+	if _, ok := acme.Models["entitled-two"]; !ok {
+		t.Error("a whitelisted model the overlay itself defines must survive")
+	}
+	if len(acme.Models) != 2 {
+		t.Errorf("models = %v, want exactly the 2 whitelisted entries", acme.Models)
+	}
+}
+
 // TestApplyOverlaysSurvivesFailure: losing the per-account catalog must not
 // take the public one down with it.
 func TestApplyOverlaysSurvivesFailure(t *testing.T) {
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	base := modelsdev.Catalog{"acme": {ID: "acme", Name: "Acme"}}
 	before := len(registry)
 	Register(stubOverlay{byID: byID{"zen-stub"}, err: context.DeadlineExceeded})

@@ -6,10 +6,14 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"sort"
+	"sync"
 	"time"
 
 	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/installation"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
@@ -48,6 +52,21 @@ func (opencodeTransform) Apply(ctx context.Context, r *Resolved) error {
 	if server := zenServer(info); server != zenDefaultServer && r.BaseURL == "" {
 		r.BaseURL = server
 	}
+	// The inference gateway behind the catalog overlay's `api` URL requires
+	// the account's org on every request — without it a real bearer token is
+	// rejected outright ("Workspace selection is required"), which is why a
+	// freshly authorized login otherwise looks identical to an invalid key.
+	if orgID := info.Metadata["orgID"]; orgID != "" {
+		r.Header("x-opencode-org-id", orgID)
+	}
+	// opencode.ai fronts both zen/v1 and inference/openai/v1 with a rule that
+	// rejects any client whose User-Agent does not start with "opencode/" —
+	// confirmed by capturing the real TS client's traffic: identical
+	// requests (same key, same body) succeed with this header and fail with
+	// a fabricated "FreeUsageLimitError: Rate limit exceeded" without it,
+	// regardless of whether the credential is actually valid. Every other
+	// provider's default (or Go's bare "Go-http-client/1.1") trips this.
+	r.Header("User-Agent", "opencode/"+installation.Version)
 	return nil
 }
 
@@ -72,6 +91,21 @@ func (opencodeTransform) RefreshCredential(ctx context.Context, info auth.Info) 
 	return next, nil
 }
 
+// zenOverlayTTL matches modelsdev's own catalog TTL: Overlay is on Resolve's
+// path (built for every message a session sends, and for every candidate
+// Fallback scans), so a live /api/config fetch on each call would turn every
+// turn into an extra network round trip. The account's provider config does
+// not change within a session, so a short in-memory cache is enough.
+const zenOverlayTTL = 5 * time.Minute
+
+var zenOverlayCache struct {
+	sync.Mutex
+	key     string
+	catalog modelsdev.Catalog
+	err     error
+	at      time.Time
+}
+
 // Overlay fetches the account's provider config, porting fetchProviders().
 // Without a stored credential there is nothing to fetch and no overlay.
 func (opencodeTransform) Overlay(ctx context.Context) (modelsdev.Catalog, error) {
@@ -86,7 +120,25 @@ func (opencodeTransform) Overlay(ctx context.Context) (modelsdev.Catalog, error)
 	if token == "" {
 		return nil, nil
 	}
-	return zenConfig(ctx, zenServer(info), token, info.Metadata["orgID"])
+	server := zenServer(info)
+	orgID := info.Metadata["orgID"]
+	key := server + "|" + orgID + "|" + token
+
+	zenOverlayCache.Lock()
+	if zenOverlayCache.key == key && time.Since(zenOverlayCache.at) < zenOverlayTTL {
+		catalog, cachedErr := zenOverlayCache.catalog, zenOverlayCache.err
+		zenOverlayCache.Unlock()
+		return catalog, cachedErr
+	}
+	zenOverlayCache.Unlock()
+
+	catalog, fetchErr := zenConfig(ctx, server, token, orgID)
+
+	zenOverlayCache.Lock()
+	zenOverlayCache.key, zenOverlayCache.catalog, zenOverlayCache.err, zenOverlayCache.at = key, catalog, fetchErr, time.Now()
+	zenOverlayCache.Unlock()
+
+	return catalog, fetchErr
 }
 
 func zenServer(info *auth.Info) string {
@@ -99,6 +151,25 @@ func zenServer(info *auth.Info) string {
 		return server
 	}
 	return zenDefaultServer
+}
+
+// resolveVerificationURI resolves a (possibly relative) verification URI
+// against the console's own origin, the way account.ts does with
+// `new URL(parsed.verification_uri_complete, server + "/")`.
+func resolveVerificationURI(server, target string) (string, error) {
+	base, err := url.Parse(server + "/")
+	if err != nil {
+		return "", err
+	}
+	ref, err := url.Parse(target)
+	if err != nil {
+		return "", err
+	}
+	resolved := base.ResolveReference(ref)
+	if resolved.Scheme != "http" && resolved.Scheme != "https" {
+		return "", fmt.Errorf("opencode: unexpected verification URI scheme %q", resolved.Scheme)
+	}
+	return resolved.String(), nil
 }
 
 func zenLogin(ctx context.Context, _ map[string]string) (Credential, error) {
@@ -117,6 +188,12 @@ func zenLogin(ctx context.Context, _ map[string]string) (Credential, error) {
 	if target == "" {
 		target = code.VerificationURI
 	}
+	// The console sends the verification URI relative to its own origin
+	// (e.g. "/console/device?..."); resolve it against server, matching
+	// account.ts's `new URL(parsed.verification_uri_complete, server + "/")`.
+	if resolved, err := resolveVerificationURI(server, target); err == nil {
+		target = resolved
+	}
 	promptLogin(ctx, LoginPrompt{
 		URL:     target,
 		Code:    code.UserCode,
@@ -127,12 +204,76 @@ func zenLogin(ctx context.Context, _ map[string]string) (Credential, error) {
 	if err != nil {
 		return Credential{}, err
 	}
+	metadata := map[string]string{"server": server}
+	if account, err := zenAccount(ctx, server, token.AccessToken); err == nil {
+		for key, value := range account {
+			metadata[key] = value
+		}
+	}
 	return Credential{
-		Type:    "oauth",
-		Access:  token.AccessToken,
-		Refresh: token.RefreshToken,
-		Expires: auth.TokenResponse{ExpiresIn: token.ExpiresIn}.ExpiresAt(),
+		Type:     "oauth",
+		Access:   token.AccessToken,
+		Refresh:  token.RefreshToken,
+		Expires:  auth.TokenResponse{ExpiresIn: token.ExpiresIn}.ExpiresAt(),
+		Metadata: metadata,
 	}, nil
+}
+
+// zenAccount fetches the account's id/email and org, porting credential() in
+// opencode.ts. The org id in particular is required later, on every
+// inference request (see Apply's x-opencode-org-id header) and on the
+// catalog overlay fetch (Overlay's x-org-id) — without it those endpoints
+// treat an otherwise-valid bearer token as unauthenticated.
+func zenAccount(ctx context.Context, server, accessToken string) (map[string]string, error) {
+	var user struct {
+		ID    string `json:"id"`
+		Email string `json:"email"`
+	}
+	if err := zenGetJSON(ctx, server+"/api/user", accessToken, &user); err != nil {
+		return nil, err
+	}
+	var orgs []struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	if err := zenGetJSON(ctx, server+"/api/orgs", accessToken, &orgs); err != nil {
+		return nil, err
+	}
+	sort.Slice(orgs, func(i, j int) bool {
+		if orgs[i].Name != orgs[j].Name {
+			return orgs[i].Name < orgs[j].Name
+		}
+		return orgs[i].ID < orgs[j].ID
+	})
+	metadata := map[string]string{"accountID": user.ID, "email": user.Email}
+	if len(orgs) > 0 {
+		metadata["orgID"] = orgs[0].ID
+		metadata["orgName"] = orgs[0].Name
+	}
+	return metadata, nil
+}
+
+func zenGetJSON(ctx context.Context, endpoint, accessToken string, out any) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	client := &http.Client{Timeout: 30 * time.Second}
+	res, err := client.Do(req)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	data, err := io.ReadAll(res.Body)
+	if err != nil {
+		return err
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return fmt.Errorf("opencode: %s returned %d", endpoint, res.StatusCode)
+	}
+	return json.Unmarshal(data, out)
 }
 
 // zenProviderConfig is the subset of the remote config this port can express.
@@ -140,10 +281,13 @@ func zenLogin(ctx context.Context, _ map[string]string) (Credential, error) {
 // bodies; those map onto catalog fields the Go port does not model yet, so
 // decoding them here would produce values nothing reads.
 type zenProviderConfig struct {
-	Name   string `json:"name"`
-	NPM    string `json:"npm"`
-	API    string `json:"api"`
-	Models map[string]struct {
+	Name string `json:"name"`
+	NPM  string `json:"npm"`
+	API  string `json:"api"`
+	// Whitelist is the exact set of model ids the account is entitled to;
+	// see mergeProvider's pruning step in transform.go.
+	Whitelist []string `json:"whitelist"`
+	Models    map[string]struct {
 		Name        string `json:"name"`
 		ID          string `json:"id"`
 		Family      string `json:"family"`
@@ -160,6 +304,15 @@ type zenProviderConfig struct {
 			CacheRead  *float64 `json:"cache_read"`
 			CacheWrite *float64 `json:"cache_write"`
 		} `json:"cost"`
+		// Provider routes this specific model through a different SDK/wire
+		// protocol than the rest of the account's catalog — Zen proxies its
+		// Claude, Gemini and GPT-5-family/Grok/Muse-Spark models to the
+		// matching upstream API instead of its own OpenAI-compatible Chat
+		// Completions endpoint. See fromconfig.go's per-model client dispatch.
+		Provider *struct {
+			NPM string `json:"npm"`
+			API string `json:"api"`
+		} `json:"provider"`
 	} `json:"models"`
 }
 
@@ -205,10 +358,11 @@ func zenConfig(ctx context.Context, server, token, orgID string) (modelsdev.Cata
 	catalog := modelsdev.Catalog{}
 	for providerID, item := range payload.Config.Provider {
 		entry := modelsdev.Provider{
-			ID:   providerID,
-			Name: item.Name,
-			NPM:  item.NPM,
-			API:  item.API,
+			ID:        providerID,
+			Name:      item.Name,
+			NPM:       item.NPM,
+			API:       item.API,
+			Whitelist: item.Whitelist,
 		}
 		if len(item.Models) > 0 {
 			entry.Models = map[string]modelsdev.Model{}
@@ -237,6 +391,9 @@ func zenConfig(ctx context.Context, server, token, orgID string) (modelsdev.Cata
 				cost.CacheRead = config.Cost.CacheRead
 				cost.CacheWrite = config.Cost.CacheWrite
 				model.Cost = cost
+			}
+			if config.Provider != nil {
+				model.Provider = &modelsdev.ProviderOverride{NPM: config.Provider.NPM, API: config.Provider.API}
 			}
 			entry.Models[modelID] = model
 		}

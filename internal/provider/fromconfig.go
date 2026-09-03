@@ -120,9 +120,13 @@ func Resolve(ctx context.Context, providerID string, cfg *config.Config) (*Resol
 	}
 
 	// The catalog names the provider's SDK, which is what decides the wire
-	// protocol, and usually its endpoint too.
+	// protocol, and usually its endpoint too. Overlays (an opencode/Zen
+	// account's own provider config, among others) must be merged in here,
+	// not only on the model-listing path, or a connected account keeps
+	// resolving to the public, unauthenticated endpoint.
 	var entry modelsdev.Provider
 	if catalogData, catErr := modelsdev.New().Get(ctx); catErr == nil {
+		catalogData = ApplyOverlays(ctx, catalogData)
 		if found, ok := catalogData[providerID]; ok {
 			entry = found
 			if providerConfig == nil || providerConfig.API == "" {
@@ -153,8 +157,26 @@ func Resolve(ctx context.Context, providerID string, cfg *config.Config) (*Resol
 	return resolved, nil
 }
 
-// Client builds the stream client for a resolved provider.
+// Client builds the stream client for a resolved provider. Most providers
+// speak one protocol for every model they list; a provider whose catalog
+// declares per-model overrides (opencode/Zen chief among them — see
+// model_route.go) gets its default client wrapped so requests for those
+// specific models are routed to the protocol/endpoint they actually need.
 func (r *Resolved) Client() (llm.StreamClient, error) {
+	client, err := r.defaultClient()
+	if err != nil {
+		return nil, err
+	}
+	if modelsNeedRouting(r.Models) {
+		return &modelRoutedClient{resolved: r, fallback: client}, nil
+	}
+	return client, nil
+}
+
+// defaultClient builds the provider-wide client from Resolved.Protocol —
+// what every model gets unless a per-model override in modelRoutedClient
+// says otherwise.
+func (r *Resolved) defaultClient() (llm.StreamClient, error) {
 	// A transform that signs requests or supplied its own key has met the
 	// credential requirement; so has a local endpoint that wants none.
 	needsKey := r.APIKey == "" && r.Options.Sign == nil && !keylessProvider(r.ID)

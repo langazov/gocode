@@ -115,7 +115,7 @@ func (d DeviceFlow) Poll(ctx context.Context, code *DeviceCode) (*DeviceToken, e
 			Error    string `json:"error"`
 			Interval int    `json:"interval"`
 		}
-		err := d.post(ctx, d.TokenURL, map[string]string{
+		err := postPoll(ctx, d.client(), d.TokenURL, d.UserAgent, d.JSONRequest, map[string]string{
 			"client_id":   d.ClientID,
 			"device_code": code.DeviceCode,
 			"grant_type":  "urn:ietf:params:oauth:grant-type:device_code",

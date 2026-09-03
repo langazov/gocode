@@ -13,6 +13,24 @@ import (
 	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
+// TestMergeModelCarriesProviderOverride: an overlay's per-model routing
+// override (see model_route.go) must survive the same merge that layers a
+// per-account catalog onto the public one, or a model that needs Anthropic's
+// API keeps resolving to its provider's default OpenAI-compatible endpoint.
+func TestMergeModelCarriesProviderOverride(t *testing.T) {
+	base := modelsdev.Model{ID: "claude-haiku-4-5", Name: "Public name"}
+	overlay := modelsdev.Model{Provider: &modelsdev.ProviderOverride{NPM: "@ai-sdk/anthropic", API: "https://example.com/v1"}}
+
+	merged := mergeModel(base, overlay)
+
+	if merged.Name != "Public name" {
+		t.Errorf("name = %q, want the base catalog's (overlay did not set it)", merged.Name)
+	}
+	if merged.Provider == nil || merged.Provider.NPM != "@ai-sdk/anthropic" || merged.Provider.API != "https://example.com/v1" {
+		t.Errorf("provider = %+v, want the overlay's override", merged.Provider)
+	}
+}
+
 // TestTransformRegistryMatches confirms the registry dispatches by provider id
 // and that a provider with no transform gets none — the catalog-only path that
 // carries the ~180 OpenAI-compatible providers.

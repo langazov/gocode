@@ -14,6 +14,11 @@ type Provider struct {
 	ID     string           `json:"id"`
 	NPM    string           `json:"npm,omitempty"`
 	Models map[string]Model `json:"models"`
+	// Whitelist restricts Models to exactly these ids when non-empty. It has
+	// no equivalent in the public models.dev catalog; a CatalogOverlay sets
+	// it when the account it represents is entitled to a strict subset of
+	// what the provider otherwise lists (see opencode/Zen's /api/config).
+	Whitelist []string `json:"-"`
 }
 
 type Model struct {

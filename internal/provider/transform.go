@@ -157,6 +157,24 @@ func mergeProvider(base, overlay modelsdev.Provider) modelsdev.Provider {
 		}
 		out.Models = models
 	}
+	// A whitelist means the account is entitled to exactly this set — not
+	// "these plus whatever the public catalog otherwise lists". Without
+	// pruning, the picker offered models the account's own device-flow
+	// token can't actually use (rejected by the inference gateway, not by
+	// this port), indistinguishable from a real outage until tried.
+	if len(overlay.Whitelist) > 0 {
+		allowed := make(map[string]bool, len(overlay.Whitelist))
+		for _, id := range overlay.Whitelist {
+			allowed[id] = true
+		}
+		pruned := make(map[string]modelsdev.Model, len(overlay.Whitelist))
+		for id, model := range out.Models {
+			if allowed[id] {
+				pruned[id] = model
+			}
+		}
+		out.Models = pruned
+	}
 	return out
 }
 
@@ -185,6 +203,9 @@ func mergeModel(base, overlay modelsdev.Model) modelsdev.Model {
 	}
 	if overlay.ToolCall {
 		out.ToolCall = true
+	}
+	if overlay.Provider != nil {
+		out.Provider = overlay.Provider
 	}
 	return out
 }

@@ -6,7 +6,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 const fixture = `{
@@ -103,6 +105,54 @@ func TestGetFetchesAndParses(t *testing.T) {
 	}
 	if model.Interleaved == nil || !model.Interleaved.Enabled {
 		t.Fatalf("expected interleaved enabled")
+	}
+}
+
+// TestGetIsSingleFlightUnderConcurrency exercises the channel-based cache
+// cell (Service.cache) that replaced a sync.Mutex: concurrent first-load
+// Get calls must take turns owning the entry rather than racing each other
+// into populate(), so the network is hit once no matter how many goroutines
+// call Get before anything is cached. Run with -race to also confirm the
+// channel handoff has no data race on the returned Catalog.
+func TestGetIsSingleFlightUnderConcurrency(t *testing.T) {
+	var calls int32
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("GOCODE_MODELS_PATH", "")
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "")
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		time.Sleep(20 * time.Millisecond) // widen the race window
+		w.Write([]byte(fixture))
+	}))
+	defer srv.Close()
+	t.Setenv("GOCODE_MODELS_URL", srv.URL)
+	service := New()
+
+	const goroutines = 20
+	results := make(chan Catalog, goroutines)
+	errs := make(chan error, goroutines)
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			catalog, err := service.Get(context.Background())
+			if err != nil {
+				errs <- err
+				return
+			}
+			results <- catalog
+		}()
+	}
+	for i := 0; i < goroutines; i++ {
+		select {
+		case err := <-errs:
+			t.Fatal(err)
+		case catalog := <-results:
+			if len(catalog) != 2 {
+				t.Errorf("catalog = %d providers, want 2", len(catalog))
+			}
+		}
+	}
+	if got := atomic.LoadInt32(&calls); got != 1 {
+		t.Errorf("server hit %d times by %d concurrent Get calls, want 1 (single-flight)", got, goroutines)
 	}
 }
 
@@ -265,6 +315,79 @@ func TestRefreshSkipsWhenFresh(t *testing.T) {
 	}
 	if !before.ModTime().Equal(after.ModTime()) {
 		t.Fatalf("expected no rewrite for fresh cache")
+	}
+}
+
+// TestStartBackgroundRefreshFetchesImmediatelyOnStartup guards against a
+// time.Ticker's missing first tick: packages/core/src/models-dev.ts uses
+// `Effect.repeat(Schedule.spaced(...))`, which runs the refresh once right
+// away and only then starts spacing further runs, so a stale on-disk
+// catalog gets refreshed at the start of every gocode run rather than up to
+// 60 minutes into one (or never, for a one-shot `gocode run`).
+func TestStartBackgroundRefreshFetchesImmediatelyOnStartup(t *testing.T) {
+	service := testService(t)
+	// Seed a stale cache directly, bypassing Get, so nothing has "just"
+	// fetched it — StartBackgroundRefresh is what must notice it is stale.
+	if err := os.MkdirAll(filepath.Dir(service.Filepath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(service.Filepath, []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(service.Filepath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.StartBackgroundRefresh(ctx)
+
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		info, err := os.Stat(service.Filepath)
+		if err == nil && info.ModTime().After(stale) {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("StartBackgroundRefresh did not refresh a stale cache at startup")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// TestStartBackgroundRefreshSkipsWhenDisabled: offline mode must not spawn a
+// goroutine that hits the network anyway, immediately or on a timer.
+func TestStartBackgroundRefreshSkipsWhenDisabled(t *testing.T) {
+	service := testService(t)
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "1")
+
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&calls, 1)
+		w.Write([]byte(fixture))
+	}))
+	defer srv.Close()
+	service.Source = srv.URL
+
+	if err := os.MkdirAll(filepath.Dir(service.Filepath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-time.Hour)
+	if err := os.WriteFile(service.Filepath, []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(service.Filepath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	service.StartBackgroundRefresh(ctx)
+	time.Sleep(100 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&calls); got != 0 {
+		t.Errorf("fetched %d times with GOCODE_DISABLE_MODELS_FETCH set, want 0", got)
 	}
 }
 

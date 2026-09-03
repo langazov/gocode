@@ -10,6 +10,7 @@ import (
 
 	"github.com/langazov/gocode-go/internal/clix"
 	"github.com/langazov/gocode-go/internal/modelsdev"
+	"github.com/langazov/gocode-go/internal/provider"
 )
 
 // modelsCommand mirrors ModelsCommand in cli/cmd/models.ts ("models [provider]").
@@ -41,6 +42,11 @@ func runModelsCommand(a *clix.Args) error {
 	if err != nil {
 		return err
 	}
+	// A connected account (opencode/Zen among them) narrows or extends what
+	// it publishes beyond the public catalog; without this, the list shows
+	// every publicly-listed model regardless of what the account is
+	// actually entitled to use.
+	catalog = provider.ApplyOverlays(ctx, catalog)
 
 	print := func(providerID string, verbose bool) {
 		provider := catalog[providerID]

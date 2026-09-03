@@ -45,6 +45,10 @@ type Credential struct {
 	Access  string
 	Refresh string
 	Expires int64
+	// Metadata carries login-time details a transform needs on every
+	// resolution (e.g. opencode/Zen stores the account's org id here, which
+	// its catalog overlay and inference requests both require).
+	Metadata map[string]string
 }
 
 // Methods returns the login methods a provider supports.
