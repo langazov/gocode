@@ -134,6 +134,25 @@ type App struct {
 	// sync.data.provider: the dialogs render from it immediately instead of
 	// waiting on a request, and a refresh lands through catalogMsg.
 	catalogModels []client.Model
+	// catalogLoaded records that a catalog reply actually arrived. Without it
+	// the dialogs cannot tell "the request has not come back yet" from "it
+	// came back empty because no provider is connected" — on a fresh install
+	// both are an empty slice, and the model dialog rendered the second as a
+	// "Fetching the model catalog..." that never resolved.
+	catalogLoaded bool
+	// catalogErr is the last catalog fetch failure. loadCatalogCmd used to
+	// discard both errors, so an unreachable API was indistinguishable from
+	// an empty catalog; the dialog shows this instead.
+	catalogErr string
+	// allProviders is the *unfiltered* provider list (?all=true), every entry
+	// in the catalog including ones holding no credential. That is what the
+	// connect dialog offers, and it is deliberately a separate field from
+	// `providers`: that one is the reachable subset, and paidProviderAvailable
+	// reads it to decide whether the user has connected anything at all, so
+	// widening it there would permanently suppress the getting-started card.
+	allProviders       []client.Provider
+	allProvidersLoaded bool
+	allProvidersErr    string
 	// modelCosts maps "provider/model" to the catalog's cost.input, the other
 	// half of that same question.
 	modelCosts map[string]float64
@@ -384,6 +403,13 @@ type messagesMsg struct {
 type catalogMsg struct {
 	models    []client.Model
 	providers []client.Provider
+	// providersOK separates "the provider request failed" from "it returned
+	// nothing", so a failed refresh does not blank the cached list — which
+	// paidProviderAvailable reads, and would misreport as "nothing connected".
+	providersOK bool
+	// err is the model-list failure. The handler then leaves the cached lists
+	// alone rather than blanking them on a transient hiccup.
+	err error
 }
 type mcpMsg struct{ servers []client.MCPServer }
 
@@ -445,14 +471,42 @@ func (a *App) loadSessionsCmd() tea.Cmd {
 	}
 }
 
-// loadCatalogCmd fetches display names for the current model's meta row.
-// Both calls are best-effort; the meta row falls back to raw IDs.
+// rebuildProviderNames rebuilds the id -> display-name map from both provider
+// lists. It reads the unfiltered list too, so a provider the user has not
+// connected still renders under its real name rather than its bare id, and so
+// a catalog refresh does not drop names the connect dialog had already
+// supplied.
+func (a *App) rebuildProviderNames() {
+	a.providerNames = map[string]string{}
+	for _, provider := range a.allProviders {
+		a.providerNames[provider.ID] = provider.Name
+	}
+	for _, provider := range a.providers {
+		a.providerNames[provider.ID] = provider.Name
+	}
+}
+
+// loadCatalogCmd fetches the reachable model and provider lists, which supply
+// display names for the current model's meta row and back the model dialog.
+//
+// The errors are carried rather than dropped: an empty list is a legitimate
+// answer here (nothing connected yet), so silently turning a failed request
+// into one left the dialog claiming the user had no models when the real
+// problem was that the API could not be reached.
 func (a *App) loadCatalogCmd() tea.Cmd {
 	c := a.client
 	return func() tea.Msg {
-		models, _ := c.Models(a.ctx)
-		providers, _ := c.Providers(a.ctx)
-		return catalogMsg{models: models, providers: providers}
+		models, err := c.Models(a.ctx)
+		if err != nil {
+			// The model list is what the dialog renders; with it missing there
+			// is nothing to apply, so report the failure and keep the cache.
+			return catalogMsg{err: err}
+		}
+		// The provider list only feeds display names and the getting-started
+		// card, so a failure there must not throw away the models just
+		// fetched — it reports itself through providersOK instead.
+		providers, providersErr := c.Providers(a.ctx)
+		return catalogMsg{models: models, providers: providers, providersOK: providersErr == nil}
 	}
 }
 
@@ -581,6 +635,16 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.sessions = msg.sessions
 		return nil
 	case catalogMsg:
+		if msg.err != nil {
+			// Keep whatever was already cached: a failed refresh must not
+			// blank a list the user is looking at. The dialog reads this to
+			// explain itself instead of showing an endless "Loading".
+			a.catalogErr = msg.err.Error()
+			a.refreshOpenCatalogDialog()
+			return nil
+		}
+		a.catalogErr = ""
+		a.catalogLoaded = true
 		a.modelNames = map[string]string{}
 		a.contextLimits = map[string]int{}
 		a.modelCosts = map[string]float64{}
@@ -589,9 +653,11 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			a.contextLimits[model.ProviderID+"/"+model.ID] = model.ContextLimit
 			a.modelCosts[model.ProviderID+"/"+model.ID] = model.CostInput
 		}
-		a.providerNames = map[string]string{}
-		a.providers = msg.providers
+		if msg.providersOK {
+			a.providers = msg.providers
+		}
 		a.catalogModels = msg.models
+		a.rebuildProviderNames()
 		// A dialog open before the catalog arrived is showing a stale or empty
 		// list; refresh it in place now that there is one.
 		a.refreshOpenCatalogDialog()
@@ -599,9 +665,6 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		// catalog, and messages rendered before it arrived cached the raw
 		// model ID.
 		a.invalidateRenderCache()
-		for _, provider := range msg.providers {
-			a.providerNames[provider.ID] = provider.Name
-		}
 		// The catalog resolving is this port's analogue of TS's
 		// local.agent.current() becoming defined: the prompt's meta row was
 		// unrenderable before this and fades in now, exactly once
@@ -719,11 +782,19 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		}
 		return nil
 	case providerListMsg:
-		a.providers = msg.providers
-		a.providerNames = map[string]string{}
-		for _, provider := range msg.providers {
-			a.providerNames[provider.ID] = provider.Name
+		if msg.err != nil {
+			a.allProvidersErr = msg.err.Error()
+			a.refreshOpenCatalogDialog()
+			return nil
 		}
+		a.allProvidersErr = ""
+		a.allProvidersLoaded = true
+		// Deliberately not `a.providers`. This is the unfiltered list; writing
+		// it there is what used to make the connect dialog fill and then empty
+		// again, because the slower catalogMsg would land afterwards and
+		// overwrite it with the reachable-only subset.
+		a.allProviders = msg.providers
+		a.rebuildProviderNames()
 		a.refreshOpenCatalogDialog()
 		return nil
 	case providerConnectedMsg:

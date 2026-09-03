@@ -20,13 +20,39 @@ var customProviderID = regexp.MustCompile(`^[a-z0-9][a-z0-9-_]*$`)
 // It opens from the cached provider list and refreshes in the background, for
 // the same reason modelsOverlay does.
 func (a *App) providersOverlay() tea.Cmd {
-	a.openList("Connect a provider", a.providerItems(a.providers))
-	a.overlay.size = dialogLarge
-	if len(a.providers) == 0 {
-		a.overlay.emptyTitle = "Loading providers"
-		a.overlay.emptyBody = "Fetching the provider list..."
-	}
+	a.openProviderDialog()
 	return a.loadAllProvidersCmd()
+}
+
+// openProviderDialog renders the connect dialog from the unfiltered provider
+// list. Shared with refreshOpenCatalogDialog so opening and refreshing cannot
+// disagree about which list to read or what to say when it is empty.
+func (a *App) openProviderDialog() {
+	providers := a.allProviders
+	var items []overlayItem
+	// providerItems always appends the "Other" row, which would leave the
+	// dialog showing a lone "Custom provider" entry and suppress the empty
+	// state entirely — offering a custom provider is not a useful answer
+	// while the real list is still loading or has failed.
+	if len(providers) > 0 {
+		items = a.providerItems(providers)
+	}
+	a.openList("Connect a provider", items)
+	o := a.overlay
+	o.size = dialogLarge
+	if len(providers) == 0 {
+		switch {
+		case a.allProvidersErr != "":
+			o.emptyTitle = "Could not load providers"
+			o.emptyBody = a.allProvidersErr
+		case !a.allProvidersLoaded:
+			o.emptyTitle = "Loading providers"
+			o.emptyBody = "Fetching the provider list..."
+		default:
+			o.emptyTitle = "No providers found"
+			o.emptyBody = "The model catalog returned no providers."
+		}
+	}
 }
 
 // loadAllProvidersCmd refreshes the full provider list, including ones with no
@@ -36,14 +62,19 @@ func (a *App) loadAllProvidersCmd() tea.Cmd {
 	return func() tea.Msg {
 		providers, err := c.AllProviders(a.ctx)
 		if err != nil {
-			return nil
+			return providerListMsg{err: err}
 		}
 		return providerListMsg{providers: providers}
 	}
 }
 
-// providerListMsg carries a refreshed provider list.
-type providerListMsg struct{ providers []client.Provider }
+// providerListMsg carries a refreshed provider list, or the error that stopped
+// one arriving — reported rather than dropped, so a failure is not rendered as
+// "you have no providers".
+type providerListMsg struct {
+	providers []client.Provider
+	err       error
+}
 
 // providerItems ports providerOptions(): priority order, then name.
 func (a *App) providerItems(providers []client.Provider) []overlayItem {

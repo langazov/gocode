@@ -52,6 +52,9 @@ func TestDialogsOpenWithoutWaitingOnTheNetwork(t *testing.T) {
 			// Seed the caches the way a running session would have them.
 			app.catalogModels = testModels
 			app.providers = testProviders
+			// The connect dialog renders the unfiltered list, which is a
+			// separate cache from the reachable-only `providers`.
+			app.allProviders = testProviders
 			app.agentList = []client.Agent{{ID: "build"}, {ID: "plan"}}
 
 			start := time.Now()

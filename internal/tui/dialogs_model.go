@@ -71,10 +71,21 @@ func (a *App) openModelDialog(models []client.Model) {
 	o.current = a.currentModelLabel()
 	o.actions = a.modelDialogActions(models)
 	if len(models) == 0 {
-		// Nothing cached yet: say so rather than showing "No results found",
-		// which reads as "you have no models".
-		o.emptyTitle = "Loading models"
-		o.emptyBody = "Fetching the model catalog..."
+		// Three different reasons produce an empty list, and they need three
+		// different messages. Reporting all of them as "Loading" is what made
+		// a fresh install look like a hung download: the catalog had in fact
+		// arrived, it was just empty because no provider is connected.
+		switch {
+		case a.catalogErr != "":
+			o.emptyTitle = "Could not load models"
+			o.emptyBody = a.catalogErr
+		case !a.catalogLoaded:
+			o.emptyTitle = "Loading models"
+			o.emptyBody = "Fetching the model catalog..."
+		default:
+			o.emptyTitle = "No models available"
+			o.emptyBody = "No provider is connected yet. Press ctrl+p to connect one."
+		}
 	}
 }
 
@@ -92,8 +103,7 @@ func (a *App) refreshOpenCatalogDialog() {
 		a.restoreOverlaySelection(filter, selected)
 	case "Connect a provider":
 		filter, selected := o.filter, a.selectedOverlayValue()
-		a.openList("Connect a provider", a.providerItems(a.providers))
-		a.overlay.size = dialogLarge
+		a.openProviderDialog()
 		a.restoreOverlaySelection(filter, selected)
 	}
 }
