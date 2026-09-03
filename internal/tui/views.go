@@ -73,10 +73,27 @@ func (a *App) viewportHeight() int {
 		// The banner replaces the single blank row its slot always occupied.
 		h -= banner - 1
 	}
+	// Same reasoning for the "/"/"@" autocomplete popup: unlike the banner
+	// it has no reserved slot at all when closed, so its rows have to come
+	// entirely out of this budget. Skipped with a short timeline (there was
+	// always slack below viewportHeight's last window to absorb it into),
+	// which is why this only showed up once a session's history was long
+	// enough to actually fill the viewport.
+	h -= a.autocompletePopupHeight()
 	if h < 3 {
 		h = 3
 	}
 	return h
+}
+
+// autocompletePopupHeight is the rendered height of the autocomplete popup
+// (see autocompleteView), or zero while it's closed.
+func (a *App) autocompletePopupHeight() int {
+	popup := a.autocompleteView(a.sessionPromptBoxWidth())
+	if popup == "" {
+		return 0
+	}
+	return strings.Count(popup, "\n") + 1
 }
 
 // permissionBannerHeight is the rendered height of the permission banner, or

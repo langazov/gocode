@@ -23,6 +23,69 @@ func autocompleteApp(t *testing.T, commands int) *App {
 	return app
 }
 
+// TestAutocompletePopupDoesNotGetCroppedWithLongHistory is the regression
+// for "when the session has content bigger than one page, the / commands
+// menu is truncated at the bottom". viewportHeight() budgeted the timeline
+// window without reserving any rows for the autocomplete popup — unlike the
+// permission banner, which it does account for — so with a short history
+// there was always slack below the timeline's window to silently absorb
+// the popup's extra rows, but once history actually filled the viewport
+// the popup pushed the total rendered height past frame()'s MaxHeight crop
+// and lost its own bottom rows along with the prompt box and footer
+// beneath it.
+func TestAutocompletePopupDoesNotGetCroppedWithLongHistory(t *testing.T) {
+	app := autocompleteApp(t, 8) // enough rows that the popup has real height
+	for i := 0; i < 80; i++ {
+		app.timeline = append(app.timeline, client.Message{
+			ID:   fmt.Sprintf("msg_%d", i),
+			Type: "user",
+			Data: []byte(fmt.Sprintf(`{"text":"line %d"}`, i)),
+		})
+	}
+	app.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	if !app.autocomplete.visible() {
+		t.Fatal("expected the popup to be open")
+	}
+
+	view := app.View()
+	if lines := strings.Split(view, "\n"); len(lines) > app.height {
+		t.Fatalf("view is %d lines tall, want at most app.height=%d — frame() cropped something away", len(lines), app.height)
+	}
+
+	plain := stripANSI(view)
+	// The popup is capped at 10 rows (autocompleteMaxRows); cmd00-07 plus
+	// the two real slash commands autocompleteApp's App also registers
+	// (new, sessions) hit that cap exactly, so the last item's row is the
+	// tightest check that nothing at the bottom of the popup got cropped.
+	if !strings.Contains(plain, "cmd07") {
+		t.Fatalf("the last autocomplete row (cmd07) is missing — the popup got cropped:\n%s", plain)
+	}
+}
+
+// TestViewportHeightReservesRoomForAutocompletePopup pins the actual fix
+// directly: viewportHeight()'s budget has to shrink by exactly the popup's
+// rendered height once the popup opens, the same way it already does for
+// the permission banner. Checking this arithmetic avoids the end-to-end
+// test above having to also fight the chat footer's own independent
+// width-based segment dropping to prove nothing lower got cropped.
+func TestViewportHeightReservesRoomForAutocompletePopup(t *testing.T) {
+	app := autocompleteApp(t, 8)
+	before := app.viewportHeight()
+
+	app.Update(tea.KeyPressMsg{Code: '/', Text: "/"})
+	if !app.autocomplete.visible() {
+		t.Fatal("expected the popup to be open")
+	}
+
+	popupHeight := app.autocompletePopupHeight()
+	if popupHeight == 0 {
+		t.Fatal("expected a non-zero popup height once the popup is open")
+	}
+	if after := app.viewportHeight(); before-after != popupHeight {
+		t.Fatalf("viewportHeight shrank by %d after the popup opened (popup is %d rows), want it to shrink by exactly the popup's height", before-after, popupHeight)
+	}
+}
+
 // TestAutocompleteIsNotADialog is the regression for "the dialog after typing
 // / is not looking ok". The original is an inline dropdown anchored to the
 // prompt, not the centred modal surface this port first reused — which came
