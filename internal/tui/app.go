@@ -696,6 +696,12 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return a.modelMetaFade.Advance(msg)
 	case sessionOpenedMsg:
 		a.active = msg.session
+		// Consumed (applyPendingModel already pinned it to this session if
+		// it was created for that purpose) or stale (a leftover home-view
+		// pick that belongs to no session): either way it must not leak
+		// into whatever session is open next, which reads a.active.Model
+		// as its own source of truth from here on.
+		a.activeModel = ""
 		a.view = viewChat
 		a.timeline = nil
 		a.subagentSiblings = nil
@@ -709,6 +715,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return nil
 	case openedWithPrompt:
 		a.active = msg.session
+		a.activeModel = ""
 		a.view = viewChat
 		a.timeline = nil
 		a.input.Reset()
@@ -1234,12 +1241,32 @@ func (a *App) newSession() tea.Cmd {
 		return staticMsg(statusMsg{text: err.Error()})
 	}
 	c := a.client
+	pendingModel := a.activeModel
 	return func() tea.Msg {
 		session, err := c.CreateSession(a.ctx, client.CreateInput{Directory: dir})
 		if err != nil {
 			return statusMsg{text: "failed to create session: " + err.Error()}
 		}
+		applyPendingModel(a.ctx, c, session, pendingModel)
 		return sessionOpenedMsg{session: session}
+	}
+}
+
+// applyPendingModel pins a model chosen from the home view (before any
+// session existed) onto a session just created for it, setting session.Model
+// in place so the caller's sessionOpenedMsg/openedWithPrompt already carries
+// the right value — sessionOpenedMsg clears a.activeModel once this has run,
+// consumed or not, so it never leaks into a later, unrelated session.
+func applyPendingModel(ctx context.Context, c *client.Client, session *client.Session, pending string) {
+	if pending == "" {
+		return
+	}
+	providerID, modelID, ok := strings.Cut(pending, "/")
+	if !ok {
+		return
+	}
+	if err := c.SetModel(ctx, session.ID, providerID, modelID); err == nil {
+		session.Model = &client.ModelRef{ProviderID: providerID, ID: modelID}
 	}
 }
 
@@ -1254,11 +1281,13 @@ func (a *App) createAndPrompt(text string) tea.Cmd {
 		return staticMsg(statusMsg{text: err.Error()})
 	}
 	c := a.client
+	pendingModel := a.activeModel
 	return func() tea.Msg {
 		session, err := c.CreateSession(a.ctx, client.CreateInput{Directory: dir})
 		if err != nil {
 			return statusMsg{text: "failed to create session: " + err.Error()}
 		}
+		applyPendingModel(a.ctx, c, session, pendingModel)
 		if _, err := c.Prompt(a.ctx, session.ID, text); err != nil {
 			return statusMsg{text: "prompt failed: " + err.Error()}
 		}

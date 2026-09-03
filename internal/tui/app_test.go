@@ -830,11 +830,64 @@ func TestModelDialogSwitchesModel(t *testing.T) {
 	chosen := app.overlay.items[app.overlay.selected]
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	_ = chosen
-	if !app.activeModelSet() {
-		t.Fatal("choosing a model should set the session model")
+	// The session's own Model field is the source of truth once a session
+	// is active (the prompt box reads it directly via currentModelParts) —
+	// not a.activeModel, which is reserved for a pending pick made before
+	// any session exists (see TestModelDialogFromHomeAppliesToNewSession).
+	if app.active.Model == nil {
+		t.Fatal("choosing a model should update the session's Model field")
+	}
+	if app.activeModelSet() {
+		t.Error("a.activeModel should stay empty once the session's own Model field was updated")
 	}
 	if len(api.models) != 1 {
 		t.Fatalf("expected SetModel API call, got %+v", api.models)
+	}
+}
+
+// TestModelDialogFromHomeAppliesToNewSession is the regression for "in home
+// view it is not able to change [the model] at all": picking a model before
+// any session exists used to be a pure no-op (SetModel needs a session ID
+// the home view doesn't have yet). It must instead be remembered and pinned
+// to whichever session gets created for the first prompt.
+func TestModelDialogFromHomeAppliesToNewSession(t *testing.T) {
+	api, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+	if app.view != viewHome {
+		t.Fatal("test expects to start on the home view")
+	}
+
+	driveCmd(t, app, app.modelsOverlay())
+	if app.overlay == nil {
+		t.Fatal("expected model dialog")
+	}
+	app.overlay.selected = 0
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if !app.activeModelSet() {
+		t.Fatal("choosing a model from the home view should record a pending choice")
+	}
+	providerID, modelID, ok := app.currentModelParts()
+	if !ok || providerID == "" || modelID == "" {
+		t.Fatalf("prompt box should reflect the pending choice immediately, got %q/%q ok=%v", providerID, modelID, ok)
+	}
+
+	for _, r := range "hi" {
+		press(t, app, string(r))
+	}
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
+
+	if app.active == nil {
+		t.Fatal("expected a session to be created")
+	}
+	if app.active.Model == nil || app.active.Model.ProviderID != providerID || app.active.Model.ID != modelID {
+		t.Fatalf("new session should be pinned to the chosen model, got %+v", app.active.Model)
+	}
+	if app.activeModelSet() {
+		t.Error("a.activeModel should be cleared once consumed by the new session")
+	}
+	if len(api.models) != 1 || api.models[0].sessionID != app.active.ID {
+		t.Fatalf("expected one SetModel call pinning the new session, got %+v", api.models)
 	}
 }
 

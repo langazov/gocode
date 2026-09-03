@@ -301,14 +301,24 @@ func (a *App) modelRow(model client.Model, category string, favorite bool) overl
 		category: category,
 		footer:   footer,
 		action: func() tea.Msg {
+			a.models.markRecent(modelRef{ProviderID: model.ProviderID, ModelID: model.ID})
 			if a.active == nil {
-				return statusMsg{text: "open a session first"}
+				// Home view: no session exists yet to pin the model to.
+				// Remember the choice — newSession/createAndPrompt apply it
+				// via SetModel right after creating the session, and clear
+				// it once consumed (see sessionOpenedMsg/openedWithPrompt).
+				a.activeModel = label
+				return statusMsg{text: "model: " + label}
 			}
 			if err := a.client.SetModel(a.ctx, a.active.ID, model.ProviderID, model.ID); err != nil {
 				return statusMsg{text: "model switch failed: " + err.Error()}
 			}
-			a.activeModel = label
-			a.models.markRecent(modelRef{ProviderID: model.ProviderID, ModelID: model.ID})
+			// Update the session's own Model field immediately rather than
+			// only a.activeModel: the prompt box's status line reads
+			// a.active.Model directly (currentModelParts), which otherwise
+			// stayed on the old model until the next prompt triggered a
+			// full session refresh.
+			a.active.Model = &client.ModelRef{ProviderID: model.ProviderID, ID: model.ID}
 			return statusMsg{text: "model: " + label}
 		},
 	}
