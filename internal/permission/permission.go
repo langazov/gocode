@@ -36,13 +36,20 @@ var MissingAgentPermissions = Ruleset{{Action: "*", Resource: "*", Effect: Deny}
 // by default rather than falling through to Evaluate's unmatched-rule
 // "ask", plus the one read carve-out that's meaningful with this port's
 // current tool set (reading a .env file asks; its .example counterpart is
-// still allowed). TS's remaining defaults — doom_loop, external_directory,
-// question, plan_enter/plan_exit — gate features/tools this port hasn't
-// implemented yet (see specs/go-port-gaps.md); add their rules here
-// alongside whichever of those lands first.
+// still allowed). TS's remaining defaults — doom_loop and question — gate
+// features/tools this port hasn't implemented yet (see specs/go-port-gaps.md);
+// add their rules here alongside whichever of those lands first.
 func Defaults() Ruleset {
 	return Ruleset{
 		{Action: "*", Resource: "*", Effect: Allow},
+		// Agent switching is opt-in per agent, not part of the allow-all
+		// baseline: build re-allows plan_enter and the plan agent re-allows
+		// plan_exit (cmd/gocode/builtin_agents.go), so neither tool is
+		// reachable from the agent it makes no sense for — and a custom or
+		// subagent that never opted in cannot move the session out from under
+		// the user at all.
+		{Action: "plan_enter", Resource: "*", Effect: Deny},
+		{Action: "plan_exit", Resource: "*", Effect: Deny},
 		// Reaching outside the working directory is always asked for, even
 		// though everything else is allowed by default. Matching agent.ts's
 		// `external_directory: {"*": "ask"}`, which sits beside the same

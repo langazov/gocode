@@ -9,6 +9,21 @@
 # until the user cleared the xattr by hand. Formula downloads are not
 # quarantined.
 #
+# One formula ships all three binaries, because two of them exist only to serve
+# the first:
+#
+#   bin/gocode              the agent
+#   bin/mdlsp               the markdown language server, started by gocode for
+#                           .md files and usable by any LSP-speaking editor
+#   libexec/rag-plugin/     the semantic-search process plugin: binary plus the
+#                           gocode-plugin.json manifest the loader needs
+#
+# Installing is not enabling: a plugin runs only when the config's `plugin`
+# array names it, and a server under libexec is not on PATH for the registry to
+# find. post_install closes both gaps by calling the binary's own config
+# editor, so `brew install` leaves a working setup rather than a pile of files
+# and a paragraph of instructions.
+#
 # Usage:
 #   script/brew-formula.sh <version> <sha256sums-file> [output]
 #
@@ -76,15 +91,72 @@ class Gocode < Formula
 
   def install
     bin.install "gocode"
+    # A general LSP server, not a gocode internal: editors are pointed at it
+    # directly, and gocode's own registry finds it by name on PATH.
+    bin.install "mdlsp"
+    # The plugin stays out of PATH — it is not a command anyone runs — but
+    # keeps its directory layout, since the loader resolves a plugin by
+    # reading gocode-plugin.json next to the binary.
+    libexec.install "rag-plugin"
+  end
+
+  # Wire both extras into the user's global config. Homebrew runs this as the
+  # user, so it reaches ~/.config/gocode; the edits are idempotent, preserve
+  # every other key, and refuse to rewrite a config carrying comments.
+  #
+  # opt_ paths are used rather than the versioned Cellar path so an upgrade
+  # does not leave the config pointing at a directory that no longer exists.
+  #
+  # A failure here is warned about, not raised: the binaries are installed and
+  # usable either way, and a config this cannot parse is a reason to tell the
+  # user rather than to fail their upgrade.
+  def post_install
+    [
+      ["lsp", "enable", "mdlsp",
+       "--global", "--command", opt_bin/"mdlsp", "--extensions", ".md,.markdown"],
+      ["plugin", "enable", (opt_libexec/"rag-plugin").to_s,
+       "--global", "--options", '{"embeddingProvider":"openai"}'],
+    ].each do |args|
+      system bin/"gocode", *args
+    rescue StandardError => e
+      opoo "could not run 'gocode #{args[0]} #{args[1]}': #{e}"
+      opoo "Wire it up by hand; 'brew info gocode' lists the commands."
+    end
+  end
+
+  def caveats
+    <<~EOS
+      Two extras were installed alongside gocode and wired into
+      ~/.config/gocode:
+
+        mdlsp       markdown language server, started for .md files
+        rag-plugin  semantic code search (rag_index / rag_search tools)
+
+      rag-plugin embeds through an OpenAI-compatible endpoint, so it needs a
+      credential before its tools will work:
+
+        gocode auth login
+
+      To turn either off again (the files stay installed):
+
+        gocode lsp disable mdlsp
+        gocode plugin disable #{opt_libexec}/rag-plugin
+    EOS
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/gocode --version")
+    assert_match "mdlsp", shell_output("#{bin}/mdlsp --version")
+    # The manifest is what makes the directory loadable as a plugin.
+    assert_predicate libexec/"rag-plugin/gocode-plugin.json", :exist?
   end
 end
 EOF
 }
 
+# Ruby's #{...} interpolations survive this script's heredoc untouched: bash
+# expands $-prefixed forms, and #{ is not one. Only ${...} would need escaping,
+# and the formula uses none.
 if [ -n "$output" ]; then
   mkdir -p "$(dirname "$output")"
   render > "$output"

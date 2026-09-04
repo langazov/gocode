@@ -34,6 +34,18 @@ type SessionNode struct {
 	// liveness hint only: the bus drops events under pressure, so the
 	// authoritative timeline always comes from a Messages fetch.
 	Text map[string]*strings.Builder
+	// Agent is the session's agent as of the last switch seen on the stream,
+	// empty until one arrives. Plan mode switches the agent server-side from
+	// inside a turn, so this is the only way the interface learns about a
+	// change it did not initiate itself.
+	Agent string
+	// Asks counts question and permission requests raised or settled on this
+	// session. It is a change signal, not a quantity: the pending requests
+	// themselves are fetched over HTTP, and this only says when to go look.
+	// A turn parked on an unanswered ask makes no further events at all, so
+	// without it the interface waits out its 10s tick before showing the
+	// prompt that is holding the session up.
+	Asks int
 }
 
 func newSessionNode(id string) *SessionNode {
@@ -47,6 +59,8 @@ func (n *SessionNode) clone() *SessionNode {
 	out := &SessionNode{
 		ID:    n.ID,
 		Busy:  n.Busy,
+		Agent: n.Agent,
+		Asks:  n.Asks,
 		Tools: make(map[string]ToolState, len(n.Tools)),
 		Text:  make(map[string]*strings.Builder, len(n.Text)),
 	}
@@ -135,6 +149,20 @@ func (t *tree) apply(e client.Event) bool {
 		state := node.Tools[callID]
 		state.CallID, state.Status = callID, status
 		node.Tools[callID] = state
+		t.dirty[sessionID] = true
+		return true
+	case "session.next.question.asked", "session.next.question.settled",
+		"session.next.permission.asked":
+		node.Asks++
+		return true
+	case "session.next.agent.switched":
+		agent, _ := e.Data["agent"].(string)
+		if agent == "" || agent == node.Agent {
+			return false
+		}
+		node.Agent = agent
+		// Dirty: the switch is a timeline entry of its own, so the durable
+		// history the interface shows is now behind.
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.step.ended", "session.next.step.failed":

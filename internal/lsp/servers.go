@@ -202,6 +202,14 @@ var builtinServers = []Server{
 		Command:     []string{"sourcekit-lsp"},
 		RootMarkers: []string{"Package.swift"},
 	},
+	{
+		// This repo's own markdown server (cmd/mdlsp). Like every other entry
+		// it runs only when the binary is on PATH: `make install-mdlsp`.
+		ID:          "mdlsp",
+		Extensions:  []string{".md", ".markdown", ".mdown", ".mkd"},
+		Command:     []string{"mdlsp"},
+		RootMarkers: []string{},
+	},
 }
 
 // Available reports whether the server's binary is on PATH.
@@ -342,6 +350,8 @@ func languageID(path string) string {
 		return "latex"
 	case ".prisma":
 		return "prisma"
+	case ".md", ".markdown", ".mdown", ".mkd":
+		return "markdown"
 	}
 	if strings.EqualFold(filepath.Base(path), "Dockerfile") {
 		return "dockerfile"

@@ -54,7 +54,7 @@ installed.
 |---|---|
 | **Zero runtime deps** | `CGO_ENABLED=0` everywhere. SQLite is [modernc](https://gitlab.com/cznic/sqlite), a pure-Go translation — so cross-compiling all six targets happens on one Linux runner. |
 | **Durable by construction** | Every turn is event-sourced into SQLite. Kill the process mid-stream and the session resumes exactly where it stopped. |
-| **Agent-native** | 13 built-in tools, sub-agent spawning, MCP servers, skills, plugins, and 27 language servers wired into the same permission engine. |
+| **Agent-native** | 13 built-in tools, sub-agent spawning, MCP servers, skills, plugins, and 28 language servers wired into the same permission engine. |
 | **Extensible** | Plugins hook the request, the prompt, tool calls and permissions, and can add tools of their own. A plugin is an executable in any language — the binary stays one static file. |
 | **Actually tested** | 960 tests across 34 packages, ~25k lines of test code against ~41k lines of source. |
 
@@ -84,6 +84,24 @@ silicon, `/usr/local/bin` on Intel macOS, and
 
 ```sh
 gocode --version
+```
+
+The formula installs two optional extras alongside the agent and wires both
+into `~/.config/gocode`, because installing something is not the same as
+enabling it — a plugin runs only when the config's `plugin` array names it:
+
+| Installed | What it does |
+|---|---|
+| `mdlsp` (on `PATH`) | markdown language server: diagnostics for broken links and anchors, heading outline, rename. gocode starts it for `.md` files, and any LSP-speaking editor can point at it too |
+| `rag-plugin` (in `libexec`) | semantic code search, adding the `rag_index` and `rag_search` tools |
+
+`rag-plugin` embeds through an OpenAI-compatible endpoint, so run
+`gocode auth login` before its tools will work. Either extra can be switched
+off without uninstalling anything:
+
+```sh
+gocode lsp disable mdlsp
+gocode plugin disable "$(brew --prefix gocode)/libexec/rag-plugin"
 ```
 
 Homebrew does not quarantine what a *formula* downloads, so the

@@ -69,7 +69,7 @@ func (a *App) viewportHeight() int {
 	// account for. Without this the column overflows and frame()'s MaxHeight
 	// crops from the bottom — taking the banner's own buttons with it, which
 	// is the one part of it the user has to reach.
-	if banner := a.permissionBannerHeight(); banner > 0 {
+	if banner := a.askBannerHeight(); banner > 0 {
 		// The banner replaces the single blank row its slot always occupied.
 		h -= banner - 1
 	}
@@ -96,10 +96,10 @@ func (a *App) autocompletePopupHeight() int {
 	return strings.Count(popup, "\n") + 1
 }
 
-// permissionBannerHeight is the rendered height of the permission banner, or
-// zero when none is showing.
-func (a *App) permissionBannerHeight() int {
-	banner := a.permissionBanner()
+// askBannerHeight is the rendered height of the blocking-prompt banner
+// (permission or question), or zero when none is showing.
+func (a *App) askBannerHeight() int {
+	banner := a.askBanner()
 	if banner == "" {
 		return 0
 	}
@@ -208,7 +208,7 @@ func (a *App) viewChat() string {
 	// subagent footer is appended only when it renders, so a root session's
 	// row budget — and with it frame()'s MaxHeight crop of the footer — is
 	// unchanged.
-	chat = append(chat, "", a.indentBlock(a.permissionBanner()))
+	chat = append(chat, "", a.indentBlock(a.askBanner()))
 	if footer := a.subagentFooter(); footer != "" {
 		chat = append(chat, a.indentBlock(footer))
 	}
@@ -435,6 +435,116 @@ func formatTokens(count int) string {
 		return fmt.Sprintf("%.1fK", float64(count)/1000)
 	}
 	return fmt.Sprintf("%d", count)
+}
+
+// questionBanner renders a pending ask from the question tool (which is what
+// plan_enter and plan_exit go through). It shares the permission banner's
+// slot and shape — both are a blocked turn asking the user something — but is
+// keyed on Primary rather than Warning: a question is a choice, not a risk.
+//
+// Returns "" when nothing is pending, which is what keeps it out of the
+// layout's height budget.
+func (a *App) questionBanner() string {
+	prompt := a.currentQuestion()
+	if prompt == nil {
+		return ""
+	}
+
+	button := func(label string, selected, ticked bool) string {
+		bg := a.theme.BackgroundElement
+		fg := a.theme.TextMuted
+		if selected {
+			bg = a.theme.Primary
+			fg = a.theme.Background
+		}
+		mark := ""
+		if prompt.Multiple {
+			// Multi-select needs the chosen set visible even for the options
+			// the cursor is not on; the highlight alone cannot show both.
+			mark = "○ "
+			if ticked {
+				mark = "● "
+			}
+		}
+		return lipgloss.NewStyle().Foreground(fg).Background(bg).Render(" " + mark + label + " ")
+	}
+	buttons := make([]string, 0, len(prompt.Options))
+	for i, option := range prompt.Options {
+		buttons = append(buttons, button(option.Label, a.questionChoice == i, a.questionPicked[i]))
+	}
+
+	hints := a.styles().Text.Render("⇆") + " " + a.styles().Muted.Render("select")
+	if prompt.Multiple {
+		hints += "  " + a.styles().Text.Render("space") + " " + a.styles().Muted.Render("toggle")
+	}
+	hints += "  " + a.styles().Text.Render("enter") + " " + a.styles().Muted.Render("confirm") +
+		"  " + a.styles().Text.Render("esc") + " " + a.styles().Muted.Render("skip")
+
+	barLeft := strings.Join(buttons, " ")
+	inner := a.contentWidth() - 1 - 5
+	gap := inner - lipgloss.Width(barLeft) - lipgloss.Width(hints)
+	bar := barLeft
+	if gap >= 1 {
+		bar += strings.Repeat(" ", gap) + hints
+	} else {
+		bar += "\n" + hints
+	}
+	barStyle := lipgloss.NewStyle().
+		Background(a.theme.BackgroundElement).
+		PaddingTop(1).
+		PaddingBottom(1).
+		PaddingLeft(2).
+		PaddingRight(3).
+		Width(a.contentWidth() - 1)
+
+	header := prompt.Header
+	if header == "" {
+		header = "Question"
+	}
+	// With several questions in one request, say where the user is: answering
+	// the first of three and seeing no progress is indistinguishable from the
+	// banner having failed to advance.
+	if total := len(a.question.Questions); total > 1 {
+		header = fmt.Sprintf("%s (%d/%d)", header, a.questionIndex+1, total)
+	}
+	content := []string{
+		lipgloss.JoinHorizontal(lipgloss.Top,
+			a.styles().Text.Render("?"), " ", a.styles().Text.Render(header)),
+	}
+	body := strings.Join(wrapWords(prompt.Question, a.contentWidth()-6), "\n")
+	if body != "" {
+		content = append(content, "", a.styles().Muted.Render(body))
+	}
+	if len(prompt.Options) > 0 {
+		// The highlighted option's description, which is where the question
+		// tool puts the consequence of each choice.
+		if description := prompt.Options[min(a.questionChoice, len(prompt.Options)-1)].Description; description != "" {
+			content = append(content, "", a.styles().Muted.Render(
+				strings.Join(wrapWords(description, a.contentWidth()-6), "\n")))
+		}
+	}
+
+	style := lipgloss.NewStyle().
+		Border(splitBorder(), false, false, false, true).
+		BorderForeground(a.theme.Primary).
+		Background(a.theme.BackgroundPanel).
+		PaddingTop(1).
+		PaddingBottom(1).
+		PaddingLeft(1).
+		PaddingRight(3).
+		Width(borderBoxWidth(a.contentWidth() - 2))
+	return style.Render(strings.Join(content, "\n")) + "\n" + barStyle.Render(bar)
+}
+
+// askBanner is whichever blocking prompt the active session is parked on.
+// They share one slot because they cannot usefully stack: a permission is
+// asked before its tool runs, so answering it is what lets the question's tool
+// reach the point of asking anything.
+func (a *App) askBanner() string {
+	if banner := a.permissionBanner(); banner != "" {
+		return banner
+	}
+	return a.questionBanner()
 }
 
 // permissionBanner mirrors the PermissionPrompt: a warning-bordered

@@ -82,6 +82,19 @@ type App struct {
 	permissionChoice int // selected option: 0 once, 1 always, 2 reject
 	stats            *client.Stats
 
+	// question is the pending ask blocking the active session's turn, and
+	// questionIndex which of its prompts is being answered — a request may
+	// carry several, answered in order, with questionAnswers accumulating the
+	// settled ones until the whole set can be replied at once.
+	question        *client.QuestionRequest
+	questionIndex   int
+	questionChoice  int
+	questionPicked  map[int]bool // multi-select: option indices toggled on
+	questionAnswers [][]string
+	// asksSeen is the last SessionNode.Asks the active session reported, so a
+	// new ask (or one settled elsewhere) triggers exactly one refetch.
+	asksSeen int
+
 	// interruptArmed ports the prompt's `store.interrupt` counter: the
 	// session.interrupt command is a two-press gesture, and the footer's hint
 	// row reads this to switch between "esc interrupt" and "esc again to
@@ -150,6 +163,12 @@ type App struct {
 	skillList       []client.Skill
 	skillListLoaded bool
 	skillListErr    string
+	// memoryList is the cached memory list backing the /memory manager, on the
+	// same pattern: the dialog opens from the cache and a refresh lands
+	// through memoryListMsg.
+	memoryList       []client.Memory
+	memoryListLoaded bool
+	memoryListErr    string
 	// catalogModels is the last-fetched model list, the port of TS's
 	// sync.data.provider: the dialogs render from it immediately instead of
 	// waiting on a request, and a refresh lands through catalogMsg.
@@ -382,33 +401,52 @@ func (a *App) tick() tea.Cmd {
 	return tea.Tick(10*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// applySnapshot folds one aggregated snapshot into the model, reporting
-// whether the active session's durable timeline needs a refetch.
+// snapshotEffect names the refetches one snapshot implies. Both are things the
+// event stream can only signal, not carry: the durable timeline and the
+// pending ask lists are served over HTTP.
+type snapshotEffect struct {
+	timeline bool
+	asks     bool
+}
+
+// applySnapshot folds one aggregated snapshot into the model, reporting what
+// the active session now needs refetched.
 //
 // All per-event work happens on the aggregator goroutine (aggregator.go); this
 // runs on the main goroutine and is therefore deliberately cheap — a map
 // lookup and a pointer swap, regardless of how many agents are running.
-func (a *App) applySnapshot(snapshot Snapshot) bool {
+func (a *App) applySnapshot(snapshot Snapshot) snapshotEffect {
 	a.agents = snapshot
 	a.dropped += snapshot.Dropped
 	if a.active == nil {
-		return false
+		return snapshotEffect{}
 	}
 	node := snapshot.Sessions[a.active.ID]
 	if node == nil {
 		// Only subagent sessions reported activity this frame.
-		return false
+		return snapshotEffect{}
 	}
 	a.streaming = node.Text
+	// A switch the server made on its own (plan_enter/plan_exit) has to move
+	// the footer's agent indicator too, or the interface keeps claiming Build
+	// while the session runs as Plan.
+	if node.Agent != "" && node.Agent != a.activeAgent {
+		a.activeAgent = node.Agent
+	}
 	// node.Busy alone is not the status: the aggregator only learns a turn
 	// started once the runner publishes step.started, which it does lazily,
 	// when the model's first token arrives. See sessionBusy.
 	a.busy = node.Busy || sessionBusy(a.timeline)
+	effect := snapshotEffect{}
+	if node.Asks != a.asksSeen {
+		a.asksSeen = node.Asks
+		effect.asks = true
+	}
 	if snapshot.Dirty[a.active.ID] {
 		a.scrollOffset = 0
-		return true
+		effect.timeline = true
 	}
-	return false
+	return effect
 }
 
 // activeSubagents lists the child sessions that reported activity, so the UI
@@ -476,6 +514,8 @@ type subagentSiblingsMsg struct {
 
 type sessionOpenedMsg struct{ session *client.Session }
 type permissionsMsg struct{ pending []client.PermissionRequest }
+
+type questionsMsg struct{ pending []client.QuestionRequest }
 type promptSentMsg struct {
 	sessionID string
 	text      string
@@ -657,6 +697,20 @@ func (a *App) loadPermissions(sessionID string) tea.Cmd {
 	}
 }
 
+// loadQuestions fetches the asks blocking this session. Paired with
+// loadPermissions everywhere: both park the turn, and a client that polls one
+// without the other leaves the session looking hung for whichever it missed.
+func (a *App) loadQuestions(sessionID string) tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		pending, err := c.Questions(a.ctx, sessionID)
+		if err != nil {
+			return nil
+		}
+		return questionsMsg{pending: pending}
+	}
+}
+
 // Update dispatches msg then syncs the terminal window title, mirroring
 // app.tsx's createEffect over the current route/session — rather than
 // hooking every place a.view/a.active changes, this just recomputes the
@@ -683,7 +737,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case tickMsg:
 		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd(), a.loadLSPCmd()}
 		if a.active != nil {
-			cmds = append(cmds, a.loadPermissions(a.active.ID))
+			cmds = append(cmds, a.loadPermissions(a.active.ID), a.loadQuestions(a.active.ID))
 			cmds = append(cmds, a.loadStats(a.active.ID))
 			if a.sidebar {
 				cmds = append(cmds, a.loadSidebarTodos())
@@ -827,12 +881,20 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case permissionsMsg:
 		a.applyPermissions(msg.pending)
 		return nil
+	case questionsMsg:
+		a.applyQuestions(msg.pending)
+		return nil
 	case promptSentMsg:
 		if msg.sessionID == "" || a.active == nil {
 			return nil
 		}
 		a.busy = true
-		cmds := []tea.Cmd{a.loadPermissions(a.active.ID), a.startSpinner(), a.refreshSessionCmd(a.active.ID)}
+		cmds := []tea.Cmd{
+			a.loadPermissions(a.active.ID),
+			a.loadQuestions(a.active.ID),
+			a.startSpinner(),
+			a.refreshSessionCmd(a.active.ID),
+		}
 		return tea.Batch(cmds...)
 	case sessionRefreshedMsg:
 		// The server auto-titles a session from its first prompt
@@ -859,10 +921,17 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		// applySnapshot is where a live turn's busy state actually lands (the
 		// aggregator is the only thing watching the event stream), so this is
 		// the path that has to keep the spinner running.
-		dirty := a.applySnapshot(msg.snapshot)
+		effect := a.applySnapshot(msg.snapshot)
 		cmds := []tea.Cmd{a.startSpinner()}
-		if dirty && a.active != nil {
-			cmds = append(cmds, a.loadMessages(a.active.ID))
+		if a.active != nil {
+			if effect.timeline {
+				cmds = append(cmds, a.loadMessages(a.active.ID))
+			}
+			// A turn parked on an ask emits nothing further, so this is the
+			// only prompt-ly signal the interface gets until its slow tick.
+			if effect.asks {
+				cmds = append(cmds, a.loadPermissions(a.active.ID), a.loadQuestions(a.active.ID))
+			}
 		}
 		return tea.Batch(cmds...)
 	case agentListMsg:
@@ -885,6 +954,30 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			filter, selected := o.filter, a.selectedOverlayValue()
 			a.openSkillDialog(a.skillList)
 			a.restoreOverlaySelection(filter, selected)
+		}
+		return nil
+	case memoryListMsg:
+		if msg.err != nil {
+			a.memoryListErr = msg.err.Error()
+		} else {
+			a.memoryListErr = ""
+			a.memoryListLoaded = true
+			a.memoryList = msg.memories
+		}
+		// Only rebuild the dialog when it is the one open. A quick add from
+		// the prompt refreshes the cache without stealing focus.
+		if o := a.overlay; o != nil && o.kind == overlayList && o.title == "Memories" {
+			filter, selected := o.filter, a.selectedOverlayValue()
+			a.openMemoryDialog(a.memoryList)
+			a.restoreOverlaySelection(filter, selected)
+		} else if msg.reopen && a.overlay == nil {
+			// An add or edit ran through an input dialog, which closed the
+			// manager on submit. Put it back rather than dropping the user
+			// out of the list they were working in.
+			a.openMemoryDialog(a.memoryList)
+		}
+		if msg.status != "" {
+			return staticMsg(statusMsg{text: msg.status})
 		}
 		return nil
 	case providerListMsg:
@@ -1076,6 +1169,12 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	if a.permission != nil {
 		return a.handlePermissionKey(msg)
+	}
+	// After permissions: a permission request is asked before the tool runs,
+	// so if both are somehow outstanding the permission is the older one and
+	// answering it is what lets the question's tool proceed.
+	if a.question != nil {
+		return a.handleQuestionKey(msg)
 	}
 
 	if msg.String() == "up" || msg.String() == "down" {
@@ -1316,6 +1415,138 @@ func (a *App) handlePermissionKey(msg tea.KeyMsg) tea.Cmd {
 		}
 		return nil
 	}
+}
+
+// handleQuestionKey drives the question banner: left/right (or h/l) move
+// between options, space toggles one on a multi-select, enter confirms, and
+// escape rejects the whole request.
+//
+// Rejecting is not a cosmetic escape hatch — the tool that asked is parked on
+// a channel, so escape is the user's only way to release a turn they do not
+// want to answer.
+func (a *App) handleQuestionKey(msg tea.KeyMsg) tea.Cmd {
+	request := a.question
+	prompt := a.currentQuestion()
+	if prompt == nil {
+		return nil
+	}
+	count := len(prompt.Options)
+	switch msg.String() {
+	case "left", "h", "up", "shift+tab":
+		if count > 0 {
+			a.questionChoice = (a.questionChoice + count - 1) % count
+		}
+		return nil
+	case "right", "l", "down", "tab":
+		if count > 0 {
+			a.questionChoice = (a.questionChoice + 1) % count
+		}
+		return nil
+	case " ", "space":
+		if prompt.Multiple && count > 0 {
+			if a.questionPicked == nil {
+				a.questionPicked = map[int]bool{}
+			}
+			a.questionPicked[a.questionChoice] = !a.questionPicked[a.questionChoice]
+		}
+		return nil
+	case "esc", "escape":
+		a.clearQuestion()
+		c, requestID := a.client, request.ID
+		return func() tea.Msg {
+			if err := c.RejectQuestion(a.ctx, requestID); err != nil {
+				return statusMsg{text: "reject failed: " + err.Error()}
+			}
+			return nil
+		}
+	case "enter":
+		answer := a.selectedLabels(prompt)
+		if len(answer) == 0 {
+			// A multi-select with nothing ticked would send an empty answer
+			// the tool cannot act on; treat enter as selecting the highlighted
+			// option instead of replying with nothing.
+			if count == 0 {
+				return nil
+			}
+			answer = []string{prompt.Options[a.questionChoice].Label}
+		}
+		a.questionAnswers = append(a.questionAnswers, answer)
+		if a.questionIndex+1 < len(request.Questions) {
+			a.questionIndex++
+			a.questionChoice = 0
+			a.questionPicked = nil
+			return nil
+		}
+		answers := a.questionAnswers
+		a.clearQuestion()
+		c, requestID := a.client, request.ID
+		return func() tea.Msg {
+			if err := c.ReplyQuestion(a.ctx, requestID, answers); err != nil {
+				return statusMsg{text: "reply failed: " + err.Error()}
+			}
+			return nil
+		}
+	}
+	return nil
+}
+
+// currentQuestion is the prompt being answered, or nil when none is pending.
+func (a *App) currentQuestion() *client.QuestionPrompt {
+	if a.question == nil || a.questionIndex >= len(a.question.Questions) {
+		return nil
+	}
+	return &a.question.Questions[a.questionIndex]
+}
+
+// selectedLabels is the answer for the current prompt: the ticked options on a
+// multi-select, or the highlighted one otherwise.
+func (a *App) selectedLabels(prompt *client.QuestionPrompt) []string {
+	if !prompt.Multiple {
+		if a.questionChoice < len(prompt.Options) {
+			return []string{prompt.Options[a.questionChoice].Label}
+		}
+		return nil
+	}
+	var out []string
+	for i := range prompt.Options {
+		if a.questionPicked[i] {
+			out = append(out, prompt.Options[i].Label)
+		}
+	}
+	return out
+}
+
+func (a *App) clearQuestion() {
+	a.question = nil
+	a.questionIndex = 0
+	a.questionChoice = 0
+	a.questionPicked = nil
+	a.questionAnswers = nil
+}
+
+// applyQuestions adopts the pending ask for the active session, keeping the
+// in-progress selection when it is still the same request — a refetch on the
+// reconciliation tick must not reset a partly answered multi-question round.
+func (a *App) applyQuestions(pending []client.QuestionRequest) {
+	if a.active == nil {
+		a.clearQuestion()
+		return
+	}
+	for i := range pending {
+		if pending[i].SessionID != a.active.ID {
+			continue
+		}
+		if a.question != nil && a.question.ID == pending[i].ID {
+			a.question = &pending[i]
+			return
+		}
+		a.clearQuestion()
+		a.question = &pending[i]
+		return
+	}
+	// Nothing pending: whatever was showing has been answered or rejected,
+	// here or by another client.
+	a.clearQuestion()
 }
 
 func (a *App) applyPermissions(pending []client.PermissionRequest) {
@@ -1563,7 +1794,7 @@ func (a *App) runSlashCommand(input string) tea.Cmd {
 
 	for _, entry := range a.commandsRegistry() {
 		if entry.matchesSlash(name) {
-			return runItemAction(entry)
+			return runItemActionWithArgs(entry, arguments)
 		}
 	}
 	return staticMsg(statusMsg{text: "unknown command: /" + name})

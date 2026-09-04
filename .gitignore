@@ -14,6 +14,10 @@
 /cmd/rag-plugin/rag-plugin
 /cmd/rag-plugin/rag-plugin.exe
 
+# The markdown LSP server binary, same pattern.
+/cmd/mdlsp/mdlsp
+/cmd/mdlsp/mdlsp.exe
+
 # Compiled test binaries. `go test -c` and a stray `-o` drop these next to the
 # package; one was committed by accident before this rule existed.
 *.test

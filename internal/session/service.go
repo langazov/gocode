@@ -325,7 +325,12 @@ func (s *Service) SetModel(ctx context.Context, sessionID string, model ModelRef
 	return nil
 }
 
-// SetAgent pins an agent on the session row.
+// SetAgent pins an agent on the session row and announces the switch.
+//
+// The announcement matters because the switch can originate server-side — the
+// plan_enter/plan_exit tools call this from inside a turn — and a client that
+// only tracks agent changes it initiated itself would keep showing the old
+// agent while the session ran under the new one.
 func (s *Service) SetAgent(ctx context.Context, sessionID, agent string) error {
 	res, err := s.DB.Exec(ctx,
 		`UPDATE session SET agent = ?, time_updated = ? WHERE id = ?`,
@@ -336,7 +341,28 @@ func (s *Service) SetAgent(ctx context.Context, sessionID, agent string) error {
 	if affected, _ := res.RowsAffected(); affected == 0 {
 		return fmt.Errorf("Session not found: %s", sessionID)
 	}
-	return nil
+	if s.Bus == nil {
+		return nil
+	}
+	messageID, err := id.Ascending(id.KindMessage)
+	if err != nil {
+		return err
+	}
+	_, err = s.Bus.Publish(ctx, AgentSwitched, map[string]any{
+		"timestamp": time.Now().UnixMilli(),
+		"sessionID": sessionID,
+		"messageID": messageID,
+		"agent":     agent,
+	}, event.PublishOptions{})
+	return err
+}
+
+// EnqueuePrompt admits a prompt for delivery at the session's next idle
+// boundary. Exists as its own method so the tool layer can depend on this one
+// verb without importing the session package for its Delivery type.
+func (s *Service) EnqueuePrompt(ctx context.Context, sessionID, text string) error {
+	_, err := s.Prompt(context.WithoutCancel(ctx), sessionID, text, DeliveryQueue)
+	return err
 }
 
 type Todo struct {
