@@ -196,6 +196,12 @@
   }
   .tab[aria-selected="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 
+  /* ---------- screenshots ---------- */
+  .shots { display: flex; flex-direction: column; gap: 28px; }
+  .shot { margin: 0; border-radius: var(--radius); overflow: hidden; border: 1px solid var(--border); box-shadow: var(--shadow); background: var(--bg-raised); }
+  .shot img { display: block; width: 100%; height: auto; }
+  .shot figcaption { margin: 0; padding: 13px 18px; color: var(--text-muted); font-size: 14px; border-top: 1px solid var(--border); }
+
   table.compat { width: 100%; border-collapse: collapse; font-size: 14.5px; }
   table.compat th, table.compat td { text-align: left; padding: 11px 13px; border-bottom: 1px solid var(--border); }
   table.compat th { color: var(--text-muted); font-weight: 560; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; }
@@ -218,6 +224,7 @@
     <a class="brand" href="#top"><span class="mark">⌘</span> gocode</a>
     <span class="spacer"></span>
     <a class="link" href="#features">Features</a>
+    <a class="link opt" href="#screenshots">Screenshots</a>
     <a class="link opt" href="#install">Install</a>
     <a class="link" href="#downloads">Downloads</a>
     <a class="link opt" href="#parity">Parity</a>
@@ -271,8 +278,8 @@
         </div>
         <div class="card">
           <span class="ico">🔧</span>
-          <h3>14 built-in tools</h3>
-          <p>read, write, edit, apply_patch, glob, grep, bash, webfetch, websearch, todowrite, question, plan and skills — each behind a permission rule.</p>
+          <h3>15 built-in tools</h3>
+          <p>read, write, edit, apply_patch, glob, grep, bash, webfetch, websearch, todowrite, question, plan_enter/plan_exit, skill and task (sub-agent spawning) — each behind a permission rule.</p>
         </div>
         <div class="card">
           <span class="ico">🩺</span>
@@ -292,7 +299,7 @@
         <div class="card">
           <span class="ico">🧠</span>
           <h3>Any provider</h3>
-          <p>A models.dev catalog is embedded, so 212 providers resolve offline. Anthropic, OpenAI and Gemini wire formats, plus Copilot, Azure and ChatGPT sign-in.</p>
+          <p>A models.dev catalog is embedded, so 200+ providers resolve offline. Anthropic, OpenAI (Chat Completions and Responses), and Gemini wire formats, plus Copilot, Azure and ChatGPT sign-in — a single provider can even route different models through different wire formats.</p>
         </div>
         <div class="card">
           <span class="ico">🛡</span>
@@ -306,6 +313,27 @@
         <div class="stat"><b>~25K</b><span>lines of tests</span></div>
         <div class="stat"><b>25 MB</b><span>static binary</span></div>
         <div class="stat"><b>0</b><span>runtime dependencies</span></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="screenshots">
+    <div class="wrap">
+      <h2>See it in action</h2>
+      <p class="sub">The real terminal interface — not a mockup.</p>
+      <div class="shots">
+        <figure class="shot">
+          <img src="assets/gocode-splash.png" alt="The gocode TUI on launch: the gocode wordmark above an empty prompt reading &quot;Ask anything…&quot;, with the active agent and model shown beneath it and the working directory, MCP count and version along the footer." loading="lazy">
+          <figcaption>Launch it in any directory — agent and model live on the prompt, <code class="inline">tab</code> switches agents, <code class="inline">ctrl+p</code> opens commands.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/gocode-session.png" alt="A gocode session mid-answer: syntax-highlighted Go code and prose explaining channels fill the main pane, while a sidebar reports context usage, spend, connected MCP servers and LSP status." loading="lazy">
+          <figcaption>A turn in flight, with context, spend, MCP servers and language servers in the sidebar.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/gocode-markdown.png" alt="Rich markdown rendering in a gocode session: a bulleted list with bold terms and inline code, an H2 heading, a two-column comparison table with colored bullet headers, and a syntax-highlighted Go code block." loading="lazy">
+          <figcaption>Markdown rendered in full — headings, tables, bold/italic/inline code, and syntax-highlighted code blocks.</figcaption>
+        </figure>
       </div>
     </div>
   </section>
