@@ -19,7 +19,7 @@ type Config struct {
 	DisabledProviders []string            `json:"disabled_providers,omitempty"`
 	EnabledProviders  []string            `json:"enabled_providers,omitempty"`
 	Instructions      []string            `json:"instructions,omitempty"`
-	Plugin            []string            `json:"plugin,omitempty"`
+	Plugin            []PluginSpec        `json:"plugin,omitempty"`
 	Agent             map[string]Agent    `json:"agent,omitempty"`
 	Provider          map[string]Provider `json:"provider,omitempty"`
 	MCP               map[string]any      `json:"mcp,omitempty"`

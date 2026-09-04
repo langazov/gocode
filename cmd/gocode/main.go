@@ -16,13 +16,16 @@ import (
 	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/db"
 	"github.com/langazov/gocode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/flag"
 	"github.com/langazov/gocode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/installation"
 	"github.com/langazov/gocode-go/internal/llm"
 	"github.com/langazov/gocode-go/internal/lsp"
 	"github.com/langazov/gocode-go/internal/mcp"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 	"github.com/langazov/gocode-go/internal/modelstate"
 	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/plugin"
 	"github.com/langazov/gocode-go/internal/provider"
 	"github.com/langazov/gocode-go/internal/question"
 	"github.com/langazov/gocode-go/internal/session"
@@ -118,11 +121,19 @@ type stack struct {
 	// must close it themselves — on Windows an open sqlite handle blocks
 	// t.TempDir's cleanup from deleting the file.
 	Database *db.DB
+	// Plugins holds the loaded plugin host backing the runner's hook seams
+	// and any tools plugins contributed.
+	Plugins *plugin.Host
 }
 
 // Close releases the resources bootStack opened. Only tests need this: a
-// running command exits the process instead, which reclaims everything.
+// running command exits the process instead, which reclaims everything —
+// except a process plugin, which is a child the OS does not reap for us, so
+// the host is shut down here regardless.
 func (s *stack) Close() error {
+	if s.Plugins != nil {
+		_ = s.Plugins.Close(context.Background())
+	}
 	return s.Database.Close()
 }
 
@@ -156,6 +167,34 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		return nil, err
 	}
 	cwd, _ := os.Getwd()
+
+	// Plugins load before anything is built from the config, because the
+	// config hook lets them change what gets built — including the default
+	// model resolved just below. Ports the ordering in
+	// packages/opencode/src/plugin/index.ts, where the host is constructed
+	// from the config and then immediately hands it back for mutation.
+	plugins, err := plugin.Load(ctx, plugin.LoadInput{
+		Input: plugin.Input{
+			Directory: cwd,
+			Worktree:  cwd,
+			Version:   installation.Version,
+		},
+		Specs: plugin.Specs(cfg.Plugin),
+		Pure:  flag.Pure(),
+		Report: &plugin.Report{
+			Error: func(spec plugin.Spec, stage plugin.Stage, err error) {
+				global.LogBackground("plugin %s failed at %s: %v", spec.Ref, stage, err)
+			},
+		},
+		Log: func(message string) { global.LogBackground("%s", message) },
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := plugin.ApplyConfig(ctx, plugins, cfg); err != nil {
+		global.LogBackground("plugin config hook failed: %v", err)
+	}
+
 	var lastUsed modelstate.Ref
 	if ref, ok := modelstate.Load(cwd); ok {
 		lastUsed = ref
@@ -167,6 +206,19 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	bus := event.NewBus(database)
 	session.RegisterProjectors(bus)
 	session.RegisterRunnerProjectors(bus)
+	// Plugins see every committed event, porting the bus listener the
+	// TypeScript host installs. Delivery is fire-and-forget on purpose: a
+	// listener runs after the commit, and a slow plugin must not hold up the
+	// next one.
+	if len(plugins.Instances()) > 0 {
+		bus.Listen(func(payload event.Payload) {
+			plugin.Notify(ctx, plugins, plugin.Event{
+				ID:         payload.ID,
+				Type:       payload.Type,
+				Properties: payload.Data,
+			})
+		})
+	}
 
 	providerID, modelID, ok := strings.Cut(modelFlag, "/")
 	if !ok {
@@ -217,6 +269,9 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Asker:     questions,
 		Diagnoser: lspService,
 	})
+	// Plugin tools register after the built-ins so a plugin can replace one
+	// by name, matching the record merge on the TypeScript side.
+	plugin.RegisterTools(tools, plugins, workdir, workdir)
 
 	// Slash commands are assembled after skills are discovered, since a skill
 	// is one of their sources.
@@ -300,6 +355,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Agent:             "build",
 		Model:             session.ModelRef{ProviderID: providerID, ID: modelID},
 		Permissions:       &session.EnginePermissionGate{Engine: permissionEngine},
+		Plugins:           plugins,
 		ContextLimit:      defaultContextLimit,
 		ReasoningVariants: reasoningVariantsResolver(catalog),
 		Pricing:           pricingResolver(catalog),
@@ -361,6 +417,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		LSP:         lspService,
 		Commands:    commands,
 		Database:    database,
+		Plugins:     plugins,
 	}, nil
 }
 

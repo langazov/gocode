@@ -14,6 +14,7 @@ import (
 	"github.com/langazov/gocode-go/internal/event"
 	"github.com/langazov/gocode-go/internal/id"
 	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/plugin"
 	"github.com/langazov/gocode-go/internal/tool"
 )
 
@@ -57,6 +58,11 @@ type Runner struct {
 
 	// Permissions, when set, gates every local tool execution.
 	Permissions PermissionGate
+
+	// Plugins, when set, is consulted at the hook seams in
+	// runner_plugins.go: tool advertisement, request assembly, tool
+	// execution, and permission asks. Nil disables every hook.
+	Plugins *plugin.Host
 
 	// ContextLimit bounds the model context window for compaction budgeting.
 	ContextLimit int
@@ -260,6 +266,7 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 			})
 		}
 	}
+	r.applyToolDefinitions(ctx, tools)
 	if isLastStep {
 		llmMessages = append(llmMessages, llm.AssistantText("", MaxStepsPrompt))
 	}
@@ -267,6 +274,7 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	if resolved.System != "" {
 		system = append(system, resolved.System)
 	}
+	system = r.applySystemTransform(ctx, sessionID, resolved, system)
 	request := llm.Request{
 		ProviderID: resolved.Model.ProviderID,
 		ModelID:    resolved.Model.ID,
@@ -281,6 +289,9 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	if r.ReasoningVariants != nil && resolved.Model.Variant != "" {
 		request.Reasoning = r.ReasoningVariants(resolved.Model.ProviderID, resolved.Model.ID, resolved.Model.Variant)
 	}
+	// Last, so a plugin sees — and can override — every value the runner and
+	// the reasoning variant resolved.
+	r.applyChatParams(ctx, sessionID, resolved, &request)
 
 	var assistantMessageID string
 	var text strings.Builder
@@ -551,6 +562,10 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 	if r.Tools == nil {
 		return "", fmt.Errorf("session: no tool registry")
 	}
+	// Argument rewriting happens before the permission checks, not after:
+	// what a call is allowed to touch is read off its arguments, so a plugin
+	// that rewrites a path must have that path be the one asked about.
+	call.Input = r.applyToolArgs(ctx, sessionID, call.ID, call.Name, call.Input)
 	if r.Permissions != nil {
 		// A tool may imply approvals beyond its own action. The shell does:
 		// its command can reach outside the working directory, which every
@@ -577,7 +592,7 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 			}
 		}
 		resources := r.permissionResourcesFor(call)
-		err := r.Permissions.Assert(ctx, ToolPermissionInput{
+		request := ToolPermissionInput{
 			SessionID:          sessionID,
 			Agent:              agentID,
 			Action:             permissionAction(call.Name),
@@ -585,17 +600,30 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 			Save:               permissionSave(call.Name, resources),
 			AssistantMessageID: assistantMessageID,
 			CallID:             call.ID,
-		})
-		if err != nil {
-			return "", err
+		}
+		// A plugin can settle the request before the user is interrupted,
+		// porting the permission.ask hook. Only an explicit decision counts:
+		// the default status leaves the engine's own evaluation in charge.
+		switch r.askPlugins(ctx, request) {
+		case plugin.PermissionDeny:
+			return "", fmt.Errorf("session: %s denied by plugin", request.Action)
+		case plugin.PermissionAllow:
+		default:
+			if err := r.Permissions.Assert(ctx, request); err != nil {
+				return "", err
+			}
 		}
 	}
-	return r.Tools.Execute(ctx, call.Name, call.Input, tool.ExecContext{
+	output, err := r.Tools.Execute(ctx, call.Name, call.Input, tool.ExecContext{
 		SessionID:          sessionID,
 		Agent:              agentID,
 		AssistantMessageID: assistantMessageID,
 		CallID:             call.ID,
 	})
+	if err != nil {
+		return "", err
+	}
+	return r.applyToolOutput(ctx, sessionID, call.ID, call.Name, call.Input, output), nil
 }
 
 // tool looks a tool up by name, returning nil when the registry has none.

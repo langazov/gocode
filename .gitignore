@@ -4,6 +4,11 @@
 /dist/
 /go/
 
+# `make example-plugin` builds into the plugin's own directory rather than
+# dist/, because gocode-plugin.json names the command relative to it.
+/examples/plugin-echo/plugin-echo
+/examples/plugin-echo/plugin-echo.exe
+
 # Compiled test binaries. `go test -c` and a stray `-o` drop these next to the
 # package; one was committed by accident before this rule existed.
 *.test

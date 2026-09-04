@@ -168,6 +168,14 @@ func convertRequest(request llm.Request) generateRequest {
 	if thinking, ok := request.Reasoning["thinkingConfig"]; ok {
 		config["thinkingConfig"] = thinking
 	}
+	// Gemini spells the sampling controls inside generationConfig rather than
+	// at the top level, so the chat.params hook's values land here.
+	if request.Temperature != nil {
+		config["temperature"] = *request.Temperature
+	}
+	if request.TopP != nil {
+		config["topP"] = *request.TopP
+	}
 	if len(config) > 0 {
 		out.GenerationConfig = config
 	}

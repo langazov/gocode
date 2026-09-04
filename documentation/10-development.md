@@ -120,6 +120,10 @@ Known deliberate divergences:
 | `.well-known` provider config asks for confirmation | it is remote configuration |
 | Unmatched `/command` falls through to a report | silently swallowing input is worse than saying "unknown" |
 | MCP prompts not exposed as commands | `prompts/list` not implemented |
+| External plugins are subprocesses, not imported modules | a linked Go binary cannot load unknown code in-process; see [Plugins](09-integrations.md#plugins) |
+| No runtime install for plugins either | same posture as language servers: a configured plugin is compiled in or already on disk |
+| A failing plugin hook is reported and skipped, not fatal | upstream's `Effect.promise` makes a rejected hook a defect that aborts the turn — one broken third-party plugin should not take down the agent |
+| Plugin auth/provider registrations are built-in only | an OAuth flow is a conversation, not a request/response, and modelling it over stdio would add a callback channel with no user yet |
 
 ## CI
 

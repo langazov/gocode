@@ -83,6 +83,13 @@ type Request struct {
 	Tools      []ToolDefinition
 	ToolChoice string
 	MaxTokens  int
+	// Temperature and TopP are the sampling controls the chat.params plugin
+	// hook adjusts (packages/plugin/src/index.ts). They are pointers because
+	// zero is a meaningful setting and "leave it to the provider" is a
+	// different request — nil sends no field at all, which is what every turn
+	// did before the hook existed.
+	Temperature *float64
+	TopP        *float64
 	// Reasoning carries provider-specific extended-thinking/reasoning-effort
 	// options selected via a model variant (see internal/provider.ReasoningVariants
 	// and packages/opencode/src/provider/transform.ts's reasoningVariants).

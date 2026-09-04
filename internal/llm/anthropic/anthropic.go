@@ -86,6 +86,7 @@ type Request struct {
 	Messages    []Message   `json:"messages"`
 	System      string      `json:"system,omitempty"`
 	Temperature *float64    `json:"temperature,omitempty"`
+	TopP        *float64    `json:"top_p,omitempty"`
 	Stream      bool        `json:"stream,omitempty"`
 	StopSeqs    []string    `json:"stop_sequences,omitempty"`
 	Thinking    *Thinking   `json:"thinking,omitempty"`

@@ -1,0 +1,6 @@
+{
+  "command": ["./plugin-echo"],
+  "env": {
+    "PLUGIN_ECHO_EXAMPLE": "1"
+  }
+}

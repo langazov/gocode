@@ -12,9 +12,11 @@ import (
 	"github.com/langazov/gocode-go/internal/clix"
 	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/flag"
 	"github.com/langazov/gocode-go/internal/global"
 	"github.com/langazov/gocode-go/internal/installation"
 	"github.com/langazov/gocode-go/internal/lsp"
+	"github.com/langazov/gocode-go/internal/plugin"
 )
 
 // processStart is used by "debug startup" to print elapsed process time,
@@ -111,16 +113,27 @@ func debugInfoCommand() *clix.Command {
 		fmt.Printf("os: %s %s\n", runtime.GOOS, runtime.GOARCH)
 		fmt.Printf("terminal: %s\n", terminal)
 		fmt.Println("plugins:")
-		if os.Getenv("GOCODE_PURE") == "1" {
-			fmt.Println("external plugins disabled (--pure)")
+		// Built-in plugins are part of the binary, so --pure does not
+		// suppress them — it only disables the ones the user configured.
+		for _, name := range plugin.NativeNamesSorted() {
+			fmt.Printf("- %s (built-in)\n", name)
+		}
+		if flag.Pure() {
+			fmt.Println("configured plugins disabled (--pure)")
 			return nil
 		}
-		if len(cfg.Plugin) == 0 {
+		if len(cfg.Plugin) == 0 && len(plugin.Natives()) == 0 {
 			fmt.Println("none")
 			return nil
 		}
-		for _, p := range cfg.Plugin {
-			fmt.Println("-", p)
+		cwd, _ := os.Getwd()
+		for _, entry := range plugin.Specs(cfg.Plugin) {
+			resolved, stage, err := plugin.Resolve(entry, cwd)
+			if err != nil {
+				fmt.Printf("- %s (unavailable at %s: %v)\n", entry.Ref, stage, err)
+				continue
+			}
+			fmt.Printf("- %s (%s: %s)\n", entry.Ref, resolved.Source, resolved.Target)
 		}
 		return nil
 	}}

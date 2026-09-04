@@ -53,8 +53,10 @@ func convertRequest(request llm.Request) (Request, error) {
 		maxTokens = 8192
 	}
 	out := Request{
-		Model:     request.ModelID,
-		MaxTokens: maxTokens,
+		Model:       request.ModelID,
+		MaxTokens:   maxTokens,
+		Temperature: request.Temperature,
+		TopP:        request.TopP,
 	}
 	if thinking := parseThinking(request.Reasoning); thinking != nil {
 		out.Thinking = thinking

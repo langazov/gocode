@@ -147,6 +147,7 @@ type chatRequest struct {
 	Stream          bool              `json:"stream"`
 	MaxOutputTokens int               `json:"max_output_tokens,omitempty"`
 	Temperature     *float64          `json:"temperature,omitempty"`
+	TopP            *float64          `json:"top_p,omitempty"`
 	Reasoning       *reasoningOptions `json:"reasoning,omitempty"`
 	// Store false matches the TS route's own default: without a prior turn's
 	// encrypted reasoning state to replay (see the package doc), keeping
@@ -159,9 +160,11 @@ var storeFalse = false
 
 func convertRequest(request llm.Request) chatRequest {
 	out := chatRequest{
-		Model:  request.ModelID,
-		Stream: true,
-		Store:  &storeFalse,
+		Model:       request.ModelID,
+		Stream:      true,
+		Store:       &storeFalse,
+		Temperature: request.Temperature,
+		TopP:        request.TopP,
 	}
 	if request.MaxTokens > 0 {
 		out.MaxOutputTokens = request.MaxTokens

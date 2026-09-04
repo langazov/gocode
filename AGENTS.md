@@ -52,6 +52,7 @@ Everything the agent does becomes a durable event in SQLite before visible state
 | `internal/tui/` | Bubble Tea interface |
 | `internal/lsp/` | 27 built-in language servers, lazy-started |
 | `internal/mcp/` | MCP server connections, reconnect, tool import |
+| `internal/plugin/` | Plugin host: hook catalog, native + subprocess tiers, loader |
 | `internal/skill/` | Skill discovery from markdown files |
 | `internal/agent/` | Agent registry, default selection |
 | `internal/config/` | JSONC config merge, agent markdown parsing |

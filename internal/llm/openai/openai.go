@@ -144,6 +144,7 @@ type chatRequest struct {
 	Stream          bool          `json:"stream"`
 	MaxTokens       int           `json:"max_tokens,omitempty"`
 	Temperature     *float64      `json:"temperature,omitempty"`
+	TopP            *float64      `json:"top_p,omitempty"`
 	StreamOpts      *streamOpts   `json:"stream_options,omitempty"`
 	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
 }
@@ -154,10 +155,12 @@ type streamOpts struct {
 
 func convertRequest(request llm.Request) (chatRequest, error) {
 	out := chatRequest{
-		Model:      request.ModelID,
-		Stream:     true,
-		MaxTokens:  request.MaxTokens,
-		StreamOpts: &streamOpts{IncludeUsage: true},
+		Model:       request.ModelID,
+		Stream:      true,
+		MaxTokens:   request.MaxTokens,
+		Temperature: request.Temperature,
+		TopP:        request.TopP,
+		StreamOpts:  &streamOpts{IncludeUsage: true},
 	}
 	if effort, ok := request.Reasoning["reasoning_effort"].(string); ok {
 		out.ReasoningEffort = effort
