@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 	"testing"
 
@@ -183,7 +184,11 @@ func TestRagPluginCLIIndex(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root, "a.md", "banana banana\n")
 
-	binary := t.TempDir() + "/rag-plugin-cli"
+	name := "rag-plugin-cli"
+	if goruntime.GOOS == "windows" {
+		name += ".exe"
+	}
+	binary := filepath.Join(t.TempDir(), name)
 	build := exec.Command("go", "build", "-o", binary, ".")
 	build.Dir = "."
 	if out, err := build.CombinedOutput(); err != nil {

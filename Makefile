@@ -160,6 +160,16 @@ rag-plugin: ## Build the RAG process plugin into cmd/rag-plugin/
 	@echo 'RAG plugin: $(RAG_PLUGIN_OUT)'
 	@echo 'Enable it with: "plugin": [["$(CURDIR)/$(RAG_PLUGIN_DIR)", {"embeddingProvider": "openai"}]]'
 
+# Builds into the install directory rather than copying the source tree, so
+# only the manifest and the binary are installed — not main.go and README.md.
+install-rag-plugin: ## Build and install the RAG plugin as "rag-plugin"
+	@mkdir -p '$(PLUGIN_ROOT)/rag-plugin'
+	$(GO) build -o '$(PLUGIN_ROOT)/rag-plugin/rag-plugin$(shell $(GO) env GOEXE)' $(RAG_PLUGIN_SRC)
+	cp '$(RAG_PLUGIN_DIR)/gocode-plugin.json' '$(PLUGIN_ROOT)/rag-plugin/'
+	@echo 'Installed to $(PLUGIN_ROOT)/rag-plugin'
+	@if [ '$(CONFIGURE)' = '1' ]; then $(PLUGIN_CONFIG) -add rag-plugin -options '$(OPTIONS)'; \
+	else echo 'Enable it with: "plugin": ["rag-plugin"]'; fi
+
 # The markdown language server. A standalone LSP binary: point your editor at
 # it (VS Code "go.languageServerFlags"-style config, nvim-lspconfig, ...).
 MDLSP_OUT := cmd/mdlsp/mdlsp$(shell $(GO) env GOEXE)
@@ -174,16 +184,6 @@ mdlsp: ## Build the markdown LSP server into cmd/mdlsp/
 install-mdlsp: ## Install the markdown LSP server to $GOPATH/bin
 	$(GO) install ./cmd/mdlsp
 	@echo 'Installed mdlsp; gocode now runs it on markdown files.'
-
-# Builds into the install directory rather than copying the source tree, so
-# only the manifest and the binary are installed — not main.go and README.md.
-install-rag-plugin: ## Build and install the RAG plugin as "rag-plugin"
-	@mkdir -p '$(PLUGIN_ROOT)/rag-plugin'
-	$(GO) build -o '$(PLUGIN_ROOT)/rag-plugin/rag-plugin$(shell $(GO) env GOEXE)' $(RAG_PLUGIN_SRC)
-	cp '$(RAG_PLUGIN_DIR)/gocode-plugin.json' '$(PLUGIN_ROOT)/rag-plugin/'
-	@echo 'Installed to $(PLUGIN_ROOT)/rag-plugin'
-	@if [ '$(CONFIGURE)' = '1' ]; then $(PLUGIN_CONFIG) -add rag-plugin -options '$(OPTIONS)'; \
-	else echo 'Enable it with: "plugin": ["rag-plugin"]'; fi
 
 uninstall-plugin: ## Remove an installed plugin: make uninstall-plugin NAME=id
 	@if [ -z '$(NAME)' ]; then echo 'usage: make uninstall-plugin NAME=<id>'; exit 2; fi
