@@ -99,7 +99,7 @@ func TestEndToEndSubprocess(t *testing.T) {
 
 	// Handshake, open a document, get an outline — all through the real pipe.
 	resp := call("initialize", map[string]any{
-		"rootUri": "file://" + root,
+		"rootUri": fileURIRoot(root),
 	}, deadline)
 	caps, _ := resp["result"].(map[string]any)
 	if caps != nil {
@@ -113,7 +113,7 @@ func TestEndToEndSubprocess(t *testing.T) {
 	}
 	writeMsg(map[string]any{"jsonrpc": "2.0", "method": "initialized", "params": map[string]any{}})
 
-	uri := "file://" + root + "/doc.md"
+	uri := uriFor(root, "doc.md")
 	text := "# Hello\n\nsee [x](#hello)\n"
 	writeMsg(map[string]any{"jsonrpc": "2.0", "method": "textDocument/didOpen", "params": map[string]any{
 		"textDocument": map[string]any{"uri": uri, "languageId": "markdown", "version": 1, "text": text},

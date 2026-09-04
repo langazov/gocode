@@ -88,17 +88,47 @@ type Conn struct {
 	// MethodNotFound can make them give up. When nil, such requests get a
 	// CodeMethodNotFound error response, which is what a server should send.
 	missingMethod func(method string) (any, error)
+
+	// ordered, when set, runs inbound requests and notifications one at a
+	// time in arrival order instead of one goroutine each. See
+	// SetOrderedDispatch. inbox is the FIFO the read loop appends to and the
+	// worker drains; inboxWake signals a waiting worker.
+	ordered   bool
+	inbox     []func()
+	inboxWake *sync.Cond
 }
 
 // NewConn builds a connection that writes to w and reads from r.
 func NewConn(w io.WriteCloser, r io.Reader) *Conn {
-	return &Conn{
+	c := &Conn{
 		writer:   w,
 		reader:   bufio.NewReaderSize(r, 64*1024),
 		pending:  map[int64]chan rpcResponse{},
 		handlers: map[string]HandlerFunc{},
 		notify:   map[string]NotifyFunc{},
 	}
+	c.inboxWake = sync.NewCond(&c.mu)
+	return c
+}
+
+// SetOrderedDispatch makes inbound requests and notifications run one at a
+// time, in the order they arrived, rather than each on its own goroutine.
+// Call it before Listen.
+//
+// The default is concurrent dispatch, which is what a client wants: it lets a
+// slow handler for a server-initiated request run while other traffic
+// continues. A server usually needs the opposite. LSP guarantees ordering,
+// and editors rely on it — a client that sends textDocument/didOpen and then
+// immediately textDocument/documentSymbol expects the open to have been
+// applied. Under concurrent dispatch those two land in a race, and the
+// request can be answered against state the notification had not reached yet.
+//
+// Responses to our own outbound Calls are still delivered inline on the read
+// loop, never queued behind a handler, so a handler is free to Call back.
+func (c *Conn) SetOrderedDispatch(ordered bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.ordered = ordered
 }
 
 // SetMissingMethod registers the fallback for unhandled requests. Call it
@@ -126,6 +156,16 @@ func (c *Conn) OnNotify(method string, fn NotifyFunc) {
 // Listen reads messages until the stream ends, then fails every in-flight
 // call. It runs in its own goroutine for the lifetime of the connection.
 func (c *Conn) Listen() {
+	c.mu.Lock()
+	ordered := c.ordered
+	c.mu.Unlock()
+	if ordered {
+		done := make(chan struct{})
+		go func() { defer close(done); c.drainInbox() }()
+		// Shutdown wakes the worker; wait for the queue to drain so a
+		// handler is never abandoned mid-flight.
+		defer func() { <-done }()
+	}
 	for {
 		payload, err := c.readMessage()
 		if err != nil {
@@ -151,13 +191,11 @@ func (c *Conn) dispatch(message rpcResponse) {
 			fn := c.notify[message.Method]
 			c.mu.Unlock()
 			if fn != nil {
-				// Serve notifications on their own goroutine: a handler that
-				// blocks must not stall the read loop.
-				go fn(message.Params)
+				c.run(func() { fn(message.Params) })
 			}
 			return
 		}
-		go c.respond(message)
+		c.run(func() { c.respond(message) })
 		return
 	}
 
@@ -174,6 +212,47 @@ func (c *Conn) dispatch(message rpcResponse) {
 	c.mu.Unlock()
 	if ch != nil {
 		ch <- message
+	}
+}
+
+// run executes an inbound handler off the read loop, which must keep reading
+// so that responses to our own Calls still arrive. Under the default
+// concurrent dispatch that is one goroutine per message; under ordered
+// dispatch it is an append to the inbox the single worker drains in order.
+func (c *Conn) run(fn func()) {
+	c.mu.Lock()
+	if !c.ordered {
+		c.mu.Unlock()
+		go fn()
+		return
+	}
+	// Appending is unbounded on purpose: blocking here would stall the read
+	// loop, which is the one thing the queue exists to prevent.
+	c.inbox = append(c.inbox, fn)
+	c.mu.Unlock()
+	c.inboxWake.Signal()
+}
+
+// drainInbox is the ordered-dispatch worker: it runs queued handlers one at a
+// time until the connection closes and the queue is empty.
+func (c *Conn) drainInbox() {
+	c.mu.Lock()
+	for {
+		for len(c.inbox) == 0 {
+			if c.closed {
+				c.mu.Unlock()
+				return
+			}
+			c.inboxWake.Wait()
+		}
+		fn := c.inbox[0]
+		// Drop the reference as well as the slot so a completed handler's
+		// captures are not pinned by the backing array.
+		c.inbox[0] = nil
+		c.inbox = c.inbox[1:]
+		c.mu.Unlock()
+		fn()
+		c.mu.Lock()
 	}
 }
 
@@ -338,6 +417,9 @@ func (c *Conn) Shutdown(err error) {
 	pending := c.pending
 	c.pending = map[int64]chan rpcResponse{}
 	c.mu.Unlock()
+	// An ordered-dispatch worker parked on an empty inbox only learns the
+	// connection is gone by being woken.
+	c.inboxWake.Broadcast()
 
 	for _, ch := range pending {
 		ch <- rpcResponse{Error: &RPCError{Code: CodeConnectionClose, Message: "connection closed: " + err.Error()}}

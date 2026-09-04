@@ -136,6 +136,76 @@ func TestFramingSurvivesLargePayload(t *testing.T) {
 	}
 }
 
+func TestOrderedDispatchRunsInArrivalOrder(t *testing.T) {
+	// The bug this guards: a notification and the request sent right after it
+	// each got their own goroutine, so a server could answer the request
+	// before applying the notification. mdlsp hit this as an empty document
+	// outline when an editor sent didOpen then documentSymbol.
+	cRead, sWrite := io.Pipe()
+	sRead, cWrite := io.Pipe()
+	client := NewConn(cWrite, cRead)
+	server := NewConn(sWrite, sRead)
+	server.SetOrderedDispatch(true)
+	go client.Listen()
+	go server.Listen()
+	t.Cleanup(func() {
+		client.Shutdown(io.ErrClosedPipe)
+		server.Shutdown(io.ErrClosedPipe)
+	})
+
+	// The notification handler is deliberately the slow one: under concurrent
+	// dispatch the request overtakes it and reads seen=false.
+	opened := false
+	server.OnNotify("open", func(json.RawMessage) {
+		time.Sleep(20 * time.Millisecond)
+		opened = true
+	})
+	server.Handle("read", func(json.RawMessage) (any, error) { return opened, nil })
+
+	for i := range 20 {
+		opened = false
+		if err := client.Notify("open", nil); err != nil {
+			t.Fatal(err)
+		}
+		var got bool
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		err := client.Call(ctx, "read", nil, &got)
+		cancel()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !got {
+			t.Fatalf("iteration %d: request answered before the notification it followed", i)
+		}
+	}
+}
+
+func TestConcurrentDispatchIsTheDefault(t *testing.T) {
+	// A client must not serialize inbound traffic: a slow server-initiated
+	// request has to overlap with the rest, or a handler that calls back into
+	// the same connection would deadlock.
+	client, server := pipeConns(t)
+	release := make(chan struct{})
+	entered := make(chan struct{}, 2)
+	server.Handle("wait", func(json.RawMessage) (any, error) {
+		entered <- struct{}{}
+		<-release
+		return nil, nil
+	})
+
+	go func() { _ = client.Call(context.Background(), "wait", nil, nil) }()
+	go func() { _ = client.Call(context.Background(), "wait", nil, nil) }()
+
+	for i := range 2 {
+		select {
+		case <-entered:
+		case <-time.After(2 * time.Second):
+			t.Fatalf("only %d handler(s) ran; dispatch is not concurrent", i)
+		}
+	}
+	close(release)
+}
+
 var errTest = &testError{}
 
 type testError struct{}

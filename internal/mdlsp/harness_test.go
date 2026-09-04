@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/langazov/gocode-go/internal/jsonrpc"
+	"github.com/langazov/gocode-go/internal/lspprotocol"
 )
 
 // testPair wires a server and a test client over in-memory pipes, exercising
@@ -52,8 +53,10 @@ func (p *testPair) initialize(t *testing.T, root string) map[string]any {
 	return result.Capabilities
 }
 
+// fileURIRoot is the rootUri for a workspace directory. See uriFor in
+// server_test.go for why this cannot be a concatenation.
 func fileURIRoot(path string) string {
-	return "file://" + path
+	return lspprotocol.URIFromPath(path)
 }
 
 // open sends didOpen with text and waits for the diagnostics notification.

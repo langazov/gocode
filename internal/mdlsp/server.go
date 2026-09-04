@@ -51,6 +51,12 @@ func New(in io.Reader, out io.WriteCloser) *Server {
 // cancelled, or the exit notification arrives.
 func (s *Server) Serve(ctx context.Context) error {
 	conn := jsonrpc.NewConn(s.out, s.in)
+	// The actor serializes state access but not arrival: without this, a
+	// didOpen notification and the documentSymbol request an editor sends
+	// straight after it reach the mailbox in whichever order their goroutines
+	// win, and the request can be answered against a document that is not
+	// open yet. LSP promises the client its messages are processed in order.
+	conn.SetOrderedDispatch(true)
 	notify := func(method string, params any) {
 		// Notification writes are best effort; a wedged client pipe must not
 		// take the actor down.

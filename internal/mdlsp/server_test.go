@@ -28,8 +28,13 @@ func writeTree(t *testing.T, files map[string]string) string {
 	return root
 }
 
+// uriFor builds the URI an editor would send for a workspace file. It must go
+// through URIFromPath rather than concatenating: a Windows path needs its
+// backslashes flipped and its drive letter moved behind a slash, and
+// "file://C:\..." parses as a host with an invalid port, which PathFromURI
+// rejects — leaving the server with no document and every assertion empty.
 func uriFor(root, rel string) string {
-	return "file://" + filepath.Join(root, rel)
+	return lspprotocol.URIFromPath(filepath.Join(root, rel))
 }
 
 func TestInitializeDeclaresCapabilities(t *testing.T) {
