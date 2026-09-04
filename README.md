@@ -29,6 +29,12 @@ One statically linked binary. No Node, no Bun, no runtime to install.
 
 <sub>A turn in flight, with context, spend, MCP servers and language servers in the sidebar.</sub>
 
+<br><br>
+
+<img src="docs/assets/gocode-markdown.png" alt="Rich markdown rendering in a gocode session: a bulleted list with bold terms and inline code, an H2 heading, a two-column comparison table with colored bullet headers, and a syntax-highlighted Go code block." width="900">
+
+<sub>Markdown rendered in full — headings, tables, bold/italic/inline code, and syntax-highlighted code blocks.</sub>
+
 </div>
 
 ## Why
