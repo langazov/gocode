@@ -51,6 +51,10 @@ Everything the agent does becomes a durable event in SQLite before visible state
 | `internal/server/` | HTTP API routes |
 | `internal/tui/` | Bubble Tea interface |
 | `internal/lsp/` | 27 built-in language servers, lazy-started |
+| `internal/mdlsp/` | Markdown language server (`cmd/mdlsp`): actor-based, goldmark-backed |
+| `internal/jsonrpc/` | Shared Content-Length JSON-RPC connection (client + server) |
+| `internal/lspprotocol/` | Shared LSP wire types |
+| `internal/mddoc/` | Markdown document model: headings, links, UTF-16 positions |
 | `internal/mcp/` | MCP server connections, reconnect, tool import |
 | `internal/plugin/` | Plugin host: hook catalog, native + subprocess tiers, loader |
 | `internal/skill/` | Skill discovery from markdown files |

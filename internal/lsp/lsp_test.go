@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/lspprotocol"
 )
 
 // newFakeService builds a service whose only server is the fake, so the tests
@@ -372,6 +373,27 @@ func TestServerHandles(t *testing.T) {
 	}
 }
 
+// Markdown went unserved for a while: the repo shipped mdlsp but no registry
+// entry claimed .md, so clientsFor matched nothing and the miss was silent.
+func TestBuiltinServerHandlesMarkdown(t *testing.T) {
+	var found *Server
+	for i := range builtinServers {
+		if builtinServers[i].ID == "mdlsp" {
+			found = &builtinServers[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("no builtin server with ID mdlsp")
+	}
+	if !found.Handles("/x/README.md") {
+		t.Error("mdlsp should handle .md")
+	}
+	if got := languageID("/x/README.md"); got != "markdown" {
+		t.Errorf("languageID(.md) = %q, want markdown", got)
+	}
+}
+
 func TestURIRoundTrip(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("posix path shapes")
@@ -418,6 +440,10 @@ func TestReport(t *testing.T) {
 		t.Errorf("warnings must not be included: %q", got)
 	}
 }
+
+// maxDiagnosticsPerFile re-exports the shared limit for this test; the
+// constant itself lives in internal/lspprotocol now.
+const maxDiagnosticsPerFile = lspprotocol.MaxDiagnosticsPerFile
 
 func TestReportTruncates(t *testing.T) {
 	var issues []Diagnostic

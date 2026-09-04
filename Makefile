@@ -52,7 +52,7 @@ PLUGIN_CONFIG := $(GO) run tools/pluginconfig.go
 .PHONY: help build release run install test cover fmt fmt-check vet lint check wasm wasm-run \
         example-plugin install-plugin install-example-plugin uninstall-plugin \
         enable-plugin disable-plugin plugin-root clean \
-        rag-plugin install-rag-plugin
+        rag-plugin install-rag-plugin mdlsp install-mdlsp
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -160,6 +160,21 @@ rag-plugin: ## Build the RAG process plugin into cmd/rag-plugin/
 	@echo 'RAG plugin: $(RAG_PLUGIN_OUT)'
 	@echo 'Enable it with: "plugin": [["$(CURDIR)/$(RAG_PLUGIN_DIR)", {"embeddingProvider": "openai"}]]'
 
+# The markdown language server. A standalone LSP binary: point your editor at
+# it (VS Code "go.languageServerFlags"-style config, nvim-lspconfig, ...).
+MDLSP_OUT := cmd/mdlsp/mdlsp$(shell $(GO) env GOEXE)
+
+mdlsp: ## Build the markdown LSP server into cmd/mdlsp/
+	$(GO) build -o $(MDLSP_OUT) ./cmd/mdlsp
+	@echo 'mdlsp: $(MDLSP_OUT)'
+	@echo 'Wire your editor to: $(CURDIR)/$(MDLSP_OUT) (runs on stdio)'
+
+# gocode's built-in LSP registry names `mdlsp` for .md files but, like every
+# other server, starts it only when it is on PATH. This target puts it there.
+install-mdlsp: ## Install the markdown LSP server to $GOPATH/bin
+	$(GO) install ./cmd/mdlsp
+	@echo 'Installed mdlsp; gocode now runs it on markdown files.'
+
 # Builds into the install directory rather than copying the source tree, so
 # only the manifest and the binary are installed — not main.go and README.md.
 install-rag-plugin: ## Build and install the RAG plugin as "rag-plugin"
@@ -185,4 +200,4 @@ disable-plugin: ## Remove a plugin from the global config, leaving it installed:
 	@$(PLUGIN_CONFIG) -remove '$(NAME)'
 
 clean: ## Remove build artifacts (installed plugins are left alone)
-	rm -rf $(BINARY) coverage.out $(RELEASE_DIR) $(WASM_DIR) $(EXAMPLE_PLUGIN_OUT)
+	rm -rf $(BINARY) coverage.out $(RELEASE_DIR) $(WASM_DIR) $(EXAMPLE_PLUGIN_OUT) $(MDLSP_OUT)

@@ -72,14 +72,14 @@ next publish" is not.
 
 ### Server registry
 
-`servers.go` declares 27 servers with the extensions they handle and how to
+`servers.go` declares 28 servers with the extensions they handle and how to
 find them:
 
 ```
 gopls · typescript · rust · pyright · ruff · clangd · zls · lua-ls · bash
 terraform · dart · ocaml-lsp · gleam · nixd · clojure-lsp · elixir-ls
 haskell-language-server · yaml-ls · json-ls · texlab · svelte · astro
-prisma · dockerfile · csharp · kotlin-ls · sourcekit-lsp
+prisma · dockerfile · csharp · kotlin-ls · sourcekit-lsp · mdlsp
 ```
 
 Clients spawn **lazily**, on first touch of a matching file, and are keyed by
@@ -101,6 +101,41 @@ Add your own in config:
 ```
 
 Status shows in the TUI footer and at `GET /api/lsp`.
+
+### mdlsp: the markdown language server
+
+The repo also ships the other side of the protocol: `mdlsp`, a standalone LSP
+*server* for markdown documents (`cmd/mdlsp`, actor core in `internal/mdlsp`).
+It is a general editor tool, built from the same parts as the client — and, as
+of the registry entry above, one the agent connects to as well: touch a `.md`
+file and gocode starts it like any other server, provided it is on `PATH`.
+
+| Package | Role |
+|---|---|
+| `internal/jsonrpc` | The Content-Length-framed JSON-RPC connection, shared by client and server. Originally client-only in `internal/lsp`. |
+| `internal/lspprotocol` | Wire types both sides speak. `internal/lsp` aliases them. |
+| `internal/mddoc` | The markdown model: goldmark AST walk producing headings, slugs, link spans, code blocks, frontmatter, plus byte↔UTF-16 position mapping. |
+| `internal/mdlsp` | The server. All state lives on one actor goroutine — handlers post closures over a channel and wait on reply channels; no mutexes. |
+
+Features: heading outline (`documentSymbol`), folding ranges, go-to-definition
+for `#anchor`, `file.md#anchor` and `[[Wiki]]` links, find-references,
+heading rename (rewrites every inbound anchor), completion (anchors, wiki
+names, file paths), clickable document links, diagnostics for broken links,
+formatting (whitespace only), and workspace-wide symbol search.
+
+```sh
+make mdlsp          # builds cmd/mdlsp/mdlsp
+make install-mdlsp  # installs it to $GOPATH/bin, where gocode finds it
+```
+
+Point any editor at the binary over stdio, e.g. Neovim:
+
+```lua
+vim.lsp.config("mdlsp", {
+  cmd = { vim.fn.getcwd() .. "/cmd/mdlsp/mdlsp" },
+  filetypes = { "markdown" },
+})
+```
 
 ## MCP
 

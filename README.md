@@ -54,7 +54,7 @@ installed.
 |---|---|
 | **Zero runtime deps** | `CGO_ENABLED=0` everywhere. SQLite is [modernc](https://gitlab.com/cznic/sqlite), a pure-Go translation — so cross-compiling all six targets happens on one Linux runner. |
 | **Durable by construction** | Every turn is event-sourced into SQLite. Kill the process mid-stream and the session resumes exactly where it stopped. |
-| **Agent-native** | 13 built-in tools, sub-agent spawning, MCP servers, skills, plugins, and 27 language servers wired into the same permission engine. |
+| **Agent-native** | 13 built-in tools, sub-agent spawning, MCP servers, skills, plugins, and 28 language servers wired into the same permission engine. |
 | **Extensible** | Plugins hook the request, the prompt, tool calls and permissions, and can add tools of their own. A plugin is an executable in any language — the binary stays one static file. |
 | **Actually tested** | 960 tests across 34 packages, ~25k lines of test code against ~41k lines of source. |
 

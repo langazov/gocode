@@ -93,7 +93,7 @@ func Spawn(ctx context.Context, serverID, root string, command []string, env map
 		waiters:     map[string][]chan struct{}{},
 	}
 	client.register()
-	go client.conn.listen()
+	go client.conn.Listen()
 
 	if err := client.initialize(ctx, initialization); err != nil {
 		client.Close()
@@ -118,12 +118,17 @@ func drainStderr(serverID string, stderr interface{ Read([]byte) (int, error) })
 // register wires the handlers a server may call before initialize returns, so
 // none of them race the handshake.
 func (c *Client) register() {
-	c.conn.onNotify("textDocument/publishDiagnostics", c.onPublishDiagnostics)
+	c.conn.OnNotify("textDocument/publishDiagnostics", c.onPublishDiagnostics)
+
+	// Preserve the historical behavior of the conn this package used to own:
+	// an unregistered server-to-client request gets a null result rather than
+	// MethodNotFound, which can make servers give up on capability probes.
+	c.conn.SetMissingMethod(func(string) (any, error) { return nil, nil })
 
 	// Servers commonly ask for configuration and for dynamic capability
 	// registration during startup. Answering (even emptily) keeps them moving;
 	// leaving these unanswered makes several servers stall.
-	c.conn.handle("workspace/configuration", func(params json.RawMessage) (any, error) {
+	c.conn.Handle("workspace/configuration", func(params json.RawMessage) (any, error) {
 		var request struct {
 			Items []struct {
 				Section string `json:"section"`
@@ -133,11 +138,11 @@ func (c *Client) register() {
 		out := make([]any, len(request.Items))
 		return out, nil
 	})
-	c.conn.handle("client/registerCapability", func(json.RawMessage) (any, error) { return nil, nil })
-	c.conn.handle("client/unregisterCapability", func(json.RawMessage) (any, error) { return nil, nil })
-	c.conn.handle("window/workDoneProgress/create", func(json.RawMessage) (any, error) { return nil, nil })
-	c.conn.handle("workspace/diagnostic/refresh", func(json.RawMessage) (any, error) { return nil, nil })
-	c.conn.handle("workspace/applyEdit", func(json.RawMessage) (any, error) {
+	c.conn.Handle("client/registerCapability", func(json.RawMessage) (any, error) { return nil, nil })
+	c.conn.Handle("client/unregisterCapability", func(json.RawMessage) (any, error) { return nil, nil })
+	c.conn.Handle("window/workDoneProgress/create", func(json.RawMessage) (any, error) { return nil, nil })
+	c.conn.Handle("workspace/diagnostic/refresh", func(json.RawMessage) (any, error) { return nil, nil })
+	c.conn.Handle("workspace/applyEdit", func(json.RawMessage) (any, error) {
 		// This client never applies server-driven edits; the agent owns edits.
 		return map[string]any{"applied": false}, nil
 	})
@@ -198,16 +203,16 @@ func (c *Client) initialize(ctx context.Context, initialization map[string]any) 
 	}
 
 	var result initializeResult
-	if err := c.conn.call(ctx, "initialize", params, &result); err != nil {
+	if err := c.conn.Call(ctx, "initialize", params, &result); err != nil {
 		return err
 	}
 	c.syncKind = result.Capabilities.syncKind()
 
-	if err := c.conn.send("initialized", map[string]any{}); err != nil {
+	if err := c.conn.Notify("initialized", map[string]any{}); err != nil {
 		return err
 	}
 	if len(initialization) > 0 {
-		c.conn.send("workspace/didChangeConfiguration", map[string]any{"settings": initialization})
+		c.conn.Notify("workspace/didChangeConfiguration", map[string]any{"settings": initialization})
 	}
 	return nil
 }
@@ -243,7 +248,7 @@ func (c *Client) Open(path string) (changed bool, err error) {
 
 	uri := uriFromPath(path)
 	if !seen {
-		return true, c.conn.send("textDocument/didOpen", map[string]any{
+		return true, c.conn.Notify("textDocument/didOpen", map[string]any{
 			"textDocument": textDocumentItem{
 				URI:        uri,
 				LanguageID: languageID(path),
@@ -257,7 +262,7 @@ func (c *Client) Open(path string) (changed bool, err error) {
 	// full-document change, which is what this sends: the agent replaces whole
 	// files, so there is no incremental edit to describe.
 	change := map[string]any{"text": string(text)}
-	return true, c.conn.send("textDocument/didChange", map[string]any{
+	return true, c.conn.Notify("textDocument/didChange", map[string]any{
 		"textDocument":   versionedTextDocumentIdentifier{URI: uri, Version: version},
 		"contentChanges": []map[string]any{change},
 	})
@@ -331,7 +336,7 @@ func (c *Client) DiagnosticsFor(path string) []Diagnostic {
 func (c *Client) DocumentSymbols(ctx context.Context, path string) ([]DocumentSymbol, error) {
 	path = normalizePath(path)
 	var raw json.RawMessage
-	err := c.conn.call(ctx, "textDocument/documentSymbol", map[string]any{
+	err := c.conn.Call(ctx, "textDocument/documentSymbol", map[string]any{
 		"textDocument": textDocumentIdentifier{URI: uriFromPath(path)},
 	}, &raw)
 	if err != nil {
@@ -398,15 +403,15 @@ func (c *Client) Close() error {
 		defer close(done)
 		ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
-		c.conn.call(ctx, "shutdown", nil, nil)
-		c.conn.send("exit", nil)
+		c.conn.Call(ctx, "shutdown", nil, nil)
+		c.conn.Notify("exit", nil)
 	}()
 	select {
 	case <-done:
 	case <-time.After(shutdownTimeout):
 	}
 
-	c.conn.shutdown(errConnClosed)
+	c.conn.Shutdown(errConnClosed)
 	if c.cmd.Process != nil {
 		c.cmd.Process.Kill()
 	}

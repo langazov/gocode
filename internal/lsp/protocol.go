@@ -1,90 +1,59 @@
 package lsp
 
 import (
-	"fmt"
-	"net/url"
-	"path/filepath"
-	"runtime"
-	"strings"
+	"github.com/langazov/gocode-go/internal/lspprotocol"
 )
 
-// Position is a zero-based line/character pair.
-type Position struct {
-	Line      int `json:"line"`
-	Character int `json:"character"`
-}
+// The wire types and helpers in this file moved to internal/lspprotocol so
+// the markdown language server in internal/mdlsp can share them. These
+// aliases keep every existing call site — in this package and its consumers
+// (internal/rag/chunk, internal/tool/builtins) — untouched.
+type (
+	Position       = lspprotocol.Position
+	Range          = lspprotocol.Range
+	DocumentSymbol = lspprotocol.DocumentSymbol
+	Diagnostic     = lspprotocol.Diagnostic
+)
 
-type Range struct {
-	Start Position `json:"start"`
-	End   Position `json:"end"`
-}
-
-// DocumentSymbol is one entry of a textDocument/documentSymbol response,
-// normalized to the hierarchical shape the spec defines. A server that
-// answers with the older, flat SymbolInformation shape instead (name, kind,
-// location) is converted to this on decode — see decodeDocumentSymbols in
-// client.go — so callers only ever see one shape.
-type DocumentSymbol struct {
-	Name           string           `json:"name"`
-	Kind           int              `json:"kind"`
-	Range          Range            `json:"range"`
-	SelectionRange Range            `json:"selectionRange"`
-	Children       []DocumentSymbol `json:"children,omitempty"`
-}
-
-// SymbolKind values from the LSP spec (3.17), the full enum. DocumentSymbol.Kind
-// holds one of these.
 const (
-	SymbolKindFile          = 1
-	SymbolKindModule        = 2
-	SymbolKindNamespace     = 3
-	SymbolKindPackage       = 4
-	SymbolKindClass         = 5
-	SymbolKindMethod        = 6
-	SymbolKindProperty      = 7
-	SymbolKindField         = 8
-	SymbolKindConstructor   = 9
-	SymbolKindEnum          = 10
-	SymbolKindInterface     = 11
-	SymbolKindFunction      = 12
-	SymbolKindVariable      = 13
-	SymbolKindConstant      = 14
-	SymbolKindString        = 15
-	SymbolKindNumber        = 16
-	SymbolKindBoolean       = 17
-	SymbolKindArray         = 18
-	SymbolKindObject        = 19
-	SymbolKindKey           = 20
-	SymbolKindNull          = 21
-	SymbolKindEnumMember    = 22
-	SymbolKindStruct        = 23
-	SymbolKindEvent         = 24
-	SymbolKindOperator      = 25
-	SymbolKindTypeParameter = 26
-)
+	SymbolKindFile          = lspprotocol.SymbolKindFile
+	SymbolKindModule        = lspprotocol.SymbolKindModule
+	SymbolKindNamespace     = lspprotocol.SymbolKindNamespace
+	SymbolKindPackage       = lspprotocol.SymbolKindPackage
+	SymbolKindClass         = lspprotocol.SymbolKindClass
+	SymbolKindMethod        = lspprotocol.SymbolKindMethod
+	SymbolKindProperty      = lspprotocol.SymbolKindProperty
+	SymbolKindField         = lspprotocol.SymbolKindField
+	SymbolKindConstructor   = lspprotocol.SymbolKindConstructor
+	SymbolKindEnum          = lspprotocol.SymbolKindEnum
+	SymbolKindInterface     = lspprotocol.SymbolKindInterface
+	SymbolKindFunction      = lspprotocol.SymbolKindFunction
+	SymbolKindVariable      = lspprotocol.SymbolKindVariable
+	SymbolKindConstant      = lspprotocol.SymbolKindConstant
+	SymbolKindString        = lspprotocol.SymbolKindString
+	SymbolKindNumber        = lspprotocol.SymbolKindNumber
+	SymbolKindBoolean       = lspprotocol.SymbolKindBoolean
+	SymbolKindArray         = lspprotocol.SymbolKindArray
+	SymbolKindObject        = lspprotocol.SymbolKindObject
+	SymbolKindKey           = lspprotocol.SymbolKindKey
+	SymbolKindNull          = lspprotocol.SymbolKindNull
+	SymbolKindEnumMember    = lspprotocol.SymbolKindEnumMember
+	SymbolKindStruct        = lspprotocol.SymbolKindStruct
+	SymbolKindEvent         = lspprotocol.SymbolKindEvent
+	SymbolKindOperator      = lspprotocol.SymbolKindOperator
+	SymbolKindTypeParameter = lspprotocol.SymbolKindTypeParameter
 
-// Severity values from the LSP spec.
-const (
-	SeverityError   = 1
-	SeverityWarning = 2
-	SeverityInfo    = 3
-	SeverityHint    = 4
+	SeverityError   = lspprotocol.SeverityError
+	SeverityWarning = lspprotocol.SeverityWarning
+	SeverityInfo    = lspprotocol.SeverityInfo
+	SeverityHint    = lspprotocol.SeverityHint
 )
-
-// Diagnostic is a single problem reported by a server.
-type Diagnostic struct {
-	Range    Range  `json:"range"`
-	Severity int    `json:"severity,omitempty"`
-	Code     any    `json:"code,omitempty"`
-	Source   string `json:"source,omitempty"`
-	Message  string `json:"message"`
-}
 
 // publishDiagnosticsParams is textDocument/publishDiagnostics.
 type publishDiagnosticsParams struct {
-	URI         string       `json:"uri"`
-	Version     *int         `json:"version,omitempty"`
-	Diagnostics []Diagnostic `json:"diagnostics"`
+	URI         string                   `json:"uri"`
+	Version     *int                     `json:"version,omitempty"`
+	Diagnostics []lspprotocol.Diagnostic `json:"diagnostics"`
 }
 
 type textDocumentItem struct {
@@ -130,75 +99,12 @@ func (c serverCapabilities) syncKind() int {
 }
 
 // uriFromPath converts an absolute path to a file:// URI.
-//
-// Not a simple concatenation: each segment has to be escaped, and Windows
-// paths need the drive letter after a leading slash with backslashes flipped.
-func uriFromPath(path string) string {
-	path = filepath.ToSlash(path)
-	if runtime.GOOS == "windows" && len(path) > 1 && path[1] == ':' {
-		path = "/" + path
-	}
-	segments := strings.Split(path, "/")
-	for i, segment := range segments {
-		segments[i] = url.PathEscape(segment)
-	}
-	return "file://" + strings.Join(segments, "/")
-}
+func uriFromPath(path string) string { return lspprotocol.URIFromPath(path) }
 
 // pathFromURI is the inverse, returning ok=false for a non-file URI.
-func pathFromURI(uri string) (string, bool) {
-	if !strings.HasPrefix(uri, "file://") {
-		return "", false
-	}
-	parsed, err := url.Parse(uri)
-	if err != nil {
-		return "", false
-	}
-	path := parsed.Path
-	if runtime.GOOS == "windows" && len(path) > 2 && path[0] == '/' && path[2] == ':' {
-		path = path[1:]
-	}
-	return filepath.FromSlash(path), true
-}
-
-// Pretty renders one diagnostic the way diagnostic.ts does.
-func (d Diagnostic) Pretty() string {
-	severity := "ERROR"
-	switch d.Severity {
-	case SeverityWarning:
-		severity = "WARN"
-	case SeverityInfo:
-		severity = "INFO"
-	case SeverityHint:
-		severity = "HINT"
-	}
-	return fmt.Sprintf("%s [%d:%d] %s", severity, d.Range.Start.Line+1, d.Range.Start.Character+1, d.Message)
-}
-
-// maxDiagnosticsPerFile matches MAX_PER_FILE in diagnostic.ts.
-const maxDiagnosticsPerFile = 20
+func pathFromURI(uri string) (string, bool) { return lspprotocol.PathFromURI(uri) }
 
 // Report renders the <diagnostics> block the edit and write tools append to
-// their output, porting report() in diagnostic.ts. Only errors are reported;
-// warnings would flood the model with noise it cannot act on.
-func Report(file string, issues []Diagnostic) string {
-	var errs []Diagnostic
-	for _, issue := range issues {
-		if issue.Severity == SeverityError {
-			errs = append(errs, issue)
-		}
-	}
-	if len(errs) == 0 {
-		return ""
-	}
-	suffix := ""
-	if len(errs) > maxDiagnosticsPerFile {
-		suffix = fmt.Sprintf("\n... and %d more", len(errs)-maxDiagnosticsPerFile)
-		errs = errs[:maxDiagnosticsPerFile]
-	}
-	lines := make([]string, 0, len(errs))
-	for _, issue := range errs {
-		lines = append(lines, issue.Pretty())
-	}
-	return fmt.Sprintf("<diagnostics file=\"%s\">\n%s%s\n</diagnostics>", file, strings.Join(lines, "\n"), suffix)
-}
+// their output. Only errors are reported; warnings would flood the model with
+// noise it cannot act on.
+func Report(file string, issues []Diagnostic) string { return lspprotocol.Report(file, issues) }
