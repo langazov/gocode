@@ -43,6 +43,11 @@ func runFakeServer(mode string) {
 		writer.Write(payload)
 	}
 
+	// openText remembers each open document's current text, so
+	// textDocument/documentSymbol (which carries only a URI, no content) has
+	// something to derive symbols from.
+	openText := map[string]string{}
+
 	for {
 		payload, err := readFrame(reader)
 		if err != nil {
@@ -88,6 +93,7 @@ func runFakeServer(mode string) {
 			if len(params.ContentChanges) > 0 {
 				text = params.ContentChanges[0].Text
 			}
+			openText[params.TextDocument.URI] = text
 			// The fake's rule: every line holding BUG is an error, and every
 			// line holding WARN is a warning.
 			diagnostics := []map[string]any{}
@@ -120,6 +126,48 @@ func runFakeServer(mode string) {
 					"diagnostics": diagnostics,
 				},
 			})
+		case "textDocument/documentSymbol":
+			var params struct {
+				TextDocument struct {
+					URI string `json:"uri"`
+				} `json:"textDocument"`
+			}
+			json.Unmarshal(message.Params, &params)
+			// The fake's rule: a line "FUNC:<name>" starts a top-level symbol
+			// named <name>, running to the line before the next FUNC marker
+			// (or EOF). Lets a test build a specific, known symbol tree just
+			// by writing fixture content, the same trick the diagnostics case
+			// above uses for BUG/WARN.
+			lines := strings.Split(openText[params.TextDocument.URI], "\n")
+			var symbols []map[string]any
+			start := -1
+			name := ""
+			flush := func(end int) {
+				if start < 0 {
+					return
+				}
+				symbols = append(symbols, map[string]any{
+					"name": name,
+					"kind": 12, // Function
+					"range": map[string]any{
+						"start": map[string]any{"line": start, "character": 0},
+						"end":   map[string]any{"line": end, "character": 0},
+					},
+					"selectionRange": map[string]any{
+						"start": map[string]any{"line": start, "character": 0},
+						"end":   map[string]any{"line": start, "character": 0},
+					},
+				})
+			}
+			for i, line := range lines {
+				if rest, ok := strings.CutPrefix(line, "FUNC:"); ok {
+					flush(i - 1)
+					start = i
+					name = strings.TrimSpace(rest)
+				}
+			}
+			flush(len(lines) - 1)
+			send(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": symbols})
 		case "shutdown":
 			send(map[string]any{"jsonrpc": "2.0", "id": message.ID, "result": nil})
 		case "exit":

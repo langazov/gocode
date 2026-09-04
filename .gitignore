@@ -1,5 +1,6 @@
 # Build output.
 /gocode
+/rag-plugin
 /build/
 /dist/
 /go/
@@ -8,6 +9,10 @@
 # dist/, because gocode-plugin.json names the command relative to it.
 /examples/plugin-echo/plugin-echo
 /examples/plugin-echo/plugin-echo.exe
+
+# Same reasoning for the rag-plugin process plugin.
+/cmd/rag-plugin/rag-plugin
+/cmd/rag-plugin/rag-plugin.exe
 
 # Compiled test binaries. `go test -c` and a stray `-o` drop these next to the
 # package; one was committed by accident before this rule existed.
