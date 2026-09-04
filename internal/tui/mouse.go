@@ -180,7 +180,11 @@ func (a *App) handleClick(x, y int) tea.Cmd {
 	o := a.overlay
 	switch target := a.overlayMouseTarget(y, x); target.kind {
 	case overlayTargetBackdrop, overlayTargetEsc:
-		a.closeOverlay()
+		// Dismissing with the mouse runs the same onCancel the escape key
+		// does (dialog.tsx settles both through the dialog's onClose): the
+		// theme dialog's revert and the plugins dialog's save are close
+		// handlers, and a click outside the panel must not skip them.
+		return a.resolveOverlay(o.onCancel)
 	case overlayTargetItem:
 		return a.activateItem(o.items[target.item])
 	case overlayTargetAction:

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/langazov/gocode-go/internal/command"
+	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/global"
 	"github.com/langazov/gocode-go/internal/tui/client"
 	"github.com/langazov/gocode-go/internal/tui/theme"
@@ -127,6 +128,20 @@ type App struct {
 	// lsp is the latest language-server status, refreshed on the tick like
 	// mcpServers. nil until the first fetch lands.
 	lsp *client.LSPState
+	// plugins is the loaded plugin list, fetched once at Init — the set is
+	// fixed at boot (the loader runs before the server starts), so unlike
+	// MCP and LSP there is no tick refresh.
+	plugins []client.PluginStatus
+	// pluginConfig is the config's plugin array, fetched with the list; it is
+	// the enable-state truth the /plugins dialog edits.
+	pluginConfig []config.PluginSpec
+	// pluginsAvailable is what is installed under the config directories'
+	// plugin folders without the config naming it — the rows the /plugins
+	// dialog shows as disabled. Rescanned each time the dialog opens.
+	pluginsAvailable []client.PluginAvailable
+	// pluginDialog is the /plugins dialog's working state (enable toggles
+	// and the drill-in target); nil while the dialog is closed.
+	pluginDialog *pluginDialogState
 	// agentList is the cached agent list, so the agent dialog opens without a
 	// round trip. (Distinct from `agents`, the subagent aggregator snapshot.)
 	agentList []client.Agent
@@ -322,7 +337,7 @@ type leaderTimeoutMsg struct{}
 
 func (a *App) Init() tea.Cmd {
 	a.windowTitle = a.desiredWindowTitle()
-	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadCommandsCmd(), a.loadAgentsCmd(0), a.tick()}
+	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadCommandsCmd(), a.loadAgentsCmd(0), a.loadPluginsCmd(), a.tick()}
 	if a.resumeSessionID != "" {
 		cmds = append(cmds, a.resumeSessionCmd(a.resumeSessionID))
 	}
@@ -437,6 +452,17 @@ type mcpMsg struct{ servers []client.MCPServer }
 
 // lspMsg carries the language-server status for the sidebar.
 type lspMsg struct{ state *client.LSPState }
+
+// pluginsMsg carries the loaded plugin list, the config's plugin array and
+// the installed-but-unconfigured plugins, for the sidebar and the /plugins
+// dialog. The first two are fixed at boot; the third is a fresh scan of the
+// config directories' plugin folders, which is why the dialog refetches on
+// open instead of trusting the copy Init took.
+type pluginsMsg struct {
+	plugins    []client.PluginStatus
+	configured []client.PluginSpec
+	available  []client.PluginAvailable
+}
 
 // commandsMsg carries the slash-command list.
 type commandsMsg struct{ commands []client.Command }
@@ -558,6 +584,19 @@ func (a *App) loadCommandsCmd() tea.Cmd {
 	}
 }
 
+// toConfigSpecs converts the client's plugin specs into config specs, so the
+// dialog's save path writes with the same type the config package round-trips.
+func toConfigSpecs(in []client.PluginSpec) []config.PluginSpec {
+	if in == nil {
+		return nil
+	}
+	out := make([]config.PluginSpec, 0, len(in))
+	for _, spec := range in {
+		out = append(out, config.PluginSpec{Ref: spec.Ref})
+	}
+	return out
+}
+
 func (a *App) loadLSPCmd() tea.Cmd {
 	c := a.client
 	return func() tea.Msg {
@@ -577,6 +616,22 @@ func (a *App) loadMCPCmd() tea.Cmd {
 			return nil
 		}
 		return mcpMsg{servers: servers}
+	}
+}
+
+// loadPluginsCmd fetches the loaded plugin list (GET /api/plugin). Run at
+// Init for the sidebar, and again whenever the /plugins dialog opens: the
+// loaded set really is fixed at boot, but the installed set is not — `make
+// install-plugin` can drop a plugin in while the app runs, and the dialog
+// exists to show it.
+func (a *App) loadPluginsCmd() tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		plugins, configured, available, err := c.Plugins(a.ctx)
+		if err != nil {
+			return nil
+		}
+		return pluginsMsg{plugins: plugins, configured: configured, available: available}
 	}
 }
 
@@ -701,6 +756,14 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return nil
 	case lspMsg:
 		a.lsp = msg.state
+		return nil
+	case pluginsMsg:
+		a.plugins = msg.plugins
+		a.pluginConfig = toConfigSpecs(msg.configured)
+		a.pluginsAvailable = msg.available
+		// The dialog opens from the cached lists and this refresh lands a
+		// moment later; fold it in rather than making the user reopen.
+		a.refreshPluginDialog()
 		return nil
 	case commandsMsg:
 		a.commands = msg.commands

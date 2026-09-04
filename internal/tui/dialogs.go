@@ -122,8 +122,13 @@ type overlay struct {
 	armValue     string // armed two-press confirmation (session delete)
 	armKeys      string // keybind shown in the armed confirmation label
 	onMove       func(item overlayItem)
-	input        string // for overlayInput
-	onSubmit     func(string) tea.Msg
+	// onActivate replaces enter's (and a row click's) default close-then-run
+	// with a handler that leaves the dialog open. A picker selects one thing
+	// and is done; the plugins dialog toggles a row and stays put so several
+	// can be flipped in one visit.
+	onActivate func(item overlayItem) tea.Cmd
+	input      string // for overlayInput
+	onSubmit   func(string) tea.Msg
 
 	// placeholder is the filter input's placeholder (DialogSelect's
 	// placeholder prop, "Search" when unset).
@@ -268,10 +273,11 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 		return nil
 	}
 	// Inside a dialog the dialog owns the keyboard: ctrl+c closes it like
-	// escape instead of quitting the app (Dialog keybinds in the original).
+	// escape instead of quitting the app (Dialog keybinds in the original) —
+	// "like escape" including its onCancel, so it cannot skip the theme
+	// dialog's revert or the plugins dialog's save.
 	if key == "ctrl+c" {
-		a.closeOverlay()
-		return nil
+		return a.resolveOverlay(o.onCancel)
 	}
 	switch o.kind {
 	case overlayHelp, overlayStatus:
@@ -432,7 +438,14 @@ func (a *App) resolveOverlay(branch func() tea.Msg) tea.Cmd {
 // enter/onSelect: closes the dialog first, then dispatches whatever the
 // action returns. Shared by the enter key and a mouse click/release on the
 // row (see mouse.go's overlayMouseTarget/handleClick).
+//
+// A dialog that stays open on activation (onActivate, see the field) takes
+// over both paths, so keyboard and mouse cannot disagree about whether the
+// panel closes.
 func (a *App) activateItem(item overlayItem) tea.Cmd {
+	if a.overlay != nil && a.overlay.onActivate != nil {
+		return a.overlay.onActivate(item)
+	}
 	a.closeOverlay()
 	return runItemAction(item)
 }
@@ -1173,8 +1186,16 @@ func (a *App) statusOverlay(w int) string {
 		"",
 		pad+a.onPanel(a.theme.Text, false).Render("No Formatters"),
 		"",
-		pad+a.onPanel(a.theme.Text, false).Render("No Plugins"),
-		"")
+		pad+a.onPanel(a.theme.Text, false).Render(fmt.Sprintf("%d Plugins", len(a.plugins))),
+	)
+	for _, p := range a.plugins {
+		dot := lipgloss.NewStyle().Foreground(pluginDotColor(a.theme, p.State)).Render("•")
+		lines = append(lines, pad+
+			dot+" "+
+			a.onPanel(a.theme.Text, true).Render(p.ID)+" "+
+			a.onPanel(a.theme.TextMuted, false).Render(p.Source+" · "+p.State))
+	}
+	lines = append(lines, "")
 	return strings.Join(lines, "\n")
 }
 
@@ -1440,6 +1461,9 @@ func (a *App) commandsRegistry() []overlayItem {
 		}},
 		{label: "skill.list", slash: "skills", hint: "Browse skills", category: "System", action: func() tea.Msg {
 			return a.skillsOverlay()
+		}},
+		{label: "plugin.list", slash: "plugins", hint: "Manage plugins", category: "System", action: func() tea.Msg {
+			return a.pluginsOverlay()
 		}},
 		{label: "theme.list", slash: "themes", hint: "Choose theme", category: "Theme", footer: "ctrl+x t", action: func() tea.Msg {
 			a.themesOverlay()

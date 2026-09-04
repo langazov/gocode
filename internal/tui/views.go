@@ -701,6 +701,22 @@ func mcpDotColor(t theme.Theme, status string) color.Color {
 	}
 }
 
+// pluginDotColor colors a plugin's state dot in the sidebar: green while it
+// answers, red once its process is gone. "loaded" — a native plugin's only
+// state, and the initial one for a process plugin between handshake and
+// first check — stays neutral, matching mcpDotColor's treatment of states
+// that are not obviously good or bad.
+func pluginDotColor(t theme.Theme, state string) color.Color {
+	switch state {
+	case "running":
+		return t.Success
+	case "exited":
+		return t.Error
+	default:
+		return t.TextMuted
+	}
+}
+
 // mcpStatusLabel mirrors sidebar/mcp.tsx's <Switch> status label exactly
 // (dialog-status.tsx additionally prefixes the needs_auth case with a "run:
 // gocode mcp auth <name>" hint, folded in here too since both callers
@@ -816,6 +832,22 @@ func (a *App) sidebarView() string {
 			rows = append(rows, dot+" "+
 				a.onPanel(a.theme.Text, false).Render(server.Name)+" "+
 				a.onPanel(a.theme.TextMuted, false).Render(server.Root))
+		}
+	}
+
+	// Plugins (order 350, after LSP): the loaded plugin list with its state.
+	// Fetched once at Init — the set is fixed at boot — so unlike MCP and LSP
+	// there is no tick refresh, and a "Loading..." state cannot persist.
+	rows = append(rows, "", a.onPanel(a.theme.Text, true).Render("Plugins"))
+	switch {
+	case len(a.plugins) == 0:
+		rows = append(rows, a.onPanel(a.theme.TextMuted, false).Render("No plugins loaded"))
+	default:
+		for _, p := range a.plugins {
+			dot := lipgloss.NewStyle().Foreground(pluginDotColor(a.theme, p.State)).Render("•")
+			rows = append(rows, dot+" "+
+				a.onPanel(a.theme.Text, false).Render(truncateRunes(p.ID, 24))+" "+
+				a.onPanel(a.theme.TextMuted, false).Render(p.Source+" · "+p.State))
 		}
 	}
 
