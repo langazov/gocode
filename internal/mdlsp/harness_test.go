@@ -16,7 +16,13 @@ import (
 type testPair struct {
 	client *jsonrpc.Conn
 	server *Server
-	done   chan error
+
+	// done is closed when Serve returns, and serveErr holds what it returned
+	// — read it only after done. A closed channel rather than a delivered
+	// value because both a test and the cleanup wait here, and a one-shot
+	// send would let whoever arrived first consume the other's wake-up.
+	done     chan struct{}
+	serveErr error
 }
 
 func newTestPair(t *testing.T) *testPair {
@@ -26,15 +32,33 @@ func newTestPair(t *testing.T) *testPair {
 	pair := &testPair{
 		client: jsonrpc.NewConn(cWrite, cRead),
 		server: New(sRead, sWrite),
-		done:   make(chan error, 1),
+		done:   make(chan struct{}),
 	}
-	go func() { pair.done <- pair.server.Serve(context.Background()) }()
+	go func() {
+		pair.serveErr = pair.server.Serve(context.Background())
+		close(pair.done)
+	}()
 	go pair.client.Listen()
 	t.Cleanup(func() {
 		pair.client.Shutdown(io.ErrClosedPipe)
-		<-pair.done
+		// Bounded, so a server that genuinely wedges fails this test with a
+		// clear message instead of hanging until the package timeout takes
+		// every other test in the binary down with it.
+		if !pair.waitForExit(10 * time.Second) {
+			t.Error("Serve did not return after the client disconnected")
+		}
 	})
 	return pair
+}
+
+// waitForExit reports whether Serve returned within d.
+func (p *testPair) waitForExit(d time.Duration) bool {
+	select {
+	case <-p.done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // initialize performs the handshake against a workspace root.

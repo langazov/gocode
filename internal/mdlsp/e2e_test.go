@@ -47,14 +47,27 @@ func TestEndToEndSubprocess(t *testing.T) {
 		_ = cmd.Wait()
 	})
 
+	// A message that never comes must fail this test, not hang until the
+	// package-wide timeout takes the whole suite down with it.
+	if f, ok := stdout.(*os.File); ok {
+		if err := f.SetReadDeadline(time.Now().Add(30 * time.Second)); err != nil {
+			t.Logf("stdout read deadline unavailable: %v", err)
+		}
+	}
+
 	// A minimal but real client: Content-Length framing by hand.
 	writeMsg := func(v any) {
 		payload, _ := json.Marshal(v)
 		fmt.Fprintf(stdin, "Content-Length: %d\r\n\r\n", len(payload))
 		stdin.Write(payload)
 	}
+	// One reader for the whole stream, not one per message: a buffered reader
+	// reads ahead, so a per-call reader that happened to pull two frames into
+	// its buffer would return the first and discard the second with itself,
+	// leaving the next call blocked on bytes that already arrived.
+	r := bufio.NewReader(stdout)
 	readMsg := func() map[string]any {
-		r := bufio.NewReader(stdout)
+		t.Helper()
 		length := -1
 		for {
 			line, err := r.ReadString('\n')

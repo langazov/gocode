@@ -436,11 +436,14 @@ func TestShutdownAndExit(t *testing.T) {
 		t.Fatalf("shutdown: %v", err)
 	}
 	_ = pair.client.Notify("exit", nil)
-	select {
-	case err := <-pair.done:
-		if err != nil {
-			t.Fatalf("Serve returned %v", err)
-		}
-	default:
+	// exit is the lifecycle terminator: the server must stop on its own,
+	// without the client closing the pipe. Waiting for that is the whole
+	// point of the test — a non-blocking poll here passed whether or not
+	// Serve ever returned.
+	if !pair.waitForExit(10 * time.Second) {
+		t.Fatal("Serve did not return after the exit notification")
+	}
+	if pair.serveErr != nil {
+		t.Fatalf("Serve returned %v", pair.serveErr)
 	}
 }
