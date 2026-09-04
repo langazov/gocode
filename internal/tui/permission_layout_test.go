@@ -59,7 +59,7 @@ func TestPermissionBannerRespectsMaxHeight(t *testing.T) {
 	app := permissionApp(t, 120, 60, &client.PermissionRequest{
 		ID: "p1", Action: "bash", Resources: []string{longCommand(200)},
 	})
-	height := app.permissionBannerHeight()
+	height := app.askBannerHeight()
 	if height > permissionMaxHeight {
 		t.Errorf("banner is %d rows, want at most %d", height, permissionMaxHeight)
 	}
@@ -76,7 +76,7 @@ func TestPermissionBannerShrinksBelowMaxHeightInShortTerminal(t *testing.T) {
 	app := permissionApp(t, 80, 14, &client.PermissionRequest{
 		ID: "p1", Action: "bash", Resources: []string{longCommand(200)},
 	})
-	if height := app.permissionBannerHeight(); height >= app.height {
+	if height := app.askBannerHeight(); height >= app.height {
 		t.Errorf("banner is %d rows in a %d-row terminal", height, app.height)
 	}
 }

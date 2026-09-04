@@ -254,6 +254,9 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	if err != nil {
 		return turnResult{}, err
 	}
+	// Plan mode's read-only charter (and its release on the way back to build)
+	// rides on the newest user message. See reminders.go.
+	llmMessages = applyReminders(llmMessages, messages, resolved.ID)
 	isLastStep := resolved.MaxSteps > 0 && currentStep >= resolved.MaxSteps
 	var tools []llm.ToolDefinition
 	if r.Tools != nil && !isLastStep {

@@ -166,6 +166,59 @@ func (c *Client) Reply(ctx context.Context, sessionID, requestID, reply string) 
 		map[string]string{"reply": reply}, nil)
 }
 
+// QuestionOption is one selectable choice, mirroring question.Option.
+type QuestionOption struct {
+	Label       string `json:"label"`
+	Description string `json:"description,omitempty"`
+}
+
+// QuestionPrompt is a single question put to the user. A request may carry
+// several; they are answered in order.
+type QuestionPrompt struct {
+	Question string           `json:"question"`
+	Header   string           `json:"header"`
+	Options  []QuestionOption `json:"options"`
+	Multiple bool             `json:"multiple,omitempty"`
+}
+
+// QuestionSource ties a question back to the tool call that asked it.
+type QuestionSource struct {
+	MessageID string `json:"messageID,omitempty"`
+	CallID    string `json:"callID,omitempty"`
+}
+
+// QuestionRequest is one pending ask. The tool that raised it is blocked until
+// it is replied to or rejected.
+type QuestionRequest struct {
+	ID        string           `json:"id"`
+	SessionID string           `json:"sessionID"`
+	Questions []QuestionPrompt `json:"questions"`
+	Source    *QuestionSource  `json:"source,omitempty"`
+}
+
+func (c *Client) Questions(ctx context.Context, sessionID string) ([]QuestionRequest, error) {
+	var out []QuestionRequest
+	err := c.do(ctx, http.MethodGet, "/api/session/"+sessionID+"/question", nil, &out)
+	return out, err
+}
+
+// ReplyQuestion answers a pending question, unblocking the tool call. One
+// entry per question in the request, each holding the labels chosen for it.
+func (c *Client) ReplyQuestion(ctx context.Context, requestID string, answers [][]string) error {
+	if answers == nil {
+		answers = [][]string{}
+	}
+	return c.do(ctx, http.MethodPost, "/api/question/"+requestID+"/reply",
+		map[string]any{"answers": answers}, nil)
+}
+
+// RejectQuestion declines a pending question, failing the tool call that
+// asked it. This is what escape does, and it is the only way a user can get a
+// blocked turn moving again without answering.
+func (c *Client) RejectQuestion(ctx context.Context, requestID string) error {
+	return c.do(ctx, http.MethodPost, "/api/question/"+requestID+"/reject", nil, nil)
+}
+
 // Event is a committed event from the /api/event SSE stream.
 type Event struct {
 	ID      string         `json:"id"`

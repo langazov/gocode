@@ -149,10 +149,12 @@ func TestQuestionToolUnblocksOnCancel(t *testing.T) {
 	}
 }
 
-// stubSwitcher records agent switches for the plan-mode tests.
+// stubSwitcher records agent switches and handoff prompts for the plan-mode
+// tests.
 type stubSwitcher struct {
 	mu       sync.Mutex
 	switched []string
+	prompts  []string
 	err      error
 }
 
@@ -166,10 +168,26 @@ func (s *stubSwitcher) SetAgent(ctx context.Context, sessionID, agent string) er
 	return nil
 }
 
+func (s *stubSwitcher) EnqueuePrompt(ctx context.Context, sessionID, text string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.err != nil {
+		return s.err
+	}
+	s.prompts = append(s.prompts, sessionID+": "+text)
+	return nil
+}
+
 func (s *stubSwitcher) all() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.switched...)
+}
+
+func (s *stubSwitcher) queued() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.prompts...)
 }
 
 func TestPlanExitSwitchesOnYes(t *testing.T) {
@@ -188,6 +206,12 @@ func TestPlanExitSwitchesOnYes(t *testing.T) {
 	}
 	if !strings.Contains(out, "build") {
 		t.Fatalf("output = %q", out)
+	}
+	// The switch alone leaves the session pinned to build with nothing to do;
+	// the handoff prompt is what gives the build agent a turn.
+	got := switcher.queued()
+	if len(got) != 1 || !strings.Contains(got[0], "Execute the plan") {
+		t.Fatalf("queued prompts = %v", got)
 	}
 }
 
@@ -223,6 +247,11 @@ func TestPlanEnterTargetsPlanAgent(t *testing.T) {
 	}
 	if got := switcher.all(); len(got) != 1 || got[0] != "ses_1->plan" {
 		t.Fatalf("switches = %v", got)
+	}
+	// Entering plan mode carries no handoff: the request the user already made
+	// is what the plan agent works from.
+	if got := switcher.queued(); len(got) != 0 {
+		t.Fatalf("plan_enter should queue nothing, got %v", got)
 	}
 }
 

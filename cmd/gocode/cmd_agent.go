@@ -68,6 +68,7 @@ func runAgentList(a *clix.Args) error {
 
 	registry := agent.NewRegistry()
 	registry.Update(agent.Info{ID: "build", Mode: "primary", Permissions: permission.Ruleset{}})
+	registerPlanAgent(registry, permission.Defaults(), nil)
 	registerBuiltinSubagents(registry, permission.Defaults())
 	if cfg.DefaultAgent != "" {
 		registry.SetDefault(cfg.DefaultAgent)

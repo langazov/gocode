@@ -68,6 +68,14 @@ var (
 		Type:    "session.next.compaction.ended",
 		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
 	}
+	// AgentSwitched records a change of the session's agent in the timeline,
+	// mirroring the event of the same name in packages/schema. Durable because
+	// the switch is a fact about the conversation — reading back a session
+	// should show where plan mode began and ended, not just its effects.
+	AgentSwitched = event.Definition{
+		Type:    "session.next.agent.switched",
+		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
+	}
 )
 
 // RegisterRunnerProjectors wires the assistant-message projections to the
@@ -86,6 +94,31 @@ func RegisterRunnerProjectors(bus *event.Bus) {
 	bus.Project(ReasoningDelta, projectContentDelta)
 	bus.Project(ReasoningEnded, projectContentEnded)
 	bus.Project(CompactionEnded, projectCompactionEnded)
+	bus.Project(AgentSwitched, projectAgentSwitched)
+}
+
+// projectAgentSwitched appends the agent-switched marker to the timeline.
+// ToLLMMessages skips this type, so it is a record for readers only and never
+// reaches the model.
+func projectAgentSwitched(ctx context.Context, tx *sql.Tx, payload event.Payload) error {
+	data := payload.Data
+	messageID, _ := data["messageID"].(string)
+	sessionID, _ := data["sessionID"].(string)
+	agent, _ := data["agent"].(string)
+	created := asInt64(data["timestamp"])
+
+	encoded, err := json.Marshal(map[string]any{
+		"agent": agent,
+		"time":  map[string]any{"created": created},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO session_message (id, session_id, type, seq, data, time_created, time_updated)
+		VALUES (?, ?, 'agent-switched', ?, ?, ?, ?)`,
+		messageID, sessionID, payload.Durable.Seq, string(encoded), created, created)
+	return err
 }
 
 func projectStepStarted(ctx context.Context, tx *sql.Tx, payload event.Payload) error {

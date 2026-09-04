@@ -36,6 +36,9 @@ type mockAPI struct {
 	created    int
 	compacts   int
 	pending    []client.PermissionRequest
+	questions  []client.QuestionRequest
+	answered   [][]([]string) // answers posted to /api/question/{id}/reply
+	rejected   []string       // request ids posted to /api/question/{id}/reject
 	renamed    []renameCall
 	models     []modelCall
 	forkedFrom string
@@ -45,7 +48,7 @@ type mockAPI struct {
 
 func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 	t.Helper()
-	api := &mockAPI{pending: []client.PermissionRequest{}}
+	api := &mockAPI{pending: []client.PermissionRequest{}, questions: []client.QuestionRequest{}}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/session", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]client.Session{{
@@ -93,6 +96,21 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 		}
 		json.NewDecoder(r.Body).Decode(&body)
 		api.replies = append(api.replies, body.Reply)
+		w.Write([]byte(`{"ok":true}`))
+	})
+	mux.HandleFunc("GET /api/session/{sessionID}/question", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode(api.questions)
+	})
+	mux.HandleFunc("POST /api/question/{requestID}/reply", func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Answers [][]string `json:"answers"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		api.answered = append(api.answered, body.Answers)
+		w.Write([]byte(`{"ok":true}`))
+	})
+	mux.HandleFunc("POST /api/question/{requestID}/reject", func(w http.ResponseWriter, r *http.Request) {
+		api.rejected = append(api.rejected, r.PathValue("requestID"))
 		w.Write([]byte(`{"ok":true}`))
 	})
 	mux.HandleFunc("POST /api/session/{sessionID}/rename", func(w http.ResponseWriter, r *http.Request) {
@@ -456,7 +474,7 @@ func feed(app *App, events ...client.Event) bool {
 	for _, e := range events {
 		state.apply(e)
 	}
-	return app.applySnapshot(state.snapshot(0))
+	return app.applySnapshot(state.snapshot(0)).timeline
 }
 
 func TestStreamingTextDeltas(t *testing.T) {

@@ -306,7 +306,21 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		filepath.Join(global.Resolve().Config, "gocode"),
 		filepath.Join(global.Resolve().Home, ".agents"),
 	)
-	questions := question.NewService(question.Hooks{}, nil)
+	// A question parks the whole turn on the user, so clients have to hear
+	// about it now rather than on their next reconciliation tick. The settled
+	// hooks matter too: they retract a prompt this client did not answer
+	// itself — another client did, or the run was interrupted.
+	questions := question.NewService(question.Hooks{
+		OnAsked: func(request question.Request) {
+			publishAsk(ctx, bus, session.QuestionAsked, request.SessionID, request.ID)
+		},
+		OnReplied: func(sessionID, requestID string, _ []question.Answer) {
+			publishAsk(ctx, bus, session.QuestionSettled, sessionID, requestID)
+		},
+		OnRejected: func(sessionID, requestID string) {
+			publishAsk(ctx, bus, session.QuestionSettled, sessionID, requestID)
+		},
+	}, nil)
 
 	// Language servers are started lazily, on the first file that needs one, so
 	// boot stays fast and a project with none pays nothing.
@@ -351,17 +365,24 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	// last-match-wins, so an agent's own explicit rules still override the
 	// "*": allow baseline, exactly like TS's Permission.merge(defaults, user).
 	defaultPermissions := permission.Defaults()
-	buildPermissions := defaultPermissions
+	var userRules permission.Ruleset
 	if cfg.Permission.Raw != nil || cfg.Permission.IsFlat {
 		if configured, err := cfg.Permission.Ruleset(); err == nil && len(configured) > 0 {
-			buildPermissions = permission.Merge(defaultPermissions, configured)
+			userRules = configured
 		}
 	}
 	agents.Update(agent.Info{
-		ID:          "build",
-		Mode:        "primary",
-		Permissions: buildPermissions,
+		ID:   "build",
+		Mode: "primary",
+		// plan_enter is denied by default (permission.Defaults) and re-allowed
+		// only here, so the suggestion to plan comes from the implementation
+		// agent and nowhere else — a subagent, or the plan agent itself,
+		// proposing the switch is noise at best and a loop at worst.
+		Permissions: permission.Merge(defaultPermissions, permission.Ruleset{
+			{Action: "plan_enter", Resource: "*", Effect: permission.Allow},
+		}, userRules),
 	})
+	registerPlanAgent(agents, defaultPermissions, userRules)
 	registerBuiltinSubagents(agents, defaultPermissions)
 	if cfg.DefaultAgent != "" {
 		agents.SetDefault(cfg.DefaultAgent)
@@ -395,7 +416,13 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	// Scoped to the project, so approving a directory survives the session
 	// and every later one in the same worktree.
 	savedPermissions := session.NewSavedPermissions(database, workdir)
-	permissionEngine := permission.NewEngine(agentRules, savedPermissions, permission.Hooks{}, nil)
+	// Same nudge for permissions, which had the same tick-latency problem: an
+	// approval raised mid-turn sat invisible for up to 10 seconds.
+	permissionEngine := permission.NewEngine(agentRules, savedPermissions, permission.Hooks{
+		OnAsked: func(request permission.Request) {
+			publishAsk(ctx, bus, session.PermissionAsked, request.SessionID, request.ID)
+		},
+	}, nil)
 
 	runner := &session.Runner{
 		DB:                database,
