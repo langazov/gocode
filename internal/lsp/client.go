@@ -323,6 +323,65 @@ func (c *Client) DiagnosticsFor(path string) []Diagnostic {
 	return append([]Diagnostic(nil), c.diagnostics[path]...)
 }
 
+// DocumentSymbols requests textDocument/documentSymbol for path, which the
+// caller must already have opened (Open) so the server has something to
+// answer about. Used by the RAG plugin's syntax-aware chunker to split code
+// files at real function/class/method boundaries instead of arbitrary line
+// windows — see internal/rag/chunk/syntax.go.
+func (c *Client) DocumentSymbols(ctx context.Context, path string) ([]DocumentSymbol, error) {
+	path = normalizePath(path)
+	var raw json.RawMessage
+	err := c.conn.call(ctx, "textDocument/documentSymbol", map[string]any{
+		"textDocument": textDocumentIdentifier{URI: uriFromPath(path)},
+	}, &raw)
+	if err != nil {
+		return nil, err
+	}
+	return decodeDocumentSymbols(raw)
+}
+
+// decodeDocumentSymbols accepts either response shape the spec allows:
+// hierarchical DocumentSymbol[] (has "range" directly on each entry) or flat
+// SymbolInformation[] (has "location": {"range": ...} instead). Presence of
+// a "location" key on the first entry distinguishes them; a mixed array
+// never happens in practice, since it comes from one server's one
+// capability choice.
+func decodeDocumentSymbols(raw json.RawMessage) ([]DocumentSymbol, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var probe []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return nil, err
+	}
+	if len(probe) == 0 {
+		return nil, nil
+	}
+	if _, flat := probe[0]["location"]; flat {
+		var symbols []struct {
+			Name     string `json:"name"`
+			Kind     int    `json:"kind"`
+			Location struct {
+				Range Range `json:"range"`
+			} `json:"location"`
+		}
+		if err := json.Unmarshal(raw, &symbols); err != nil {
+			return nil, err
+		}
+		out := make([]DocumentSymbol, len(symbols))
+		for i, s := range symbols {
+			out[i] = DocumentSymbol{Name: s.Name, Kind: s.Kind, Range: s.Location.Range, SelectionRange: s.Location.Range}
+		}
+		return out, nil
+	}
+
+	var hierarchical []DocumentSymbol
+	if err := json.Unmarshal(raw, &hierarchical); err != nil {
+		return nil, err
+	}
+	return hierarchical, nil
+}
+
 // Close shuts the server down, politely first and then forcibly.
 func (c *Client) Close() error {
 	c.mu.Lock()

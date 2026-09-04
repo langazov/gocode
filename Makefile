@@ -25,6 +25,12 @@ EXAMPLE_PLUGIN_DIR := examples/plugin-echo
 EXAMPLE_PLUGIN_SRC := ./$(EXAMPLE_PLUGIN_DIR)
 EXAMPLE_PLUGIN_OUT := $(EXAMPLE_PLUGIN_DIR)/plugin-echo$(shell $(GO) env GOEXE)
 
+# The RAG process plugin. Same reasoning as the example plugin above: the
+# binary must land inside its own directory, next to gocode-plugin.json.
+RAG_PLUGIN_DIR := cmd/rag-plugin
+RAG_PLUGIN_SRC := ./$(RAG_PLUGIN_DIR)
+RAG_PLUGIN_OUT := $(RAG_PLUGIN_DIR)/rag-plugin$(shell $(GO) env GOEXE)
+
 # Where a plugin referred to by bare name is looked up. This must match
 # plugin.InstallRoot() in internal/plugin/loader.go, which is pinned by
 # TestInstallDir. Note there is no second "gocode" segment: global.Paths.Config
@@ -45,7 +51,8 @@ PLUGIN_CONFIG := $(GO) run tools/pluginconfig.go
 
 .PHONY: help build release run install test cover fmt fmt-check vet lint check wasm wasm-run \
         example-plugin install-plugin install-example-plugin uninstall-plugin \
-        enable-plugin disable-plugin plugin-root clean
+        enable-plugin disable-plugin plugin-root clean \
+        rag-plugin install-rag-plugin
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -147,6 +154,21 @@ install-example-plugin: ## Build and install the example plugin as "plugin-echo"
 	@echo 'Installed to $(PLUGIN_ROOT)/plugin-echo'
 	@if [ '$(CONFIGURE)' = '1' ]; then $(PLUGIN_CONFIG) -add plugin-echo -options '$(OPTIONS)'; \
 	else echo 'Enable it with: "plugin": ["plugin-echo"]'; fi
+
+rag-plugin: ## Build the RAG process plugin into cmd/rag-plugin/
+	$(GO) build -o $(RAG_PLUGIN_OUT) $(RAG_PLUGIN_SRC)
+	@echo 'RAG plugin: $(RAG_PLUGIN_OUT)'
+	@echo 'Enable it with: "plugin": [["$(CURDIR)/$(RAG_PLUGIN_DIR)", {"embeddingProvider": "openai"}]]'
+
+# Builds into the install directory rather than copying the source tree, so
+# only the manifest and the binary are installed — not main.go and README.md.
+install-rag-plugin: ## Build and install the RAG plugin as "rag-plugin"
+	@mkdir -p '$(PLUGIN_ROOT)/rag-plugin'
+	$(GO) build -o '$(PLUGIN_ROOT)/rag-plugin/rag-plugin$(shell $(GO) env GOEXE)' $(RAG_PLUGIN_SRC)
+	cp '$(RAG_PLUGIN_DIR)/gocode-plugin.json' '$(PLUGIN_ROOT)/rag-plugin/'
+	@echo 'Installed to $(PLUGIN_ROOT)/rag-plugin'
+	@if [ '$(CONFIGURE)' = '1' ]; then $(PLUGIN_CONFIG) -add rag-plugin -options '$(OPTIONS)'; \
+	else echo 'Enable it with: "plugin": ["rag-plugin"]'; fi
 
 uninstall-plugin: ## Remove an installed plugin: make uninstall-plugin NAME=id
 	@if [ -z '$(NAME)' ]; then echo 'usage: make uninstall-plugin NAME=<id>'; exit 2; fi

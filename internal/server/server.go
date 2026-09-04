@@ -17,6 +17,7 @@ import (
 	"github.com/langazov/gocode-go/internal/modelsdev"
 	"github.com/langazov/gocode-go/internal/modelstate"
 	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/plugin"
 	"github.com/langazov/gocode-go/internal/question"
 	"github.com/langazov/gocode-go/internal/session"
 	"github.com/langazov/gocode-go/internal/skill"
@@ -43,6 +44,8 @@ type Server struct {
 	LSP *lsp.Service
 	// Commands holds the slash commands the interface completes and runs.
 	Commands *command.Registry
+	// Plugins holds the loaded plugin host, for the status surfaces.
+	Plugins *plugin.Host
 
 	// oauth tracks in-flight provider logins started from the interface. A
 	// device flow outlives the request that begins it, so the attempt is
@@ -80,6 +83,9 @@ func (s *Server) Mux() *http.ServeMux {
 	}
 	if s.MCP != nil {
 		mux.HandleFunc("GET /api/mcp", s.listMCP)
+	}
+	if s.Plugins != nil {
+		mux.HandleFunc("GET /api/plugin", s.listPlugins)
 	}
 	if s.Jobs != nil {
 		mux.HandleFunc("GET /api/job", s.listJobs)

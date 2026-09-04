@@ -35,7 +35,10 @@
 // call site in the runtime — cannot tell them apart.
 package plugin
 
-import "context"
+import (
+	"context"
+	"sort"
+)
 
 // Input is what a plugin factory receives, porting `PluginInput` in
 // packages/plugin/src/index.ts.
@@ -110,6 +113,35 @@ type entry struct {
 	remote invoker
 }
 
+// names returns the trigger hook names this plugin registered, including any
+// the host dropped as unknown — the status surfaces show what the plugin
+// asked for, not what survived validation. Sorted for stable output.
+func (h *Hooks) names() []string {
+	if h == nil || len(h.entries) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(h.entries))
+	for _, e := range h.entries {
+		out = append(out, e.name)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// toolNames returns the names of the tools this plugin contributed, sorted
+// for stable output.
+func (h *Hooks) toolNames() []string {
+	if h == nil || len(h.Tools) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(h.Tools))
+	for _, t := range h.Tools {
+		out = append(out, t.Name)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // invoker is the seam between an in-process hook and one reached over a
 // transport. [Process] implements it.
 type invoker interface {
@@ -132,6 +164,10 @@ type Instance struct {
 
 	// closer tears down transport-level resources; nil for native plugins.
 	closer func(context.Context) error
+
+	// state reports liveness for the status surfaces; nil for native plugins,
+	// which have no separate process to observe.
+	state func() string
 }
 
 // Source is the tier a plugin was loaded from.

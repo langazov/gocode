@@ -19,6 +19,50 @@ type Range struct {
 	End   Position `json:"end"`
 }
 
+// DocumentSymbol is one entry of a textDocument/documentSymbol response,
+// normalized to the hierarchical shape the spec defines. A server that
+// answers with the older, flat SymbolInformation shape instead (name, kind,
+// location) is converted to this on decode — see decodeDocumentSymbols in
+// client.go — so callers only ever see one shape.
+type DocumentSymbol struct {
+	Name           string           `json:"name"`
+	Kind           int              `json:"kind"`
+	Range          Range            `json:"range"`
+	SelectionRange Range            `json:"selectionRange"`
+	Children       []DocumentSymbol `json:"children,omitempty"`
+}
+
+// SymbolKind values from the LSP spec (3.17), the full enum. DocumentSymbol.Kind
+// holds one of these.
+const (
+	SymbolKindFile          = 1
+	SymbolKindModule        = 2
+	SymbolKindNamespace     = 3
+	SymbolKindPackage       = 4
+	SymbolKindClass         = 5
+	SymbolKindMethod        = 6
+	SymbolKindProperty      = 7
+	SymbolKindField         = 8
+	SymbolKindConstructor   = 9
+	SymbolKindEnum          = 10
+	SymbolKindInterface     = 11
+	SymbolKindFunction      = 12
+	SymbolKindVariable      = 13
+	SymbolKindConstant      = 14
+	SymbolKindString        = 15
+	SymbolKindNumber        = 16
+	SymbolKindBoolean       = 17
+	SymbolKindArray         = 18
+	SymbolKindObject        = 19
+	SymbolKindKey           = 20
+	SymbolKindNull          = 21
+	SymbolKindEnumMember    = 22
+	SymbolKindStruct        = 23
+	SymbolKindEvent         = 24
+	SymbolKindOperator      = 25
+	SymbolKindTypeParameter = 26
+)
+
 // Severity values from the LSP spec.
 const (
 	SeverityError   = 1

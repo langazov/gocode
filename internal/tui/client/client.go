@@ -525,6 +525,77 @@ func (c *Client) MCPServers(ctx context.Context) ([]MCPServer, error) {
 	return out, nil
 }
 
+// PluginStatus is one loaded plugin: its tier ("native"/"process"), process
+// state ("loaded"/"running"/"exited"), and the hook and tool names it
+// registered.
+type PluginStatus struct {
+	ID     string   `json:"id"`
+	Spec   string   `json:"spec"`
+	Source string   `json:"source"`
+	State  string   `json:"state"`
+	Hooks  []string `json:"hooks"`
+	Tools  []string `json:"tools"`
+}
+
+// PluginSpec is one entry of the config's `plugin` array — a reference and
+// its optional options bag. It mirrors internal/config.PluginSpec because
+// the TUI client does not import the config package.
+type PluginSpec struct {
+	Ref     string         `json:"ref"`
+	Options map[string]any `json:"-"`
+}
+
+// UnmarshalJSON accepts both config forms: a bare string and [ref, options].
+func (p *PluginSpec) UnmarshalJSON(data []byte) error {
+	var ref string
+	if err := json.Unmarshal(data, &ref); err == nil {
+		p.Ref = ref
+		return nil
+	}
+	var tuple [2]json.RawMessage
+	if err := json.Unmarshal(data, &tuple); err != nil {
+		return err
+	}
+	if err := json.Unmarshal(tuple[0], &ref); err != nil {
+		return err
+	}
+	p.Ref = ref
+	return nil
+}
+
+// pluginStatusResponse is the body of GET /api/plugin.
+type pluginStatusResponse struct {
+	Plugins    []PluginStatus    `json:"plugins"`
+	Configured []PluginSpec      `json:"configured"`
+	Available  []PluginAvailable `json:"available"`
+}
+
+// PluginAvailable is one plugin installed under a config directory's plugin
+// folder that the `plugin` array does not name — runnable, but not loaded.
+type PluginAvailable struct {
+	Name string `json:"name"`
+	// Ref is what enabling it writes to the `plugin` array.
+	Ref  string `json:"ref"`
+	Path string `json:"path"`
+	Root string `json:"root"`
+}
+
+// Plugins fetches the loaded plugin list with the config's plugin array
+// beside it — the array is what "enabled" means for the plugins dialog —
+// and the installed-but-unconfigured plugins the dialog offers as disabled.
+// The first two are fixed at boot; the third is scanned per request, so a
+// plugin installed while the app runs shows up on the dialog's next open.
+func (c *Client) Plugins(ctx context.Context) ([]PluginStatus, []PluginSpec, []PluginAvailable, error) {
+	var out pluginStatusResponse
+	if err := c.do(ctx, http.MethodGet, "/api/plugin", nil, &out); err != nil {
+		return nil, nil, nil, err
+	}
+	if out.Plugins == nil {
+		out.Plugins = []PluginStatus{}
+	}
+	return out.Plugins, out.Configured, out.Available, nil
+}
+
 func (c *Client) SetModel(ctx context.Context, sessionID, providerID, modelID string) error {
 	return c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/model", map[string]string{
 		"providerID": providerID, "id": modelID,

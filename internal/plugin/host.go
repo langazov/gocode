@@ -153,3 +153,42 @@ func (h *Host) Close(ctx context.Context) error {
 	}
 	return errors.Join(failures...)
 }
+
+// Status is one entry of the plugin list the status surfaces show. State is
+// "loaded" unless a process-level check says otherwise, so a native plugin is
+// always "loaded" — there is nothing to fall over.
+type Status struct {
+	ID     string   `json:"id"`
+	Spec   string   `json:"spec"`
+	Source string   `json:"source"`
+	State  string   `json:"state"`
+	Hooks  []string `json:"hooks,omitempty"`
+	Tools  []string `json:"tools,omitempty"`
+}
+
+// Status returns every loaded plugin with its tier, hook and tool names, and
+// process state, in load order. It backs GET /api/plugin and the interface's
+// plugin section; nil means no plugins are loaded, which the surfaces render
+// as an explicit empty state rather than hiding the section.
+func (h *Host) Status() []Status {
+	h.mu.RLock()
+	instances := append([]*Instance(nil), h.instances...)
+	h.mu.RUnlock()
+
+	out := make([]Status, 0, len(instances))
+	for _, instance := range instances {
+		state := "loaded"
+		if instance.state != nil {
+			state = instance.state()
+		}
+		out = append(out, Status{
+			ID:     instance.ID,
+			Spec:   instance.Spec,
+			Source: string(instance.Source),
+			State:  state,
+			Hooks:  instance.Hooks.names(),
+			Tools:  instance.Hooks.toolNames(),
+		})
+	}
+	return out
+}

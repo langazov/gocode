@@ -205,6 +205,7 @@ func Spawn(ctx context.Context, spec string, cfg SpawnConfig, in Input, opts Opt
 		Source: SourceProcess,
 		Hooks:  process.hooks(declared),
 		closer: process.Close,
+		state:  process.State,
 	}
 	if instance.ID == "" {
 		instance.ID = spec
@@ -429,6 +430,19 @@ func (p *Process) drainStderr(stderr io.Reader, sink io.Writer) {
 		}
 		p.onLog(fmt.Sprintf("%s: %s", p.spec, line))
 	}
+}
+
+// State reports the process's liveness for the status surfaces: "running"
+// while the reader loop is alive, "exited" afterwards. A process whose
+// transport died cannot answer hooks — any Trigger against it fails at
+// p.call's closed check — so that distinction is what "state" means here.
+func (p *Process) State() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.closed {
+		return "exited"
+	}
+	return "running"
 }
 
 // Close shuts the plugin down: ask politely, close stdin so a well-behaved

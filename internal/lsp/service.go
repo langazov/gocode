@@ -236,6 +236,39 @@ func (s *Service) Touch(ctx context.Context, file string, wait bool) {
 	group.Wait()
 }
 
+// DocumentSymbols asks every server that handles file for its symbol tree,
+// opening the file first so a server that requires an open document before
+// answering gets one (the same flow Touch uses). The first non-empty result
+// wins: two servers rarely cover the same extension, and when they do
+// (pyright + ruff on .py) only one implements documentSymbol meaningfully —
+// there is no useful way to merge two servers' outlines of the same file.
+//
+// A nil *Service, LSP disabled, or no server installed for this file's
+// language all return (nil, nil) rather than an error: "no symbols" is the
+// normal case a caller falls back from, not a failure.
+func (s *Service) DocumentSymbols(ctx context.Context, file string) ([]DocumentSymbol, error) {
+	if s == nil {
+		return nil, nil
+	}
+	clients := s.clientsFor(ctx, file)
+	var lastErr error
+	for _, client := range clients {
+		if _, err := client.Open(file); err != nil {
+			lastErr = err
+			continue
+		}
+		symbols, err := client.DocumentSymbols(ctx, file)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		if len(symbols) > 0 {
+			return symbols, nil
+		}
+	}
+	return nil, lastErr
+}
+
 // Diagnostics returns everything every running server has published, keyed by
 // absolute path.
 func (s *Service) Diagnostics() map[string][]Diagnostic {
