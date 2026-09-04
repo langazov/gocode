@@ -17,23 +17,19 @@ One statically linked binary. No Node, no Bun, no runtime to install.
 
 ---
 
-```
-┌─ gocode ────────────────────────────────────── gpt-5 · build ─┐
-│                                                                  │
-│  › refactor the auth middleware to use the new token store       │
-│                                                                  │
-│  ● read      internal/auth/middleware.go                          │
-│  ● grep      "tokenStore" · 7 matches in 3 files                  │
-│  ● edit      internal/auth/middleware.go  +24 −11                 │
-│  ● bash      go test ./internal/auth/...                          │
-│    ok  github.com/you/app/internal/auth   0.42s                   │
-│                                                                  │
-│  Swapped the middleware onto TokenStore.Lookup and dropped the   │
-│  now-unused session cache. Tests pass.                            │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-  ~/app  ⎇ main   ● gopls   12.4k tokens   $0.03
-```
+<div align="center">
+
+<img src="docs/assets/gocode-splash.png" alt="The gocode TUI on launch: the gocode wordmark above an empty prompt reading &quot;Ask anything…&quot;, with the active agent and model shown beneath it and the working directory, MCP count and version along the footer." width="900">
+
+<sub>Launch it in any directory — agent and model live on the prompt, <code>tab</code> switches agents, <code>ctrl+p</code> opens commands.</sub>
+
+<br><br>
+
+<img src="docs/assets/gocode-session.png" alt="A gocode session mid-answer: syntax-highlighted Go code and prose explaining channels fill the main pane, while a sidebar reports context usage, spend, connected MCP servers and LSP status." width="900">
+
+<sub>A turn in flight, with context, spend, MCP servers and language servers in the sidebar.</sub>
+
+</div>
 
 ## Why
 
