@@ -1,6 +1,6 @@
 <div align="center">
 
-# gocode
+# GoCode
 
 **A complete Go port of the [opencode](https://github.com/anomalyco/opencode) coding agent.**
 
