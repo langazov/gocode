@@ -23,6 +23,15 @@ func discoverHome(t *testing.T) (home, project string) {
 	return home, project
 }
 
+// fallbackName is the directory-plugin entrypoint the loader looks for, with
+// the extension Windows needs to consider a file runnable at all.
+func fallbackName() string {
+	if runtime.GOOS == "windows" {
+		return "plugin.exe"
+	}
+	return "plugin"
+}
+
 // writeExecutable creates a runnable file, or a plain one when mode says so.
 func writeExecutable(t *testing.T, path string, mode os.FileMode) {
 	t.Helper()
@@ -42,7 +51,7 @@ func TestDiscoverFindsExecutablesInInstallRoot(t *testing.T) {
 	writeExecutable(t, filepath.Join(root, "lint"), 0o755)
 	// A directory plugin: the loader's fallback entrypoint is an executable
 	// named `plugin` inside it.
-	writeExecutable(t, filepath.Join(root, "rag", "plugin"), 0o755)
+	writeExecutable(t, filepath.Join(root, "rag", fallbackName()), 0o755)
 
 	found := Discover(t.TempDir())
 	if len(found) != 2 {
