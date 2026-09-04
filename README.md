@@ -35,6 +35,12 @@ One statically linked binary. No Node, no Bun, no runtime to install.
 
 <sub>Markdown rendered in full — headings, tables, bold/italic/inline code, and syntax-highlighted code blocks.</sub>
 
+<br><br>
+
+<img src="docs/assets/gocode-mcp-kubernetes.png" alt="gocode diagnosing a Kubernetes cluster through the kubernetes MCP server: a structured markdown report with a status heading, a workload table (StatefulSets, Deployments, a DaemonSet all ready), a numbered list of non-critical observations, and a verdict section, with the kubernetes and chrome-devtools MCP servers shown connected in the sidebar." width="900">
+
+<sub>MCP tools driving a real diagnosis — the kubernetes server inspects a live cluster and gocode turns the results into a structured report.</sub>
+
 </div>
 
 ## Why
