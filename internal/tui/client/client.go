@@ -468,6 +468,62 @@ func (c *Client) Skills(ctx context.Context) ([]Skill, error) {
 	return out, err
 }
 
+// Memory is one durable instruction, as the /memory manager sees it. It
+// mirrors internal/memory.Memory; the interface reaches the store over HTTP
+// like everything else.
+type Memory struct {
+	ID       string `json:"id"`
+	Scope    string `json:"scope"`
+	Content  string `json:"content"`
+	Category string `json:"category,omitempty"`
+	Origin   string `json:"origin"`
+	Pinned   bool   `json:"pinned"`
+	Disabled bool   `json:"disabled"`
+}
+
+// MemoryPatch is a partial update. A nil field is left alone, which is what
+// lets the dialog toggle a pin without resubmitting the content.
+type MemoryPatch struct {
+	Content  *string `json:"content,omitempty"`
+	Scope    *string `json:"scope,omitempty"`
+	Category *string `json:"category,omitempty"`
+	Pinned   *bool   `json:"pinned,omitempty"`
+	Disabled *bool   `json:"disabled,omitempty"`
+}
+
+// Memories lists the memories that apply here — this project's and the global
+// ones — including the ones the user has silenced, which the manager shows.
+func (c *Client) Memories(ctx context.Context) ([]Memory, error) {
+	var out []Memory
+	err := c.do(ctx, http.MethodGet, "/api/memory", nil, &out)
+	return out, err
+}
+
+// CreateMemory saves a memory. scope is "project" or "global"; anything else
+// is treated as the project scope by the server.
+func (c *Client) CreateMemory(ctx context.Context, content, scope string) (*Memory, error) {
+	var out Memory
+	body := map[string]string{"content": content, "scope": scope}
+	if err := c.do(ctx, http.MethodPost, "/api/memory", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// UpdateMemory applies a partial update.
+func (c *Client) UpdateMemory(ctx context.Context, id string, patch MemoryPatch) (*Memory, error) {
+	var out Memory
+	if err := c.do(ctx, http.MethodPatch, "/api/memory/"+id, patch, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteMemory removes a memory permanently.
+func (c *Client) DeleteMemory(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/memory/"+id, nil, nil)
+}
+
 // LSPState is the language-server status shown in the sidebar.
 type LSPState struct {
 	Enabled   bool        `json:"enabled"`

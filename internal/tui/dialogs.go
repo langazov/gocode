@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
@@ -61,6 +62,12 @@ type overlayItem struct {
 	// title color, matching `<text fg={theme.success}>✓</text>`.
 	gutterOK bool
 	action   func() tea.Msg
+	// argAction handles "/name args" for an interface command that takes
+	// them. Interface commands are otherwise argument-free — runSlashCommand
+	// parses the arguments off and drops them — so a nil argAction is every
+	// command that existed before this field, and they keep behaving
+	// identically.
+	argAction func(string) tea.Msg
 }
 
 // matchesSlash reports whether an interface command answers to a "/" name.
@@ -90,8 +97,14 @@ type dialogAction struct {
 	keys  string
 	// right places the action in the footer's right-aligned group
 	// (DialogSelect's `side: "right"`); the default group is left-aligned.
-	right     bool
-	onTrigger func(item overlayItem) tea.Cmd
+	right bool
+	// standalone marks an action that does not operate on the selected row —
+	// "new", for one. Ordinary actions are skipped when nothing is selected,
+	// which for a create action would disable it in exactly the state that
+	// needs it most: the empty list. A standalone action is handed a zero
+	// overlayItem instead.
+	standalone bool
+	onTrigger  func(item overlayItem) tea.Cmd
 }
 
 // overlay is the shared dialog surface. List dialogs mirror DialogSelect: a
@@ -326,14 +339,19 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 				return nil
 			}
 			return staticMsg(overlay.onSubmit(value))
+		case "shift+enter":
+			// enter submits, so a newline needs its own chord. The renderer
+			// grows the panel to match.
+			o.input += "\n"
+			return nil
 		case "backspace":
 			if run := []rune(o.input); len(run) > 0 {
 				o.input = string(run[:len(run)-1])
 			}
 			return nil
 		}
-		if len(key) == 1 {
-			o.input += key
+		if text, ok := typedText(key); ok {
+			o.input += text
 		}
 		return nil
 	}
@@ -349,6 +367,9 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 	}
 	for _, action := range o.actions {
 		if action.keys != "" && key == action.keys {
+			if action.standalone {
+				return action.onTrigger(overlayItem{})
+			}
 			if item, ok := o.selectedItem(); ok {
 				return action.onTrigger(item)
 			}
@@ -400,8 +421,12 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 	case "enter":
 		// submit(): a focused footer action wins over the selected item.
 		if o.focusedAction >= 0 && o.focusedAction < len(o.actions) {
+			action := o.actions[o.focusedAction]
+			if action.standalone {
+				return action.onTrigger(overlayItem{})
+			}
 			if item, ok := o.selectedItem(); ok {
-				return o.actions[o.focusedAction].onTrigger(item)
+				return action.onTrigger(item)
 			}
 			return nil
 		}
@@ -411,11 +436,36 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 		}
 		return a.activateItem(item)
 	}
-	if len(key) == 1 {
-		o.filter += key
+	if text, ok := typedText(key); ok {
+		o.filter += text
 		o.applyFilter()
 	}
 	return nil
+}
+
+// typedText reports the literal text a key contributes to an editable field,
+// and whether it contributes any at all.
+//
+// The obvious test — len(key) == 1 — is wrong twice over, because what arrives
+// here is a key *name* from tea.KeyMsg.String(), not the character typed:
+//
+//   - The space bar names itself "space", five bytes, so it was silently
+//     dropped. Nothing with a space in it could be typed into a filter or an
+//     input dialog.
+//   - len() counts bytes, so every non-ASCII character was dropped too: "é" is
+//     two bytes and "世" is three, neither of which is 1.
+//
+// Counting runes instead is safe here because every other key name is a word
+// ("enter", "tab", "up") or a chord ("ctrl+a"), all of which are several runes
+// long. A one-rune name is therefore always a literal character.
+func typedText(key string) (string, bool) {
+	if key == "space" {
+		return " ", true
+	}
+	if utf8.RuneCountInString(key) == 1 {
+		return key, true
+	}
+	return "", false
 }
 
 // resolveOverlay closes the dialog and dispatches the chosen branch, the
@@ -463,7 +513,22 @@ func runItemAction(item overlayItem) tea.Cmd {
 	if item.action == nil {
 		return nil
 	}
-	result := item.action()
+	return itemResult(item.action())
+}
+
+// runItemActionWithArgs dispatches "/name args". A command that declares no
+// argAction ignores the arguments, which is how every interface command
+// behaved before argAction existed.
+func runItemActionWithArgs(item overlayItem, arguments string) tea.Cmd {
+	if arguments != "" && item.argAction != nil {
+		return itemResult(item.argAction(arguments))
+	}
+	return runItemAction(item)
+}
+
+// itemResult normalizes what an action returns: a tea.Cmd is run as-is,
+// anything else is delivered as a message, and nil does nothing.
+func itemResult(result tea.Msg) tea.Cmd {
 	if result == nil {
 		return nil
 	}
@@ -1119,22 +1184,37 @@ func (a *App) actionRow(o *overlay, w int) (string, []actionHit) {
 // textarea showing the value and cursor, and an enter hint.
 func (a *App) inputOverlay(w int) string {
 	pad := strings.Repeat(" ", 2)
-	value := a.onPanel(a.theme.Text, false).Render(a.overlay.input)
 	cursor := lipgloss.NewStyle().
 		Foreground(a.theme.BackgroundPanel).
 		Background(a.theme.Text).
 		Render(" ")
-	lines := []string{
-		a.dialogHeader(2, a.overlay.title, "esc", w),
-		"",
-		pad + value + cursor,
-		"",
-		"",
-		"",
-		pad + a.onPanel(a.theme.Text, false).Render("enter") + " " +
-			a.onPanel(a.theme.TextMuted, false).Render("submit"),
-		"",
+
+	// The value is rendered a line at a time so a multi-line entry (shift+enter)
+	// does not smuggle a raw newline into the middle of a composited row, which
+	// would tear the panel. The cursor sits after the last line.
+	entry := strings.Split(a.overlay.input, "\n")
+	value := make([]string, 0, len(entry))
+	for i, line := range entry {
+		rendered := pad + a.onPanel(a.theme.Text, false).Render(line)
+		if i == len(entry)-1 {
+			rendered += cursor
+		}
+		value = append(value, rendered)
 	}
+
+	lines := []string{a.dialogHeader(2, a.overlay.title, "esc", w), ""}
+	lines = append(lines, value...)
+	// Three filler rows keep a single-line dialog the height it has always
+	// been; a taller entry eats into them before the panel grows.
+	for i := len(value); i < 4; i++ {
+		lines = append(lines, "")
+	}
+	lines = append(lines,
+		pad+a.onPanel(a.theme.Text, false).Render("enter")+" "+
+			a.onPanel(a.theme.TextMuted, false).Render("submit")+"  "+
+			a.onPanel(a.theme.Text, false).Render("shift+enter")+" "+
+			a.onPanel(a.theme.TextMuted, false).Render("newline"),
+		"")
 	return strings.Join(lines, "\n")
 }
 
@@ -1465,6 +1545,10 @@ func (a *App) commandsRegistry() []overlayItem {
 		{label: "plugin.list", slash: "plugins", hint: "Manage plugins", category: "System", action: func() tea.Msg {
 			return a.pluginsOverlay()
 		}},
+		{label: "memory.list", slash: "memory", hint: "Manage memories", category: "System",
+			action: func() tea.Msg { return a.memoriesOverlay() },
+			// "/memory <instruction>" saves without opening the dialog.
+			argAction: func(arguments string) tea.Msg { return a.quickAddMemory(arguments) }},
 		{label: "theme.list", slash: "themes", hint: "Choose theme", category: "Theme", footer: "ctrl+x t", action: func() tea.Msg {
 			a.themesOverlay()
 			return nil

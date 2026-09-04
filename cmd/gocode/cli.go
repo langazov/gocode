@@ -123,6 +123,7 @@ func newRootCommand() *clix.Command {
 			githubCommand(),
 			prCommand(),
 			sessionCommand(),
+			memoryCommand(),
 			pluginCommand(),
 			dbCommand(),
 			completionCommand(),

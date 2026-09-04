@@ -129,12 +129,30 @@ func Load(ctx context.Context, in LoadInput) (*Host, error) {
 		log(fmt.Sprintf("plugin %s: hook %s failed: %v", pluginID, hook, err))
 	})
 
+	// A config entry may name a native plugin, and the only reason to write
+	// one is to pass it options: `"plugin": [["memory", {"maxEntries": 50}]]`.
+	// That entry must *configure* the built-in, not load a second copy of it —
+	// two instances of one plugin means its hooks run twice, which for a hook
+	// that appends to the system prompt is a visibly duplicated block.
+	//
+	// So the options are claimed here, before the native tier loads, and the
+	// spec that supplied them is skipped in the loop below.
+	nativeOptions := map[string]Options{}
+	if !in.Pure {
+		for _, spec := range in.Specs {
+			name := strings.TrimPrefix(spec.Ref, "native:")
+			if _, exists := Native(name); exists {
+				nativeOptions[name] = spec.Options
+			}
+		}
+	}
+
 	if !in.DisableNative {
 		for _, name := range Natives() {
 			spec := Spec{Ref: name}
 			in.Report.start(spec)
 			factory, _ := Native(name)
-			instance, err := loadNative(ctx, name, factory, in.Input, nil)
+			instance, err := loadNative(ctx, name, factory, in.Input, nativeOptions[name])
 			if err != nil {
 				in.Report.fail(spec, StageLoad, err)
 				continue
@@ -150,6 +168,10 @@ func Load(ctx context.Context, in LoadInput) (*Host, error) {
 
 	for _, spec := range in.Specs {
 		if spec.Ref == "" {
+			continue
+		}
+		// Already loaded above, with this entry's options.
+		if _, claimed := nativeOptions[strings.TrimPrefix(spec.Ref, "native:")]; claimed && !in.DisableNative {
 			continue
 		}
 		in.Report.start(spec)

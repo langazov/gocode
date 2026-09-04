@@ -17,8 +17,14 @@ func registerBuiltinSubagents(registry *agent.Registry, defaults permission.Rule
 		Mode: "subagent",
 		Description: "General-purpose agent for researching complex questions and executing " +
 			"multi-step tasks. Use this agent to execute multiple units of work in parallel.",
+		// todowrite is denied upstream because the todo list belongs to the
+		// parent session. Memories are the same shape of state, only more
+		// durable: a subagent spawned for one task must not silently leave
+		// standing instructions behind in every future session.
 		Permissions: permission.Merge(defaults, permission.Ruleset{
 			{Action: "todowrite", Resource: "*", Effect: permission.Deny},
+			{Action: "memory_write", Resource: "*", Effect: permission.Deny},
+			{Action: "memory_delete", Resource: "*", Effect: permission.Deny},
 		}),
 	})
 	registry.Update(agent.Info{

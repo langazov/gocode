@@ -32,21 +32,7 @@ func runServeCommand(a *clix.Args) error {
 	}
 	listener := listenAddr(addr)
 	fmt.Printf("gocode server listening on http://%s\n", listener.Addr().String())
-	srv := &server.Server{
-		Session:     stack.Service,
-		Bus:         stack.Bus,
-		Permissions: stack.Permissions,
-		Models:      stack.Models,
-		Agents:      stack.Agents,
-		Config:      stack.Config,
-		MCP:         stack.MCP,
-		Jobs:        stack.Jobs,
-		Questions:   stack.Questions,
-		Skills:      stack.Skills,
-		LSP:         stack.LSP,
-		Commands:    stack.Commands,
-		Plugins:     stack.Plugins,
-	}
+	srv := stack.newServer()
 	return server.ServeOn(listener, srv.Mux())
 }
 

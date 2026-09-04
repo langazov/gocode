@@ -14,6 +14,7 @@ import (
 	"github.com/langazov/gocode-go/internal/event"
 	"github.com/langazov/gocode-go/internal/lsp"
 	"github.com/langazov/gocode-go/internal/mcp"
+	"github.com/langazov/gocode-go/internal/memory"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 	"github.com/langazov/gocode-go/internal/modelstate"
 	"github.com/langazov/gocode-go/internal/permission"
@@ -46,6 +47,12 @@ type Server struct {
 	Commands *command.Registry
 	// Plugins holds the loaded plugin host, for the status surfaces.
 	Plugins *plugin.Host
+	// Memory holds durable memories, for the interface's /memory manager. The
+	// agent reaches the same store through the memory plugin's tools instead.
+	Memory *memory.Store
+	// ProjectID scopes project-scoped memories. Empty when the runtime
+	// resolved no project, which sends new memories to the global scope.
+	ProjectID string
 
 	// oauth tracks in-flight provider logins started from the interface. A
 	// device flow outlives the request that begins it, so the attempt is
@@ -86,6 +93,12 @@ func (s *Server) Mux() *http.ServeMux {
 	}
 	if s.Plugins != nil {
 		mux.HandleFunc("GET /api/plugin", s.listPlugins)
+	}
+	if s.Memory != nil {
+		mux.HandleFunc("GET /api/memory", s.listMemories)
+		mux.HandleFunc("POST /api/memory", s.createMemory)
+		mux.HandleFunc("PATCH /api/memory/{memoryID}", s.updateMemory)
+		mux.HandleFunc("DELETE /api/memory/{memoryID}", s.deleteMemory)
 	}
 	if s.Jobs != nil {
 		mux.HandleFunc("GET /api/job", s.listJobs)

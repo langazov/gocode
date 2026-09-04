@@ -22,12 +22,18 @@ import (
 	"github.com/langazov/gocode-go/internal/llm"
 	"github.com/langazov/gocode-go/internal/lsp"
 	"github.com/langazov/gocode-go/internal/mcp"
+	"github.com/langazov/gocode-go/internal/memory"
+	// Registers the memory plugin with the native tier. Imported for effect:
+	// the plugin registry is populated from init, so the boot wiring's job is
+	// only to make sure the package is linked in. See internal/plugin/native.go.
+	_ "github.com/langazov/gocode-go/internal/memoryplugin"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 	"github.com/langazov/gocode-go/internal/modelstate"
 	"github.com/langazov/gocode-go/internal/permission"
 	"github.com/langazov/gocode-go/internal/plugin"
 	"github.com/langazov/gocode-go/internal/provider"
 	"github.com/langazov/gocode-go/internal/question"
+	"github.com/langazov/gocode-go/internal/server"
 	"github.com/langazov/gocode-go/internal/session"
 	"github.com/langazov/gocode-go/internal/skill"
 	"github.com/langazov/gocode-go/internal/tool"
@@ -124,6 +130,39 @@ type stack struct {
 	// Plugins holds the loaded plugin host backing the runner's hook seams
 	// and any tools plugins contributed.
 	Plugins *plugin.Host
+	// Memory holds durable memories, backing the interface's /memory manager.
+	// The agent reaches the same store through the memory plugin's tools.
+	Memory *memory.Store
+	// ProjectID is the project this stack booted in, resolved once so the
+	// memory routes and the memory plugin agree on what "this project" means.
+	ProjectID string
+}
+
+// newServer builds the HTTP server this stack backs.
+//
+// Every subcommand that serves the API — tui, serve, run, web — needs the
+// identical field list, and it had been copied four times. That is a quiet
+// hazard rather than a style problem: a service wired at three of the four
+// sites yields a feature that works under `gocode tui` and 404s under
+// `gocode serve`, with nothing failing to compile to say so.
+func (s *stack) newServer() *server.Server {
+	return &server.Server{
+		Session:     s.Service,
+		Bus:         s.Bus,
+		Permissions: s.Permissions,
+		Models:      s.Models,
+		Agents:      s.Agents,
+		Config:      s.Config,
+		MCP:         s.MCP,
+		Jobs:        s.Jobs,
+		Questions:   s.Questions,
+		Skills:      s.Skills,
+		LSP:         s.LSP,
+		Commands:    s.Commands,
+		Plugins:     s.Plugins,
+		Memory:      s.Memory,
+		ProjectID:   s.ProjectID,
+	}
 }
 
 // Close releases the resources bootStack opened. Only tests need this: a
@@ -168,6 +207,15 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	}
 	cwd, _ := os.Getwd()
 
+	// The project row has to exist before the plugins load: a native plugin
+	// scoped to the project (memory, for one) is handed the id in Services and
+	// has no way to create it itself. A failure here is not fatal — the
+	// plugins that want it opt out, and everything else boots normally.
+	projectID, err := session.EnsureProject(ctx, database, cwd)
+	if err != nil {
+		global.LogBackground("resolving project for %s: %v", cwd, err)
+	}
+
 	// Plugins load before anything is built from the config, because the
 	// config hook lets them change what gets built — including the default
 	// model resolved just below. Ports the ordering in
@@ -178,6 +226,10 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 			Directory: cwd,
 			Worktree:  cwd,
 			Version:   installation.Version,
+			// Native plugins run on this heap, so they get the live handles
+			// rather than a second connection to the same database. Never
+			// serialized; see plugin.Input.Services.
+			Services: plugin.Services{DB: database, ProjectID: projectID},
 		},
 		Specs: plugin.Specs(cfg.Plugin),
 		Pure:  flag.Pure(),
@@ -418,6 +470,8 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Commands:    commands,
 		Database:    database,
 		Plugins:     plugins,
+		Memory:      memory.New(database),
+		ProjectID:   projectID,
 	}, nil
 }
 

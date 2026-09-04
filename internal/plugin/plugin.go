@@ -38,6 +38,8 @@ package plugin
 import (
 	"context"
 	"sort"
+
+	"github.com/langazov/gocode-go/internal/db"
 )
 
 // Input is what a plugin factory receives, porting `PluginInput` in
@@ -62,6 +64,33 @@ type Input struct {
 	// Version is the gocode version, so a plugin can gate on it the way an
 	// npm plugin gates on its `opencode` peer range.
 	Version string `json:"version,omitempty"`
+
+	// Services carries in-process handles, for the native tier only.
+	//
+	// Everything above this line is data that survives a pipe, because this
+	// struct is JSON-marshaled into a process plugin's handshake (see
+	// process.go). A native plugin is linked into the binary and runs on the
+	// same heap as the runtime, so handing it the live database is both
+	// possible and correct — the alternative, opening a second connection to
+	// the same file, would put a second writer outside the write semaphore
+	// internal/db uses to serialize them.
+	//
+	// The `json:"-"` tag is what keeps that distinction structural rather
+	// than a rule someone has to remember: a process plugin cannot see this
+	// field, so nothing can accidentally start depending on it there.
+	Services Services `json:"-"`
+}
+
+// Services are the runtime handles a native plugin may be given. A zero value
+// is valid and means the runtime was booted without them — some CLI
+// subcommands build no database — so every consumer must check before use and
+// opt out (return nil hooks) rather than fail the load.
+type Services struct {
+	// DB is the runtime's database handle.
+	DB *db.DB
+	// ProjectID identifies the project the runtime booted in, already resolved
+	// through session.EnsureProject. Empty when no database backs this boot.
+	ProjectID string
 }
 
 // Options is the free-form settings bag a plugin is configured with, porting

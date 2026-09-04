@@ -23,6 +23,7 @@ const (
 	KindPty        Kind = "pty"
 	KindTool       Kind = "tool"
 	KindWorkspace  Kind = "workspace"
+	KindMemory     Kind = "memory"
 )
 
 var prefixes = map[Kind]string{
@@ -36,6 +37,7 @@ var prefixes = map[Kind]string{
 	KindPty:        "pty",
 	KindTool:       "tool",
 	KindWorkspace:  "wrk",
+	KindMemory:     "mem",
 }
 
 func Ascending(kind Kind, given ...string) (string, error) {

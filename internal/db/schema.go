@@ -3,7 +3,17 @@ package db
 // baseSchema is the fresh-install schema, ported from
 // packages/core/src/database/schema.gen.ts. Statement order matches the
 // TypeScript source so foreign key targets exist before referencing tables.
-var baseSchema = []string{
+//
+// Statements marked "gocode-local" have no counterpart upstream and must
+// survive a regeneration from schema.gen.ts. Each one is paired with a
+// migration in migrations.go, because [DB.Apply] runs this list only on a
+// fresh database and runs migrations only on an existing one — a table added
+// to one and not the other exists for half the installed base. See
+// TestMemorySchemaMatchesMigration, which asserts the two agree.
+//
+// The gocode-local statements are spliced on rather than written inline, so
+// the fresh-install path and the migration execute the identical strings.
+var baseSchema = append([]string{
 	`CREATE TABLE workspace (
 		id text PRIMARY KEY,
 		type text NOT NULL,
@@ -215,4 +225,4 @@ var baseSchema = []string{
 	`CREATE INDEX session_workspace_idx ON session (workspace_id)`,
 	`CREATE INDEX session_parent_idx ON session (parent_id)`,
 	`CREATE INDEX todo_session_idx ON todo (session_id)`,
-}
+}, memorySchema...)

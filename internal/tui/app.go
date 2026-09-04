@@ -150,6 +150,12 @@ type App struct {
 	skillList       []client.Skill
 	skillListLoaded bool
 	skillListErr    string
+	// memoryList is the cached memory list backing the /memory manager, on the
+	// same pattern: the dialog opens from the cache and a refresh lands
+	// through memoryListMsg.
+	memoryList       []client.Memory
+	memoryListLoaded bool
+	memoryListErr    string
 	// catalogModels is the last-fetched model list, the port of TS's
 	// sync.data.provider: the dialogs render from it immediately instead of
 	// waiting on a request, and a refresh lands through catalogMsg.
@@ -887,6 +893,30 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			a.restoreOverlaySelection(filter, selected)
 		}
 		return nil
+	case memoryListMsg:
+		if msg.err != nil {
+			a.memoryListErr = msg.err.Error()
+		} else {
+			a.memoryListErr = ""
+			a.memoryListLoaded = true
+			a.memoryList = msg.memories
+		}
+		// Only rebuild the dialog when it is the one open. A quick add from
+		// the prompt refreshes the cache without stealing focus.
+		if o := a.overlay; o != nil && o.kind == overlayList && o.title == "Memories" {
+			filter, selected := o.filter, a.selectedOverlayValue()
+			a.openMemoryDialog(a.memoryList)
+			a.restoreOverlaySelection(filter, selected)
+		} else if msg.reopen && a.overlay == nil {
+			// An add or edit ran through an input dialog, which closed the
+			// manager on submit. Put it back rather than dropping the user
+			// out of the list they were working in.
+			a.openMemoryDialog(a.memoryList)
+		}
+		if msg.status != "" {
+			return staticMsg(statusMsg{text: msg.status})
+		}
+		return nil
 	case providerListMsg:
 		if msg.err != nil {
 			a.allProvidersErr = msg.err.Error()
@@ -1563,7 +1593,7 @@ func (a *App) runSlashCommand(input string) tea.Cmd {
 
 	for _, entry := range a.commandsRegistry() {
 		if entry.matchesSlash(name) {
-			return runItemAction(entry)
+			return runItemActionWithArgs(entry, arguments)
 		}
 	}
 	return staticMsg(statusMsg{text: "unknown command: /" + name})
