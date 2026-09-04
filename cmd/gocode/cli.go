@@ -125,6 +125,7 @@ func newRootCommand() *clix.Command {
 			sessionCommand(),
 			memoryCommand(),
 			pluginCommand(),
+			lspCommand(),
 			dbCommand(),
 			completionCommand(),
 			versionCommand(),

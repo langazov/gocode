@@ -128,6 +128,10 @@ make mdlsp          # builds cmd/mdlsp/mdlsp
 make install-mdlsp  # installs it to $GOPATH/bin, where gocode finds it
 ```
 
+A Homebrew install ships it too: the formula puts `mdlsp` on `PATH` next to
+`gocode` and registers it in the global config, pinned to the `opt` path so an
+upgrade does not leave the entry dangling. See [Install](../README.md#install).
+
 Point any editor at the binary over stdio, e.g. Neovim:
 
 ```lua

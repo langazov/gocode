@@ -50,13 +50,14 @@ Everything the agent does becomes a durable event in SQLite before visible state
 | `internal/db/` | SQLite schema, migrations, connection pool |
 | `internal/server/` | HTTP API routes |
 | `internal/tui/` | Bubble Tea interface |
-| `internal/lsp/` | 27 built-in language servers, lazy-started |
+| `internal/lsp/` | 28 built-in language servers, lazy-started |
 | `internal/mdlsp/` | Markdown language server (`cmd/mdlsp`): actor-based, goldmark-backed |
 | `internal/jsonrpc/` | Shared Content-Length JSON-RPC connection (client + server) |
 | `internal/lspprotocol/` | Shared LSP wire types |
 | `internal/mddoc/` | Markdown document model: headings, links, UTF-16 positions |
 | `internal/mcp/` | MCP server connections, reconnect, tool import |
 | `internal/plugin/` | Plugin host: hook catalog, native + subprocess tiers, loader |
+| `internal/configedit/` | Surgical global-config edits for installers (`gocode plugin enable`, `gocode lsp enable`) |
 | `internal/skill/` | Skill discovery from markdown files |
 | `internal/agent/` | Agent registry, default selection |
 | `internal/config/` | JSONC config merge, agent markdown parsing |
@@ -80,7 +81,7 @@ Last-match-wins evaluation across merged rulesets. `permission.Defaults()` retur
 
 ### LSP integration
 
-27 built-in language servers, started lazily on the first file that needs one. Only starts servers already on PATH — no runtime `npm install`. `StrictRoot` servers (like ruff) decline to run without a marker file. All server configs are in `internal/lsp/servers.go`.
+28 built-in language servers, started lazily on the first file that needs one. Only starts servers already on PATH — no runtime `npm install`. `StrictRoot` servers (like ruff) decline to run without a marker file. All server configs are in `internal/lsp/servers.go`.
 
 ### Skills and commands
 
