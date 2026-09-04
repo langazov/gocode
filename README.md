@@ -46,8 +46,9 @@ installed.
 |---|---|
 | **Zero runtime deps** | `CGO_ENABLED=0` everywhere. SQLite is [modernc](https://gitlab.com/cznic/sqlite), a pure-Go translation — so cross-compiling all six targets happens on one Linux runner. |
 | **Durable by construction** | Every turn is event-sourced into SQLite. Kill the process mid-stream and the session resumes exactly where it stopped. |
-| **Agent-native** | 13 built-in tools, sub-agent spawning, MCP servers, skills, and 27 language servers wired into the same permission engine. |
-| **Actually tested** | 862 tests across 33 packages, ~22k lines of test code against ~36k lines of source. |
+| **Agent-native** | 13 built-in tools, sub-agent spawning, MCP servers, skills, plugins, and 27 language servers wired into the same permission engine. |
+| **Extensible** | Plugins hook the request, the prompt, tool calls and permissions, and can add tools of their own. A plugin is an executable in any language — the binary stays one static file. |
+| **Actually tested** | 960 tests across 34 packages, ~25k lines of test code against ~41k lines of source. |
 
 ## Install
 
@@ -216,6 +217,7 @@ flowchart LR
   RUN --> LLM["Providers<br/><i>Anthropic · OpenAI · Gemini</i>"]
   RUN --> TOOLS["Tools<br/><i>read, edit, bash…</i>"]
   TOOLS --> PERM["Permissions"]
+  RUN --> PLUG["Plugin host<br/><i>hooks + extra tools</i>"]
   RUN --> BUS["Event bus"]
   BUS --> DB[("SQLite<br/><i>events + projections</i>")]
 
@@ -251,12 +253,48 @@ Config is JSON, merged from global and project scope:
   "lsp": { "gopls": { "disabled": false } },
   "mcp": {
     "github": { "type": "local", "command": ["gh-mcp"] }
-  }
+  },
+  "plugin": ["my-plugin", ["./tools/lint", { "strict": true }]]
 }
 ```
 
 See [documentation/07-configuration.md](documentation/07-configuration.md) for
 every key.
+
+## Plugins
+
+MCP adds tools. **Plugins change behavior** — what the model is told, what a
+tool call runs with, what its result looks like, whether a permission is even
+asked.
+
+A plugin is an **executable**, not a library: gocode spawns it and speaks
+JSON-RPC over stdio. That is this port's answer to a problem the TypeScript
+original does not have — a linked Go binary cannot `import()` unknown code, so
+external plugins run beside it instead. They can be written in any language,
+and the binary stays a single static file with no runtime.
+
+```sh
+make install-example-plugin      # build, install, and enable examples/plugin-echo
+gocode debug info                # confirm it loaded
+```
+
+Installing copies the plugin to `~/.config/gocode/plugin/` **and** enables it in
+your global config, so plain `gocode` picks it up in any directory. Those are
+two separate steps: a plugin runs only when the config's `plugin` array names
+it, so a copied-but-unlisted plugin is inert.
+
+```sh
+make install-plugin PLUGIN=./my-plugin   # copy + enable
+make disable-plugin NAME=my-plugin       # leave installed, stop loading it
+make uninstall-plugin NAME=my-plugin     # remove both
+```
+
+Hooks cover the request (`chat.params`, `chat.headers`), the system prompt,
+tool definitions and execution, permissions, and compaction. A plugin can also
+contribute tools, which appear to the model exactly like the built-ins.
+
+**[→ Plugins, in full](documentation/09-integrations.md#plugins)** ·
+[worked example](examples/plugin-echo)
 
 ## Project layout
 
@@ -268,11 +306,13 @@ internal/
   provider/         catalog, auth, transforms
   tool/             tool registry + 13 builtins
   permission/       the allow/deny/ask engine
+  plugin/           plugin host: hooks, subprocess tier, loader
   event/            event store, projections, replay
   db/               SQLite schema and migrations
   server/           HTTP API
   tui/              Bubble Tea interface
   lsp/  mcp/        language server and MCP clients
+examples/           worked examples (plugin-echo)
 documentation/      detailed docs (start here)
 docs/               the published website
 ```

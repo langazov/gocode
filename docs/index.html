@@ -285,6 +285,11 @@
           <p>stdio and HTTP/SSE servers, OAuth with dynamic client registration, live reconnect, and their tools merged into the registry.</p>
         </div>
         <div class="card">
+          <span class="ico">🧩</span>
+          <h3>Plugins</h3>
+          <p>Hooks on the request, the system prompt, tool definitions, execution and permissions — plus tools of their own. A plugin is an executable in any language, not a JS module, so the binary stays one static file.</p>
+        </div>
+        <div class="card">
           <span class="ico">🧠</span>
           <h3>Any provider</h3>
           <p>A models.dev catalog is embedded, so 212 providers resolve offline. Anthropic, OpenAI and Gemini wire formats, plus Copilot, Azure and ChatGPT sign-in.</p>
@@ -297,8 +302,8 @@
       </div>
 
       <div class="stats" style="margin-top:16px">
-        <div class="stat"><b>~36K</b><span>lines of Go</span></div>
-        <div class="stat"><b>~22K</b><span>lines of tests</span></div>
+        <div class="stat"><b>~41K</b><span>lines of Go</span></div>
+        <div class="stat"><b>~25K</b><span>lines of tests</span></div>
         <div class="stat"><b>25 MB</b><span>static binary</span></div>
         <div class="stat"><b>0</b><span>runtime dependencies</span></div>
       </div>
@@ -373,7 +378,7 @@ gocode run "fix the failing test"   <span style="color:#6e6e7c"># one-shot, no i
           <tr><td>MCP</td><td class="partial">◐ Partial</td><td>Tools and OAuth; prompts-as-commands not yet</td></tr>
           <tr><td>Slash commands</td><td class="yes">✓ Done</td><td>Built-ins, config, markdown, skills</td></tr>
           <tr><td>Bedrock / Vertex</td><td class="partial">◐ Planned</td><td>Wire formats ready; credential chains pending</td></tr>
-          <tr><td>Plugin host</td><td class="partial">✗ Not ported</td><td>Needs a JS runtime; out of scope for one binary</td></tr>
+          <tr><td>Plugin host</td><td class="yes">✓ Done</td><td>Hooks, plugin tools, built-in and subprocess tiers; plugins are executables, not JS modules</td></tr>
         </tbody>
       </table>
       <p class="note">

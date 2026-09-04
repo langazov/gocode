@@ -40,13 +40,15 @@ order. Roughly:
 
 ```mermaid
 flowchart TD
-  A["config.Load()<br/><i>global + project JSON</i>"] --> B["db.OpenDefault()<br/><i>open + migrate SQLite</i>"]
+  A["config.Load()<br/><i>global + project JSON</i>"] --> P["plugin.Load()<br/><i>built-ins, then configured</i>"]
+  P --> P2["plugin.ApplyConfig()<br/><i>the config hook</i>"]
+  P2 --> B["db.OpenDefault()<br/><i>open + migrate SQLite</i>"]
   B --> C["event.NewBus(db)"]
   C --> D["RegisterProjectors()<br/><i>events → tables</i>"]
   D --> E["resolve provider/model<br/><i>flag → state → config → fallback</i>"]
   E --> F["modelsdev.New()<br/><i>catalog: disk → embedded → network</i>"]
   F --> G["lsp.New(workdir, cfg)"]
-  G --> H["tool.NewRegistry()<br/>+ builtins.RegisterWith()"]
+  G --> H["tool.NewRegistry()<br/>+ builtins.RegisterWith()<br/>+ plugin.RegisterTools()"]
   H --> I["skill.Discover() · command.Load()"]
   I --> J["mcp.NewService()<br/><i>connects servers, adds their tools</i>"]
   J --> K["session.Service + Runner"]
@@ -54,15 +56,20 @@ flowchart TD
   style K fill:#065f46,stroke:#047857,color:#ecfdf5
 ```
 
-Two ordering details matter:
+Three ordering details matter:
 
 - **Projectors register before anything publishes.** An event with no
   registered projector commits but updates nothing, and the divergence check
   (see [Data model](02-data-model.md)) will not save you — it only catches
   projections that disagree, not projections that are missing.
-- **MCP registers tools into the same registry as the builtins.** From the
-  runner's perspective an MCP tool and `read` are indistinguishable; both are
-  `tool.Tool` values behind the same permission gate.
+- **MCP and plugins register tools into the same registry as the builtins.**
+  From the runner's perspective an MCP tool, a plugin tool and `read` are
+  indistinguishable; all three are `tool.Tool` values behind the same
+  permission gate.
+- **Plugins load before anything is built from the config**, because the
+  `config` hook lets them change what gets built — including the default model
+  resolved two steps later. Plugin tools register *after* the builtins, so a
+  plugin can replace one by name.
 
 ### Model resolution
 
@@ -92,6 +99,7 @@ flowchart TD
   subgraph L3["Orchestration"]
     session["session"]
     tool["tool + builtins"]
+    plugin["plugin"]
     mcp["mcp"]
     lsp["lsp"]
   end
@@ -121,7 +129,7 @@ flowchart TD
 |---|---|---|
 | **Foundation** | `db` `event` `config` `global` `id` `identifier` `flock` `fsutil` | No knowledge of agents, models, or sessions. Pure infrastructure. |
 | **Domain** | `llm` `provider` `permission` `agent` `command` `skill` `markdown` `diff` `patch` `credential` `auth` `modelsdev` | Model the problem. No I/O orchestration. |
-| **Orchestration** | `session` `tool` `mcp` `lsp` `background` `question` | Wire the domain together and drive it. |
+| **Orchestration** | `session` `tool` `plugin` `mcp` `lsp` `background` `question` | Wire the domain together and drive it. |
 | **Interface** | `tui` `server` `cmd/gocode` `clix` | Present it. Contain no business logic. |
 
 ## The three entry points
@@ -180,12 +188,16 @@ internal/
     promote.go         inbox → durable event
     compaction.go      context-window overflow recovery
     spawn.go           sub-agent sessions
+    runner_plugins.go  the plugin hook seams
   event/               event store: append, project, replay, notify
   db/                  schema, migrations, connection
   llm/                 provider clients; one package per wire format
   provider/            catalog, credentials, per-provider transforms
   tool/                registry + builtins/
   permission/          allow / deny / ask
+  plugin/              hook catalog, host, loader
+    hook.go            Definition/Trigger — the typed dispatch core
+    process.go         the subprocess tier (JSON-RPC over stdio)
   server/              HTTP handlers
   tui/                 Bubble Tea app (~11k lines, the largest package)
   lsp/  mcp/           external protocol clients

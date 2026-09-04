@@ -86,6 +86,22 @@ sequenceDiagram
   R->>DB: publish step.ended (usage, cost)
 ```
 
+### Where plugins get a say
+
+Four points in that sequence are plugin seams, all in `runner_plugins.go`:
+
+| Step | Hook |
+|---|---|
+| advertising tools | `tool.definition` |
+| assembling the system prompt | `experimental.chat.system.transform` |
+| after the request is built (last, so it can override the reasoning variant too) | `chat.params` |
+| dispatching and settling a tool | `tool.execute.before` / `after`, `permission.ask` |
+
+Each helper returns immediately when no plugin registered that hook, so a build
+with none runs exactly the code it ran before the seams existed. A hook that
+fails is reported and skipped rather than failing the turn — see the
+[divergence note](09-integrations.md#one-deliberate-divergence).
+
 ### The cancellation subtlety
 
 This line in `runTurnAttempt` is load-bearing:

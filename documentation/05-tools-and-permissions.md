@@ -325,6 +325,38 @@ Three things to get right:
 3. **Go through `Resolver`** for filesystem access, so path restrictions and
    the `external_directory` gate apply. Bypassing it bypasses permissions.
 
+### …without recompiling
+
+A tool can also come from a **plugin**, which does not have to be Go and does
+not have to be in this repo. A plugin declares its tools in its handshake
+manifest and `plugin.RegisterTools` bridges each one into this same registry,
+so from the runner's side it is a `tool.Tool` like any other — same
+advertisement, same permission gate, same `ExecContext`.
+
+The bridge drops the `title` and `metadata` a plugin returns, because the
+registry's contract is a plain string; they stay available to the
+`tool.execute.after` hook. See [Plugins](09-integrations.md#plugins).
+
+## Plugin hooks on this path
+
+Three hooks sit on the tool path, and one on the permission path:
+
+| Hook | Where | Can |
+|---|---|---|
+| `tool.definition` | advertisement | rewrite the description and JSON Schema the model sees |
+| `tool.execute.before` | before the permission checks | rewrite the call's arguments |
+| `tool.execute.after` | after settlement | rewrite the output the model sees |
+| `permission.ask` | before the user is interrupted | answer `allow` / `deny`, or defer with `ask` |
+
+The ordering of `tool.execute.before` is deliberate: it runs **before** the
+permission checks, not after. What a call is allowed to touch is read off its
+arguments, so a plugin that rewrites a path must have that path be the one
+asked about — otherwise a rule like `"edit": {"*.env": "deny"}` could be
+sidestepped by rewriting the target after the check.
+
+`permission.ask` only short-circuits on an explicit decision; the default
+status leaves the engine's own evaluation in charge.
+
 ---
 
 [← Providers](04-providers.md) · [Index](README.md) · [Next: The TUI →](06-tui.md)

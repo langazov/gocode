@@ -63,6 +63,7 @@ flowchart TB
     TOOLS["Tools"]
     LSP["Language servers"]
     MCP["MCP servers"]
+    PLUG["Plugins"]
   end
 
   TUI --> SRV
@@ -71,8 +72,10 @@ flowchart TB
   SRV --> SVC --> RUN
   RUN --> LLM
   RUN --> TOOLS
+  RUN -.->|hooks| PLUG
   TOOLS -.-> LSP
   TOOLS -.-> MCP
+  TOOLS -.-> PLUG
   RUN --> BUS --> DB[("SQLite")]
   BUS -.->|SSE| SRV
 
@@ -97,8 +100,8 @@ that and appear everywhere in the source:
 
 | | |
 |---|---|
-| Source | ~36,300 lines across 33 internal packages |
-| Tests | ~22,000 lines, 862 test functions |
+| Source | ~40,700 lines across 34 internal packages |
+| Tests | ~25,100 lines, 960 test functions |
 | Direct dependencies | 13 |
 | Binary | ~25 MB, statically linked |
 | Release targets | 6 (macOS/Linux/Windows × arm64/x64) |

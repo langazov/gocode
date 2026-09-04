@@ -100,6 +100,7 @@ Keeping secrets in `{env:...}` is what lets `gocode.json` be committed.
   "tools": { "websearch": false },
   "lsp": { /* see below */ },
   "mcp": { /* see below */ },
+  "plugin": [ /* see below */ ],
   "agent": { /* see below */ },
   "command": { /* see below */ },
 
@@ -177,6 +178,32 @@ provider-specific settings survive a round trip.
   "remote":  { "type": "remote", "url": "https://mcp.example.com/sse" }
 }
 ```
+
+### `plugin`
+
+An ordered array. Each entry is either a bare reference or a
+`[reference, options]` pair whose options are handed to the plugin at startup:
+
+```jsonc
+"plugin": [
+  "my-plugin",                                 // installed by that name
+  "./tools/lint",                              // a path, relative to the project
+  ["review", { "strict": true, "max": 20 }]    // with options
+]
+```
+
+A reference resolves in three places, in order: the built-in registry, the
+filesystem (relative to the session directory), then
+`~/.config/gocode/plugin/<name>`. **There is no npm step** — a name that is
+nowhere fails with "not installed" rather than being fetched.
+
+Order is meaningful. Hooks run in load order and each one sees the previous
+one's edits, so a plugin listed later can override an earlier one. Built-in
+plugins always load first.
+
+Listing a plugin is what *enables* it: copying one into the plugin directory
+does nothing on its own. `make install-plugin` does both halves. See
+[Plugins](09-integrations.md#plugins).
 
 ### `agent`
 
