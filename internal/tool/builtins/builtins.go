@@ -18,20 +18,44 @@ import (
 // Resolver scopes tool paths to a root directory.
 type Resolver struct {
 	Root string
+	// Allow names directories outside Root the file tools may still reach,
+	// as absolute paths. Only the global plans directory uses this: plan mode
+	// has to be able to write a plan somewhere, and that somewhere is
+	// deliberately not the repository (see global.PlansDir).
+	//
+	// This widens the sandbox, not the policy. Whether a given tool may write
+	// to one of these paths is still the permission engine's decision — the
+	// plan agent allows `edit` only under the plans directory, and denies it
+	// everywhere else.
+	Allow []string
 }
 
-// Resolve returns the absolute path for input, keeping it within the root.
+// Resolve returns the absolute path for input, keeping it within the root or
+// one of the explicitly allowed directories.
 func (r Resolver) Resolve(input string) (string, error) {
 	candidate := input
 	if !filepath.IsAbs(candidate) && !isRootedPath(candidate) {
 		candidate = filepath.Join(r.Root, candidate)
 	}
 	candidate = filepath.Clean(candidate)
-	root := filepath.Clean(r.Root)
-	if candidate != root && !strings.HasPrefix(candidate, root+string(filepath.Separator)) {
-		return "", fmt.Errorf("path escapes working directory: %s", input)
+	if within(candidate, r.Root) {
+		return candidate, nil
 	}
-	return candidate, nil
+	for _, allowed := range r.Allow {
+		if within(candidate, allowed) {
+			return candidate, nil
+		}
+	}
+	return "", fmt.Errorf("path escapes working directory: %s", input)
+}
+
+// within reports whether candidate is dir itself or sits underneath it.
+func within(candidate, dir string) bool {
+	if dir == "" {
+		return false
+	}
+	dir = filepath.Clean(dir)
+	return candidate == dir || strings.HasPrefix(candidate, dir+string(filepath.Separator))
 }
 
 // Options carries the optional services that gate the tools needing them.
@@ -49,6 +73,10 @@ type Options struct {
 	// Diagnoser, when set, reports language-server diagnostics on the files the
 	// edit, write and patch tools change, and warms servers on read.
 	Diagnoser Diagnoser
+	// AllowPaths are directories outside root the file tools may reach. See
+	// Resolver.Allow — in practice this is the global plans directory, the one
+	// place plan mode is allowed to write.
+	AllowPaths []string
 }
 
 // Register adds all built-in tools to the registry, scoped to root.
@@ -59,7 +87,7 @@ func Register(registry *tool.Registry, root string, database *db.DB) {
 // RegisterWith adds the built-in tools, enabling the optional ones whose
 // services are supplied.
 func RegisterWith(registry *tool.Registry, root string, opts Options) {
-	resolver := Resolver{Root: root}
+	resolver := Resolver{Root: root, Allow: opts.AllowPaths}
 	registry.Register(NewReadToolWith(resolver, opts.Diagnoser))
 	registry.Register(NewWriteToolWith(resolver, opts.Diagnoser))
 	registry.Register(NewEditToolWith(resolver, opts.Diagnoser))

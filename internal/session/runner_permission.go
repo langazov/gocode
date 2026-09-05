@@ -28,6 +28,17 @@ func (g *EnginePermissionGate) Assert(ctx context.Context, input ToolPermissionI
 	})
 }
 
+// Denied implements PermissionRuled: the engine's rule evaluation only, with
+// no ask and no waiting. Returns the same BlockedError Assert would.
+func (g *EnginePermissionGate) Denied(input ToolPermissionInput) error {
+	return g.Engine.Denied(permission.AssertInput{
+		SessionID: input.SessionID,
+		Agent:     input.Agent,
+		Action:    input.Action,
+		Resources: input.Resources,
+	})
+}
+
 // SessionRules resolves a session-scoped ruleset, if one was stored. Subagent
 // sessions carry a ruleset derived from their parent's grants intersected with
 // the subagent's own (see DeriveSubagentPermissions), which must win over the

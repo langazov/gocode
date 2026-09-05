@@ -9,6 +9,10 @@ import (
 	"github.com/langazov/gocode-go/internal/session"
 )
 
+// testPlansDir is the global plans directory the tests register plan mode
+// against — the one place plan mode may write.
+const testPlansDir = "/data/gocode/plans"
+
 func planRegistry(t *testing.T, userRules permission.Ruleset) *agent.Registry {
 	t.Helper()
 	registry := agent.NewRegistry()
@@ -20,7 +24,7 @@ func planRegistry(t *testing.T, userRules permission.Ruleset) *agent.Registry {
 			{Action: "plan_enter", Resource: "*", Effect: permission.Allow},
 		}, userRules),
 	})
-	registerPlanAgent(registry, defaults, userRules)
+	registerPlanAgent(registry, defaults, userRules, testPlansDir)
 	registerBuiltinSubagents(registry, defaults)
 	return registry
 }
@@ -111,5 +115,58 @@ func TestPlanAgentHonoursUserPermissionConfig(t *testing.T) {
 
 	if got := effectFor(t, registry, session.PlanAgentID, "bash", "ls"); got != permission.Ask {
 		t.Fatalf("user config must reach the plan agent, got %q", got)
+	}
+}
+
+// ...but it stops at the read-only core. `"permission": {"edit": "allow"}` is a
+// reasonable thing to put in a config to stop being asked, and it used to
+// switch plan mode off silently — the mode would still say "plan" everywhere
+// while the model edited files. Nothing overrides plan mode.
+func TestUserConfigCannotOverridePlanMode(t *testing.T) {
+	for _, raw := range []string{
+		`[{"action":"edit","resource":"*","effect":"allow"}]`,
+		`[{"action":"*","resource":"*","effect":"allow"}]`,
+		`[{"action":"edit","resource":"main.go","effect":"allow"}]`,
+	} {
+		var userRules permission.Ruleset
+		if err := json.Unmarshal([]byte(raw), &userRules); err != nil {
+			t.Fatal(err)
+		}
+		registry := planRegistry(t, userRules)
+		if got := effectFor(t, registry, session.PlanAgentID, "edit", "main.go"); got != permission.Deny {
+			t.Errorf("%s overrode plan mode: edit = %q, want deny", raw, got)
+		}
+		// The same config still applies to build, which is where it belongs.
+		if got := effectFor(t, registry, "build", "edit", "main.go"); got != permission.Allow {
+			t.Errorf("%s should still apply to build: edit = %q, want allow", raw, got)
+		}
+	}
+}
+
+// Plan mode has to be able to write a plan somewhere. That somewhere is the
+// global plans directory and nowhere else — deliberately outside every
+// repository, so a planning session cannot leave anything behind in the
+// working tree. Upstream also allows `.opencode/plans/*.md` inside the
+// worktree; this port does not.
+func TestPlanAgentWritesPlansOnlyInTheGlobalDirectory(t *testing.T) {
+	registry := planRegistry(t, nil)
+
+	if got := effectFor(t, registry, session.PlanAgentID, "edit", testPlansDir+"/feature.md"); got != permission.Allow {
+		t.Errorf("plan mode must be able to write its plan, got %q", got)
+	}
+	if got := effectFor(t, registry, session.PlanAgentID,
+		permission.ExternalDirectoryAction, testPlansDir+"/feature.md"); got != permission.Allow {
+		t.Errorf("the plans directory must not prompt as an external directory, got %q", got)
+	}
+	for _, inRepo := range []string{
+		".opencode/plans/feature.md",
+		".gocode/plans/feature.md",
+		"plans/feature.md",
+		"docs/plan.md",
+		"PLAN.md",
+	} {
+		if got := effectFor(t, registry, session.PlanAgentID, "edit", inRepo); got != permission.Deny {
+			t.Errorf("plan mode wrote %s into the repository: %q", inRepo, got)
+		}
 	}
 }

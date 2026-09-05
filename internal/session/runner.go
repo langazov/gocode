@@ -104,6 +104,14 @@ type PermissionGate interface {
 	Assert(ctx context.Context, input ToolPermissionInput) error
 }
 
+// PermissionRuled is the optional half of PermissionGate that answers "is this
+// refused outright?" without waiting on the user. A gate that implements it
+// gets its denies enforced ahead of anything that could settle an ask —
+// currently the plugin permission hook.
+type PermissionRuled interface {
+	Denied(input ToolPermissionInput) error
+}
+
 type ToolPermissionInput struct {
 	SessionID string
 	Agent     string
@@ -604,9 +612,21 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 			AssistantMessageID: assistantMessageID,
 			CallID:             call.ID,
 		}
-		// A plugin can settle the request before the user is interrupted,
-		// porting the permission.ask hook. Only an explicit decision counts:
-		// the default status leaves the engine's own evaluation in charge.
+		// A configured deny is checked before the plugin hook and is not
+		// negotiable. The hook exists to settle a question the user would
+		// otherwise be interrupted with; a rule that already says no is not a
+		// question. Without this, any plugin answering "allow" switched off
+		// every deny in the ruleset — plan mode's read-only constraint
+		// included — with nothing in the transcript to say it had.
+		if denier, ok := r.Permissions.(PermissionRuled); ok {
+			if err := denier.Denied(request); err != nil {
+				return "", err
+			}
+		}
+		// A plugin can settle the remaining request before the user is
+		// interrupted, porting the permission.ask hook. Only an explicit
+		// decision counts: the default status leaves the engine's own
+		// evaluation in charge.
 		switch r.askPlugins(ctx, request) {
 		case plugin.PermissionDeny:
 			return "", fmt.Errorf("session: %s denied by plugin", request.Action)

@@ -17,20 +17,46 @@ import (
 var SubagentDeniedTools = []string{"task", "todowrite"}
 
 // DeriveSubagentPermissions builds the ruleset for a child session: the
-// parent session's grants first, then the subagent's own ruleset (later rules
-// win under permission.Evaluate's last-match-wins), then explicit denies for
-// the tools a subagent must not reach.
+// subagent's own capabilities first, then the parent's denies as a floor it
+// cannot widen, then explicit denies for the tools a subagent must not reach.
+//
+// The order is the whole point, and it used to be the other way round. Under
+// permission.Evaluate's last-match-wins, putting the subagent last let its own
+// `"*": allow` baseline re-grant everything the parent had denied — so a
+// plan-mode session could delegate to a subagent and have it write the files
+// plan mode had just refused to write. Parent denies go last so a restriction
+// survives delegation however many levels deep it goes.
 //
 // Ports deriveSubagentSessionPermission from
-// packages/opencode/src/agent/subagent-permissions.ts.
+// packages/opencode/src/agent/subagent-permissions.ts, which carries the same
+// parent denies (plus external_directory) for the same reason.
 func DeriveSubagentPermissions(parent permission.Ruleset, subagent agent.Info) permission.Ruleset {
-	out := permission.Merge(parent, subagent.Permissions)
+	out := permission.Merge(subagent.Permissions, parentFloor(parent))
 	for _, denied := range SubagentDeniedTools {
 		if mentions(subagent.Permissions, denied) {
 			// The subagent was explicitly configured for this tool; respect it.
 			continue
 		}
 		out = append(out, permission.Rule{Action: denied, Resource: "*", Effect: permission.Deny})
+	}
+	return out
+}
+
+// parentFloor is the part of a parent's ruleset a child inherits: what the
+// parent was refused, and where it was allowed to reach outside the working
+// directory.
+//
+// Allows are deliberately not carried down — a parent's capabilities are its
+// own, and the subagent's ruleset decides what the subagent can do. Only the
+// restrictions travel. The one exception is external_directory, whose allows
+// come along because they are the parent's answer to "which directories may be
+// touched at all", which a child cannot sensibly re-derive.
+func parentFloor(parent permission.Ruleset) permission.Ruleset {
+	var out permission.Ruleset
+	for _, rule := range parent {
+		if rule.Effect == permission.Deny || rule.Action == permission.ExternalDirectoryAction {
+			out = append(out, rule)
+		}
 	}
 	return out
 }

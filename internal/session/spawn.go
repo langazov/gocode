@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/langazov/gocode-go/internal/agent"
+	"github.com/langazov/gocode-go/internal/permission"
 	"github.com/langazov/gocode-go/internal/tool"
 )
 
@@ -40,6 +41,31 @@ func (s *Spawner) depth() int {
 		return s.Depth
 	}
 	return DefaultSubagentDepth
+}
+
+// parentRules is the ruleset the parent session actually runs under, which is
+// what DeriveSubagentPermissions takes its floor from.
+//
+// The precedence mirrors AgentRulesProvider.Configured, and it has to: a
+// top-level session has no stored ruleset of its own — its restrictions live
+// on its agent. Reading only the stored column, as this used to, meant a
+// plan-mode parent handed its children an empty floor, and every restriction
+// plan mode exists to impose stopped at the first `task` call.
+func (s *Spawner) parentRules(ctx context.Context, parent Info) (permission.Ruleset, error) {
+	stored, err := s.Service.Permission(ctx, parent.ID)
+	if err != nil {
+		return nil, err
+	}
+	if len(stored) > 0 {
+		return stored, nil
+	}
+	if s.Agents == nil {
+		return nil, nil
+	}
+	if info, ok := s.Agents.Get(parent.Agent); ok {
+		return info.Permissions, nil
+	}
+	return nil, nil
 }
 
 // Agent reports whether an agent exists and whether it may run as a subagent.
@@ -89,7 +115,7 @@ func (s *Spawner) Spawn(ctx context.Context, req tool.SpawnRequest) (string, <-c
 		if parent == nil {
 			return "", nil, fmt.Errorf("Session not found: %s", req.ParentSessionID)
 		}
-		parentRules, err := s.Service.Permission(ctx, req.ParentSessionID)
+		parentRules, err := s.parentRules(ctx, *parent)
 		if err != nil {
 			return "", nil, err
 		}

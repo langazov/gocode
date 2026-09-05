@@ -326,14 +326,21 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	// boot stays fast and a project with none pays nothing.
 	lspService := lsp.New(workdir, cfg)
 
+	// plansDir is the one directory outside the working tree the file tools
+	// may reach. Plan mode writes plans there and nowhere else, so a planning
+	// session leaves the repository untouched. See global.PlansDir and
+	// planReadOnlyRules.
+	plansDir := global.PlansDir(global.Resolve())
+
 	tools := tool.NewRegistry()
 	// The agent switcher is bound after the session service exists; plan mode
 	// is registered below once it does.
 	builtins.RegisterWith(tools, workdir, builtins.Options{
-		Database:  database,
-		Skills:    skills,
-		Asker:     questions,
-		Diagnoser: lspService,
+		Database:   database,
+		Skills:     skills,
+		Asker:      questions,
+		Diagnoser:  lspService,
+		AllowPaths: []string{plansDir},
 	})
 	// Plugin tools register after the built-ins so a plugin can replace one
 	// by name, matching the record merge on the TypeScript side.
@@ -382,7 +389,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 			{Action: "plan_enter", Resource: "*", Effect: permission.Allow},
 		}, userRules),
 	})
-	registerPlanAgent(agents, defaultPermissions, userRules)
+	registerPlanAgent(agents, defaultPermissions, userRules, plansDir)
 	registerBuiltinSubagents(agents, defaultPermissions)
 	if cfg.DefaultAgent != "" {
 		agents.SetDefault(cfg.DefaultAgent)
