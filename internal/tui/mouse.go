@@ -173,6 +173,9 @@ func (a *App) handleClick(x, y int) tea.Cmd {
 			if id, ok := a.reasoningClickTarget(y); ok {
 				a.expandedReasoning[id] = !a.expandedReasoning[id]
 				a.invalidateRenderCache()
+			} else if id, ok := a.toolOutputClickTarget(y); ok {
+				a.expandedToolOutput[id] = !a.expandedToolOutput[id]
+				a.invalidateRenderCache()
 			}
 		}
 		return nil
@@ -223,6 +226,19 @@ func (a *App) reasoningClickTarget(row int) (id string, ok bool) {
 		return "", false
 	}
 	id, found := a.chatReasoningRows[a.chatWindowStart+i]
+	return id, found
+}
+
+// toolOutputClickTarget is reasoningClickTarget's counterpart for a
+// collapsed bash output's summary row (chatToolOutputRows/bashBlock), always
+// active regardless of thinkingMode — a tool call's output has no analogue
+// to reasoning's "show" mode that would make the toggle a no-op.
+func (a *App) toolOutputClickTarget(row int) (id string, ok bool) {
+	i := row - a.chatWindowPad
+	if i < 0 {
+		return "", false
+	}
+	id, found := a.chatToolOutputRows[a.chatWindowStart+i]
 	return id, found
 }
 

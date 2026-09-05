@@ -391,7 +391,8 @@ func TestPromptBoxAlignsWithMessageBlocksWidth(t *testing.T) {
 	userWidth := lipgloss.Width(app.userBlock(message, client.UserData{Text: "hello"}))
 
 	bashState := &toolState{Status: "done", Input: map[string]any{"command": "echo hi"}, Output: "hi"}
-	bashWidth := lipgloss.Width(app.toolRow(message, "bash", bashState))
+	bashBlock, _ := app.toolRow(message, "t1", "bash", bashState)
+	bashWidth := lipgloss.Width(bashBlock)
 
 	// sessionPromptBoxWidth is the exact value the real viewChat call site
 	// uses, so this also exercises the production wiring, not just the

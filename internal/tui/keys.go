@@ -28,7 +28,7 @@ func (a *App) scrollMessages(delta int) tea.Cmd {
 // maxScrollOffset is how far back the timeline can scroll: everything above
 // the viewport. viewChat clamps to the same bound as it windows.
 func (a *App) maxScrollOffset() int {
-	lines, _ := a.buildTimeline()
+	lines, _, _ := a.buildTimeline()
 	if over := len(lines) - a.viewportHeight(); over > 0 {
 		return over
 	}

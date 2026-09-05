@@ -20,7 +20,7 @@ func TestQueuedPromptRendersBelowTheTimeline(t *testing.T) {
 		{ID: "msg_q1", Text: "and then deploy it", Delivery: "steer", TimeCreated: 5},
 	}
 
-	lines, _ := app.buildTimeline()
+	lines, _, _ := app.buildTimeline()
 	plain := ansi.Strip(strings.Join(lines, "\n"))
 	if !strings.Contains(plain, "and then deploy it") {
 		t.Fatal("the queued prompt should be visible")
@@ -63,7 +63,7 @@ func TestNoQueuedPromptsAddNothing(t *testing.T) {
 	}
 }
 
-func firstOf(lines []string, _ map[int]string) []string { return lines }
+func firstOf(lines []string, _ map[int]string, _ map[int]string) []string { return lines }
 
 // A prompt entering or leaving the inbox is only ever a signal on the stream —
 // the waiting prompts themselves are served over HTTP — so the snapshot has to

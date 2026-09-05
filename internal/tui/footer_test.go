@@ -457,7 +457,7 @@ func TestAbortedMessageRendersTheMarkerNotAnErrorBlock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	block, _ := app.renderAssistant(message, data, true)
+	block, _, _ := app.renderAssistant(message, data, true)
 	rendered := ansi.Strip(block)
 
 	if strings.Contains(rendered, "context canceled") {

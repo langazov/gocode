@@ -33,24 +33,27 @@ type toolState = struct {
 // buildTimeline for callers that only need the lines (existing tests
 // included); handleClick needs the reasoning row map too.
 func (a *App) timelineLines() []string {
-	lines, _ := a.buildTimeline()
+	lines, _, _ := a.buildTimeline()
 	return lines
 }
 
 // buildTimeline is timelineLines' real implementation, additionally
 // returning which absolute line (by index into the returned lines) is a
-// reasoning part's clickable header row — see reasoningHeaderRef.
-func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
+// reasoning part's clickable header row (see reasoningHeaderRef) or a
+// collapsed tool-output's clickable summary row (see toolOutputHeaderRef).
+func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, toolOutputRows map[int]string) {
 	var blocks []string
 	var blockRefs [][]reasoningHeaderRef
+	var blockToolRefs [][]toolOutputHeaderRef
 	messages := a.timeline
 	if len(messages) > 60 {
 		messages = messages[len(messages)-60:]
 	}
 	for i, message := range messages {
-		if block, refs := a.renderMessageCached(message, i == len(messages)-1); block != "" {
+		if block, refs, toolRefs := a.renderMessageCached(message, i == len(messages)-1); block != "" {
 			blocks = append(blocks, block)
 			blockRefs = append(blockRefs, refs)
+			blockToolRefs = append(blockToolRefs, toolRefs)
 		}
 	}
 	// Live assistant text, in message-ID order. The map iteration this used
@@ -62,6 +65,7 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 		}
 		blocks = append(blocks, a.streamingTextBlock(id, builder.String()))
 		blockRefs = append(blockRefs, nil)
+		blockToolRefs = append(blockToolRefs, nil)
 	}
 	// Prompts sent while the turn was still running, below everything the
 	// assistant has produced so far — the position upstream's queued user
@@ -69,12 +73,14 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 	for _, block := range a.queuedBlocks() {
 		blocks = append(blocks, block)
 		blockRefs = append(blockRefs, nil)
+		blockToolRefs = append(blockToolRefs, nil)
 	}
 	// TS's scrollbox opens with a `<box height={1}/>` spacer above the first
 	// message (index.tsx ~1199); only visible once scrolled to the top, but
 	// part of the scrollback content the same way here.
 	out := []string{""}
 	reasoningRows = map[int]string{}
+	toolOutputRows = map[int]string{}
 	for i, block := range blocks {
 		if i > 0 {
 			out = append(out, "") // blank line between messages (marginTop=1)
@@ -95,9 +101,14 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 		for _, ref := range blockRefs[i] {
 			reasoningRows[base+ref.line-dropped] = ref.id
 		}
+		for _, ref := range blockToolRefs[i] {
+			for row := ref.lineStart; row <= ref.lineEnd; row++ {
+				toolOutputRows[base+row-dropped] = ref.id
+			}
+		}
 		out = append(out, blockLines...)
 	}
-	return out, reasoningRows
+	return out, reasoningRows, toolOutputRows
 }
 
 // renderMessage returns the message's rendered block plus any reasoning
@@ -133,12 +144,12 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 // The spinner keeps animating because renderMessage emits spinnerPlaceholder
 // rather than the glyph, and the frame is substituted in below — on the
 // cached string, after the cache lookup.
-func (a *App) renderMessageCached(message client.Message, isLast bool) (string, []reasoningHeaderRef) {
+func (a *App) renderMessageCached(message client.Message, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef) {
 	signature := a.renderSignature(message, isLast)
 	if hit, ok := a.messageCache[message.ID]; ok && hit.signature == signature {
-		return a.substituteSpinner(hit.block), hit.refs
+		return a.substituteSpinner(hit.block), hit.refs, hit.toolRefs
 	}
-	block, refs := a.renderMessage(message, isLast)
+	block, refs, toolRefs := a.renderMessage(message, isLast)
 	if a.messageCache == nil {
 		a.messageCache = map[string]cachedRender{}
 	}
@@ -147,8 +158,8 @@ func (a *App) renderMessageCached(message client.Message, isLast bool) (string, 
 	if len(a.messageCache) > 256 {
 		a.messageCache = map[string]cachedRender{}
 	}
-	a.messageCache[message.ID] = cachedRender{signature: signature, block: block, refs: refs}
-	return a.substituteSpinner(block), refs
+	a.messageCache[message.ID] = cachedRender{signature: signature, block: block, refs: refs, toolRefs: toolRefs}
+	return a.substituteSpinner(block), refs, toolRefs
 }
 
 // renderSignature hashes everything renderMessage's output depends on. The
@@ -185,24 +196,24 @@ func (a *App) renderSignature(message client.Message, isLast bool) uint64 {
 // the theme, the thinking mode, and per-part reasoning expansion.
 func (a *App) invalidateRenderCache() { a.renderEpoch++ }
 
-func (a *App) renderMessage(message client.Message, isLast bool) (string, []reasoningHeaderRef) {
+func (a *App) renderMessage(message client.Message, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef) {
 	switch message.Type {
 	case "user":
 		data, err := client.DecodeUser(message.Data)
 		if err != nil || data.Text == "" {
-			return "", nil
+			return "", nil, nil
 		}
-		return a.userBlock(message, data), nil
+		return a.userBlock(message, data), nil, nil
 	case "assistant":
 		data, err := client.DecodeAssistant(message.Data)
 		if err != nil {
-			return "", nil
+			return "", nil, nil
 		}
 		return a.renderAssistant(message, data, isLast)
 	case "compaction":
-		return a.compactionSeparator(), nil
+		return a.compactionSeparator(), nil, nil
 	}
-	return "", nil
+	return "", nil, nil
 }
 
 // userBlock mirrors UserMessage: a ┃ left border in the agent color around a
@@ -386,10 +397,12 @@ func messageAborted(data client.AssistantData) bool {
 // then the error block, then the "▣ Agent · model · duration" settlement
 // line. The second return value locates each reasoning part's clickable
 // header line within the joined block this function returns (relative to
-// its own line 0) — see reasoningHeaderRef.
-func (a *App) renderAssistant(message client.Message, data client.AssistantData, isLast bool) (string, []reasoningHeaderRef) {
+// its own line 0) — see reasoningHeaderRef. The third does the same for a
+// collapsed tool-output's clickable summary line — see toolOutputHeaderRef.
+func (a *App) renderAssistant(message client.Message, data client.AssistantData, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef) {
 	var blocks []string
 	var refs []reasoningHeaderRef
+	var toolRefs []toolOutputHeaderRef
 	lineOffset := 0
 	appendBlock := func(block string) {
 		blocks = append(blocks, block)
@@ -414,7 +427,15 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 				appendBlock(a.assistantTextBlock(part.Text))
 			}
 		case "tool":
-			if block := a.toolRow(message, part.Name, part.State); block != "" {
+			block, toolRef := a.toolRow(message, part.ID, part.Name, part.State)
+			if block != "" {
+				if toolRef != nil {
+					toolRefs = append(toolRefs, toolOutputHeaderRef{
+						id:        toolRef.id,
+						lineStart: lineOffset + toolRef.lineStart,
+						lineEnd:   lineOffset + toolRef.lineEnd,
+					})
+				}
 				appendBlock(block)
 			}
 		}
@@ -440,7 +461,7 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 		appendBlock("")
 		appendBlock(a.settlementLine(message, data))
 	}
-	return strings.Join(blocks, "\n"), refs
+	return strings.Join(blocks, "\n"), refs, toolRefs
 }
 
 // settlementLine mirrors the assistant's final row: ▣ (muted once aborted,
@@ -495,6 +516,20 @@ type reasoningPartTime struct {
 type reasoningHeaderRef struct {
 	id   string
 	line int
+}
+
+// toolOutputHeaderRef marks the lines (relative to the start of the block
+// bashBlock returns, inclusive) that toggle a tool call's output — the
+// bash-output equivalent of reasoningHeaderRef. While collapsed this is a
+// single row, the one-line summary; while expanded it spans the whole
+// block, since there's no single header to re-click once the output has
+// grown to fill it — clicking anywhere on an open block collapses it again.
+// Threaded back up through renderAssistant/renderMessage/buildTimeline the
+// same way reasoningHeaderRef is, so handleClick (mouse.go) can hit-test it
+// against what's actually on screen.
+type toolOutputHeaderRef struct {
+	id                 string
+	lineStart, lineEnd int
 }
 
 // nextThinkingMode mirrors nextThinkingMode() in context/thinking.ts: the
@@ -712,21 +747,27 @@ func (a *App) streamingTextBlock(id, text string) string {
 // "~ " line, running tools attach the spinner, and failed tools turn error
 // colored. bash/edit/todowrite switch to a bordered BlockTool-style panel
 // once they have something to show beyond the one-line summary.
-func (a *App) toolRow(message client.Message, name string, state *toolState) string {
+//
+// id is the tool part's own ID (client.AssistantData's Content[].ID),
+// threaded through so bashBlock can key its collapsed/expanded output state
+// per tool call rather than per message — a message can hold more than one
+// tool part. The second return value is non-nil only for bash, and only
+// while its output is collapsed (see toolOutputHeaderRef).
+func (a *App) toolRow(message client.Message, id, name string, state *toolState) (string, *toolOutputHeaderRef) {
 	if state == nil {
-		return a.styles().Muted.Render("   ⚙ " + name)
+		return a.styles().Muted.Render("   ⚙ " + name), nil
 	}
 	if state.Status != "pending" {
 		switch name {
 		case "bash":
-			return a.bashBlock(state)
+			return a.bashBlock(id, state)
 		case "edit":
 			if block := a.editDiffBlock(state); block != "" {
-				return block
+				return block, nil
 			}
 		case "todowrite":
 			if block := a.todoWriteBlock(state); block != "" {
-				return block
+				return block, nil
 			}
 		}
 	}
@@ -737,20 +778,20 @@ func (a *App) toolRow(message client.Message, name string, state *toolState) str
 	width := a.contentWidth()
 	switch state.Status {
 	case "pending":
-		return wrapToolLine(a.styles().Text, strings.Repeat(" ", 6)+"~ ", label, width)
+		return wrapToolLine(a.styles().Text, strings.Repeat(" ", 6)+"~ ", label, width), nil
 	case "running":
 		// TS only swaps in the live spinner glyph for bash/read/task; every
 		// other tool sits static in the muted icon the whole time, so
 		// running and done render identically for them.
 		if name == "bash" || name == "read" || name == "task" {
 			frame := spinnerPlaceholder
-			return wrapToolLine(a.styles().Muted, "   "+frame+" ", label, width)
+			return wrapToolLine(a.styles().Muted, "   "+frame+" ", label, width), nil
 		}
-		return wrapToolLine(a.styles().Muted, "   "+icon+" ", label, width)
+		return wrapToolLine(a.styles().Muted, "   "+icon+" ", label, width), nil
 	case "error":
-		return wrapToolLine(a.styles().Error, "   "+icon+" ", label, width)
+		return wrapToolLine(a.styles().Error, "   "+icon+" ", label, width), nil
 	default:
-		return wrapToolLine(a.styles().Muted, "   "+icon+" ", label, width)
+		return wrapToolLine(a.styles().Muted, "   "+icon+" ", label, width), nil
 	}
 }
 
@@ -793,9 +834,15 @@ func renderLines(style lipgloss.Style, text string) string {
 }
 
 // bashBlock mirrors Shell's BlockTool: the command line (spinner while
-// running, "$ " once settled) followed by the collapsed output, once
-// there's more to show than the one-line summary.
-func (a *App) bashBlock(state *toolState) string {
+// running, "$ " once settled) followed by its output. Output beyond one line
+// collapses to just that first line plus a "click to expand" hint by
+// default (see toolOutputHeaderRef, mouse.go's toolOutputClickTarget) —
+// mirroring reasoningBlock's collapsed/expanded toggle, keyed by id (the
+// tool part's own ID) rather than truncating: once expanded, the full
+// output always renders, however long, and a click anywhere on the open
+// block collapses it again (there's no single header left to re-click, the
+// way reasoningBlock or the collapsed summary below have one).
+func (a *App) bashBlock(id string, state *toolState) (string, *toolOutputHeaderRef) {
 	command, _ := state.Input["command"].(string)
 	if command == "" {
 		command = "Writing command..."
@@ -807,19 +854,46 @@ func (a *App) bashBlock(state *toolState) string {
 	}
 	var lines []string
 	lines = append(lines, renderLines(a.styles().Text, strings.Join(wrapPrefixed(prefix, command, innerWidth), "\n")))
+	var ref *toolOutputHeaderRef
+	expandedBlock := false
 	if output := strings.TrimSpace(ansi.Strip(state.Output)); output != "" {
-		maxChars := 10 * innerWidth
-		limited, overflow := collapseToolOutput(output, 10, maxChars)
-		limited = wrapText(limited, innerWidth)
-		lines = append(lines, "", renderLines(a.styles().Text, limited))
-		if overflow {
-			lines = append(lines, a.styles().Muted.Render("(truncated)"))
+		outputLines := strings.Split(output, "\n")
+		switch {
+		case a.expandedToolOutput[id] && len(outputLines) > 1:
+			wrapped := wrapText(output, innerWidth)
+			lines = append(lines, "", renderLines(a.styles().Text, wrapped))
+			expandedBlock = true
+		case len(outputLines) == 1:
+			// Nothing was ever collapsed, so nothing to toggle back.
+			wrapped := wrapText(output, innerWidth)
+			lines = append(lines, "", renderLines(a.styles().Text, wrapped))
+		default:
+			// The click target lands on the last row the wrapped first line
+			// (and its hint) actually occupies, not the row the summary
+			// starts on: blockToolStyle's PaddingTop(1) row, plus the
+			// command's own (possibly wrapped) rows, plus the blank
+			// separator, plus the first output line's own wrapped rows.
+			commandRows := strings.Count(lines[0], "\n") + 1
+			first := wrapText(outputLines[0], innerWidth)
+			firstRows := strings.Count(first, "\n") + 1
+			hint := fmt.Sprintf(" (+%d lines — click to expand)", len(outputLines)-1)
+			summary := renderLines(a.styles().Text, first) + a.styles().Muted.Render(hint)
+			lines = append(lines, "", summary)
+			row := 1 + commandRows + 1 + firstRows - 1
+			ref = &toolOutputHeaderRef{id: id, lineStart: row, lineEnd: row}
 		}
 	}
 	if state.Status == "error" && state.Error != "" {
 		lines = append(lines, a.styles().Error.Render(state.Error))
 	}
-	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
+	if expandedBlock {
+		// The whole rendered block, padding included (blockToolStyle's
+		// PaddingTop(1) + this content + PaddingBottom(1)) — every row of it
+		// is a valid click target to collapse back.
+		contentRows := strings.Count(strings.Join(lines, "\n"), "\n") + 1
+		ref = &toolOutputHeaderRef{id: id, lineStart: 0, lineEnd: contentRows + 1}
+	}
+	return a.blockToolStyle().Render(strings.Join(lines, "\n")), ref
 }
 
 // editDiffBlock renders a tool's unified diff.
@@ -964,34 +1038,6 @@ func (a *App) todoWriteBlock(state *toolState) string {
 		lines = append(lines, "  "+a.todoRow(todo))
 	}
 	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
-}
-
-// collapseToolOutput ports util/collapse-tool-output.ts: caps at maxLines
-// lines or maxChars runes, whichever is hit first. The "…" lands inline if
-// the char cap bites within the line-capped preview, otherwise as its own
-// trailing line.
-func collapseToolOutput(output string, maxLines, maxChars int) (string, bool) {
-	lines := strings.Split(output, "\n")
-	if len(lines) <= maxLines && utf8.RuneCountInString(output) <= maxChars {
-		return output, false
-	}
-	take := maxLines
-	if take > len(lines) {
-		take = len(lines)
-	}
-	preview := strings.Join(lines[:take], "\n")
-	previewRunes := []rune(preview)
-	if len(previewRunes) > maxChars {
-		cut := maxChars - 1
-		if cut < 0 {
-			cut = 0
-		}
-		return string(previewRunes[:cut]) + "…", true
-	}
-	if len(lines) > maxLines {
-		return preview + "\n…", true
-	}
-	return preview, true
 }
 
 // toolLabel maps a tool name plus its input to the InlineTool icon and

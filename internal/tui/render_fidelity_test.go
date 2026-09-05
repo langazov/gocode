@@ -1,10 +1,13 @@
 package tui
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
@@ -18,7 +21,7 @@ func TestSettlementLineShowsOnLastMessageWhileStreaming(t *testing.T) {
 	msg := client.Message{ID: "m1", Type: "assistant", TimeCreated: 1000}
 	data := client.AssistantData{Agent: "build"} // no Finish yet: still streaming
 
-	block, _ := app.renderAssistant(msg, data, true) // isLast = true
+	block, _, _ := app.renderAssistant(msg, data, true) // isLast = true
 	if !strings.Contains(block, "▣") {
 		t.Fatalf("the last message should show the settlement line while streaming, got %q", block)
 	}
@@ -34,7 +37,7 @@ func TestSettlementLineHiddenOnEarlierUnfinishedMessage(t *testing.T) {
 	msg := client.Message{ID: "m1", Type: "assistant", TimeCreated: 1000}
 	data := client.AssistantData{Agent: "build"}
 
-	block, _ := app.renderAssistant(msg, data, false) // isLast = false
+	block, _, _ := app.renderAssistant(msg, data, false) // isLast = false
 	if strings.Contains(block, "▣") {
 		t.Fatalf("an earlier, unfinished message should not show the settlement line, got %q", block)
 	}
@@ -68,7 +71,7 @@ func TestToolRowOnlySpinsForBashAndRead(t *testing.T) {
 	spinner := spinnerFrames[0]
 
 	for _, name := range []string{"bash", "read"} {
-		got := app.toolRow(msg, name, running)
+		got, _ := app.toolRow(msg, "", name, running)
 		if !strings.Contains(got, spinnerPlaceholder) {
 			t.Fatalf("%s while running should carry the spinner slot, got %q", name, got)
 		}
@@ -77,7 +80,7 @@ func TestToolRowOnlySpinsForBashAndRead(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"write", "glob", "grep", "webfetch", "edit"} {
-		got := app.toolRow(msg, name, running)
+		got, _ := app.toolRow(msg, "", name, running)
 		if strings.Contains(got, spinnerPlaceholder) || strings.Contains(got, spinner) {
 			t.Fatalf("%s should not spin while running (TS keeps it static), got %q", name, got)
 		}
@@ -170,7 +173,7 @@ func TestBashBlockShowsCommandAndOutputOnceDone(t *testing.T) {
 		Input:  map[string]any{"command": "echo hi"},
 		Output: "hi\n",
 	}
-	got := app.toolRow(client.Message{}, "bash", state)
+	got, _ := app.toolRow(client.Message{}, "t1", "bash", state)
 	if !strings.Contains(got, "$ echo hi") {
 		t.Fatalf("bash block missing command line, got %q", got)
 	}
@@ -179,23 +182,182 @@ func TestBashBlockShowsCommandAndOutputOnceDone(t *testing.T) {
 	}
 }
 
-func TestBashBlockTruncatesLongOutput(t *testing.T) {
-	app := &App{width: 100, height: 30}
+// Long bash output no longer gets cut down to a fixed number of lines —
+// it collapses to just its first line plus a "click to expand" hint (see
+// bashBlock/toolOutputHeaderRef), keyed by the tool part's own id so two
+// concurrent bash calls collapse/expand independently.
+func TestBashBlockCollapsesToFirstLineByDefault(t *testing.T) {
+	app := &App{width: 100, height: 30, expandedToolOutput: map[string]bool{}}
 	var lines []string
 	for i := 0; i < 20; i++ {
-		lines = append(lines, "line")
+		lines = append(lines, fmt.Sprintf("line %d", i))
 	}
 	state := &toolState{
 		Status: "done",
 		Input:  map[string]any{"command": "seq"},
 		Output: strings.Join(lines, "\n"),
 	}
-	got := app.toolRow(client.Message{}, "bash", state)
-	if !strings.Contains(got, "(truncated)") {
-		t.Fatalf("20-line output should be truncated, got %q", got)
+	got, ref := app.toolRow(client.Message{}, "t1", "bash", state)
+	if !strings.Contains(got, "line 0") {
+		t.Fatalf("collapsed bash output should still show its first line, got %q", got)
 	}
-	if strings.Count(got, "line") > 11 { // 10 kept + safety margin
-		t.Fatalf("truncated output kept too many lines, got %q", got)
+	if strings.Contains(got, "line 19") {
+		t.Fatalf("collapsed bash output should hide everything past the first line, got %q", got)
+	}
+	if !strings.Contains(got, "click to expand") {
+		t.Fatalf("collapsed bash output should hint that it can be expanded, got %q", got)
+	}
+	if ref == nil || ref.id != "t1" {
+		t.Fatalf("expected a tool-output header ref for t1, got %+v", ref)
+	}
+}
+
+// Once expanded, the output must render in full — no line/char cap, however
+// long — unlike the fixed 10-line/char truncation this replaces. And since
+// there's no single header left to re-click (unlike the collapsed summary,
+// or reasoningBlock's header), the whole block must be a click target so
+// clicking anywhere on it collapses it again.
+func TestBashBlockExpandedShowsFullOutputUntruncated(t *testing.T) {
+	app := &App{width: 100, height: 30, expandedToolOutput: map[string]bool{"t1": true}}
+	var lines []string
+	for i := 0; i < 500; i++ {
+		lines = append(lines, fmt.Sprintf("line %d", i))
+	}
+	state := &toolState{
+		Status: "done",
+		Input:  map[string]any{"command": "seq"},
+		Output: strings.Join(lines, "\n"),
+	}
+	got, ref := app.toolRow(client.Message{}, "t1", "bash", state)
+	if !strings.Contains(got, "line 0") || !strings.Contains(got, "line 499") {
+		t.Fatalf("expanded bash output must show every line, got %q", got)
+	}
+	if strings.Contains(got, "…") || strings.Contains(got, "(truncated)") {
+		t.Fatalf("expanded bash output must never truncate, got %q", got)
+	}
+	if ref == nil || ref.id != "t1" {
+		t.Fatalf("expected a whole-block click target for t1, got %+v", ref)
+	}
+	if ref.lineStart != 0 {
+		t.Fatalf("expected the expanded block's click target to start at its very first row, got %+v", ref)
+	}
+	wantRows := strings.Count(got, "\n") + 1
+	if got := ref.lineEnd - ref.lineStart + 1; got != wantRows {
+		t.Fatalf("expected the click target to span the whole %d-row block, got %d rows (%+v)", wantRows, got, ref)
+	}
+}
+
+// TestClickAnywhereOnExpandedBashOutputCollapsesIt is the concrete
+// regression: expand a bash block, then click somewhere in the middle of
+// its now-open output — not the row that used to be the collapsed
+// summary — and confirm it still collapses. An expanded block has no
+// single header left to re-click, so every row of it must respond.
+func TestClickAnywhereOnExpandedBashOutputCollapsesIt(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.active = &client.Session{ID: "ses_1"}
+	app.view = viewChat
+	var outputLines []string
+	for i := 0; i < 20; i++ {
+		outputLines = append(outputLines, fmt.Sprintf("line %d", i))
+	}
+	data, err := json.Marshal(map[string]any{
+		"agent": "build", "finish": "end_turn",
+		"content": []map[string]any{{
+			"type": "tool", "id": "t1", "name": "bash",
+			"state": map[string]any{
+				"status": "done",
+				"input":  map[string]any{"command": "seq"},
+				"output": strings.Join(outputLines, "\n"),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.timeline = []client.Message{{ID: "m1", Type: "assistant", Data: data}}
+	app.expandedToolOutput["t1"] = true
+
+	_ = app.viewChat() // populates chatToolOutputRows for the *expanded* layout
+
+	rows := map[int]bool{}
+	for absRow, id := range app.chatToolOutputRows {
+		if id == "t1" {
+			rows[absRow+app.chatWindowPad-app.chatWindowStart] = true
+		}
+	}
+	if len(rows) < 2 {
+		t.Fatalf("expected the expanded block to expose more than one clickable row, got %v", rows)
+	}
+
+	// A row past the block's very first one, to prove the whole block — not
+	// just a single header line — responds to a click.
+	midRow := -1
+	for row := range rows {
+		if row > 0 {
+			midRow = row
+			break
+		}
+	}
+	if midRow == -1 {
+		t.Fatalf("expected a clickable row past the block's first line, got %v", rows)
+	}
+
+	app.handleClick(5, midRow)
+	if app.expandedToolOutput["t1"] {
+		t.Fatal("clicking anywhere on the expanded block should collapse it again")
+	}
+}
+
+// TestClickOnBashOutputSummaryTogglesExpansion drives the full mouse
+// pipeline (viewChat caching the layout, then handleClick hit-testing it)
+// the way Bubble Tea would — the bash-output equivalent of
+// TestClickOnReasoningHeaderTogglesExpansion in reasoning_test.go.
+func TestClickOnBashOutputSummaryTogglesExpansion(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.active = &client.Session{ID: "ses_1"}
+	app.view = viewChat
+	var outputLines []string
+	for i := 0; i < 5; i++ {
+		outputLines = append(outputLines, fmt.Sprintf("line %d", i))
+	}
+	data, err := json.Marshal(map[string]any{
+		"agent": "build", "finish": "end_turn",
+		"content": []map[string]any{{
+			"type": "tool", "id": "t1", "name": "bash",
+			"state": map[string]any{
+				"status": "done",
+				"input":  map[string]any{"command": "seq"},
+				"output": strings.Join(outputLines, "\n"),
+			},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.timeline = []client.Message{{ID: "m1", Type: "assistant", Data: data}}
+
+	_ = app.viewChat() // populates chatToolOutputRows/chatWindowPad/chatWindowStart
+
+	row := -1
+	for absRow, id := range app.chatToolOutputRows {
+		if id == "t1" {
+			row = absRow + app.chatWindowPad - app.chatWindowStart
+		}
+	}
+	if row == -1 {
+		t.Fatalf("expected a cached tool-output row for t1, got %v", app.chatToolOutputRows)
+	}
+
+	if app.expandedToolOutput["t1"] {
+		t.Fatal("should start collapsed")
+	}
+	app.handleClick(5, row)
+	if !app.expandedToolOutput["t1"] {
+		t.Fatal("expected the click to expand t1")
+	}
+	app.handleClick(5, row)
+	if app.expandedToolOutput["t1"] {
+		t.Fatal("expected a second click to collapse t1 again")
 	}
 }
 
@@ -249,7 +411,7 @@ func TestChunkToWidthSplitsOnRunesNotBytes(t *testing.T) {
 func TestBashRowPendingStaysInline(t *testing.T) {
 	app := &App{width: 100, height: 30}
 	state := &toolState{Status: "pending", Input: map[string]any{}}
-	got := app.toolRow(client.Message{}, "bash", state)
+	got, _ := app.toolRow(client.Message{}, "t1", "bash", state)
 	if !strings.Contains(got, "~ Writing command...") {
 		t.Fatalf("pending bash should stay a one-line \"~ \" summary, got %q", got)
 	}
@@ -262,7 +424,7 @@ func TestEditDiffBlockShowsColoredDiffWhenPresent(t *testing.T) {
 	app := &App{width: 100, height: 30}
 	output := "Edited file successfully: foo.go\nReplacements: 1\n```diff\n-old line\n+new line\n```"
 	state := &toolState{Status: "done", Input: map[string]any{"filePath": "foo.go"}, Output: output}
-	got := app.toolRow(client.Message{}, "edit", state)
+	got, _ := app.toolRow(client.Message{}, "t1", "edit", state)
 	if !strings.Contains(got, "← Edit foo.go") {
 		t.Fatalf("edit block missing title, got %q", got)
 	}
@@ -294,7 +456,7 @@ func TestEditDiffBlockRendersHunkHeadersAndLineNumbers(t *testing.T) {
 		"```",
 	}, "\n")
 	state := &toolState{Status: "done", Input: map[string]any{"filePath": "main.go"}, Output: unified}
-	got := app.toolRow(client.Message{}, "edit", state)
+	got, _ := app.toolRow(client.Message{}, "t1", "edit", state)
 
 	if !strings.Contains(got, "@@ -1,4 +1,4 @@") {
 		t.Fatalf("hunk header missing, got %q", got)
@@ -311,7 +473,7 @@ func TestEditDiffBlockRendersHunkHeadersAndLineNumbers(t *testing.T) {
 func TestEditFallsBackToInlineWithoutADiff(t *testing.T) {
 	app := &App{width: 100, height: 30}
 	state := &toolState{Status: "done", Input: map[string]any{"filePath": "foo.go"}, Output: "no diff here"}
-	got := app.toolRow(client.Message{}, "edit", state)
+	got, _ := app.toolRow(client.Message{}, "t1", "edit", state)
 	if !strings.Contains(got, "← Edit foo.go") {
 		t.Fatalf("edit fallback should still show the summary line, got %q", got)
 	}
@@ -324,7 +486,7 @@ func TestTodoWriteBlockRendersDecodedList(t *testing.T) {
 	app := &App{width: 100, height: 30}
 	output := `[{"content":"first","status":"completed"},{"content":"second","status":"in_progress"}]`
 	state := &toolState{Status: "done", Input: map[string]any{}, Output: output}
-	got := app.toolRow(client.Message{}, "todowrite", state)
+	got, _ := app.toolRow(client.Message{}, "t1", "todowrite", state)
 	if !strings.Contains(got, "# Todos") {
 		t.Fatalf("todowrite block missing title, got %q", got)
 	}
@@ -336,7 +498,7 @@ func TestTodoWriteBlockRendersDecodedList(t *testing.T) {
 func TestTodoWriteFallsBackToInlineWithoutDecodableList(t *testing.T) {
 	app := &App{width: 100, height: 30}
 	state := &toolState{Status: "done", Input: map[string]any{}, Output: ""}
-	got := app.toolRow(client.Message{}, "todowrite", state)
+	got, _ := app.toolRow(client.Message{}, "t1", "todowrite", state)
 	if !strings.Contains(got, "Updating todos...") {
 		t.Fatalf("todowrite fallback should show the summary line, got %q", got)
 	}
@@ -366,7 +528,7 @@ func TestTaskLabelFormatsSubagentTitle(t *testing.T) {
 func TestTaskRowShowsCheckOnceCompleted(t *testing.T) {
 	app := &App{width: 100, height: 30}
 	state := &toolState{Status: "done", Input: map[string]any{"description": "find the bug"}}
-	got := app.toolRow(client.Message{}, "task", state)
+	got, _ := app.toolRow(client.Message{}, "t1", "task", state)
 	if !strings.Contains(got, "✓") {
 		t.Fatalf("completed task should show ✓, got %q", got)
 	}
