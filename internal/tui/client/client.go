@@ -752,6 +752,37 @@ func (c *Client) Stats(ctx context.Context, sessionID string) (*Stats, error) {
 	return &out, nil
 }
 
+// Busy reports whether the server currently owns a running turn for the
+// session — the authoritative answer behind the run.started/run.ended events,
+// for reconciling after a dropped one or a mid-turn connect.
+func (c *Client) Busy(ctx context.Context, sessionID string) (bool, error) {
+	var out struct {
+		Busy bool `json:"busy"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/session/"+sessionID+"/status", nil, &out); err != nil {
+		return false, err
+	}
+	return out.Busy, nil
+}
+
+// QueuedPrompt is one prompt the user has sent that the runner has not
+// reached yet. It has no message of its own in the timeline until it is
+// promoted — see Queue.
+type QueuedPrompt struct {
+	ID          string           `json:"id"`
+	Text        string           `json:"text"`
+	Files       []FileAttachment `json:"files,omitempty"`
+	Delivery    string           `json:"delivery"`
+	TimeCreated int64            `json:"timeCreated"`
+}
+
+// Queue lists the session's waiting prompts, oldest first.
+func (c *Client) Queue(ctx context.Context, sessionID string) ([]QueuedPrompt, error) {
+	var out []QueuedPrompt
+	err := c.do(ctx, http.MethodGet, "/api/session/"+sessionID+"/queue", nil, &out)
+	return out, err
+}
+
 // Compact triggers immediate context compaction for a session.
 func (c *Client) Compact(ctx context.Context, sessionID string) (bool, error) {
 	var out struct {

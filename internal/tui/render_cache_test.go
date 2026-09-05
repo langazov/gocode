@@ -99,9 +99,10 @@ func TestModelNamesArrivingLateReRenderTheSettlementLine(t *testing.T) {
 	}
 }
 
-// The live message carries the inline spinner, so it must never be served from
-// the cache — otherwise the one thing on screen that has to move freezes.
-func TestTheLiveMessageIsNeverCached(t *testing.T) {
+// The live message is the longest one and the one that changes most, so it is
+// cached like the rest — and its spinner still has to advance from frame to
+// frame, which is what spinnerPlaceholder buys.
+func TestTheLiveMessageIsCachedAndStillSpins(t *testing.T) {
 	app := cacheApp(t)
 	running, err := json.Marshal(map[string]any{
 		"agent": "build",
@@ -117,12 +118,27 @@ func TestTheLiveMessageIsNeverCached(t *testing.T) {
 	app.timeline = append(app.timeline, client.Message{ID: "m3", Type: "assistant", TimeCreated: 2, Data: running})
 	app.busy = true
 
-	app.buildTimeline()
-	if _, cached := app.messageCache["m3"]; cached {
-		t.Fatal("the live message must not be cached")
+	app.animationsEnabled = true
+	first, _ := app.buildTimeline()
+	if _, cached := app.messageCache["m3"]; !cached {
+		t.Fatal("the live message should be cached like the rest")
 	}
 	if _, cached := app.messageCache["m1"]; !cached {
-		t.Fatal("the settled history behind it still should be")
+		t.Fatal("the settled history behind it too")
+	}
+	if !strings.Contains(strings.Join(first, "\n"), spinnerFrames[0]) {
+		t.Fatalf("expected the frame-0 glyph in the rendered timeline")
+	}
+
+	// A spinner tick must move the glyph even though the block itself is now
+	// served from the cache.
+	app.spinnerFrame += spinnerBrailleEvery
+	second, _ := app.buildTimeline()
+	if !strings.Contains(strings.Join(second, "\n"), spinnerFrames[1]) {
+		t.Fatal("the cached live message stopped animating")
+	}
+	if strings.Contains(strings.Join(second, "\n"), spinnerPlaceholder) {
+		t.Fatal("the placeholder leaked into rendered output")
 	}
 }
 

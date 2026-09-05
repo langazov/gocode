@@ -446,6 +446,9 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	}
 	execution := session.NewExecution(&session.DBSessionLookup{DB: database}, runner)
 	execution.ErrorLogger = logDrainError
+	// Turn-level busy/idle for clients. See session/run_events.go for why the
+	// step events are not enough.
+	execution.OnStatus = session.PublishRunStatus(ctx, bus)
 	catalog.StartBackgroundRefresh(ctx)
 	service := session.NewService(database, bus)
 	// Plan mode needs both the question service and the session service, so it

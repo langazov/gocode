@@ -152,6 +152,43 @@ type AdmitInput struct {
 	Delivery  Delivery
 }
 
+// Pending lists every admitted-but-unpromoted inbox row for a session, oldest
+// first — the prompts the user has sent that the runner has not reached yet.
+//
+// These deliberately have no session_message row: ProjectPromptedMessage only
+// writes one on promotion, which is what keeps an unpromoted prompt out of the
+// history ListForRunner hands the model. So this is the only way to see them,
+// and it is what a client renders as queued.
+func Pending(ctx context.Context, database *db.DB, sessionID string) ([]Admitted, error) {
+	rows, err := database.Query(ctx, `
+		SELECT id, session_id, prompt, delivery, admitted_seq, promoted_seq, time_created
+		FROM session_input
+		WHERE session_id = ? AND promoted_seq IS NULL
+		ORDER BY admitted_seq ASC`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var result []Admitted
+	for rows.Next() {
+		var (
+			id, sid, promptJSON, delivery string
+			admittedSeq                   int
+			promotedSeq                   sql.NullInt64
+			timeCreated                   int64
+		)
+		if err := rows.Scan(&id, &sid, &promptJSON, &delivery, &admittedSeq, &promotedSeq, &timeCreated); err != nil {
+			return nil, err
+		}
+		admitted, err := admittedFromRow(id, sid, promptJSON, delivery, admittedSeq, promotedSeq, timeCreated)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, admitted)
+	}
+	return result, rows.Err()
+}
+
 // HasPending reports whether an unpromoted inbox row exists for a delivery.
 func HasPending(ctx context.Context, database *db.DB, sessionID string, delivery Delivery) (bool, error) {
 	row := database.QueryRow(ctx, `

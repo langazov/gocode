@@ -238,3 +238,57 @@ func doJSONConcurrent(baseURL, sessionID string) (*http.Response, error) {
 	body := bytes.NewReader([]byte(`{"text":"say hello"}`))
 	return http.Post(baseURL+"/api/session/"+sessionID+"/prompt", "application/json", body)
 }
+
+// The queue endpoint reports the prompts a client should render as waiting:
+// admitted, not yet promoted, and so with no message row of their own.
+func TestSessionQueueEndpoint(t *testing.T) {
+	server, database, bus := newTestServer(t)
+
+	rec := doJSON(t, server, "POST", "/api/session", map[string]string{"directory": t.TempDir()})
+	if rec.Code != 200 {
+		t.Fatalf("create: expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var created session.Info
+	if err := json.NewDecoder(rec.Body).Decode(&created); err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing waiting on a fresh session.
+	rec = doJSON(t, server, "GET", "/api/session/"+created.ID+"/queue", nil)
+	if rec.Code != 200 {
+		t.Fatalf("queue: expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	var queued []session.QueuedPrompt
+	if err := json.NewDecoder(rec.Body).Decode(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 0 {
+		t.Fatalf("expected an empty queue, got %+v", queued)
+	}
+
+	// Admit two prompts directly, so neither has been drained yet.
+	for _, text := range []string{"first", "second"} {
+		if _, err := session.Admit(context.Background(), bus, database, session.AdmitInput{
+			ID:        "msg_" + text,
+			SessionID: created.ID,
+			Prompt:    session.Prompt{Text: text},
+			Delivery:  session.DeliverySteer,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec = doJSON(t, server, "GET", "/api/session/"+created.ID+"/queue", nil)
+	if err := json.NewDecoder(rec.Body).Decode(&queued); err != nil {
+		t.Fatal(err)
+	}
+	if len(queued) != 2 {
+		t.Fatalf("expected both prompts queued, got %+v", queued)
+	}
+	if queued[0].Text != "first" || queued[1].Text != "second" {
+		t.Fatalf("expected admission order, got %+v", queued)
+	}
+	if queued[0].ID != "msg_first" {
+		t.Fatalf("the queued entry carries the message ID it will be promoted under, got %q", queued[0].ID)
+	}
+}

@@ -236,6 +236,51 @@ func (s *Service) Interrupt(sessionID string) {
 	}
 }
 
+// QueuedPrompt is one prompt waiting its turn, in the shape a client renders.
+type QueuedPrompt struct {
+	ID          string           `json:"id"`
+	Text        string           `json:"text"`
+	Files       []FileAttachment `json:"files,omitempty"`
+	Delivery    string           `json:"delivery"`
+	TimeCreated int64            `json:"timeCreated"`
+}
+
+// Queued lists the prompts admitted for the session that the runner has not
+// reached yet, oldest first. Empty when nothing is waiting.
+func (s *Service) Queued(ctx context.Context, sessionID string) ([]QueuedPrompt, error) {
+	pending, err := Pending(ctx, s.DB, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]QueuedPrompt, 0, len(pending))
+	for _, row := range pending {
+		out = append(out, QueuedPrompt{
+			ID:          row.ID,
+			Text:        row.Prompt.Text,
+			Files:       row.Prompt.Files,
+			Delivery:    string(row.Delivery),
+			TimeCreated: row.TimeCreated,
+		})
+	}
+	return out, nil
+}
+
+// Busy reports whether a turn is running for the session right now. This is
+// the authoritative answer the RunStarted/RunEnded events only *announce*:
+// events can be dropped under load, and a client that connects mid-turn never
+// saw the one that mattered. Readers reconcile against this.
+func (s *Service) Busy(sessionID string) bool {
+	if s.Execution == nil {
+		return false
+	}
+	for _, active := range s.Execution.Active() {
+		if active == sessionID {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) exists(ctx context.Context, sessionID string) (bool, error) {
 	var id string
 	err := s.DB.QueryRow(ctx, `SELECT id FROM session WHERE id = ?`, sessionID).Scan(&id)

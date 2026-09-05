@@ -171,3 +171,43 @@ func TestPumpSnapshotsForwardsAll(t *testing.T) {
 		t.Fatalf("unexpected message type %T", sender.msgs[0])
 	}
 }
+
+// A turn is many steps, and the gaps between them — the model deciding what to
+// do next, a tool running — are most of its wall-clock time. Busy has to
+// survive those gaps: it used to drop on every step.ended and come back on the
+// next step.started, which is why the footer spinner disappeared partway
+// through a task and reappeared seconds later.
+func TestBusySurvivesTheGapBetweenSteps(t *testing.T) {
+	state := newTree()
+	step := func(kind string) {
+		state.apply(client.Event{Type: "session.next." + kind, Session: "ses_1"})
+	}
+
+	state.apply(client.Event{Type: "session.next.run.started", Session: "ses_1"})
+	step("step.started")
+	step("step.ended")
+	if !state.node("ses_1").Busy {
+		t.Fatal("a settled step must not idle the session: the turn continues")
+	}
+
+	step("step.started")
+	step("step.failed")
+	if !state.node("ses_1").Busy {
+		t.Fatal("a failed step is still not the end of the turn")
+	}
+
+	state.apply(client.Event{Type: "session.next.run.ended", Session: "ses_1"})
+	if state.node("ses_1").Busy {
+		t.Fatal("run.ended is the turn boundary and must idle the session")
+	}
+}
+
+// A client that connects mid-turn never sees run.started, so a step start has
+// to be enough to report the session busy.
+func TestStepStartedMarksBusyForALateJoiner(t *testing.T) {
+	state := newTree()
+	state.apply(client.Event{Type: "session.next.step.started", Session: "ses_1"})
+	if !state.node("ses_1").Busy {
+		t.Fatal("a step start must mark the session busy on its own")
+	}
+}
