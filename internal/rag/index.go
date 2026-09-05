@@ -27,6 +27,13 @@ type IndexOptions struct {
 	// considers chunks already stored under that subtree — otherwise every
 	// chunk from the rest of the project would look stale and get deleted.
 	Scope string
+	// Base is the project root, for loading ancestor .gitignore/.ignore
+	// files down through Root when Root is a scoped subdirectory — otherwise
+	// a scoped reindex would miss exclusions declared above it. Empty means
+	// "same as Root," the right default for a whole-project index.
+	Base string
+	// DisableGitignore turns off .gitignore/.ignore handling entirely.
+	DisableGitignore bool
 	// Force re-embeds every chunk even if its content hash matches what is
 	// already stored — useful after switching embedding models.
 	Force        bool
@@ -78,12 +85,14 @@ type Indexer struct {
 // the rest of the project's chunks stale.
 func (idx *Indexer) Index(ctx context.Context, opts IndexOptions) (IndexSummary, error) {
 	chunks, err := chunk.Walk(ctx, opts.Root, chunk.Options{
-		Include:    opts.Include,
-		Exclude:    opts.Exclude,
-		Lines:      opts.ChunkLines,
-		Overlap:    opts.ChunkOverlap,
-		LSP:        idx.LSP,
-		PathPrefix: opts.Scope,
+		Include:          opts.Include,
+		Exclude:          opts.Exclude,
+		Lines:            opts.ChunkLines,
+		Overlap:          opts.ChunkOverlap,
+		LSP:              idx.LSP,
+		PathPrefix:       opts.Scope,
+		DisableGitignore: opts.DisableGitignore,
+		IgnoreBase:       opts.Base,
 	})
 	if err != nil {
 		return IndexSummary{}, fmt.Errorf("rag: walk %s: %w", opts.Root, err)

@@ -38,12 +38,40 @@ Plugin options (all optional):
 | `embeddingProvider` | `openai` | models.dev provider id |
 | `embeddingModel` | `text-embedding-3-small` | embedding model id |
 | `embeddingBaseURL` | (resolved from the catalog) | override the endpoint |
-| `include` | everything (subject to `exclude`) | glob patterns, e.g. `["**/*.go"]` |
+| `include` | known code/doc extensions only (see below) | glob patterns, e.g. `["**/*.go"]` |
 | `exclude` | `node_modules`, `vendor`, `dist`, `.venv` | glob patterns |
+| `disableGitignore` | `false` | stop honoring `.gitignore`/`.ignore` files (see below) |
 | `chunkLines` | `60` | chunk size in source lines |
 | `chunkOverlap` | `10` | overlap between adjacent chunks |
 | `topK` | `8` | default result count for `rag_search` |
 | `dbPath` | `<data dir>/rag.db` | chromem-go persistence directory |
+
+With no `include` set, only recognized code, documentation, and small
+structured-config file extensions are indexed (`.go`, `.ts`, `.py`, `.md`,
+`.json`, `.yaml`, and the like — see `textExtensions` in
+`internal/rag/chunk/chunk.go` for the full list), plus a handful of
+well-known extensionless files (`Makefile`, `Dockerfile`, `README`, ...).
+Icon/asset formats (`.svg`, images, fonts), lockfiles (`.lock`), and other
+binary formats are never indexed by default — they're not code or prose, and
+some (a `.svg` sprite sheet, say) can be enormous single-line files that are
+pure noise for semantic search. `.json` gets an extra size cap (64KB) on top
+of that, since the extension covers both small hand-written config and large
+generated data dumps (a serialized lockfile, a recorded API fixture) with no
+way to tell them apart by extension alone. Set `include` explicitly to
+override this default and index exactly your own patterns instead — it's an
+opt-in escape hatch, not an addition to the default list.
+
+Every directory walked during indexing also honors that directory's
+`.gitignore` and `.ignore` files (same syntax as `.gitignore`; a
+git-independent convention some tools use for extra excludes), the same way
+`git ls-files` or `rg` would — on top of, not instead of, `exclude` above.
+This is what actually keeps large generated/vendored trees (build output,
+lockfile-managed dependencies, etc.) out of the index without having to
+hand-list every project's own conventions; `exclude` remains useful for
+excludes that don't belong in `.gitignore` itself. `rag_index`'s `path`
+argument still gets indexed even if some ancestor `.gitignore` would have
+excluded it — an explicit request to index a directory wins. Set
+`disableGitignore: true` to fall back to `include`/`exclude` alone.
 
 ## One-shot indexing outside the host
 
@@ -57,6 +85,19 @@ rag-plugin also runs as a plain CLI, independent of the JSON-RPC protocol:
 
 Run this once before first use on a large project; `rag_search` and later,
 smaller `rag_index` calls stay fast enough for the tool-call path.
+
+If indexing fails with the embeddings endpoint's "maximum input length"
+error, `embed.Client` already clamps each chunk to `DefaultMaxInputChars`
+bytes before sending it — but that error's own message only names a
+batch-relative input index, not a file, so tracking down which chunk (still)
+crossed the line means bisecting the whole tree by hand. `rag-plugin scan`
+does that lookup instead: it chunks a tree exactly like `index` would, but
+never calls the embeddings endpoint (no provider or API key needed), and
+prints the largest chunks by byte size, flagging any still over the clamp:
+
+```sh
+./rag-plugin scan -root . -top 20
+```
 
 ## Vector storage
 
