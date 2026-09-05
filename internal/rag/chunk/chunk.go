@@ -63,6 +63,14 @@ type Options struct {
 	// sliding window unchanged — this is strictly additive to the plain
 	// Options{} behavior every existing caller already gets.
 	LSP SymbolResolver
+	// PathPrefix is prepended to every chunk's Path when root is a
+	// subdirectory of the project rather than the project root itself (a
+	// scoped reindex of one subtree). Include/Exclude still match against the
+	// root-relative path, unprefixed; only the resulting Chunk.Path (and thus
+	// its ID, which is derived from it) gains the prefix, so a chunk produced
+	// by indexing "sub/" alone gets the same ID and Path a whole-project walk
+	// would have given it. Empty (whole-project indexing) is a no-op.
+	PathPrefix string
 }
 
 func (o Options) withDefaults() Options {
@@ -96,6 +104,7 @@ type Chunk struct {
 func Walk(ctx context.Context, root string, opts Options) ([]Chunk, error) {
 	opts = opts.withDefaults()
 	root = filepath.Clean(root)
+	prefix := strings.Trim(filepath.ToSlash(opts.PathPrefix), "/")
 
 	var chunks []Chunk
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
@@ -123,7 +132,11 @@ func Walk(ctx context.Context, root string, opts Options) ([]Chunk, error) {
 		if infoErr != nil || info.Size() > opts.MaxFileBytes || info.Size() == 0 {
 			return nil
 		}
-		fileChunks, readErr := chunkFile(ctx, path, relative, opts)
+		relPath := relative
+		if prefix != "" {
+			relPath = prefix + "/" + relative
+		}
+		fileChunks, readErr := chunkFile(ctx, path, relPath, opts)
 		if readErr != nil {
 			// Unreadable or binary: skip, don't fail the whole walk.
 			return nil

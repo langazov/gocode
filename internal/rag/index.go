@@ -19,6 +19,14 @@ import (
 type IndexOptions struct {
 	// Root is the absolute directory to walk.
 	Root string
+	// Scope is Root's project-root-relative path (slash-separated, no
+	// leading/trailing slash). Empty means Root is the project root itself,
+	// i.e. a whole-project index. Set it when Root is a subdirectory being
+	// indexed on its own, so chunk paths/IDs come out identical to what a
+	// whole-project walk would produce, and so the stale-chunk diff only
+	// considers chunks already stored under that subtree — otherwise every
+	// chunk from the rest of the project would look stale and get deleted.
+	Scope string
 	// Force re-embeds every chunk even if its content hash matches what is
 	// already stored — useful after switching embedding models.
 	Force        bool
@@ -65,20 +73,23 @@ type Indexer struct {
 // rather than path-based: a chunk ID already encodes (path, start, end), so
 // this one comparison naturally covers "file deleted," "file excluded," and
 // "file shrank/grew enough to shift window boundaries" without three separate
-// code paths.
+// code paths. When opts.Scope is set, both sides of that comparison are
+// restricted to the scoped subtree, so indexing one subdirectory never marks
+// the rest of the project's chunks stale.
 func (idx *Indexer) Index(ctx context.Context, opts IndexOptions) (IndexSummary, error) {
 	chunks, err := chunk.Walk(ctx, opts.Root, chunk.Options{
-		Include: opts.Include,
-		Exclude: opts.Exclude,
-		Lines:   opts.ChunkLines,
-		Overlap: opts.ChunkOverlap,
-		LSP:     idx.LSP,
+		Include:    opts.Include,
+		Exclude:    opts.Exclude,
+		Lines:      opts.ChunkLines,
+		Overlap:    opts.ChunkOverlap,
+		LSP:        idx.LSP,
+		PathPrefix: opts.Scope,
 	})
 	if err != nil {
 		return IndexSummary{}, fmt.Errorf("rag: walk %s: %w", opts.Root, err)
 	}
 
-	existingHashes, err := idx.Store.Hashes(ctx, idx.ProjectID)
+	existingHashes, err := idx.Store.HashesUnderPath(ctx, idx.ProjectID, opts.Scope)
 	if err != nil {
 		return IndexSummary{}, fmt.Errorf("rag: load existing hashes: %w", err)
 	}

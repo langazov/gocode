@@ -200,14 +200,39 @@ func (rt *runtime) indexOptions(path string, force bool) rag.IndexOptions {
 	if exclude == nil {
 		exclude = defaultExclude
 	}
+	root := rt.indexRoot(path)
 	return rag.IndexOptions{
-		Root:         rt.indexRoot(path),
+		Root:         root,
+		Scope:        rt.relativeScope(root),
 		Force:        force,
 		Include:      include,
 		Exclude:      exclude,
 		ChunkLines:   rt.opts.ChunkLines,
 		ChunkOverlap: rt.opts.ChunkOverlap,
 	}
+}
+
+// relativeScope reports root's path relative to the project base (Worktree,
+// falling back to Directory), for IndexOptions.Scope. It returns "" — meaning
+// "whole project, don't scope the stale-chunk diff" — whenever root isn't a
+// proper subdirectory of the base: root equals the base (a full-project
+// index), no base is known, or root somehow falls outside it. That last case
+// shouldn't happen given indexRoot's own resolution, but falling back to the
+// old unscoped behavior there is safer than scoping against a nonsensical
+// relative path.
+func (rt *runtime) relativeScope(root string) string {
+	base := rt.opts.Worktree
+	if base == "" {
+		base = rt.opts.Directory
+	}
+	if base == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(base, root)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 func (rt *runtime) topK(k int) int {
