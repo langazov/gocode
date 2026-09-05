@@ -31,8 +31,21 @@ func toLLMMessage(message StoredMessage, model ModelRef) ([]llm.Message, error) 
 		if err := json.Unmarshal(message.Data, &user); err != nil {
 			return nil, fmt.Errorf("session: decode user message: %w", err)
 		}
-		parts := []llm.ContentPart{{Type: llm.PartText, Text: user.Text}}
+		// An empty text part is not nothing, it is an error: Anthropic
+		// rejects a request carrying one ("text content blocks must be
+		// non-empty"). A prompt that is only an attachment has exactly that
+		// shape — the server accepts it when files are present — so sending
+		// the empty text alongside the image failed the whole turn. Upstream
+		// filters the same case ("filters out user messages with only empty
+		// text parts").
+		var parts []llm.ContentPart
+		if user.Text != "" {
+			parts = append(parts, llm.ContentPart{Type: llm.PartText, Text: user.Text})
+		}
 		parts = append(parts, attachmentParts(user.Files)...)
+		if len(parts) == 0 {
+			return nil, nil
+		}
 		return []llm.Message{{ID: message.ID, Role: llm.RoleUser, Content: parts}}, nil
 	case TypeSynthetic:
 		var synthetic struct {
@@ -113,9 +126,8 @@ func assistantToLLM(messageID string, assistant AssistantMessage, model ModelRef
 			if providerExecuted {
 				continue
 			}
-			if result, ok := toolResultPart(item); ok {
-				results = append(results, llm.ToolResultMessage("", item.ID, item.Name, result, item.State.Status == ToolError))
-			}
+			result, isError := toolResultPart(item)
+			results = append(results, llm.ToolResultMessage("", item.ID, item.Name, result, isError))
 		}
 	}
 	var out []llm.Message
@@ -125,14 +137,28 @@ func assistantToLLM(messageID string, assistant AssistantMessage, model ModelRef
 	return append(out, results...)
 }
 
-func toolResultPart(item AssistantContent) (string, bool) {
+// toolResultPart is total over tool states, and has to be: every tool call
+// sent to the model needs a matching result, or the request is malformed.
+// Anthropic refuses one outright ("Each tool_use block must have a
+// corresponding tool_result block"), so a single unsettled tool poisons the
+// whole conversation from then on, not just the turn it appeared in.
+//
+// A tool left pending or running is one whose turn ended before it did — an
+// interrupt, a crashed step, a settlement that never committed. The runner's
+// failInterruptedTools settles those at the start of the next drain, but that
+// is a repair, and history is also built for compaction and retries that do
+// not go through it. Reporting the state as an error result is both truthful
+// and well-formed. Ports upstream's "converts pending/running tool calls to
+// error results to prevent dangling tool_use".
+func toolResultPart(item AssistantContent) (result string, isError bool) {
 	switch item.State.Status {
 	case ToolCompleted:
-		return item.State.Output, true
+		return item.State.Output, false
 	case ToolError:
 		return item.State.Error, true
+	default:
+		return "Tool execution was interrupted before it produced a result.", true
 	}
-	return "", false
 }
 
 // attachmentParts lowers a user message's file attachments into image parts.

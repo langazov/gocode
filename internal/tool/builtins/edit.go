@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/langazov/gocode-go/internal/diff"
+	"github.com/langazov/gocode-go/internal/patch"
 )
 
 type EditTool struct {
@@ -102,18 +103,18 @@ func (t *EditTool) Execute(ctx context.Context, input map[string]any) (string, e
 	return formatEditOutput(target, replacements, text, replaced) + diagnosticsFooter(ctx, t.diagnoser, target), nil
 }
 
+// splitBOM and joinBOM defer to internal/patch, which already had the correct
+// pair. The copy that used to live here sliced `text[1:]` \u2014 one *byte* off a
+// three-byte mark \u2014 so every edit of a BOM file left the two trailing bytes
+// behind and prepended a fresh mark in front of them. Two bytes of rubbish
+// were added to the file on each edit, and the tool reported success.
 func splitBOM(text string) (bool, string) {
-	if strings.HasPrefix(text, "\uFEFF") {
-		return true, text[1:]
-	}
-	return false, text
+	body, bom := patch.SplitBOM(text)
+	return bom, body
 }
 
 func joinBOM(text string, bom bool) string {
-	if bom {
-		return "\uFEFF" + text
-	}
-	return text
+	return patch.JoinBOM(text, bom)
 }
 
 func detectLineEnding(text string) string {

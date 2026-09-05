@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -128,6 +129,206 @@ func TestContentHashChangesWithContentSameLineCount(t *testing.T) {
 	}
 	if before[0].ContentHash == after[0].ContentHash {
 		t.Errorf("content hash should change when content changes")
+	}
+}
+
+func TestWalkHonorsGitignore(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".gitignore", "node_modules/\n*.log\n")
+	writeFile(t, root, "node_modules/lib/pkg.js", "module.exports = {}\n")
+	writeFile(t, root, "debug.log", "boom\n")
+	writeFile(t, root, "src/main.go", "package main\n")
+
+	chunks, err := Walk(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Path != "src/main.go" {
+		t.Fatalf("got %+v, want only src/main.go", chunks)
+	}
+}
+
+func TestWalkHonorsIgnoreFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".ignore", "scratch/\n")
+	writeFile(t, root, "scratch/temp.txt", "throwaway\n")
+	writeFile(t, root, "keep.txt", "hello\n")
+
+	chunks, err := Walk(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Path != "keep.txt" {
+		t.Fatalf("got %+v, want only keep.txt", chunks)
+	}
+}
+
+func TestWalkNestedGitignoreOverridesParentViaNegation(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".gitignore", "*.md\n")
+	writeFile(t, root, "docs/.gitignore", "!keep.md\n")
+	writeFile(t, root, "docs/keep.md", "kept\n")
+	writeFile(t, root, "docs/drop.md", "dropped\n")
+	writeFile(t, root, "top.md", "dropped too\n")
+
+	chunks, err := Walk(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Path != "docs/keep.md" {
+		t.Fatalf("got %+v, want only docs/keep.md", chunks)
+	}
+}
+
+func TestWalkGitignoreDirectoryCannotBeResurrectedFromInside(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".gitignore", "build/\n")
+	writeFile(t, root, "build/.gitignore", "!keep.txt\n")
+	writeFile(t, root, "build/keep.txt", "should still be skipped\n")
+
+	chunks, err := Walk(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 0 {
+		t.Fatalf("got %+v, want none: an excluded directory's own .gitignore is never consulted", chunks)
+	}
+}
+
+func TestWalkDisableGitignore(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".gitignore", "debug.txt\n")
+	writeFile(t, root, "debug.txt", "boom\n")
+
+	chunks, err := Walk(context.Background(), root, Options{DisableGitignore: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var gotLog bool
+	for _, c := range chunks {
+		if c.Path == "debug.txt" {
+			gotLog = true
+		}
+	}
+	if !gotLog {
+		t.Fatalf("got %+v, want debug.txt present (gitignore disabled)", chunks)
+	}
+}
+
+func TestWalkScopedSubdirectoryHonorsAncestorGitignore(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".gitignore", "node_modules/\n")
+	writeFile(t, root, "packages/app/node_modules/dep/index.js", "module.exports = {}\n")
+	writeFile(t, root, "packages/app/main.go", "package main\n")
+
+	sub := filepath.Join(root, "packages", "app")
+	chunks, err := Walk(context.Background(), sub, Options{PathPrefix: "packages/app", IgnoreBase: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Path != "packages/app/main.go" {
+		t.Fatalf("got %+v, want only packages/app/main.go", chunks)
+	}
+}
+
+func TestWalkGitignoreDoesNotExcludeExplicitRootItself(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, ".gitignore", "packages/\n")
+	writeFile(t, root, "packages/app/main.go", "package main\n")
+
+	sub := filepath.Join(root, "packages")
+	chunks, err := Walk(context.Background(), sub, Options{PathPrefix: "packages", IgnoreBase: root})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Path != "packages/app/main.go" {
+		t.Fatalf("got %+v, want packages/app/main.go: an explicitly requested root shouldn't self-exclude", chunks)
+	}
+}
+
+func TestWalkSkipsKnownBinaryExtensionsWithoutReadingContent(t *testing.T) {
+	root := t.TempDir()
+	// No NUL bytes in these "binaries" — looksBinary's content sniff alone
+	// wouldn't catch them; the extension check must. Include is set
+	// explicitly (bypassing the default text allowlist) so this exercises
+	// isBinaryExt itself, not the allowlist that would exclude them anyway.
+	writeFile(t, root, "logo.png", "not actually binary bytes but still a .png\n")
+	writeFile(t, root, "archive.zip", "also not real zip bytes\n")
+	writeFile(t, root, "main.go", "package main\n")
+
+	chunks, err := Walk(context.Background(), root, Options{Include: []string{"**/*"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Path != "main.go" {
+		t.Fatalf("got %+v, want only main.go", chunks)
+	}
+}
+
+func TestWalkDefaultOnlyIndexesKnownTextFiles(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "src/main.go", "package main\n")
+	writeFile(t, root, "docs/guide.md", "# Guide\n")
+	writeFile(t, root, "icons/logo.svg", "<svg></svg>\n")
+	writeFile(t, root, "bun.lock", "{}\n")
+	writeFile(t, root, "data.bin", "\x00not text either\n")
+
+	chunks, err := Walk(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range chunks {
+		got = append(got, c.Path)
+	}
+	if len(chunks) != 2 || !slices.Contains(got, "src/main.go") || !slices.Contains(got, "docs/guide.md") {
+		t.Fatalf("got %v, want only src/main.go and docs/guide.md: .svg and .lock aren't code or docs", got)
+	}
+}
+
+func TestWalkCapsLargeJSONFilesBelowGeneralMaxFileBytes(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "package.json", `{"name":"ok"}`+"\n")
+	writeFile(t, root, "fixtures/huge.json", strings.Repeat("x", 100*1024))
+
+	chunks, err := Walk(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Path != "package.json" {
+		t.Fatalf("got %+v, want only package.json: a 100KB JSON fixture should be skipped even though it's under the 1MB general cap", chunks)
+	}
+}
+
+func TestWalkIncludeExplicitlyBypassesDefaultAllowlist(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "icons/logo.svg", "<svg></svg>\n")
+	writeFile(t, root, "src/main.go", "package main\n")
+
+	chunks, err := Walk(context.Background(), root, Options{Include: []string{"**/*.svg"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 || chunks[0].Path != "icons/logo.svg" {
+		t.Fatalf("got %+v, want only icons/logo.svg: an explicit Include should override the default text-only allowlist", chunks)
+	}
+}
+
+func TestWalkDefaultIncludesWellKnownExtensionlessFiles(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "Dockerfile", "FROM scratch\n")
+	writeFile(t, root, "Makefile", "build:\n\techo hi\n")
+
+	chunks, err := Walk(context.Background(), root, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, c := range chunks {
+		got = append(got, c.Path)
+	}
+	if len(chunks) != 2 || !slices.Contains(got, "Dockerfile") || !slices.Contains(got, "Makefile") {
+		t.Fatalf("got %v, want Dockerfile and Makefile", got)
 	}
 }
 

@@ -123,38 +123,60 @@ func (t *BashTool) Execute(ctx context.Context, input map[string]any) (string, e
 	return text, nil
 }
 
-// ExtraPermissions implements tool.PermissionScoped: it reports the
-// directories this command would reach outside the working directory.
+// ExtraPermissions implements tool.PermissionScoped: the directories this
+// command would reach outside the working directory, and the paths inside it
+// the command would modify.
 //
-// Without it the working-directory restriction on write, edit and apply_patch
-// is decorative — the model that cannot write /tmp/x with the write tool can
-// always run `cat > /tmp/x` instead, which is exactly what happens in practice.
+// Both exist for the same reason — a rule about the file tools is not a rule
+// about the shell unless the shell is held to it:
+//
+//   - external_directory: the model that cannot write /tmp/x with the write
+//     tool can always run `cat > /tmp/x` instead, which is what happens in
+//     practice.
+//   - edit: likewise `echo x > file` inside the repo. This is the one that
+//     makes plan mode hold, since plan mode's read-only constraint *is*
+//     `edit: deny` (cmd/gocode/builtin_agents.go); before it, a plan-mode
+//     session could and did rewrite files through the shell. It changes
+//     nothing under the default ruleset, where `edit` is allowed anyway —
+//     only where a rule already restricts editing does the shell start being
+//     held to it too.
 func (t *BashTool) ExtraPermissions(input map[string]any) []tool.ExtraPermission {
 	command := stringArg(input, "command")
 	if command == "" {
 		return nil
 	}
-	directories := ScanExternalPaths(command, t.resolver.Root)
-	if len(directories) == 0 {
-		return nil
+	var out []tool.ExtraPermission
+	if directories := ScanExternalPaths(command, t.resolver.Root); len(directories) > 0 {
+		// The resource is a glob over the directory, matching
+		// LocationMutation.externalDirectoryPermission, so approving once covers
+		// the directory, its subdirectories and everything in them rather than
+		// the single file the command happened to name. Wildcard `*` compiles to
+		// `.*`, which crosses separators, so `/srv/data/*` also covers
+		// `/srv/data/a/b.txt`.
+		//
+		// Save mirrors Resources: the TypeScript store persists the same glob it
+		// asked about, which is what makes "allow always" cover the directory
+		// tree instead of re-asking for each new file in it.
+		resources := make([]string, 0, len(directories))
+		for _, dir := range directories {
+			resources = append(resources, filepath.ToSlash(filepath.Join(dir, "*")))
+		}
+		out = append(out, tool.ExtraPermission{
+			Action:    permission.ExternalDirectoryAction,
+			Resources: resources,
+			Save:      resources,
+		})
 	}
-	// The resource is a glob over the directory, matching
-	// LocationMutation.externalDirectoryPermission, so approving once covers
-	// the directory, its subdirectories and everything in them rather than
-	// the single file the command happened to name. Wildcard `*` compiles to
-	// `.*`, which crosses separators, so `/srv/data/*` also covers
-	// `/srv/data/a/b.txt`.
-	//
-	// Save mirrors Resources: the TypeScript store persists the same glob it
-	// asked about, which is what makes "allow always" cover the directory
-	// tree instead of re-asking for each new file in it.
-	resources := make([]string, 0, len(directories))
-	for _, dir := range directories {
-		resources = append(resources, filepath.ToSlash(filepath.Join(dir, "*")))
+	if writes := ScanWrites(command, t.resolver.Root); len(writes) > 0 {
+		// Save is "*" rather than the paths, matching what write/edit/
+		// apply_patch persist (permissionSave in session/runner.go): the
+		// question a user answers is "may you edit files", and saving the
+		// path would mean re-asking for the next one.
+		out = append(out, tool.ExtraPermission{
+			Action:    "edit",
+			Resources: writes,
+			Save:      []string{"*"},
+		})
 	}
-	return []tool.ExtraPermission{{
-		Action:    permission.ExternalDirectoryAction,
-		Resources: resources,
-		Save:      resources,
-	}}
+	return out
 }

@@ -111,22 +111,34 @@ func TestBashToolDeclaresExternalDirectory(t *testing.T) {
 		t.Fatal("the bash tool must declare extra permissions, or the shell bypasses the directory restriction")
 	}
 
+	// A redirect outside the tree is both things at once: it leaves the
+	// working directory *and* it writes.
 	extras := scoped.ExtraPermissions(map[string]any{
 		"command": "cat > /tmp/test/channels.go << 'EOF'\npackage main\nEOF",
 	})
-	if len(extras) != 1 {
-		t.Fatalf("got %d extra permissions, want 1: %+v", len(extras), extras)
-	}
-	if extras[0].Action != permission.ExternalDirectoryAction {
-		t.Errorf("action = %q, want %q", extras[0].Action, permission.ExternalDirectoryAction)
+	external := extraFor(extras, permission.ExternalDirectoryAction)
+	if external == nil {
+		t.Fatalf("no external_directory permission declared: %+v", extras)
 	}
 	// A glob over the directory, so approving once covers it rather than one
 	// file. Resources are always forward-slash, regardless of host — see
 	// ExtraPermissions's ToSlash.
 	want := filepath.ToSlash(filepath.Join(canonicalPath("/tmp/test"), "*"))
-	if len(extras[0].Resources) != 1 || extras[0].Resources[0] != want {
-		t.Errorf("resources = %v, want a glob over %s", extras[0].Resources, want)
+	if len(external.Resources) != 1 || external.Resources[0] != want {
+		t.Errorf("resources = %v, want a glob over %s", external.Resources, want)
 	}
+	if edit := extraFor(extras, "edit"); edit == nil {
+		t.Errorf("a redirect must also be declared as an edit: %+v", extras)
+	}
+}
+
+func extraFor(extras []tool.ExtraPermission, action string) *tool.ExtraPermission {
+	for i := range extras {
+		if extras[i].Action == action {
+			return &extras[i]
+		}
+	}
+	return nil
 }
 
 func TestBashToolNoExtrasForInternalCommand(t *testing.T) {
@@ -164,5 +176,99 @@ func TestWriteToolStillRefusesExternalPaths(t *testing.T) {
 		t.Error("the file tools must keep refusing paths outside the working directory")
 	} else if !strings.Contains(err.Error(), "escapes working directory") {
 		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// ScanWrites is what makes an `edit` rule a rule about editing rather than a
+// rule about three tools. The read cases matter as much as the write ones:
+// plan mode denies edit, so a false positive here stops it reading.
+func TestScanWritesSeparatesReadsFromWrites(t *testing.T) {
+	root := t.TempDir()
+	for _, tc := range []struct {
+		command string
+		want    []string
+	}{
+		// Redirects.
+		{"echo hi > notes.md", []string{"notes.md"}},
+		{"echo hi >> notes.md", []string{"notes.md"}},
+		{"go test ./... &> out.log", []string{"out.log"}},
+		{"cat < notes.md", nil},
+		{"cat <<'EOF'\nhi\nEOF", nil},
+		// Mutating commands.
+		{"rm -rf build", []string{"build"}},
+		{"mv a.txt b.txt", []string{"a.txt", "b.txt"}},
+		{"mkdir -p a/b", []string{"a/b"}},
+		{"touch NEW", []string{"NEW"}},
+		// Commands that name a path without changing it.
+		{"cat notes.md", nil},
+		{"cd src", nil},
+		{"ls -la", nil},
+		{"grep -r foo .", nil},
+		{"go build ./...", nil},
+		{"git status", nil},
+		// In place only when asked. Once it is, every non-flag argument is
+		// reported, script included: sed's grammar is not worth modelling,
+		// and the error that matters is the other one. An extra resource
+		// costs an approval that would have been asked for anyway; a missed
+		// one is a file edited with nobody asked.
+		{"sed -n '1,5p' notes.md", nil},
+		{"sed -i '' -e s/a/b/ notes.md", []string{"notes.md", "s/a/b/"}},
+		// Buried in a pipeline, a subshell, and behind &&.
+		{"cat x | tee out.txt", []string{"out.txt"}},
+		{"(echo hi > inner.txt)", []string{"inner.txt"}},
+		{"go build ./... && echo ok > done.txt", []string{"done.txt"}},
+		// Not statically known: reported as nothing rather than guessed at.
+		{"echo hi > $TARGET", nil},
+		{"echo hi > $(mktemp)", nil},
+		{"echo hi > 'unterminated", nil},
+	} {
+		got := ScanWrites(tc.command, root)
+		if len(got) != len(tc.want) {
+			t.Errorf("ScanWrites(%q) = %v, want %v", tc.command, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("ScanWrites(%q) = %v, want %v", tc.command, got, tc.want)
+				break
+			}
+		}
+	}
+}
+
+// A command that only reads must declare nothing, or an agent with edit denied
+// cannot look at the repository it is supposed to be planning against.
+func TestBashToolDeclaresNoEditForReadOnlyCommands(t *testing.T) {
+	bash := NewBashTool(Resolver{Root: t.TempDir()})
+	scoped := any(bash).(tool.PermissionScoped)
+	for _, command := range []string{"ls -la", "cat README.md", "git log --oneline -20", "rg TODO"} {
+		extras := scoped.ExtraPermissions(map[string]any{"command": command})
+		if edit := extraFor(extras, "edit"); edit != nil {
+			t.Errorf("%q should need no edit approval, got %+v", command, edit)
+		}
+	}
+}
+
+// The paths are reported as written, so a rule a user wrote against a
+// repo-relative path matches the same way it does for the write tool.
+func TestBashToolDeclaresEditForInTreeWrite(t *testing.T) {
+	bash := NewBashTool(Resolver{Root: t.TempDir()})
+	scoped := any(bash).(tool.PermissionScoped)
+	extras := scoped.ExtraPermissions(map[string]any{"command": "echo hi > src/main.go"})
+	edit := extraFor(extras, "edit")
+	if edit == nil {
+		t.Fatalf("an in-tree write must be declared as an edit: %+v", extras)
+	}
+	if len(edit.Resources) != 1 || edit.Resources[0] != "src/main.go" {
+		t.Errorf("resources = %v, want [src/main.go]", edit.Resources)
+	}
+	// "may you edit files", not "may you edit this one" — matching what
+	// write/edit/apply_patch persist.
+	if len(edit.Save) != 1 || edit.Save[0] != "*" {
+		t.Errorf("save = %v, want [*]", edit.Save)
+	}
+	// An in-tree path is not an external directory.
+	if external := extraFor(extras, permission.ExternalDirectoryAction); external != nil {
+		t.Errorf("an in-tree write is not external, got %+v", external)
 	}
 }

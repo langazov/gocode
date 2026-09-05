@@ -252,6 +252,21 @@ func (e *Engine) Assert(ctx context.Context, input AssertInput) error {
 	}
 }
 
+// Denied reports a configured refusal without asking anyone. It is the part of
+// Assert that no reply, saved rule or plugin can talk its way out of, exposed
+// so a caller that might otherwise settle a request on the user's behalf can
+// check the rules first.
+func (e *Engine) Denied(input AssertInput) error {
+	rules, err := e.rules.Configured(input.SessionID, input.Agent)
+	if err != nil {
+		return err
+	}
+	if denied(input, rules) {
+		return &BlockedError{Rules: relevant(input, rules)}
+	}
+	return nil
+}
+
 // Ask evaluates without waiting, registering a pending request when the effect
 // is ask.
 func (e *Engine) Ask(input AssertInput) (string, Effect, error) {

@@ -274,14 +274,27 @@ func (s *Store) idsForPath(projectID, path string) []string {
 // chunk ID. index.go diffs this against a fresh chunk walk to decide what
 // needs (re-)embedding and what no longer exists.
 func (s *Store) Hashes(ctx context.Context, projectID string) (map[string]string, error) {
+	return s.HashesUnderPath(ctx, projectID, "")
+}
+
+// HashesUnderPath is Hashes restricted to chunks whose Path is scope itself
+// or nested under it (scope + "/"). An empty scope returns every stored hash
+// for the project, same as Hashes. index.go uses this to diff a scoped
+// reindex (one subdirectory) only against chunks already stored under that
+// subtree, so the rest of the project's chunks are never mistaken for stale.
+func (s *Store) HashesUnderPath(ctx context.Context, projectID, scope string) (map[string]string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := map[string]string{}
 	prefix := projectID + "\x00"
 	for key, entry := range s.manifest {
-		if strings.HasPrefix(key, prefix) {
-			out[strings.TrimPrefix(key, prefix)] = entry.ContentHash
+		if !strings.HasPrefix(key, prefix) {
+			continue
 		}
+		if scope != "" && entry.Path != scope && !strings.HasPrefix(entry.Path, scope+"/") {
+			continue
+		}
+		out[strings.TrimPrefix(key, prefix)] = entry.ContentHash
 	}
 	return out, nil
 }

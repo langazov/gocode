@@ -26,6 +26,24 @@ var dirCommands = map[string]bool{
 	"cd": true, "pushd": true, "popd": true,
 }
 
+// writeCommands are the commands that modify the paths they are given. It is
+// deliberately a subset of pathCommands: `cat foo` and `cd foo` name a path
+// without changing it, and reporting those as writes would make plan mode
+// refuse to read.
+var writeCommands = map[string]bool{
+	"rm": true, "mv": true, "cp": true, "mkdir": true, "rmdir": true,
+	"touch": true, "chmod": true, "chown": true, "ln": true,
+	"tee": true, "dd": true, "truncate": true, "install": true,
+	"rsync": true, "shred": true, "patch": true,
+}
+
+// inPlaceFlagCommands only write when asked to edit in place; without the flag
+// they filter to stdout and are as read-only as grep.
+var inPlaceFlagCommands = map[string]string{
+	"sed":  "-i",
+	"perl": "-i",
+}
+
 // ScanExternalPaths returns the directories a shell command would touch
 // outside root, so the caller can ask for approval before running it.
 //
@@ -101,6 +119,107 @@ func ScanExternalPaths(command, root string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// ScanWrites returns the paths a shell command would create, overwrite or
+// delete, so the caller can put them through the same `edit` permission the
+// file tools go through.
+//
+// Without this, `edit` is a rule about the write/edit/apply_patch tools rather
+// than about editing: a model denied `edit` can run `echo x > file` and the
+// permission system never hears about it. That is what let plan mode — whose
+// read-only constraint *is* `edit: deny` — still change files in the repo.
+//
+// Same stance as ScanExternalPaths, whose parse this shares: quoting, heredocs,
+// redirects, subshells and pipelines are handled, and anything unresolvable at
+// parse time (a path built from a variable or a command substitution) is not
+// reported. It is a guard against the common case, not a sandbox — a shell can
+// always write a file in a way no static scan will see. The permission system
+// is the boundary; this decides what gets asked about.
+//
+// Paths are returned as written, so a rule a user wrote against a repo-relative
+// path matches the same way it does for the write tool.
+func ScanWrites(command, root string) []string {
+	parser := syntax.NewParser(syntax.KeepComments(false))
+	file, err := parser.Parse(strings.NewReader(command), "")
+	if err != nil {
+		// Unparseable: the shell will fail on it in a moment, and reporting a
+		// guess would only ask about a path the command never touches.
+		return nil
+	}
+
+	found := map[string]bool{}
+	note := func(word *syntax.Word) {
+		if literal, ok := literalWord(word); ok && literal != "" && !strings.HasPrefix(literal, "-") {
+			found[filepath.ToSlash(literal)] = true
+		}
+	}
+
+	syntax.Walk(file, func(node syntax.Node) bool {
+		switch typed := node.(type) {
+		case *syntax.Redirect:
+			// Only the redirects that write. `<` and the heredoc forms feed
+			// the command instead, and reporting those would ask for edit
+			// permission to read a file.
+			if typed.Word != nil && writingRedirect(typed.Op) {
+				note(typed.Word)
+			}
+		case *syntax.CallExpr:
+			if len(typed.Args) == 0 {
+				return true
+			}
+			name, ok := literalWord(typed.Args[0])
+			if !ok {
+				return true
+			}
+			base := filepath.Base(name)
+			args := typed.Args[1:]
+			if flag, conditional := inPlaceFlagCommands[base]; conditional {
+				if !hasFlag(args, flag) {
+					return true
+				}
+			} else if !writeCommands[base] {
+				return true
+			}
+			for _, arg := range args {
+				note(arg)
+			}
+		}
+		return true
+	})
+
+	out := make([]string, 0, len(found))
+	for path := range found {
+		out = append(out, path)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// writingRedirect reports whether a redirection operator writes to its target
+// rather than reading from it.
+func writingRedirect(op syntax.RedirOperator) bool {
+	switch op {
+	case syntax.RdrOut, syntax.AppOut, syntax.RdrAll, syntax.AppAll, syntax.RdrInOut, syntax.RdrClob:
+		return true
+	default:
+		return false
+	}
+}
+
+// hasFlag reports whether a literal flag appears among the arguments, either
+// on its own (`sed -i`) or as the head of a bundle (`sed -i.bak`, `sed -ne`).
+func hasFlag(args []*syntax.Word, flag string) bool {
+	for _, arg := range args {
+		literal, ok := literalWord(arg)
+		if !ok || !strings.HasPrefix(literal, "-") || strings.HasPrefix(literal, "--") {
+			continue
+		}
+		if strings.HasPrefix(literal, flag) {
+			return true
+		}
+	}
+	return false
 }
 
 // literalWord returns a word's text when it is statically known — literals and

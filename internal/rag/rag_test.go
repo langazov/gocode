@@ -206,6 +206,70 @@ func TestSearchRespectsPathPrefix(t *testing.T) {
 	}
 }
 
+func TestScopedIndexDoesNotRemoveOtherSubtrees(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	writeFile(t, h.root, "specs/a.md", "apple\n")
+	writeFile(t, h.root, "script/b.md", "banana\n")
+
+	idx := &Indexer{Store: h.store, Embedder: h.embedder, ProjectID: "p1"}
+
+	specsRoot := filepath.Join(h.root, "specs")
+	summary, err := idx.Index(ctx, IndexOptions{Root: specsRoot, Scope: "specs", ChunkLines: 60, ChunkOverlap: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ChunksAdded != 1 || summary.ChunksRemoved != 0 {
+		t.Fatalf("indexing specs/: unexpected summary: %+v", summary)
+	}
+
+	// Indexing a sibling subtree must not touch specs/'s chunks, even though
+	// they aren't part of this walk.
+	scriptRoot := filepath.Join(h.root, "script")
+	summary, err = idx.Index(ctx, IndexOptions{Root: scriptRoot, Scope: "script", ChunkLines: 60, ChunkOverlap: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ChunksAdded != 1 || summary.ChunksRemoved != 0 {
+		t.Fatalf("indexing script/: unexpected summary: %+v", summary)
+	}
+
+	search := &Searcher{Store: h.store, Embedder: h.embedder, ProjectID: "p1"}
+	hits, err := search.Search(ctx, SearchOptions{Query: "apple banana", K: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hits) != 2 {
+		t.Fatalf("got %d hits, want 2 (specs/a.md and script/b.md both still indexed): %+v", len(hits), hits)
+	}
+
+	// Paths must come out project-root-relative even from a scoped walk, so a
+	// later whole-project reindex sees the same chunk IDs and doesn't
+	// re-embed everything.
+	var gotSpecs, gotScript bool
+	for _, hit := range hits {
+		switch hit.Path {
+		case "specs/a.md":
+			gotSpecs = true
+		case "script/b.md":
+			gotScript = true
+		}
+	}
+	if !gotSpecs || !gotScript {
+		t.Fatalf("expected project-relative paths specs/a.md and script/b.md, got %+v", hits)
+	}
+
+	// A subsequent whole-project reindex should recognize both chunks as
+	// unchanged (same IDs as the scoped walks produced), not re-add them.
+	summary, err = idx.Index(ctx, IndexOptions{Root: h.root, ChunkLines: 60, ChunkOverlap: 5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary.ChunksAdded != 0 || summary.ChunksUpdated != 0 || summary.ChunksRemoved != 0 {
+		t.Fatalf("whole-project reindex should be a no-op: %+v", summary)
+	}
+}
+
 func TestSearchRequiresQuery(t *testing.T) {
 	h := newHarness(t)
 	search := &Searcher{Store: h.store, Embedder: h.embedder, ProjectID: "p1"}

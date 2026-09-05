@@ -291,3 +291,51 @@ func TestDefaultsAllowsEverythingExceptEnvFiles(t *testing.T) {
 		}
 	}
 }
+
+// The distinction a user's bash allowlist depends on, ported from
+// packages/opencode/test/util/wildcard.test.ts.
+//
+// `ls *` and `ls*` look interchangeable and are not: the space anchors the
+// pattern to the command, and without it the rule also matches every command
+// that merely *starts* with those letters. Someone who allows `ls*` has
+// allowed `lsof`, and — worse — a rule like `git diff*` written to permit
+// diffs also permits `git diff-index --exec rm`. The escaping cases are the
+// other half: a pattern is a glob, so its regular-expression metacharacters
+// have to be literals or `foo.bar` silently matches `fooXbar`.
+func TestMatchAnchorsOnTheSpaceAndEscapesMetacharacters(t *testing.T) {
+	for _, c := range []struct {
+		input   string
+		pattern string
+		want    bool
+	}{
+		// The space is what makes a command allowlist an allowlist.
+		{"ls", "ls *", true},
+		{"ls -la", "ls *", true},
+		{"ls foo bar", "ls *", true},
+		{"lstmeval", "ls *", false},
+		// Without it, the same rule covers anything with that prefix. This is
+		// the footgun, pinned so it stays a known one.
+		{"ls", "ls*", true},
+		{"lstmeval", "ls*", true},
+		{"git commit -m foo", "git *", true},
+		{"git", "git *", true},
+
+		// Glob tokens.
+		{"file1.txt", "file?.txt", true},
+		{"file12.txt", "file?.txt", false},
+
+		// Regular-expression metacharacters are literal.
+		{"foo+bar", "foo+bar", true},
+		{"fooXbar", "foo+bar", false},
+		{"a.b", "a.b", true},
+		{"axb", "a.b", false},
+		{"a(b)c", "a(b)c", true},
+		{"x[1]", "x[1]", true},
+		{"cost$", "cost$", true},
+		{"^start", "^start", true},
+	} {
+		if got := Match(c.input, c.pattern); got != c.want {
+			t.Errorf("Match(%q, %q) = %v, want %v", c.input, c.pattern, got, c.want)
+		}
+	}
+}

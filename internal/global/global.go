@@ -63,9 +63,20 @@ func Resolve() Paths {
 
 var Path = Resolve()
 
+// PlansDir is the one place plan mode is allowed to write. It is deliberately
+// outside any repository: a plan is a working note about a change, not part of
+// the change, and plan mode's whole promise is that the working tree comes out
+// of a planning session byte for byte as it went in.
+//
+// Upstream also permits `.opencode/plans/*.md` inside the worktree; this port
+// does not, so nothing plan mode writes can ever land in a commit.
+func PlansDir(paths Paths) string {
+	return filepath.Join(paths.Data, "plans")
+}
+
 func Init() error {
 	paths := Resolve()
-	for _, dir := range []string{paths.Data, paths.Config, paths.State, paths.Tmp, paths.Log, paths.Bin, paths.Repos} {
+	for _, dir := range []string{paths.Data, paths.Config, paths.State, paths.Tmp, paths.Log, paths.Bin, paths.Repos, PlansDir(paths)} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}

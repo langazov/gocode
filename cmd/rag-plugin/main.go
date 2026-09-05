@@ -20,12 +20,14 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/langazov/gocode-go/internal/lsp"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 	"github.com/langazov/gocode-go/internal/provider"
 	"github.com/langazov/gocode-go/internal/rag"
+	"github.com/langazov/gocode-go/internal/rag/chunk"
 	"github.com/langazov/gocode-go/internal/rag/embed"
 	"github.com/langazov/gocode-go/internal/rag/store"
 )
@@ -42,6 +44,12 @@ func main() {
 		case "search":
 			if err := runCLISearch(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "rag-plugin search:", err)
+				os.Exit(1)
+			}
+			return
+		case "scan":
+			if err := runCLIScan(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "rag-plugin scan:", err)
 				os.Exit(1)
 			}
 			return
@@ -66,6 +74,7 @@ type runtimeOptions struct {
 	ChunkLines        int
 	ChunkOverlap      int
 	TopK              int
+	DisableGitignore  bool
 }
 
 // defaultExclude keeps the common dependency/output directories out of an
@@ -200,14 +209,45 @@ func (rt *runtime) indexOptions(path string, force bool) rag.IndexOptions {
 	if exclude == nil {
 		exclude = defaultExclude
 	}
-	return rag.IndexOptions{
-		Root:         rt.indexRoot(path),
-		Force:        force,
-		Include:      include,
-		Exclude:      exclude,
-		ChunkLines:   rt.opts.ChunkLines,
-		ChunkOverlap: rt.opts.ChunkOverlap,
+	root := rt.indexRoot(path)
+	base := rt.opts.Worktree
+	if base == "" {
+		base = rt.opts.Directory
 	}
+	return rag.IndexOptions{
+		Root:             root,
+		Scope:            rt.relativeScope(root),
+		Base:             base,
+		DisableGitignore: rt.opts.DisableGitignore,
+		Force:            force,
+		Include:          include,
+		Exclude:          exclude,
+		ChunkLines:       rt.opts.ChunkLines,
+		ChunkOverlap:     rt.opts.ChunkOverlap,
+	}
+}
+
+// relativeScope reports root's path relative to the project base (Worktree,
+// falling back to Directory), for IndexOptions.Scope. It returns "" — meaning
+// "whole project, don't scope the stale-chunk diff" — whenever root isn't a
+// proper subdirectory of the base: root equals the base (a full-project
+// index), no base is known, or root somehow falls outside it. That last case
+// shouldn't happen given indexRoot's own resolution, but falling back to the
+// old unscoped behavior there is safer than scoping against a nonsensical
+// relative path.
+func (rt *runtime) relativeScope(root string) string {
+	base := rt.opts.Worktree
+	if base == "" {
+		base = rt.opts.Directory
+	}
+	if base == "" {
+		return ""
+	}
+	rel, err := filepath.Rel(base, root)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return filepath.ToSlash(rel)
 }
 
 func (rt *runtime) topK(k int) int {
@@ -233,6 +273,7 @@ func runCLIIndex(args []string) error {
 	embBaseURL := fs.String("embedding-base-url", "", "override the embeddings endpoint")
 	include := fs.String("include", "", "comma-separated include globs")
 	exclude := fs.String("exclude", "", "comma-separated exclude globs")
+	disableGitignore := fs.Bool("no-gitignore", false, "don't honor .gitignore/.ignore files")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -257,6 +298,7 @@ func runCLIIndex(args []string) error {
 		EmbeddingBaseURL:  *embBaseURL,
 		Include:           splitCSV(*include),
 		Exclude:           splitCSV(*exclude),
+		DisableGitignore:  *disableGitignore,
 	})
 	if err != nil {
 		return err
@@ -320,6 +362,77 @@ func runCLISearch(args []string) error {
 		return err
 	}
 	fmt.Println(rag.FormatHits(hits))
+	return nil
+}
+
+// runCLIScan is a debugging aid: it chunks a tree exactly like index would,
+// but never calls the embeddings endpoint, so it works with no provider or
+// API key configured and can't itself trigger the "maximum input length"
+// error it's meant to help diagnose. It exists because that error's only
+// clue is a batch-relative input index — no file, no path — so pinpointing
+// the offending chunk otherwise means bisecting the whole tree by hand.
+func runCLIScan(args []string) error {
+	fs := flag.NewFlagSet("rag-plugin scan", flag.ContinueOnError)
+	root := fs.String("root", ".", "directory to scan")
+	include := fs.String("include", "", "comma-separated include globs")
+	exclude := fs.String("exclude", "", "comma-separated exclude globs")
+	chunkLines := fs.Int("chunk-lines", 0, "chunk size in source lines (0 = default 60)")
+	chunkOverlap := fs.Int("chunk-overlap", 0, "overlap between adjacent chunks (0 = default 10)")
+	noGitignore := fs.Bool("no-gitignore", false, "don't honor .gitignore/.ignore files")
+	threshold := fs.Int("threshold", 0, "flag chunks over this many bytes (0 = rag-plugin's own embedding clamp, DefaultMaxInputChars)")
+	top := fs.Int("top", 20, "how many of the largest chunks to print")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	absRoot, err := filepath.Abs(*root)
+	if err != nil {
+		return err
+	}
+
+	limitBytes := *threshold
+	if limitBytes <= 0 {
+		limitBytes = embed.DefaultMaxInputChars
+	}
+
+	exc := splitCSV(*exclude)
+	if exc == nil {
+		exc = defaultExclude
+	}
+	chunks, err := chunk.Walk(context.Background(), absRoot, chunk.Options{
+		Include:          splitCSV(*include),
+		Exclude:          exc,
+		Lines:            *chunkLines,
+		Overlap:          *chunkOverlap,
+		DisableGitignore: *noGitignore,
+	})
+	if err != nil {
+		return err
+	}
+
+	sort.Slice(chunks, func(i, j int) bool { return len(chunks[i].Content) > len(chunks[j].Content) })
+
+	overThreshold := 0
+	for _, c := range chunks {
+		if len(c.Content) > limitBytes {
+			overThreshold++
+		}
+	}
+	fmt.Printf("scanned %d chunks under %s\n", len(chunks), absRoot)
+	fmt.Printf("%d chunk(s) exceed %d bytes and would be truncated before embedding (see rag-plugin's DefaultMaxInputChars)\n", overThreshold, limitBytes)
+
+	limit := *top
+	if limit > len(chunks) {
+		limit = len(chunks)
+	}
+	for i := 0; i < limit; i++ {
+		c := chunks[i]
+		marker := ""
+		if len(c.Content) > limitBytes {
+			marker = "  [OVER CLAMP]"
+		}
+		fmt.Printf("%8d bytes  %s:%d-%d%s\n", len(c.Content), c.Path, c.StartLine, c.EndLine, marker)
+	}
 	return nil
 }
 
@@ -417,6 +530,7 @@ func handleInitialize(message request) error {
 		ChunkLines:        intOpt(params.Options, "chunkLines", 0),
 		ChunkOverlap:      intOpt(params.Options, "chunkOverlap", 0),
 		TopK:              intOpt(params.Options, "topK", 0),
+		DisableGitignore:  boolOpt(params.Options, "disableGitignore", false),
 	}
 
 	built, err := buildRuntime(context.Background(), opts)

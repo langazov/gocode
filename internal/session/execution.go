@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"errors"
-	"fmt"
 
 	"github.com/langazov/gocode-go/internal/db"
 )
@@ -48,7 +47,7 @@ func NewExecution(lookup SessionLookup, runner SessionRunner) *Execution {
 			return err
 		}
 		if !exists {
-			return fmt.Errorf("Session not found: %s", sessionID)
+			return notFound(sessionID)
 		}
 		err = runner.Run(ctx, RunInput{SessionID: sessionID, Force: force})
 		if err != nil && execution.ErrorLogger != nil {
