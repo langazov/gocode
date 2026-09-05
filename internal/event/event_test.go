@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -369,5 +370,67 @@ func TestSubscribeDropsOnOverflow(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+// TestPublishSurvivesASecondProcess is the regression test for a tool call
+// that stayed pending forever because its settlement event was never written.
+//
+// Two Bus values over two connection pools on one file are what two gocode
+// processes are — a TUI and a `serve` daemon, or a session and its subagent.
+// commitDurable reads the aggregate's sequence and then writes at seq+1, and
+// before the busy handling that read/write pair returned SQLITE_BUSY_SNAPSHOT
+// (517) as soon as the other process committed in between. Publish then failed,
+// the event was dropped, and the turn it belonged to could not be completed.
+//
+// Every publish must land, and the sequences must stay dense: a lost or
+// duplicated seq is a transcript that cannot be replayed.
+func TestPublishSurvivesASecondProcess(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "test.db")
+
+	first, err := db.OpenAndMigrate(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	const perBus = 40
+	var wg sync.WaitGroup
+	errs := make(chan error, 2*perBus)
+
+	for _, database := range []*db.DB{first, second} {
+		wg.Add(1)
+		go func(database *db.DB) {
+			defer wg.Done()
+			bus := NewBus(database)
+			for i := range perBus {
+				_, err := bus.Publish(ctx, testDef,
+					map[string]any{"entityID": "ent_shared", "n": i}, PublishOptions{})
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(database)
+	}
+
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("publish failed under cross-process contention: %v", err)
+	}
+
+	seq, err := NewBus(first).LatestSequence(ctx, "ent_shared")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := 2*perBus - 1; seq != want {
+		t.Fatalf("latest seq = %d, want %d: %d events were lost", seq, want, want-seq)
 	}
 }

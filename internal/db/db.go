@@ -3,14 +3,17 @@ package db
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"math/rand/v2"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
-	_ "modernc.org/sqlite"
+	"modernc.org/sqlite"
 )
 
 // maxReaders bounds the connection pool. WAL permits any number of concurrent
@@ -46,6 +49,14 @@ type DB struct {
 // dsn renders a connection string carrying the PRAGMAs, so every connection
 // the pool opens is configured identically. Setting them with a one-off Exec
 // would only configure whichever connection happened to serve it.
+//
+// _txlock=immediate makes BeginTx issue BEGIN IMMEDIATE, taking the write lock
+// up front rather than starting as a reader and upgrading on the first write.
+// The upgrade is what fails across processes: a transaction that reads, then
+// writes after another process has committed, is holding a stale WAL snapshot
+// and gets SQLITE_BUSY_SNAPSHOT — which busy_timeout does not wait out, since
+// waiting cannot refresh a snapshot. Taking the lock at BEGIN means there is no
+// upgrade to fail, and ordinary lock contention becomes a busy_timeout wait.
 func dsn(path string) string {
 	pragmas := []string{
 		"journal_mode(WAL)",
@@ -54,10 +65,11 @@ func dsn(path string) string {
 		"cache_size(-64000)",
 		"foreign_keys(1)",
 	}
-	query := make([]string, 0, len(pragmas))
+	query := make([]string, 0, len(pragmas)+1)
 	for _, pragma := range pragmas {
 		query = append(query, "_pragma="+url.QueryEscape(pragma))
 	}
+	query = append(query, "_txlock=immediate")
 	if path == ":memory:" {
 		return "file::memory:?" + strings.Join(query, "&")
 	}
@@ -98,6 +110,61 @@ func (d *DB) configure() error {
 	return nil
 }
 
+// Busy retries bound how long a write waits out contention from another
+// process. The write semaphore serializes this process's writers, so anything
+// that still comes back busy is a second gocode — the TUI, a `serve` daemon, a
+// subagent — holding the write lock, and the only fix is to try again.
+//
+// Each attempt already waits busy_timeout (5s) inside SQLite before giving up,
+// so these retries are for the two cases that return immediately instead:
+// SQLITE_BUSY_SNAPSHOT, and a timeout that expired under sustained load.
+const maxBusyRetries = 6
+
+// busyBackoff is exponential with jitter. The jitter matters with several
+// processes retrying the same write: a fixed delay marches them back into the
+// same collision.
+func busyBackoff(attempt int) time.Duration {
+	base := 5 * time.Millisecond << attempt
+	if base > 200*time.Millisecond {
+		base = 200 * time.Millisecond
+	}
+	return base + time.Duration(rand.Int64N(int64(base/2+1)))
+}
+
+// isBusy reports whether err is SQLite refusing a write because someone else
+// holds the lock. The extended codes (SQLITE_BUSY_SNAPSHOT 517, _RECOVERY 261,
+// _TIMEOUT 773, SQLITE_LOCKED_SHAREDCACHE 262, ...) carry the primary code in
+// their low byte, so masking covers the family without naming each one.
+func isBusy(err error) bool {
+	var sqliteErr *sqlite.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	switch sqliteErr.Code() & 0xFF {
+	case 5, 6: // SQLITE_BUSY, SQLITE_LOCKED
+		return true
+	}
+	return false
+}
+
+// retryBusy runs attempt until it succeeds, fails for a reason other than
+// contention, or runs out of retries. Every attempt takes the write semaphore
+// itself rather than holding it across the backoff, so a local writer that
+// would have succeeded is not made to wait behind another process's lock.
+func (d *DB) retryBusy(ctx context.Context, attempt func() error) error {
+	for try := 0; ; try++ {
+		err := attempt()
+		if !isBusy(err) || try >= maxBusyRetries {
+			return err
+		}
+		select {
+		case <-time.After(busyBackoff(try)):
+		case <-ctx.Done():
+			return err
+		}
+	}
+}
+
 // acquire takes the write semaphore, honoring context cancellation.
 func (d *DB) acquire(ctx context.Context) error {
 	select {
@@ -115,11 +182,20 @@ func (d *DB) Close() error {
 }
 
 func (d *DB) Exec(ctx context.Context, query string, args ...any) (sql.Result, error) {
-	if err := d.acquire(ctx); err != nil {
+	var result sql.Result
+	err := d.retryBusy(ctx, func() error {
+		if err := d.acquire(ctx); err != nil {
+			return err
+		}
+		defer d.release()
+		var err error
+		result, err = d.sql.ExecContext(ctx, query, args...)
+		return err
+	})
+	if err != nil {
 		return nil, err
 	}
-	defer d.release()
-	return d.sql.ExecContext(ctx, query, args...)
+	return result, nil
 }
 
 func (d *DB) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
@@ -132,21 +208,32 @@ func (d *DB) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
 
 // Transaction runs fn inside a SQLite transaction, rolling back on error.
 // Transactions are serialized against each other and against Exec, so a
-// SQLITE_BUSY write conflict cannot arise from within this process.
+// SQLITE_BUSY write conflict cannot arise from within this process. It can
+// arise from another one — a second gocode against the same database file —
+// and that is what the busy retry is for.
+//
+// fn must therefore be safe to run more than once: a retry rolls back and
+// starts a fresh transaction, so anything fn read is re-read. Every caller
+// derives what it writes from inside the transaction (Bus.commitDurable
+// re-reads the aggregate sequence, so a retry allocates against the sequence
+// the winning writer left behind), which is what makes the retry correct
+// rather than merely convenient.
 func (d *DB) Transaction(ctx context.Context, fn func(tx *sql.Tx) error) error {
-	if err := d.acquire(ctx); err != nil {
-		return err
-	}
-	defer d.release()
-	tx, err := d.sql.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	if err := fn(tx); err != nil {
-		tx.Rollback()
-		return err
-	}
-	return tx.Commit()
+	return d.retryBusy(ctx, func() error {
+		if err := d.acquire(ctx); err != nil {
+			return err
+		}
+		defer d.release()
+		tx, err := d.sql.BeginTx(ctx, nil)
+		if err != nil {
+			return err
+		}
+		if err := fn(tx); err != nil {
+			tx.Rollback()
+			return err
+		}
+		return tx.Commit()
+	})
 }
 
 func (d *DB) tables(ctx context.Context) ([]string, error) {
