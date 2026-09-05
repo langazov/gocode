@@ -10,8 +10,25 @@ import (
 type Coordinator[Key comparable] struct {
 	drain func(ctx context.Context, key Key, force bool) error
 
+	// OnStatus, when set, reports the key's execution edges: true when it
+	// goes from idle to owned, false when it goes back to idle. It is the
+	// port of the onBusy/onIdle pair packages/core's Runner.make takes, and
+	// like those it fires on the *turn* boundary, not on the steps within a
+	// turn — a turn that calls a tool and comes back for another model step
+	// never reports idle in between.
+	//
+	// Called with the coordinator's lock released, so a slow callback cannot
+	// stall other sessions. Must be set before the coordinator is used.
+	OnStatus func(key Key, busy bool)
+
 	mu     sync.Mutex
 	active map[Key]*entry
+}
+
+func (c *Coordinator[Key]) status(key Key, busy bool) {
+	if c.OnStatus != nil {
+		c.OnStatus(key, busy)
+	}
 }
 
 type entry struct {
@@ -68,6 +85,7 @@ func (c *Coordinator[Key]) Run(ctx context.Context, key Key) error {
 		next := newEntry(ctx)
 		c.active[key] = next
 		c.mu.Unlock()
+		c.status(key, true)
 		c.launch(ctx, key, next, true)
 		return next.await()
 	}
@@ -84,6 +102,7 @@ func (c *Coordinator[Key]) Wake(ctx context.Context, key Key) {
 	next := newEntry(ctx)
 	c.active[key] = next
 	c.mu.Unlock()
+	c.status(key, true)
 	c.launch(ctx, key, next, false)
 }
 
@@ -133,10 +152,13 @@ func (c *Coordinator[Key]) settle(key Key, e *entry, err error) {
 		successor := newEntry(e.parent)
 		c.active[key] = successor
 		c.mu.Unlock()
+		// Still owned, just by a successor entry: no idle edge, which is the
+		// whole point — a queued follow-up continues the same run of work.
 		c.launchIdle(key, successor)
 	} else {
 		delete(c.active, key)
 		c.mu.Unlock()
+		c.status(key, false)
 	}
 	e.err = err
 	e.settled = true

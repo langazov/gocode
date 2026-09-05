@@ -124,6 +124,8 @@ func (s *Server) Mux() *http.ServeMux {
 		mux.HandleFunc("GET /api/session/{sessionID}/message", s.listMessages)
 		mux.HandleFunc("GET /api/session/{sessionID}/todo", s.listTodos)
 		mux.HandleFunc("GET /api/session/{sessionID}/stats", s.sessionStats)
+		mux.HandleFunc("GET /api/session/{sessionID}/status", s.sessionStatus)
+		mux.HandleFunc("GET /api/session/{sessionID}/queue", s.sessionQueue)
 		mux.HandleFunc("POST /api/session/{sessionID}/model", s.setModel)
 		mux.HandleFunc("POST /api/session/{sessionID}/agent", s.setAgent)
 		mux.HandleFunc("POST /api/session/{sessionID}/rename", s.renameSession)
@@ -636,6 +638,26 @@ func (s *Server) sessionStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+// sessionStatus answers whether a turn is running right now. The
+// session.next.run.{started,ended} events are the fast path; this is what a
+// client reconciles against when it missed one — a dropped event under load,
+// or connecting partway through a turn.
+func (s *Server) sessionStatus(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]bool{"busy": s.Session.Busy(r.PathValue("sessionID"))})
+}
+
+// sessionQueue lists prompts the user has sent that the runner has not
+// reached yet. They have no message row of their own by design (see
+// session.Pending), so this is what a client renders as queued.
+func (s *Server) sessionQueue(w http.ResponseWriter, r *http.Request) {
+	queued, err := s.Session.Queued(r.Context(), r.PathValue("sessionID"))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, queued)
 }
 
 func (s *Server) listChildren(w http.ResponseWriter, r *http.Request) {

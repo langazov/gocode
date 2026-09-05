@@ -27,6 +27,18 @@ const spinnerTick = 40 * time.Millisecond
 // reproducing <Spinner>'s own 80ms interval off the shared 40ms loop.
 const spinnerBrailleEvery = 2
 
+// spinnerPlaceholder stands in for the inline braille glyph inside a message
+// block while it is being rendered, so the block can be cached across frames
+// and still animate: renderMessageCached substitutes the current frame into
+// the cached string on the way out (see substituteSpinner).
+//
+// It has to be exactly one cell wide, because the block's width math — style
+// padding, border widths, wrapping — runs while the placeholder is still in
+// place. U+E000 is private use, so no rendered content can contain it, and
+// both lipgloss.Width and ansi.StringWidth measure it as 1, same as every
+// braille frame and the "⋯" fallback it is replaced with.
+const spinnerPlaceholder = ""
+
 // spinnerGlyph ports Spinner's <Show when={kv.get("animations_enabled")}>:
 // the animated frame, or a static "⋯" when animations are disabled — same
 // fallback glyph as the TSX's `fallback={<text>⋯ {children}</text>}`.
@@ -35,6 +47,16 @@ func (a *App) spinnerGlyph() string {
 		return "⋯"
 	}
 	return spinnerFrames[(a.spinnerFrame/spinnerBrailleEvery)%len(spinnerFrames)]
+}
+
+// substituteSpinner swaps the current frame into a rendered block. Cheap
+// enough to run on every frame over the whole visible timeline, which is the
+// point: it is what lets a block containing a spinner still be cached.
+func (a *App) substituteSpinner(block string) string {
+	if !strings.Contains(block, spinnerPlaceholder) {
+		return block
+	}
+	return strings.ReplaceAll(block, spinnerPlaceholder, a.spinnerGlyph())
 }
 
 func (a *App) spinnerLabel() string {

@@ -46,6 +46,10 @@ type SessionNode struct {
 	// without it the interface waits out its 10s tick before showing the
 	// prompt that is holding the session up.
 	Asks int
+	// Queued counts prompts admitted to, or promoted out of, this session's
+	// inbox. Like Asks it is a change signal rather than a quantity: waiting
+	// prompts are fetched over HTTP, and this only says when to go look.
+	Queued int
 }
 
 func newSessionNode(id string) *SessionNode {
@@ -57,10 +61,12 @@ func newSessionNode(id string) *SessionNode {
 // a data race.
 func (n *SessionNode) clone() *SessionNode {
 	out := &SessionNode{
-		ID:    n.ID,
-		Busy:  n.Busy,
-		Agent: n.Agent,
-		Asks:  n.Asks,
+		ID:     n.ID,
+		Busy:   n.Busy,
+		Agent:  n.Agent,
+		Asks:   n.Asks,
+		Queued: n.Queued,
+
 		Tools: make(map[string]ToolState, len(n.Tools)),
 		Text:  make(map[string]*strings.Builder, len(n.Text)),
 	}
@@ -118,7 +124,18 @@ func (t *tree) apply(e client.Event) bool {
 	}
 	node := t.node(sessionID)
 	switch e.Type {
+	case "session.next.run.started":
+		node.Busy = true
+		return true
+	case "session.next.run.ended":
+		node.Busy = false
+		node.Text = map[string]*strings.Builder{}
+		t.dirty[sessionID] = true
+		return true
 	case "session.next.step.started":
+		// A step start still implies the turn is running: it is the earliest
+		// signal for a client that connected mid-turn and so never saw
+		// run.started. Only run.ended clears Busy.
 		node.Busy = true
 		return true
 	case "session.next.text.started", "session.next.text.delta":
@@ -166,12 +183,28 @@ func (t *tree) apply(e client.Event) bool {
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.step.ended", "session.next.step.failed":
-		node.Busy = false
+		// Deliberately does NOT clear Busy. A turn is many steps — model,
+		// tools, model again — and the gaps between them are most of its
+		// wall-clock time. Clearing here is what used to make the footer
+		// spinner drop out mid-task and come back seconds later. The turn's
+		// own end is run.ended, above.
 		node.Text = map[string]*strings.Builder{}
 		t.dirty[sessionID] = true
 		return true
-	case "session.next.text.ended", "session.next.compaction.ended",
-		"session.next.prompted", "todo.updated":
+	case "session.next.prompt.admitted":
+		// A prompt entered the inbox. It has no timeline message until it is
+		// promoted, so the only thing to do is tell the interface to refetch
+		// the queue and show it as waiting.
+		node.Queued++
+		return true
+	case "session.next.prompted":
+		// Promotion: the prompt leaves the queue and becomes a real message,
+		// so both the queue and the timeline are now behind.
+		node.Queued++
+		node.Text = map[string]*strings.Builder{}
+		t.dirty[sessionID] = true
+		return true
+	case "session.next.text.ended", "session.next.compaction.ended", "todo.updated":
 		node.Text = map[string]*strings.Builder{}
 		t.dirty[sessionID] = true
 		return true

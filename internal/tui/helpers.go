@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 
@@ -14,6 +15,18 @@ import (
 )
 
 var appVersion = installation.Version
+
+// sortedKeys orders a map's keys so a render that walks it is stable frame to
+// frame. Go randomizes map iteration, which for anything on screen means rows
+// swapping places at random.
+func sortedKeys[V any](m map[string]V) []string {
+	keys := make([]string, 0, len(m))
+	for key := range m {
+		keys = append(keys, key)
+	}
+	slices.Sort(keys)
+	return keys
+}
 
 // homeDirectory is the status bar's left segment: the abbreviated working
 // directory, suffixed with the git branch when one is checked out.

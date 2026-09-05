@@ -53,11 +53,21 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 			blockRefs = append(blockRefs, refs)
 		}
 	}
-	for _, builder := range a.streaming {
+	// Live assistant text, in message-ID order. The map iteration this used
+	// to do reordered concurrent live messages between frames.
+	for _, id := range sortedKeys(a.streaming) {
+		builder := a.streaming[id]
 		if builder.Len() == 0 {
 			continue
 		}
-		blocks = append(blocks, a.assistantTextBlock(builder.String()))
+		blocks = append(blocks, a.streamingTextBlock(id, builder.String()))
+		blockRefs = append(blockRefs, nil)
+	}
+	// Prompts sent while the turn was still running, below everything the
+	// assistant has produced so far — the position upstream's queued user
+	// messages occupy, since they are the newest messages in the session.
+	for _, block := range a.queuedBlocks() {
+		blocks = append(blocks, block)
 		blockRefs = append(blockRefs, nil)
 	}
 	// TS's scrollbox opens with a `<box height={1}/>` spacer above the first
@@ -108,18 +118,25 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string) {
 // the content width, whether it is the last message, whether a turn is
 // running, and renderEpoch — bumped by the rarer inputs (theme, thinking mode,
 // an expanded reasoning block) rather than tracked individually.
+//
+// The live message is cached alongside the settled ones. It used to be
+// exempt, because its block carries the inline spinner (a running tool row, a
+// streaming reasoning header) and caching it would have frozen the one thing
+// on screen that has to move. That exemption was the single most expensive
+// thing the interface did: the live message is also the *longest* one — it is
+// the response still growing — so every spinner tick and every keystroke
+// re-parsed and re-highlighted the whole of it. Measured at 60 settled
+// messages behind a 16KB live one, a frame cost 107ms against 1.8ms for the
+// same timeline with the turn settled, and a keypress cost the same 107ms
+// (BenchmarkBusyFrame16KB / BenchmarkBusyKeypress16KB).
+//
+// The spinner keeps animating because renderMessage emits spinnerPlaceholder
+// rather than the glyph, and the frame is substituted in below — on the
+// cached string, after the cache lookup.
 func (a *App) renderMessageCached(message client.Message, isLast bool) (string, []reasoningHeaderRef) {
-	// The live message is never cached. Its block carries the inline spinner
-	// (a running tool row, a streaming reasoning header), which advances every
-	// tick — caching it would freeze the one thing on screen that has to move.
-	// It is a single message per frame, so re-rendering it costs nothing next
-	// to the history behind it.
-	if isLast && a.busy {
-		return a.renderMessage(message, isLast)
-	}
 	signature := a.renderSignature(message, isLast)
 	if hit, ok := a.messageCache[message.ID]; ok && hit.signature == signature {
-		return hit.block, hit.refs
+		return a.substituteSpinner(hit.block), hit.refs
 	}
 	block, refs := a.renderMessage(message, isLast)
 	if a.messageCache == nil {
@@ -131,7 +148,7 @@ func (a *App) renderMessageCached(message client.Message, isLast bool) (string, 
 		a.messageCache = map[string]cachedRender{}
 	}
 	a.messageCache[message.ID] = cachedRender{signature: signature, block: block, refs: refs}
-	return block, refs
+	return a.substituteSpinner(block), refs
 }
 
 // renderSignature hashes everything renderMessage's output depends on. The
@@ -201,14 +218,37 @@ func (a *App) renderMessage(message client.Message, isLast bool) (string, []reas
 // width and need that spare column of margin (see markdown.go's doc
 // comment) rather than being pushed out to fill a wider box.
 func (a *App) userBlock(message client.Message, data client.UserData) string {
+	return a.userBlockOf(data, message.TimeCreated, false)
+}
+
+// userBlockOf is userBlock's body, also used for a prompt that is still
+// waiting its turn — which has no message row of its own to pass in.
+//
+// queued swaps the timestamp for UserMessage's ` QUEUED ` badge (bold, on the
+// same color as the block's border, with the theme's selected-item
+// foreground). Upstream shows the badge *instead of* the timestamp and adds
+// the blank line under the file pills that the timestamp would otherwise get
+// (`metadataVisible` in index.tsx).
+func (a *App) userBlockOf(data client.UserData, created int64, queued bool) string {
 	body := wrapText(data.Text, a.contentWidth()-4)
 	lines := []string{renderLines(a.styles().Text, body)}
+	metadata := queued || (a.timestamps && created > 0)
 	if len(data.Files) > 0 {
 		lines = append(lines, "")
 		lines = append(lines, a.fileAttachmentRows(data.Files, a.contentWidth()-4)...)
+		if metadata {
+			lines = append(lines, "")
+		}
 	}
-	if a.timestamps && message.TimeCreated > 0 {
-		lines = append(lines, a.styles().Muted.Render(todayTimeOrDateTime(message.TimeCreated)))
+	switch {
+	case queued:
+		badge := lipgloss.NewStyle().
+			Background(a.theme.Primary).
+			Foreground(a.theme.SelectedListItemText).
+			Bold(true)
+		lines = append(lines, badge.Render(" QUEUED "))
+	case a.timestamps && created > 0:
+		lines = append(lines, a.styles().Muted.Render(todayTimeOrDateTime(created)))
 	}
 	style := lipgloss.NewStyle().
 		Border(splitBorder(), false, false, false, true).
@@ -219,6 +259,47 @@ func (a *App) userBlock(message client.Message, data client.UserData) string {
 		PaddingLeft(2).
 		Width(borderBoxWidth(a.contentWidth() - 2))
 	return style.Render(strings.Join(lines, "\n"))
+}
+
+// queuedBlocks renders the prompts waiting behind the running turn, oldest
+// first.
+//
+// These are inbox rows, not messages: a prompt admitted while a turn is
+// running has no session_message row until the runner promotes it, which is
+// what keeps it out of the history the model is given. So where upstream
+// derives "queued" from message order — any user message past the last
+// unfinished assistant one (`pending` in session/index.tsx) — this port reads
+// the queue the server actually holds. Once a prompt is promoted it leaves
+// the queue and arrives as a normal user message in the timeline above.
+func (a *App) queuedBlocks() []string {
+	if len(a.queued) == 0 {
+		return nil
+	}
+	blocks := make([]string, 0, len(a.queued))
+	for _, prompt := range a.queued {
+		if strings.TrimSpace(prompt.Text) == "" && len(prompt.Files) == 0 {
+			continue
+		}
+		// Promotion reuses the inbox row's ID for the message it projects, so
+		// this is the same prompt arriving as a real message. The queue and
+		// the timeline are refetched by separate commands, and for the frame
+		// between the two landing a promoted prompt is in both.
+		if a.inTimeline(prompt.ID) {
+			continue
+		}
+		blocks = append(blocks, a.userBlockOf(
+			client.UserData{Text: prompt.Text, Files: prompt.Files}, prompt.TimeCreated, true))
+	}
+	return blocks
+}
+
+func (a *App) inTimeline(messageID string) bool {
+	for i := range a.timeline {
+		if a.timeline[i].ID == messageID {
+			return true
+		}
+	}
+	return false
 }
 
 // fileAttachmentRows mirrors UserMessage's file pills: a " Directory "/" File
@@ -492,7 +573,7 @@ func (a *App) reasoningBlock(id string, running bool, rawText string, partTime *
 
 	var header string
 	if running {
-		frame := a.spinnerGlyph()
+		frame := spinnerPlaceholder
 		label := "Thinking"
 		if title != "" {
 			label = "Thinking: " + title
@@ -556,6 +637,76 @@ func (a *App) assistantTextBlock(text string) string {
 	return "\n" + body
 }
 
+// streamRenderFloor is the shortest gap between two glamour passes over the
+// same live message, and streamRenderDutyCycle how much longer than the last
+// pass took the next one has to wait on top of that.
+//
+// Together they bound what a streaming response can take from the update
+// goroutine. A live message re-renders on *content* change, not on every
+// frame — but content changes with every delta, which for a fast model is as
+// often as frames arrive, and the pass gets more expensive the longer the
+// response grows. Without a ceiling a long answer starves keystrokes: the
+// editor only sees a key once View returns, so a 100ms pass is 100ms of
+// unresponsive prompt, over and over.
+//
+// Making the wait proportional to the last pass is what keeps that bounded as
+// the message grows: at 1/3 duty cycle a 100ms pass buys a 300ms wait, so two
+// of every three frames stay cheap however long the response gets. The text
+// shown lags by at most that wait, and the spinner tick guarantees the frame
+// that catches it up.
+const (
+	streamRenderFloor     = 60 * time.Millisecond
+	streamRenderDutyCycle = 3
+)
+
+// streamedBlock is one live message's last rendered block, with everything
+// needed to decide whether it can be reused.
+type streamedBlock struct {
+	text  string
+	width int
+	epoch uint64
+	block string
+	at    time.Time
+	cost  time.Duration
+}
+
+// streamingTextBlock is assistantTextBlock for text that is still arriving:
+// same output, but memoized per live message and rate-limited as described
+// above.
+func (a *App) streamingTextBlock(id, text string) string {
+	width := a.contentWidth()
+	previous, ok := a.streamRender[id]
+	if ok && previous.text == text && previous.width == width && previous.epoch == a.renderEpoch {
+		return previous.block
+	}
+	if ok && previous.width == width && previous.epoch == a.renderEpoch {
+		wait := max(streamRenderFloor, previous.cost*streamRenderDutyCycle)
+		if time.Since(previous.at) < wait {
+			return previous.block
+		}
+	}
+	start := time.Now()
+	block := a.assistantTextBlock(text)
+	if a.streamRender == nil {
+		a.streamRender = map[string]streamedBlock{}
+	}
+	// A session cycles through many assistant messages; only the ones still
+	// streaming are ever read, and applySnapshot replaces the whole set when
+	// a step settles, so drop the rest rather than let this grow.
+	if len(a.streamRender) > 8 {
+		a.streamRender = map[string]streamedBlock{}
+	}
+	a.streamRender[id] = streamedBlock{
+		text:  text,
+		width: width,
+		epoch: a.renderEpoch,
+		block: block,
+		at:    start,
+		cost:  time.Since(start),
+	}
+	return block
+}
+
 // toolRow mirrors the InlineTool renderers: a muted icon row per tool with
 // per-tool labels derived from the tool input. Pending tools render as a
 // "~ " line, running tools attach the spinner, and failed tools turn error
@@ -591,7 +742,7 @@ func (a *App) toolRow(message client.Message, name string, state *toolState) str
 		// other tool sits static in the muted icon the whole time, so
 		// running and done render identically for them.
 		if name == "bash" || name == "read" || name == "task" {
-			frame := a.spinnerGlyph()
+			frame := spinnerPlaceholder
 			return a.styles().Muted.Render("   " + frame + " " + label)
 		}
 		return a.styles().Muted.Render("   " + icon + " " + label)
@@ -650,7 +801,7 @@ func (a *App) bashBlock(state *toolState) string {
 	}
 	var lines []string
 	if state.Status == "running" {
-		frame := a.spinnerGlyph()
+		frame := spinnerPlaceholder
 		lines = append(lines, a.styles().Text.Render(frame+" "+command))
 	} else {
 		lines = append(lines, a.styles().Text.Render("$ "+command))

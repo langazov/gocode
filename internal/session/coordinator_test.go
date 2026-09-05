@@ -215,3 +215,57 @@ func TestFailedDrainWithPendingWakeStartsSuccessor(t *testing.T) {
 	waitFor(t, func() bool { return attempts.Load() == 2 }, "pending wake should start successor drain")
 	waitFor(t, func() bool { return len(coordinator.Active()) == 0 }, "successor should settle")
 }
+
+// OnStatus reports the turn boundary, not the work inside it. A wake that
+// arrives while a drain is running continues the same run of work, so it must
+// not produce an idle edge — that gap is exactly where a client's "working"
+// indicator would flicker off.
+func TestOnStatusReportsTurnEdgesOnly(t *testing.T) {
+	release := make(chan struct{})
+	var drains atomic.Int32
+	var mu sync.Mutex
+	var edges []bool
+
+	c := NewCoordinator(func(ctx context.Context, key string, force bool) error {
+		drains.Add(1)
+		<-release
+		return nil
+	})
+	c.OnStatus = func(key string, busy bool) {
+		mu.Lock()
+		edges = append(edges, busy)
+		mu.Unlock()
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- c.Run(context.Background(), "s") }()
+	waitFor(t, func() bool { return drains.Load() == 1 }, "the first drain never started")
+
+	// A wake mid-drain queues a follow-up on the same key.
+	c.Wake(context.Background(), "s")
+	release <- struct{}{} // first drain returns, successor launches
+	waitFor(t, func() bool { return drains.Load() == 2 }, "the queued wake never ran")
+
+	mu.Lock()
+	mid := append([]bool(nil), edges...)
+	mu.Unlock()
+	if len(mid) != 1 || !mid[0] {
+		t.Fatalf("expected exactly one busy edge across the handoff, got %v", mid)
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(edges) == 2
+	}, "no idle edge once the key went idle")
+
+	mu.Lock()
+	defer mu.Unlock()
+	if edges[1] {
+		t.Fatalf("the final edge should be idle, got %v", edges)
+	}
+}

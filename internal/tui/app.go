@@ -94,6 +94,13 @@ type App struct {
 	// asksSeen is the last SessionNode.Asks the active session reported, so a
 	// new ask (or one settled elsewhere) triggers exactly one refetch.
 	asksSeen int
+	// queued holds the prompts the user has sent that the runner has not
+	// started on yet, and queuedSeen the last SessionNode.Queued that
+	// triggered a refetch of them. They have no timeline message of their own
+	// until they are promoted, so the interface renders them itself — see
+	// queuedBlocks.
+	queued     []client.QueuedPrompt
+	queuedSeen int
 
 	// interruptArmed ports the prompt's `store.interrupt` counter: the
 	// session.interrupt command is a two-press gesture, and the footer's hint
@@ -267,6 +274,10 @@ type App struct {
 	messageCache map[string]cachedRender
 	renderEpoch  uint64
 
+	// streamRender memoizes the block rendered for each still-streaming
+	// assistant message, keyed by its message ID. See streamingTextBlock.
+	streamRender map[string]streamedBlock
+
 	// mdRenderer caches the glamour renderer built for the current
 	// theme+width (see markdown.go): constructing one loads chroma's lexer/
 	// style registries, too costly to redo on every streamed delta.
@@ -401,12 +412,13 @@ func (a *App) tick() tea.Cmd {
 	return tea.Tick(10*time.Second, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-// snapshotEffect names the refetches one snapshot implies. Both are things the
-// event stream can only signal, not carry: the durable timeline and the
-// pending ask lists are served over HTTP.
+// snapshotEffect names the refetches one snapshot implies. All of these are
+// things the event stream can only signal, not carry: the durable timeline,
+// the pending ask lists and the prompt queue are served over HTTP.
 type snapshotEffect struct {
 	timeline bool
 	asks     bool
+	queue    bool
 }
 
 // applySnapshot folds one aggregated snapshot into the model, reporting what
@@ -441,6 +453,10 @@ func (a *App) applySnapshot(snapshot Snapshot) snapshotEffect {
 	if node.Asks != a.asksSeen {
 		a.asksSeen = node.Asks
 		effect.asks = true
+	}
+	if node.Queued != a.queuedSeen {
+		a.queuedSeen = node.Queued
+		effect.queue = true
 	}
 	if snapshot.Dirty[a.active.ID] {
 		a.scrollOffset = 0
@@ -738,7 +754,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd(), a.loadLSPCmd()}
 		if a.active != nil {
 			cmds = append(cmds, a.loadPermissions(a.active.ID), a.loadQuestions(a.active.ID))
-			cmds = append(cmds, a.loadStats(a.active.ID))
+			cmds = append(cmds, a.loadStats(a.active.ID), a.loadRunStatus(a.active.ID), a.loadQueue(a.active.ID))
 			if a.sidebar {
 				cmds = append(cmds, a.loadSidebarTodos())
 			}
@@ -843,10 +859,15 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.activeModel = ""
 		a.view = viewChat
 		a.timeline = nil
+		a.queued = nil
 		a.subagentSiblings = nil
 		a.input.Reset()
 		a.input.Focus()
-		return tea.Batch(a.loadMessages(a.active.ID), a.loadSubagentSiblings())
+		// The run status comes along on open so a session already mid-turn
+		// (a subagent, or one resumed after a restart) shows the spinner
+		// immediately, rather than waiting for whichever event happens next.
+		return tea.Batch(a.loadMessages(a.active.ID), a.loadSubagentSiblings(),
+			a.loadRunStatus(a.active.ID), a.loadQueue(a.active.ID))
 	case subagentSiblingsMsg:
 		if a.active != nil && a.active.ParentID == msg.parentID {
 			a.subagentSiblings = msg.siblings
@@ -857,6 +878,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.activeModel = ""
 		a.view = viewChat
 		a.timeline = nil
+		a.queued = nil
 		a.input.Reset()
 		a.input.Focus()
 		a.busy = true
@@ -894,6 +916,10 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			a.loadQuestions(a.active.ID),
 			a.startSpinner(),
 			a.refreshSessionCmd(a.active.ID),
+			// The prompt is admitted by the time the POST returns, so this
+			// shows it as queued straight away rather than waiting for the
+			// admitted event to come back round through the aggregator.
+			a.loadQueue(a.active.ID),
 		}
 		return tea.Batch(cmds...)
 	case sessionRefreshedMsg:
@@ -917,6 +943,28 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case statsMsg:
 		a.stats = msg.stats
 		return nil
+	case queueMsg:
+		if a.active == nil || msg.sessionID != a.active.ID {
+			return nil
+		}
+		a.queued = msg.queued
+		return nil
+	case runStatusMsg:
+		if a.active == nil || msg.sessionID != a.active.ID {
+			return nil
+		}
+		// The server is authoritative about its own execution, so this
+		// corrects in both directions. Keep the aggregator's node in step or
+		// the next snapshot would just undo it.
+		if node := a.agents.Sessions[msg.sessionID]; node != nil {
+			node.Busy = msg.busy
+		}
+		wasBusy := a.busy
+		a.busy = msg.busy || sessionBusy(a.timeline)
+		if a.busy && !wasBusy {
+			return a.startSpinner()
+		}
+		return nil
 	case snapshotMsg:
 		// applySnapshot is where a live turn's busy state actually lands (the
 		// aggregator is the only thing watching the event stream), so this is
@@ -931,6 +979,11 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			// only prompt-ly signal the interface gets until its slow tick.
 			if effect.asks {
 				cmds = append(cmds, a.loadPermissions(a.active.ID), a.loadQuestions(a.active.ID))
+			}
+			// A prompt entered or left the inbox, so what is shown as queued
+			// is now behind.
+			if effect.queue {
+				cmds = append(cmds, a.loadQueue(a.active.ID))
 			}
 		}
 		return tea.Batch(cmds...)
@@ -2214,3 +2267,47 @@ func (a *App) loadStats(sessionID string) tea.Cmd {
 }
 
 type statsMsg struct{ stats *client.Stats }
+
+// loadRunStatus asks the server whether a turn is actually running. The
+// run.started/run.ended events drive the spinner frame to frame; this runs on
+// the slow reconciliation tick to correct the two cases events cannot: one
+// dropped under load, and connecting partway through a turn that started
+// before this process did.
+func (a *App) loadRunStatus(sessionID string) tea.Cmd {
+	if sessionID == "" {
+		return nil
+	}
+	c := a.client
+	return func() tea.Msg {
+		busy, err := c.Busy(a.ctx, sessionID)
+		if err != nil {
+			return nil
+		}
+		return runStatusMsg{sessionID: sessionID, busy: busy}
+	}
+}
+
+type runStatusMsg struct {
+	sessionID string
+	busy      bool
+}
+
+// loadQueue fetches the prompts waiting behind the running turn.
+func (a *App) loadQueue(sessionID string) tea.Cmd {
+	if sessionID == "" {
+		return nil
+	}
+	c := a.client
+	return func() tea.Msg {
+		queued, err := c.Queue(a.ctx, sessionID)
+		if err != nil {
+			return nil
+		}
+		return queueMsg{sessionID: sessionID, queued: queued}
+	}
+}
+
+type queueMsg struct {
+	sessionID string
+	queued    []client.QueuedPrompt
+}

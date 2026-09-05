@@ -268,3 +268,64 @@ func TestEquivalent(t *testing.T) {
 		t.Fatal("different session must not be equivalent")
 	}
 }
+
+// A prompt sent while a turn is running waits in the inbox with no message of
+// its own — that is what keeps it out of the history the model is given — so
+// Pending is the only way a client can see it and show it as queued. It
+// leaves the moment it is promoted.
+func TestPendingListsUnpromotedPrompts(t *testing.T) {
+	bus, database := setup(t)
+	ctx := context.Background()
+
+	for _, text := range []string{"first", "second"} {
+		if _, err := Admit(ctx, bus, database, AdmitInput{
+			ID:        "msg_" + text,
+			SessionID: "ses_1",
+			Prompt:    Prompt{Text: text},
+			Delivery:  DeliverySteer,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pending, err := Pending(ctx, database, "ses_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("expected both prompts waiting, got %d", len(pending))
+	}
+	if pending[0].Prompt.Text != "first" || pending[1].Prompt.Text != "second" {
+		t.Fatalf("expected admission order, got %q then %q", pending[0].Prompt.Text, pending[1].Prompt.Text)
+	}
+
+	// Neither is visible as a message yet.
+	store := NewMessageStore(database)
+	messages, err := store.List(ctx, "ses_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 0 {
+		t.Fatalf("an unpromoted prompt must not be in the timeline, got %d messages", len(messages))
+	}
+
+	// Promoting the first moves it out of the queue and into the timeline,
+	// under the same ID — which is what lets a renderer tell the two apart.
+	if _, err := PromoteSteers(ctx, bus, database, "ses_1", 0); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = Pending(ctx, database, "ses_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 || pending[0].Prompt.Text != "second" {
+		t.Fatalf("expected only the unpromoted prompt to remain, got %+v", pending)
+	}
+	messages, err = store.List(ctx, "ses_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(messages) != 1 || messages[0].ID != "msg_first" {
+		t.Fatalf("expected the promoted prompt in the timeline under its own ID, got %+v", messages)
+	}
+}

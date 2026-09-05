@@ -34,6 +34,10 @@ type Execution struct {
 	// ErrorLogger, when set, observes advisory wake drain failures that would
 	// otherwise be discarded, matching the local drain's tapCause logging.
 	ErrorLogger func(sessionID string, err error)
+	// OnStatus, when set, reports when a session starts running and when it
+	// goes idle again. See Coordinator.OnStatus for the boundary it fires on;
+	// wire it to PublishRunStatus to put those edges on the event bus.
+	OnStatus func(sessionID string, busy bool)
 }
 
 func NewExecution(lookup SessionLookup, runner SessionRunner) *Execution {
@@ -53,6 +57,11 @@ func NewExecution(lookup SessionLookup, runner SessionRunner) *Execution {
 		return err
 	}
 	execution.coordinator = NewCoordinator(drain)
+	execution.coordinator.OnStatus = func(sessionID string, busy bool) {
+		if execution.OnStatus != nil {
+			execution.OnStatus(sessionID, busy)
+		}
+	}
 	return execution
 }
 

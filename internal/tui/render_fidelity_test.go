@@ -62,17 +62,23 @@ func TestToolRowOnlySpinsForBashAndRead(t *testing.T) {
 		Error  string         `json:"error"`
 	}{Status: "running", Input: map[string]any{}}
 
+	// A rendered block holds spinnerPlaceholder where the glyph goes;
+	// renderMessageCached substitutes the frame on its way out, so the block
+	// can be cached and still animate. Assert on both forms.
 	spinner := spinnerFrames[0]
 
 	for _, name := range []string{"bash", "read"} {
 		got := app.toolRow(msg, name, running)
-		if !strings.Contains(got, spinner) {
-			t.Fatalf("%s while running should show the spinner glyph %q, got %q", name, spinner, got)
+		if !strings.Contains(got, spinnerPlaceholder) {
+			t.Fatalf("%s while running should carry the spinner slot, got %q", name, got)
+		}
+		if !strings.Contains(app.substituteSpinner(got), spinner) {
+			t.Fatalf("%s while running should resolve to the glyph %q, got %q", name, spinner, got)
 		}
 	}
 	for _, name := range []string{"write", "glob", "grep", "webfetch", "edit"} {
 		got := app.toolRow(msg, name, running)
-		if strings.Contains(got, spinner) {
+		if strings.Contains(got, spinnerPlaceholder) || strings.Contains(got, spinner) {
 			t.Fatalf("%s should not spin while running (TS keeps it static), got %q", name, got)
 		}
 	}
