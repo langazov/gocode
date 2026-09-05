@@ -734,22 +734,23 @@ func (a *App) toolRow(message client.Message, name string, state *toolState) str
 	if name == "task" && state.Status != "pending" && state.Status != "running" && state.Status != "error" {
 		icon = "✓" // TS: state.status === "completed" ? "✓" : "│"
 	}
+	width := a.contentWidth()
 	switch state.Status {
 	case "pending":
-		return a.styles().Text.Render(strings.Repeat(" ", 6) + "~ " + label)
+		return wrapToolLine(a.styles().Text, strings.Repeat(" ", 6)+"~ ", label, width)
 	case "running":
 		// TS only swaps in the live spinner glyph for bash/read/task; every
 		// other tool sits static in the muted icon the whole time, so
 		// running and done render identically for them.
 		if name == "bash" || name == "read" || name == "task" {
 			frame := spinnerPlaceholder
-			return a.styles().Muted.Render("   " + frame + " " + label)
+			return wrapToolLine(a.styles().Muted, "   "+frame+" ", label, width)
 		}
-		return a.styles().Muted.Render("   " + icon + " " + label)
+		return wrapToolLine(a.styles().Muted, "   "+icon+" ", label, width)
 	case "error":
-		return a.styles().Error.Render("   " + icon + " " + label)
+		return wrapToolLine(a.styles().Error, "   "+icon+" ", label, width)
 	default:
-		return a.styles().Muted.Render("   " + icon + " " + label)
+		return wrapToolLine(a.styles().Muted, "   "+icon+" ", label, width)
 	}
 }
 
@@ -799,16 +800,17 @@ func (a *App) bashBlock(state *toolState) string {
 	if command == "" {
 		command = "Writing command..."
 	}
-	var lines []string
+	innerWidth := max(20, a.contentWidth()-6)
+	prefix := "$ "
 	if state.Status == "running" {
-		frame := spinnerPlaceholder
-		lines = append(lines, a.styles().Text.Render(frame+" "+command))
-	} else {
-		lines = append(lines, a.styles().Text.Render("$ "+command))
+		prefix = spinnerPlaceholder + " "
 	}
+	var lines []string
+	lines = append(lines, renderLines(a.styles().Text, strings.Join(wrapPrefixed(prefix, command, innerWidth), "\n")))
 	if output := strings.TrimSpace(ansi.Strip(state.Output)); output != "" {
-		maxChars := 10 * max(20, a.contentWidth()-6)
+		maxChars := 10 * innerWidth
 		limited, overflow := collapseToolOutput(output, 10, maxChars)
+		limited = wrapText(limited, innerWidth)
 		lines = append(lines, "", renderLines(a.styles().Text, limited))
 		if overflow {
 			lines = append(lines, a.styles().Muted.Render("(truncated)"))
@@ -1114,6 +1116,33 @@ func aIndent(value string, spaces int) string {
 		lines[i] = pad + lines[i]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// wrapPrefixed wraps label to fit width once prefix is accounted for,
+// indenting any wrapped continuation lines to line up under the label (past
+// the icon/spinner prefix) rather than back at column 0 — and, more to the
+// point, rather than letting a long command or path run off the right edge
+// of the terminal unwrapped.
+func wrapPrefixed(prefix, label string, width int) []string {
+	pad := strings.Repeat(" ", lipgloss.Width(prefix))
+	wrapped := wrapText(label, max(width-lipgloss.Width(prefix), 1))
+	lines := strings.Split(wrapped, "\n")
+	for i, line := range lines {
+		if i == 0 {
+			lines[i] = prefix + line
+		} else {
+			lines[i] = pad + line
+		}
+	}
+	return lines
+}
+
+// wrapToolLine is wrapPrefixed for a row rendered on its own (not folded
+// into a further Background fill), so a single Style.Render call over the
+// joined lines is safe — see renderLines' doc comment for why that stops
+// being true once a Background enters the picture.
+func wrapToolLine(style lipgloss.Style, prefix, label string, width int) string {
+	return style.Render(strings.Join(wrapPrefixed(prefix, label, width), "\n"))
 }
 
 func wrapText(value string, width int) string {
