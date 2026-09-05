@@ -174,7 +174,7 @@ func (s *Service) PromptWith(ctx context.Context, sessionID string, prompt Promp
 		return "", err
 	}
 	if !exists {
-		return "", fmt.Errorf("Session not found: %s", sessionID)
+		return "", notFound(sessionID)
 	}
 	if delivery == "" {
 		delivery = DeliverySteer
@@ -226,6 +226,20 @@ func sessionTitle(text string) string {
 		title = strings.TrimSpace(title[:max]) + "…"
 	}
 	return title
+}
+
+// ErrSessionNotFound is what every "no such session" path returns, wrapped
+// with the id. It exists so the HTTP layer can answer 404 instead of 500: the
+// difference is not cosmetic to a client, which retries a 500 and gives up on
+// a 404, and a raw sql.ErrNoRows reaching a caller as a 500 says the server
+// broke when the truth is that the caller asked for something that is not
+// there.
+var ErrSessionNotFound = errors.New("session not found")
+
+// notFound wraps ErrSessionNotFound with the id, keeping the message every
+// existing caller already matches on.
+func notFound(sessionID string) error {
+	return fmt.Errorf("%w: %s", ErrSessionNotFound, sessionID)
 }
 
 // Interrupt stops any active execution for the session. Idle interruption is
@@ -335,7 +349,7 @@ func (s *Service) Rename(ctx context.Context, sessionID, title string) error {
 		return err
 	}
 	if affected, _ := res.RowsAffected(); affected == 0 {
-		return fmt.Errorf("Session not found: %s", sessionID)
+		return notFound(sessionID)
 	}
 	return nil
 }
@@ -347,7 +361,7 @@ func (s *Service) Delete(ctx context.Context, sessionID string) error {
 		return err
 	}
 	if affected, _ := res.RowsAffected(); affected == 0 {
-		return fmt.Errorf("Session not found: %s", sessionID)
+		return notFound(sessionID)
 	}
 	return nil
 }
@@ -365,7 +379,7 @@ func (s *Service) SetModel(ctx context.Context, sessionID string, model ModelRef
 		return err
 	}
 	if affected, _ := res.RowsAffected(); affected == 0 {
-		return fmt.Errorf("Session not found: %s", sessionID)
+		return notFound(sessionID)
 	}
 	return nil
 }
@@ -384,7 +398,7 @@ func (s *Service) SetAgent(ctx context.Context, sessionID, agent string) error {
 		return err
 	}
 	if affected, _ := res.RowsAffected(); affected == 0 {
-		return fmt.Errorf("Session not found: %s", sessionID)
+		return notFound(sessionID)
 	}
 	if s.Bus == nil {
 		return nil
@@ -452,6 +466,11 @@ func (s *Service) Stats(ctx context.Context, sessionID string) (map[string]any, 
 		       tokens_cache_read, tokens_cache_write
 		FROM session WHERE id = ?`, sessionID).
 		Scan(&cost, &input, &output, &reasoning, &cacheRead, &cacheWrite)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Without this the caller got "sql: no rows in result set" as a 500 —
+		// a database error where the truth is that the session is not there.
+		return nil, notFound(sessionID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -514,7 +533,7 @@ func (s *Service) Fork(ctx context.Context, sessionID, messageID string) (Info, 
 		return Info{}, err
 	}
 	if parent == nil {
-		return Info{}, fmt.Errorf("Session not found: %s", sessionID)
+		return Info{}, notFound(sessionID)
 	}
 	childID := "ses_" + identifier.Descending()
 	now := time.Now().UnixMilli()

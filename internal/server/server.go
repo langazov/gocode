@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 
 	"github.com/langazov/gocode-go/internal/agent"
 	"github.com/langazov/gocode-go/internal/background"
@@ -333,7 +334,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 	info, err := s.Session.Get(r.Context(), r.PathValue("sessionID"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	if info == nil {
@@ -359,7 +360,7 @@ func (s *Server) promptSession(w http.ResponseWriter, r *http.Request) {
 		session.Prompt{Text: body.Text, Files: body.Files},
 		session.Delivery(body.Delivery))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"messageID": messageID})
@@ -373,7 +374,7 @@ func (s *Server) interruptSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listMessages(w http.ResponseWriter, r *http.Request) {
 	messages, err := s.Session.Messages.List(r.Context(), r.PathValue("sessionID"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	type messageResponse struct {
@@ -406,6 +407,22 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 
 func writeError(w http.ResponseWriter, status int, message string) {
 	writeJSON(w, status, map[string]string{"error": message})
+}
+
+// writeServiceError answers a session-layer failure with the status that
+// describes it, rather than treating everything as a server fault.
+//
+// The distinction matters to whoever is calling: a 500 says the server broke
+// and the request is worth retrying, a 404 says the thing asked for is not
+// there and retrying is pointless. Every "no such session" path used to come
+// back as a 500 — and /stats returned a raw "sql: no rows in result set" with
+// it — so a client could not tell a deleted session from an outage.
+func writeServiceError(w http.ResponseWriter, err error) {
+	if errors.Is(err, session.ErrSessionNotFound) {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeError(w, http.StatusInternalServerError, err.Error())
 }
 
 type modelEntry struct {
@@ -569,7 +586,7 @@ func (s *Server) setModel(w http.ResponseWriter, r *http.Request) {
 	if err := s.Session.SetModel(r.Context(), sessionID, session.ModelRef{
 		ProviderID: body.ProviderID, ID: body.ID,
 	}); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	// Remember the last-used model per directory so restarts resume with it.
@@ -590,7 +607,7 @@ func (s *Server) setAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := s.Session.SetAgent(r.Context(), r.PathValue("sessionID"), body.Agent); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -604,8 +621,14 @@ func (s *Server) renameSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+	// Validated here rather than left to the service, so an empty title is a
+	// 400 like every other malformed field instead of arriving as a 500.
+	if strings.TrimSpace(body.Title) == "" {
+		writeError(w, http.StatusBadRequest, "title is required")
+		return
+	}
 	if err := s.Session.Rename(r.Context(), r.PathValue("sessionID"), body.Title); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -613,7 +636,7 @@ func (s *Server) renameSession(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 	if err := s.Session.Delete(r.Context(), r.PathValue("sessionID")); err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
@@ -622,7 +645,7 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listTodos(w http.ResponseWriter, r *http.Request) {
 	todos, err := s.Session.Todos(r.Context(), r.PathValue("sessionID"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	if todos == nil {
@@ -634,7 +657,7 @@ func (s *Server) listTodos(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sessionStats(w http.ResponseWriter, r *http.Request) {
 	stats, err := s.Session.Stats(r.Context(), r.PathValue("sessionID"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
@@ -654,7 +677,7 @@ func (s *Server) sessionStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) sessionQueue(w http.ResponseWriter, r *http.Request) {
 	queued, err := s.Session.Queued(r.Context(), r.PathValue("sessionID"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, queued)
@@ -663,7 +686,7 @@ func (s *Server) sessionQueue(w http.ResponseWriter, r *http.Request) {
 func (s *Server) listChildren(w http.ResponseWriter, r *http.Request) {
 	children, err := s.Session.Children(r.Context(), r.PathValue("sessionID"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	if children == nil {
@@ -679,7 +702,7 @@ func (s *Server) forkSession(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewDecoder(r.Body).Decode(&body)
 	child, err := s.Session.Fork(r.Context(), r.PathValue("sessionID"), body.MessageID)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, child)
@@ -688,7 +711,7 @@ func (s *Server) forkSession(w http.ResponseWriter, r *http.Request) {
 func (s *Server) compactSession(w http.ResponseWriter, r *http.Request) {
 	compacted, err := s.Session.CompactNow(r.Context(), r.PathValue("sessionID"))
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, err.Error())
+		writeServiceError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"compacted": compacted})

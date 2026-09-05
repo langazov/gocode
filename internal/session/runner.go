@@ -801,7 +801,7 @@ func LoadSessionModel(ctx context.Context, database *db.DB, sessionID string) (*
 	var model sql.NullString
 	err := database.QueryRow(ctx, `SELECT model FROM session WHERE id = ?`, sessionID).Scan(&model)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("Session not found: %s", sessionID)
+		return nil, notFound(sessionID)
 	}
 	if err != nil {
 		return nil, err

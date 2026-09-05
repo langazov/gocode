@@ -105,7 +105,7 @@ func (s *Spawner) Spawn(ctx context.Context, req tool.SpawnRequest) (string, <-c
 			return "", nil, err
 		}
 		if existing == nil {
-			return "", nil, fmt.Errorf("Session not found: %s", childID)
+			return "", nil, notFound(childID)
 		}
 	} else {
 		parent, err := s.Service.Get(ctx, req.ParentSessionID)
