@@ -614,22 +614,36 @@ func (a *App) gettingStartedCard(width int) []string {
 // the enclosing span — same reason modelMeta paints every segment).
 func wrapOnBackground(a *App, text string, width int) []string {
 	style := lipgloss.NewStyle().Foreground(a.theme.TextMuted).Background(a.theme.BackgroundElement)
+	if width < 1 {
+		width = 1
+	}
 	out := []string{}
 	line := ""
 	for _, word := range strings.Fields(text) {
+		// A token wider than the strip (long command, URL) gets chunked in
+		// place; no later word will ever make room for it.
+		for lipgloss.Width(word) > width {
+			head, tail := chunkToWidth(word, width)
+			if line != "" {
+				out = append(out, style.Render(line+strings.Repeat(" ", max(0, width-lipgloss.Width(line)))))
+				line = ""
+			}
+			out = append(out, style.Render(head))
+			word = tail
+		}
 		candidate := word
 		if line != "" {
 			candidate = line + " " + word
 		}
-		if len(candidate) > width && line != "" {
-			out = append(out, style.Render(line+strings.Repeat(" ", max(0, width-len(line)))))
+		if lipgloss.Width(candidate) > width && line != "" {
+			out = append(out, style.Render(line+strings.Repeat(" ", max(0, width-lipgloss.Width(line)))))
 			line = word
 			continue
 		}
 		line = candidate
 	}
 	if line != "" {
-		out = append(out, style.Render(line+strings.Repeat(" ", max(0, width-len(line)))))
+		out = append(out, style.Render(line+strings.Repeat(" ", max(0, width-lipgloss.Width(line)))))
 	}
 	return out
 }

@@ -592,11 +592,24 @@ func (a *App) escHintRange(pad int, title, hint string, w int) (start, end int) 
 }
 
 // wrapWords wraps text to width on spaces so continuation lines keep their
-// indent inside the panel.
+// indent inside the panel. A single token wider than the line (long flag,
+// URL, pasted regex) is chunked in place rather than left to overflow.
 func wrapWords(text string, width int) []string {
+	if width < 1 {
+		width = 1
+	}
 	var lines []string
 	line := ""
 	for _, word := range strings.Fields(text) {
+		for lipgloss.Width(word) > width {
+			head, tail := chunkToWidth(word, width)
+			if line != "" {
+				lines = append(lines, line)
+				line = ""
+			}
+			lines = append(lines, head)
+			word = tail
+		}
 		switch {
 		case line == "":
 			line = word

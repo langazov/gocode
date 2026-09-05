@@ -199,6 +199,53 @@ func TestBashBlockTruncatesLongOutput(t *testing.T) {
 	}
 }
 
+// The regression for "very-long-line-test-XXXX... that goes outside the
+// view": a tool-call line whose single token is wider than the terminal
+// (a long regex, a minified path) used to land on its own line past the
+// right edge, because wrapText only broke on spaces. Every rendered line
+// has to stay inside contentWidth.
+func TestWrapTextChunksOversizedTokens(t *testing.T) {
+	for _, width := range []int{20, 60, 100} {
+		input := "short " + strings.Repeat("X", 1000) + " tail"
+		for _, line := range strings.Split(wrapText(input, width), "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Fatalf("width %d: wrapped line is %d columns, want <= %d (line %q…)", width, w, width, line[:20])
+			}
+		}
+	}
+}
+
+func TestWrapTextKeepsUnicodeAndANSIIntact(t *testing.T) {
+	// Wide runes and ANSI runs must not be split mid-cell or mid-sequence.
+	got := wrapText("ab "+strings.Repeat("日本", 20)+" cd", 10)
+	if stripped := ansi.Strip(got); !strings.Contains(stripped, "cd") {
+		t.Fatalf("tail after the oversized run was lost, got %q", got)
+	}
+	for _, line := range strings.Split(got, "\n") {
+		if w := lipgloss.Width(ansi.Strip(line)); w > 10 {
+			t.Fatalf("line is %d cells after stripping, want <= 10, got %q", w, line)
+		}
+	}
+
+	styled := "\x1b[31m" + strings.Repeat("a", 50) + "\x1b[0m"
+	chunked := wrapText(styled, 10)
+	if n := strings.Count(chunked, "\n"); n < 3 {
+		t.Fatalf("50-column styled run at width 10 should chunk into 4+ lines, got %d (%q)", n+1, chunked)
+	}
+}
+
+func TestChunkToWidthSplitsOnRunesNotBytes(t *testing.T) {
+	// 5 Japanese runes = 10 display cells. A width-7 head must hold 3 runes
+	// (6 cells), never slice through the 4th rune mid-sequence.
+	head, tail := chunkToWidth(strings.Repeat("日", 5), 7)
+	if head != "日日日" {
+		t.Fatalf("head = %q, want 日日日", head)
+	}
+	if tail != "日日" {
+		t.Fatalf("tail = %q, want 日日", tail)
+	}
+}
+
 func TestBashRowPendingStaysInline(t *testing.T) {
 	app := &App{width: 100, height: 30}
 	state := &toolState{Status: "pending", Input: map[string]any{}}

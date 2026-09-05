@@ -1158,6 +1158,20 @@ func wrapText(value string, width int) string {
 		words := strings.Fields(paragraph)
 		line := ""
 		for _, word := range words {
+			// A single token (a long path, regex, or echo'd run of filler
+			// characters) can be wider than the whole line. No space will
+			// ever arrive to break at, so chunk it in place — otherwise it
+			// lands on its own line and runs off the right edge of the
+			// terminal.
+			for lipgloss.Width(word) > width {
+				head, tail := chunkToWidth(word, width)
+				if line != "" {
+					out = append(out, line)
+					line = ""
+				}
+				out = append(out, head)
+				word = tail
+			}
 			switch {
 			case line == "":
 				line = word
@@ -1173,6 +1187,27 @@ func wrapText(value string, width int) string {
 		}
 	}
 	return strings.Join(out, "\n")
+}
+
+// chunkToWidth splits value into a head of exactly width display columns and
+// the remainder. It is rune- and ANSI-aware via lipgloss.Width, so a break
+// never lands inside a wide rune or an escape sequence.
+func chunkToWidth(value string, width int) (head, tail string) {
+	if lipgloss.Width(value) <= width {
+		return value, ""
+	}
+	i := 0
+	// Walk runes until adding another would pass width. lipgloss.Width on
+	// each prefix is quadratic in the worst case, but the input here is one
+	// oversized token from a tool call — a few hundred cells, never the
+	// whole timeline.
+	for i < len(value) && lipgloss.Width(value[:i+1]) <= width {
+		i++
+	}
+	for i > 0 && !utf8.RuneStart(value[i]) {
+		i--
+	}
+	return value[:i], value[i:]
 }
 
 // splitBorder mirrors SplitBorder: the ┃ vertical bar.
