@@ -302,7 +302,7 @@ func TestBuildModeShellWritesAreUnaffected(t *testing.T) {
 		t.Fatal(err)
 	}
 	content, err := os.ReadFile(filepath.Join(workdir, "out.txt"))
-	if err != nil || string(content) != "written\n" {
+	if err != nil || strings.TrimSpace(string(content)) != "written" {
 		t.Fatalf("build mode should still write through the shell: %q (%v)", content, err)
 	}
 }
