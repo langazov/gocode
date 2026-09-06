@@ -1003,31 +1003,38 @@ func handleInitialize(message request) error {
 		"tools": []map[string]any{
 			{
 				"name":        "rag_index",
-				"description": "(Re)index project files for semantic search. Only embeds files that changed since the last index. Run this before rag_search if the project hasn't been indexed yet, or after making significant changes.",
+				"description": "(Re)index project files for semantic search. Incremental: only changed files are re-embedded. Run after large edits, or if rag_search finds nothing.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path":  map[string]any{"type": "string", "description": "Directory to index, relative to the project root. Defaults to the whole project."},
-						"force": map[string]any{"type": "boolean", "description": "Re-embed every chunk even if unchanged. Use after switching embedding models."},
+						"path":  map[string]any{"type": "string", "description": "Subdirectory to index, relative to the project root. Default: the whole project."},
+						"force": map[string]any{"type": "boolean", "description": "Re-embed every chunk. Needed after switching embedding models."},
 					},
 				},
 			},
 			{
-				"name":        "rag_search",
-				"description": "Semantically search the project's indexed files for chunks relevant to a natural-language query. Returns ranked snippets with file:line citations. Run rag_index first if the project hasn't been indexed.",
+				"name": "rag_search",
+				// The decision rule is the point of this description. Semantic
+				// search and grep fail in opposite directions — grep cannot
+				// find code whose wording you guessed wrong, semantic search
+				// cannot guarantee every literal occurrence — so a blanket
+				// "prefer this" would be wrong as often as it was right. What
+				// the model needs is which failure it is facing.
+				"description": "Search this project's code by meaning. Returns ranked path:line snippets. " +
+					"Try this FIRST when locating unfamiliar code — where a concept lives, how something is implemented, what handles a behaviour — instead of grep/ripgrep, find, or shell search, which only match text you can already spell. Use grep instead for an exact symbol or string you already know, or when you need every occurrence.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"query":      map[string]any{"type": "string", "description": "Natural-language search query."},
-						"k":          map[string]any{"type": "integer", "description": "Maximum number of results. Defaults to 8."},
-						"pathPrefix": map[string]any{"type": "string", "description": "Restrict results to paths starting with this prefix."},
+						"query":      map[string]any{"type": "string", "description": "What to find, in natural language."},
+						"k":          map[string]any{"type": "integer", "description": "Max results. Default 8."},
+						"pathPrefix": map[string]any{"type": "string", "description": "Only return paths under this prefix."},
 					},
 					"required": []string{"query"},
 				},
 			},
 			{
 				"name":        "rag_status",
-				"description": "Report what the RAG index database currently holds: every indexed project, its chunk and file counts, its size on disk, and whether it is healthy, unreachable, or points at a directory that no longer exists. Read-only. Use this before rag_clean or rag_vacuum to see what would be affected.",
+				"description": "List indexed projects with chunk counts, size on disk, and health. Read-only. Run before rag_clean or rag_vacuum.",
 				"parameters": map[string]any{
 					"type":       "object",
 					"properties": map[string]any{},
@@ -1035,31 +1042,33 @@ func handleInitialize(message request) error {
 			},
 			{
 				"name": "rag_clean",
-				"description": "Permanently delete indexed chunks. IRREVERSIBLE: restoring them means re-embedding, which costs time and provider credits. " +
-					"scope \"path\" deletes one subtree of the current project; scope \"project\" deletes an entire project's index; scope \"all\" deletes EVERY project in the shared database, including other projects on this machine. " +
-					"Prefer scope \"path\", and prefer re-running rag_index (which prunes stale chunks by itself) over cleaning at all. Run rag_status first, and set dryRun to preview. Requires confirm=true.",
+				// The irreversibility warning stays even under a tightening
+				// pass: it is the only brake on this tool. Nothing in the
+				// protocol can prompt the user (see handleMaintenanceTool),
+				// so the description is where the caution has to live.
+				"description": "Permanently delete indexed chunks. IRREVERSIBLE — restoring them means paying to re-embed. " +
+					"Prefer re-running rag_index, which prunes stale chunks on its own. Preview with dryRun.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"scope":     map[string]any{"type": "string", "enum": []string{"path", "project", "all"}, "description": "What to delete: \"path\" (one subtree), \"project\" (one whole project), or \"all\" (every project in the database)."},
-						"path":      map[string]any{"type": "string", "description": "Path prefix relative to the project root. Required when scope is \"path\"."},
-						"projectId": map[string]any{"type": "string", "description": "Project to delete when scope is \"project\". Defaults to the current project."},
-						"dryRun":    map[string]any{"type": "boolean", "description": "Report what would be deleted and delete nothing."},
-						"confirm":   map[string]any{"type": "boolean", "description": "Must be true to actually delete. Ask the user before setting it."},
+						"scope":     map[string]any{"type": "string", "enum": []string{"path", "project", "all"}, "description": "\"path\": one subtree. \"project\": one whole project. \"all\": EVERY project on this machine."},
+						"path":      map[string]any{"type": "string", "description": "Path prefix relative to the project root. Required for scope \"path\"."},
+						"projectId": map[string]any{"type": "string", "description": "Only for scope \"project\". Default: the current project."},
+						"dryRun":    map[string]any{"type": "boolean", "description": "Report what would be deleted, delete nothing."},
+						"confirm":   map[string]any{"type": "boolean", "description": "Must be true to delete. Ask the user first."},
 					},
 					"required": []string{"scope", "confirm"},
 				},
 			},
 			{
-				"name": "rag_vacuum",
-				"description": "Reclaim space by removing index data that no re-index can ever reach: collections whose bookkeeping rows were lost, and bookkeeping rows whose collection was lost. Safe by construction — it never touches a healthy project. " +
-					"pruneMissing additionally drops projects whose directory no longer exists, which is not corruption, so leave it off unless the user asks. Set dryRun to preview. Requires confirm=true.",
+				"name":        "rag_vacuum",
+				"description": "Reclaim space by removing index data no re-index can reach (storage and bookkeeping out of sync). Never touches a healthy project. Preview with dryRun.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"pruneMissing": map[string]any{"type": "boolean", "description": "Also drop projects whose root directory no longer exists. Off by default."},
-						"dryRun":       map[string]any{"type": "boolean", "description": "Report what would be removed and remove nothing."},
-						"confirm":      map[string]any{"type": "boolean", "description": "Must be true to actually remove. Ask the user before setting it."},
+						"pruneMissing": map[string]any{"type": "boolean", "description": "Also drop projects whose directory is gone. Off by default; ask the user."},
+						"dryRun":       map[string]any{"type": "boolean", "description": "Report what would be removed, remove nothing."},
+						"confirm":      map[string]any{"type": "boolean", "description": "Must be true to remove. Ask the user first."},
 					},
 					"required": []string{"confirm"},
 				},
