@@ -1,12 +1,17 @@
 # rag-plugin
 
 A gocode **process plugin** (see [examples/plugin-echo](../../examples/plugin-echo))
-that indexes a project's files for semantic search and exposes two tools:
+that indexes a project's files for semantic search and exposes five tools:
 
 - `rag_index` — (re)index a directory. Incremental: only embeds chunks whose
   content changed since the last index.
 - `rag_search` — embed a natural-language query and return the most similar
   indexed chunks, each labeled `path:startLine-endLine` for direct citation.
+- `rag_status` — report every indexed project, its size, and its health.
+- `rag_clean` — delete indexed chunks: one subtree, one project, or all.
+- `rag_vacuum` — reclaim index data nothing can reach.
+
+The last three are covered under [Maintenance](#maintenance) below.
 
 ## Install
 
@@ -99,11 +104,79 @@ prints the largest chunks by byte size, flagging any still over the clamp:
 ./rag-plugin scan -root . -top 20
 ```
 
+## Maintenance
+
+Indexing prunes as it goes: `rag_index` diffs the chunk IDs a fresh walk
+produces against the ones already stored and deletes the difference, which
+covers deleted files, newly-excluded files, and files whose line count
+shifted enough to move a chunk boundary. That is the whole of the automatic
+cleanup, and it only ever reaches **one project, in the subtree you re-walk,
+with working embeddings credentials**.
+
+Three kinds of data fall outside it:
+
+- **Whole projects you no longer index.** The project id is the worktree
+  path, so a repo you moved, deleted, or once indexed from a parent
+  directory keeps a collection of its own forever. Indexing
+  `~/src/app/backend` never touches the collection left behind by an earlier
+  `~/src/app`, and both stay in the database.
+- **Collections whose bookkeeping rows were lost** (`orphan`). The
+  incremental diff reads the manifest, so a collection the manifest doesn't
+  know about is never re-embedded *and* never pruned.
+- **Bookkeeping rows whose collection was lost** (`dangling`). The mirror
+  image: the diff believes chunks are stored that no search can return.
+
+This matters more than it sounds, because `store.Open` decodes *every*
+collection in the database into memory eagerly — so one abandoned project
+costs startup time and RAM on every run, for every other project sharing the
+database. And because chromem-go names each collection directory after a
+hash of the project id, none of it is identifiable, let alone deletable, by
+hand.
+
+```sh
+rag-plugin list                                  # what is in there, largest first
+rag-plugin vacuum -dry-run                       # what is unreachable
+rag-plugin vacuum -yes                           # reclaim it
+rag-plugin clean -path internal/legacy -yes      # drop one subtree of this project
+rag-plugin clean -project /old/worktree -yes     # drop one project
+rag-plugin clean -all -yes                       # drop everything, every project
+```
+
+`list` prints a project per row with its chunk and file counts, its size on
+disk, and a status of `ok`, `orphan`, `dangling`, or `root missing`; `-json`
+emits the same data for scripting. `clean` targets the project derived from
+`-root` (default `.`) unless `-project` names another, and narrows to a
+subtree with `-path`. `vacuum` removes only the unreachable cases above —
+add `-prune-missing` to also drop projects whose root directory is gone,
+which is off by default because an absent directory is not corruption (an
+unmounted volume, a worktree you will check out again).
+
+Every destructive command takes `-dry-run` to preview and prompts for
+confirmation otherwise; `-yes` answers the prompt in advance, and is
+required when stdin cannot answer, so a scripted cleanup never silently
+turns into a no-op. Deletion is irreversible in the sense that matters:
+restoring the chunks means re-embedding them, at the provider's price.
+
+None of these commands embed anything, so unlike `index` and `search` they
+need no provider, no API key, and no network. That is deliberate — the index
+most in need of cleaning up is often the one whose provider config or
+credentials have since gone away.
+
+The same operations are available to the model as `rag_status`, `rag_clean`
+and `rag_vacuum`. The destructive two require `confirm: true` and accept
+`dryRun: true`. Be aware of what that guard is and isn't: the process-plugin
+protocol has no permission field, so nothing between the model and the
+plugin can prompt you, and `confirm` is an argument the model sets itself.
+It prevents an accidental call, not a determined one.
+
 ## Vector storage
 
 Chunks and their embeddings are stored with
 [chromem-go](https://github.com/philippgille/chromem-go) — pure Go, zero
-third-party dependencies, one collection per project. Two other pure-Go
+third-party dependencies, one collection per project, where "project" is the
+worktree path. That identity is why indexing a parent directory forks a
+second collection that never converges with the first, and why
+[Maintenance](#maintenance) exists. Two other pure-Go
 vector libraries were tried first and rejected: `coder/hnsw` panics on a
 same-key replace and corrupts its own graph on delete, and both it and
 `DotNetAge/govector` (which wraps `coder/hnsw` for its own HNSW mode)
