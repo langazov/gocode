@@ -149,3 +149,58 @@ func TestDiscoverToleratesMissingFolders(t *testing.T) {
 		t.Fatalf("found %+v, want nothing", found)
 	}
 }
+
+// A packaged plugin — Homebrew's libexec copy, or the one beside gocode in an
+// unpacked release — is offered by bare name, because that is the ref that
+// now loads it.
+func TestDiscoverFindsBundledPluginsByBareName(t *testing.T) {
+	discoverHome(t)
+	bundledRoot := t.TempDir()
+	writeBundledPlugin(t, bundledRoot, "rag-plugin")
+	t.Setenv(PluginPathEnv, bundledRoot)
+
+	found := Discover(t.TempDir())
+	if len(found) != 1 {
+		t.Fatalf("found %+v, want just rag-plugin", found)
+	}
+	if found[0].Ref != "rag-plugin" {
+		t.Errorf("bundled ref = %q, want the bare name", found[0].Ref)
+	}
+	if found[0].Root != bundledRoot {
+		t.Errorf("root = %q, want %q", found[0].Root, bundledRoot)
+	}
+}
+
+// A user's own install of the same name shadows the packaged one, and the
+// packaged copy is not listed a second time — the same first-wins rule the
+// loader applies.
+func TestDiscoverPrefersInstalledOverBundled(t *testing.T) {
+	discoverHome(t)
+	installed := writeBundledPlugin(t, InstallRoot(), "rag-plugin")
+
+	bundledRoot := t.TempDir()
+	writeBundledPlugin(t, bundledRoot, "rag-plugin")
+	t.Setenv(PluginPathEnv, bundledRoot)
+
+	found := Discover(t.TempDir())
+	if len(found) != 1 {
+		t.Fatalf("found %+v, want rag-plugin reported once", found)
+	}
+	if found[0].Path != installed {
+		t.Errorf("path = %q, want the user's own install at %q", found[0].Path, installed)
+	}
+}
+
+// A bundled root is searched for plugin directories only. One of them is the
+// directory gocode itself lives in, so a looser rule would offer every
+// executable sitting next to it.
+func TestDiscoverIgnoresLooseExecutablesInBundledRoots(t *testing.T) {
+	discoverHome(t)
+	bundledRoot := t.TempDir()
+	writeExecutable(t, filepath.Join(bundledRoot, "mdlsp"), 0o755)
+	t.Setenv(PluginPathEnv, bundledRoot)
+
+	if found := Discover(t.TempDir()); len(found) != 0 {
+		t.Fatalf("found %+v, want nothing: mdlsp is a neighbouring binary, not a plugin", found)
+	}
+}

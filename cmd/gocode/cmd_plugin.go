@@ -3,9 +3,13 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
+	"strings"
 
 	"github.com/langazov/gocode-go/internal/clix"
+	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/configedit"
+	"github.com/langazov/gocode-go/internal/plugin"
 )
 
 // pluginCommand mirrors PluginCommand in cli/cmd/plug.ts ("plugin <module>",
@@ -30,6 +34,12 @@ func pluginCommand() *clix.Command {
 			{Name: "force", Aliases: []string{"f"}, Kind: clix.KindBool, Default: false, Describe: "replace existing plugin version"},
 		},
 		Sub: []*clix.Command{
+			{
+				Name:     "list",
+				Aliases:  []string{"ls"},
+				Describe: "list configured, built-in, and installed-but-disabled plugins",
+				Run:      runPluginList,
+			},
 			{
 				Name:        "enable",
 				Describe:    "add a plugin to the global config so it loads",
@@ -108,5 +118,88 @@ func reportEdit(result configedit.Result, err error) error {
 		return err
 	}
 	fmt.Printf("%s: %s\n", result.Path, result.Summary)
+	return nil
+}
+
+// runPluginList reports what is configured, what is built in, and what is
+// installed without being enabled — the three states a plugin can be in
+// before it ever runs.
+//
+// It resolves without loading. Resolution is the step that actually answers
+// "will this start": it finds the target and checks the entrypoint, which is
+// where a missing directory, a missing manifest, or a non-executable binary
+// is caught. Loading on top of that would spawn every configured process
+// plugin just to print a list, and this command is run precisely when
+// something is already suspected to be wrong. The live view of what did load,
+// with each plugin's hooks and tools, is GET /api/plugin (and the TUI's
+// plugins dialog).
+func runPluginList(a *clix.Args) error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	directory, _ := os.Getwd()
+
+	specs := make([]plugin.Spec, 0, len(cfg.Plugin))
+	for _, spec := range cfg.Plugin {
+		specs = append(specs, plugin.Spec{Ref: spec.Ref, Options: plugin.Options(spec.Options)})
+	}
+
+	// A native named in the config is there to carry options, not to load a
+	// second copy (see plugin.Load), so it is reported in the configured
+	// section and skipped in the built-in one rather than listed twice.
+	configuredNative := map[string]bool{}
+	for _, spec := range specs {
+		name := strings.TrimPrefix(spec.Ref, "native:")
+		if _, ok := plugin.Native(name); ok {
+			configuredNative[name] = true
+		}
+	}
+
+	fmt.Println("Configured:")
+	if len(specs) == 0 {
+		fmt.Println("  (none — the `plugin` array in your config is empty)")
+	}
+	broken := 0
+	for _, spec := range specs {
+		resolved, stage, err := plugin.Resolve(spec, directory)
+		if err != nil {
+			broken++
+			fmt.Printf("  %s %s\n      %s: %v\n", statusIcon("error"), spec.Ref, stage, err)
+			continue
+		}
+		detail := string(resolved.Source)
+		if resolved.Source == plugin.SourceProcess {
+			detail += "  " + resolved.Target
+		}
+		fmt.Printf("  %s %s\n      %s\n", statusIcon("connected"), spec.Ref, detail)
+	}
+
+	var builtin []string
+	for _, name := range plugin.NativeNamesSorted() {
+		if !configuredNative[name] {
+			builtin = append(builtin, name)
+		}
+	}
+	if len(builtin) > 0 {
+		fmt.Println("\nBuilt-in (loaded without being configured):")
+		for _, name := range builtin {
+			fmt.Printf("  %s %s\n", statusIcon("connected"), name)
+		}
+	}
+
+	if available := plugin.Installed(specs, directory); len(available) > 0 {
+		fmt.Println("\nInstalled but not enabled:")
+		for _, entry := range available {
+			fmt.Printf("  %s %s\n      %s\n", statusIcon("disabled"), entry.Ref, entry.Path)
+		}
+		fmt.Println("\nEnable one with: gocode plugin enable <name>")
+	}
+
+	if broken > 0 {
+		// Reported, not returned as an error: the command did its job, and
+		// the whole point of running it is to be shown the broken entry.
+		fmt.Printf("\n%d configured plugin(s) could not be resolved and will not load.\n", broken)
+	}
 	return nil
 }

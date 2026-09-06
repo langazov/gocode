@@ -58,9 +58,8 @@ func Discover(directory string) []Available {
 	root := InstallRoot()
 	var out []Available
 	seen := map[string]bool{}
-	for _, dir := range configpaths.Directories(directory, configpaths.Worktree(directory)) {
-		folder := filepath.Join(dir, PluginDirName)
-		for _, found := range discoverIn(folder, folder == root) {
+	collect := func(folder string, bareRef, bundled bool) {
+		for _, found := range discoverIn(folder, bareRef, bundled) {
 			if seen[found.Name] {
 				continue
 			}
@@ -68,13 +67,30 @@ func Discover(directory string) []Available {
 			out = append(out, found)
 		}
 	}
+	for _, dir := range configpaths.Directories(directory, configpaths.Worktree(directory)) {
+		folder := filepath.Join(dir, PluginDirName)
+		collect(folder, folder == root, false)
+	}
+	// Packaged plugins come last, matching the resolution order in [locate]:
+	// a plugin the user installed themselves shadows the one Homebrew (or a
+	// release tarball) shipped under the same name. They are offered by bare
+	// name, because that is now what loads them.
+	for _, folder := range BundledRoots() {
+		collect(folder, true, true)
+	}
 	return out
 }
 
 // discoverIn lists the runnable entries of one plugin folder. A missing or
 // unreadable folder yields nothing: not having installed any plugins is the
 // normal case, not an error to report.
-func discoverIn(folder string, isInstallRoot bool) []Available {
+//
+// bareRef reports the entry by name rather than by path, for the folders a
+// bare name resolves against. bundled applies the stricter manifest-only test
+// [bundledDir] uses, because one bundled root is the directory the gocode
+// binary lives in — often a shared bin directory whose other executables must
+// not be offered as plugins.
+func discoverIn(folder string, bareRef, bundled bool) []Available {
 	entries, err := os.ReadDir(folder)
 	if err != nil {
 		return nil
@@ -89,13 +105,18 @@ func discoverIn(folder string, isInstallRoot bool) []Available {
 			continue
 		}
 		path := filepath.Join(folder, name)
+		if bundled {
+			if _, err := os.Stat(filepath.Join(path, manifestFile)); err != nil {
+				continue
+			}
+		}
 		// The loader's own runnability test, symlinks followed — a plugin
 		// directory symlinked into place is how you develop one.
 		if _, _, err := entrypoint(path); err != nil {
 			continue
 		}
 		ref := path
-		if isInstallRoot {
+		if bareRef {
 			ref = name
 		}
 		out = append(out, Available{Name: name, Ref: ref, Path: path, Root: folder})

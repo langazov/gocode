@@ -3,6 +3,7 @@ package plugin
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -391,5 +392,162 @@ func TestLoadKeepsDistinctProcessPlugins(t *testing.T) {
 	}
 	if len(ids) != 2 || ids[0] != "native-one" || ids[1] != "helper" {
 		t.Errorf("ids = %v, want [native-one helper]", ids)
+	}
+}
+
+// writeBundledPlugin creates a packaged-plugin directory: a manifest naming
+// an executable beside it, which is the layout the release tarball ships and
+// the Homebrew formula installs into libexec.
+func writeBundledPlugin(t *testing.T, root, name string) string {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binary := filepath.Join(dir, name)
+	if err := os.WriteFile(binary, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := fmt.Sprintf(`{"command": [%q]}`, "./"+name)
+	if err := os.WriteFile(filepath.Join(dir, manifestFile), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestResolveBundledByBareName is the point of the bundled search path: a
+// plugin the package manager installed loads from `"plugin": ["rag-plugin"]`,
+// with no absolute path in the user's config.
+func TestResolveBundledByBareName(t *testing.T) {
+	withNatives(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	bundledRoot := t.TempDir()
+	dir := writeBundledPlugin(t, bundledRoot, "rag-plugin")
+	t.Setenv(PluginPathEnv, bundledRoot)
+
+	resolved, stage, err := Resolve(Spec{Ref: "rag-plugin"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("Resolve: %v (stage %s)", err, stage)
+	}
+	if resolved.Target != dir {
+		t.Errorf("Target = %q, want %q", resolved.Target, dir)
+	}
+	if resolved.Source != SourceProcess {
+		t.Errorf("Source = %q, want %q", resolved.Source, SourceProcess)
+	}
+}
+
+// TestInstalledPluginShadowsBundled pins the precedence: someone who ran
+// `make install-plugin` to try a local build must get that build, not the
+// packaged copy of the same name.
+func TestInstalledPluginShadowsBundled(t *testing.T) {
+	withNatives(t)
+	config := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", config)
+
+	bundledRoot := t.TempDir()
+	writeBundledPlugin(t, bundledRoot, "rag-plugin")
+	t.Setenv(PluginPathEnv, bundledRoot)
+
+	installed := writeBundledPlugin(t, filepath.Join(config, "gocode", "plugin"), "rag-plugin")
+
+	resolved, _, err := Resolve(Spec{Ref: "rag-plugin"}, t.TempDir())
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if resolved.Target != installed {
+		t.Errorf("Target = %q, want the user's own install at %q", resolved.Target, installed)
+	}
+}
+
+// TestBundledRootsFollowTheBinary pins both packaged layouts, derived from
+// the running executable rather than from a hardcoded prefix: <prefix>/bin
+// next to <prefix>/libexec is the Homebrew formula, and the binary's own
+// directory is the release tarball.
+func TestBundledRootsFollowTheBinary(t *testing.T) {
+	t.Setenv(PluginPathEnv, "")
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Skipf("no executable path on this platform: %v", err)
+	}
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	dir := filepath.Dir(exe)
+
+	roots := BundledRoots()
+	want := []string{filepath.Join(filepath.Dir(dir), "libexec"), dir}
+	if len(roots) != len(want) {
+		t.Fatalf("BundledRoots() = %v, want %v", roots, want)
+	}
+	for i, w := range want {
+		if roots[i] != w {
+			t.Errorf("BundledRoots()[%d] = %q, want %q", i, roots[i], w)
+		}
+	}
+}
+
+// TestBundledRootsHonorPluginPath: the env override comes first, so a
+// packager whose layout this cannot infer can point at it explicitly.
+func TestBundledRootsHonorPluginPath(t *testing.T) {
+	first, second := t.TempDir(), t.TempDir()
+	t.Setenv(PluginPathEnv, first+string(os.PathListSeparator)+second)
+
+	roots := BundledRoots()
+	if len(roots) < 2 || roots[0] != first || roots[1] != second {
+		t.Fatalf("BundledRoots() = %v, want %q and %q first", roots, first, second)
+	}
+}
+
+// TestBundledLookupIgnoresLooseExecutables: one bundled root is the directory
+// gocode itself sits in, which on a tarball install is often a shared bin
+// directory. Only a directory carrying a manifest may be offered as a plugin,
+// or every neighbouring executable would be.
+func TestBundledLookupIgnoresLooseExecutables(t *testing.T) {
+	withNatives(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	bundledRoot := t.TempDir()
+	loose := filepath.Join(bundledRoot, "ripgrep")
+	if err := os.WriteFile(loose, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A directory holding an executable but no manifest is equally not ours.
+	noManifest := filepath.Join(bundledRoot, "toolbox")
+	if err := os.MkdirAll(noManifest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noManifest, "plugin"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(PluginPathEnv, bundledRoot)
+
+	for _, ref := range []string{"ripgrep", "toolbox"} {
+		if _, _, err := Resolve(Spec{Ref: ref}, t.TempDir()); err == nil {
+			t.Errorf("Resolve(%q) should not have found a bundled plugin", ref)
+		}
+	}
+}
+
+// TestResolveMissingNamesEveryPlaceSearched: the "not installed" error is the
+// only guidance a user gets, so it has to list the bundled roots too now that
+// they are searched.
+func TestResolveMissingNamesEveryPlaceSearched(t *testing.T) {
+	withNatives(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	bundledRoot := t.TempDir()
+	t.Setenv(PluginPathEnv, bundledRoot)
+
+	_, _, err := Resolve(Spec{Ref: "nowhere"}, t.TempDir())
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	if !strings.Contains(err.Error(), InstallDir("nowhere")) {
+		t.Errorf("error should name the install root, got %v", err)
+	}
+	if !strings.Contains(err.Error(), bundledRoot) {
+		t.Errorf("error should name the bundled root, got %v", err)
 	}
 }

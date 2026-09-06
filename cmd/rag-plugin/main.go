@@ -1,17 +1,26 @@
-// Command rag-plugin is a gocode process plugin (see
-// examples/plugin-echo for the protocol) that indexes a project's files for
-// semantic search and exposes two tools: rag_index and rag_search.
+// Command rag-plugin is a gocode process plugin (see examples/plugin-echo
+// for the protocol) that indexes a project's files for semantic search. It
+// exposes rag_index and rag_search for that, plus rag_status, rag_clean and
+// rag_vacuum for keeping the shared index database from accumulating data
+// nothing can reach.
 //
 // It speaks newline-delimited JSON-RPC 2.0 on stdin/stdout when launched by
-// the host, exactly like examples/plugin-echo. It can also run a one-shot
-// index directly from the shell (`rag-plugin index ...`), which exists
-// because the host bounds a tool call it makes with no deadline of its own
-// to 30s (internal/plugin/process.go's DefaultCallTimeout) — too short for a
-// large repo's first index. Both paths share the same runtime construction
-// and the same internal/rag orchestration.
+// the host, exactly like examples/plugin-echo. It can also run directly from
+// the shell — `rag-plugin index ...`, which exists because the host bounds a
+// tool call it makes with no deadline of its own to 30s
+// (internal/plugin/process.go's DefaultCallTimeout), too short for a large
+// repo's first index, and `list`/`clean`/`vacuum`, where a person can type
+// the irreversible ones. Both paths share the same runtime construction and
+// the same internal/rag orchestration.
+//
+// The runtime is built in two tiers, and which tier a command or tool needs
+// is a real distinction rather than an optimization: indexing and searching
+// need an embeddings provider, while inspecting and deleting stored chunks
+// must keep working without one.
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +32,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"text/tabwriter"
 
 	"github.com/langazov/gocode-go/internal/lsp"
 	"github.com/langazov/gocode-go/internal/modelsdev"
@@ -51,6 +61,24 @@ func main() {
 		case "scan":
 			if err := runCLIScan(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "rag-plugin scan:", err)
+				os.Exit(1)
+			}
+			return
+		case "list":
+			if err := runCLIList(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "rag-plugin list:", err)
+				os.Exit(1)
+			}
+			return
+		case "clean":
+			if err := runCLIClean(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "rag-plugin clean:", err)
+				os.Exit(1)
+			}
+			return
+		case "vacuum":
+			if err := runCLIVacuum(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "rag-plugin vacuum:", err)
 				os.Exit(1)
 			}
 			return
@@ -94,12 +122,16 @@ type runtime struct {
 	opts     runtimeOptions
 }
 
-// close releases every resource buildRuntime opened. Every exit path (CLI
+// close releases every resource the runtime opened. Every exit path (CLI
 // mode's defer, and the plugin loop's shutdown/EOF handlers) must call this;
 // skipping the lsp.Shutdown half would leak a spawned language server
-// process past the rag-plugin process's own lifetime.
+// process past the rag-plugin process's own lifetime. The nil check is not
+// defensive padding: the maintenance commands and tools stop at the store
+// tier and never build an LSP service at all.
 func (r *runtime) close() {
-	r.lsp.Shutdown()
+	if r.lsp != nil {
+		r.lsp.Shutdown()
+	}
 	r.store.Close()
 }
 
@@ -113,19 +145,22 @@ var (
 	pending *runtimeOptions
 )
 
-// ensureRuntime builds the runtime on first use, from the options the
-// handshake stashed.
+// ensureStore opens the store on first use, from the options the handshake
+// stashed, and stops there — no embeddings provider, no LSP service.
 //
 // It is deliberately not built during `initialize`. The host blocks boot on
 // that handshake (internal/plugin/process.go's Spawn), and store.Open eagerly
 // gob-decodes every collection in the vector DB into memory — several seconds
 // for a large index, paid by every `gocode tui`/`serve` start whether or not
-// the session ever searches anything. Deferring it to the first rag_index or
-// rag_search call moves that cost onto the caller that actually wants it.
+// the session ever searches anything. Deferring it to the first tool call
+// moves that cost onto the caller that actually wants it.
 //
-// A failed build is not cached: an embeddings provider that was unreachable
-// at the first call may well answer the second.
-func ensureRuntime() (*runtime, error) {
+// This is the tier the maintenance tools (rag_status, rag_clean, rag_vacuum)
+// run on. They inspect and delete stored chunks and never embed anything, so
+// making them resolve an embeddings provider would fail them on exactly the
+// setup most likely to need cleaning up: a project whose credentials or
+// provider config have since gone away.
+func ensureStore() (*runtime, error) {
 	rtMu.Lock()
 	defer rtMu.Unlock()
 	if rt != nil {
@@ -134,12 +169,36 @@ func ensureRuntime() (*runtime, error) {
 	if pending == nil {
 		return nil, fmt.Errorf("rag-plugin: not initialized")
 	}
-	built, err := buildRuntime(context.Background(), *pending)
+	opts := resolveDefaults(*pending)
+	db, err := store.Open(context.Background(), opts.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	rt = &runtime{store: db, opts: opts}
+	return rt, nil
+}
+
+// ensureRuntime is ensureStore plus the embedding tier: the provider client
+// and the LSP service, and the indexer/searcher built on them. Only
+// rag_index and rag_search need it.
+//
+// A failed embedding build is not cached: a provider that was unreachable at
+// the first call may well answer the second. The store half stays built
+// either way — it cost seconds to decode and nothing about it failed.
+func ensureRuntime() (*runtime, error) {
+	r, err := ensureStore()
 	if err != nil {
 		return nil, err
 	}
-	rt = built
-	return rt, nil
+	rtMu.Lock()
+	defer rtMu.Unlock()
+	if r.indexer != nil {
+		return r, nil
+	}
+	if err := r.buildEmbedding(context.Background()); err != nil {
+		return nil, err
+	}
+	return r, nil
 }
 
 // closeRuntime releases the runtime if one was ever built. Safe to call when
@@ -153,7 +212,13 @@ func closeRuntime() {
 	}
 }
 
-func buildRuntime(ctx context.Context, opts runtimeOptions) (*runtime, error) {
+// resolveDefaults fills in the two options that have to be derived rather
+// than configured: which project this is, and where the database lives. It
+// is split out of buildRuntime because every entry point needs it —
+// including the maintenance commands, which need to know exactly which
+// project id and database path the indexing path would have used, or they
+// would inspect and clean the wrong thing.
+func resolveDefaults(opts runtimeOptions) runtimeOptions {
 	if opts.ProjectID == "" {
 		// No project-identity subsystem exists outside internal/session
 		// (project.ts's git-remote-hash scheme), and pulling that in would
@@ -173,25 +238,32 @@ func buildRuntime(ctx context.Context, opts runtimeOptions) (*runtime, error) {
 	if opts.DBPath == "" {
 		dataDir, err := defaultDataDir()
 		if err != nil {
-			return nil, fmt.Errorf("resolve data dir: %w", err)
+			// The only failure here is an unresolvable home directory, on a
+			// path where returning an error would force every caller to
+			// handle a case that cannot occur in practice. Falling back to a
+			// relative path keeps the plugin working in the odd environment
+			// that has no home (a bare container), and the CLI's -db flag is
+			// the escape hatch either way.
+			dataDir = "."
 		}
 		opts.DBPath = filepath.Join(dataDir, "rag.db")
 	}
+	return opts
+}
 
-	db, err := store.Open(ctx, opts.DBPath)
-	if err != nil {
-		return nil, fmt.Errorf("open store: %w", err)
-	}
-
+// buildEmbedding adds the embedding tier to an already-opened runtime: the
+// provider client, the LSP service, and the indexer/searcher over them.
+// Must be called with rtMu held (or on a runtime not yet shared, as in CLI
+// mode).
+func (r *runtime) buildEmbedding(ctx context.Context) error {
 	providers := provider.New(modelsdev.New())
 	embedder, err := embed.Resolve(ctx, embed.Config{
-		Provider: opts.EmbeddingProvider,
-		Model:    opts.EmbeddingModel,
-		BaseURL:  opts.EmbeddingBaseURL,
+		Provider: r.opts.EmbeddingProvider,
+		Model:    r.opts.EmbeddingModel,
+		BaseURL:  r.opts.EmbeddingBaseURL,
 	}, providers)
 	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("resolve embeddings provider: %w", err)
+		return fmt.Errorf("resolve embeddings provider: %w", err)
 	}
 
 	// lsp.New spawns nothing by itself — servers start lazily, the first time
@@ -200,19 +272,39 @@ func buildRuntime(ctx context.Context, opts runtimeOptions) (*runtime, error) {
 	// search-only session) or when no server for the project's languages is
 	// installed. A nil config means every built-in server, none disabled;
 	// this plugin has no opencode.json of its own to read one from.
-	lspRoot := opts.Worktree
+	lspRoot := r.opts.Worktree
 	if lspRoot == "" {
-		lspRoot = opts.Directory
+		lspRoot = r.opts.Directory
 	}
-	lspService := lsp.New(lspRoot, nil)
+	r.lsp = lsp.New(lspRoot, nil)
+	r.indexer = &rag.Indexer{Store: r.store, Embedder: embedder, ProjectID: r.opts.ProjectID, LSP: r.lsp}
+	r.searcher = &rag.Searcher{Store: r.store, Embedder: embedder, ProjectID: r.opts.ProjectID}
+	return nil
+}
 
-	return &runtime{
-		store:    db,
-		indexer:  &rag.Indexer{Store: db, Embedder: embedder, ProjectID: opts.ProjectID, LSP: lspService},
-		searcher: &rag.Searcher{Store: db, Embedder: embedder, ProjectID: opts.ProjectID},
-		lsp:      lspService,
-		opts:     opts,
-	}, nil
+// openStore builds a store-only runtime for CLI mode — the counterpart to
+// ensureStore on the plugin side.
+func openStore(ctx context.Context, opts runtimeOptions) (*runtime, error) {
+	opts = resolveDefaults(opts)
+	db, err := store.Open(ctx, opts.DBPath)
+	if err != nil {
+		return nil, fmt.Errorf("open store: %w", err)
+	}
+	return &runtime{store: db, opts: opts}, nil
+}
+
+// buildRuntime is openStore plus the embedding tier, for the CLI paths that
+// index or search.
+func buildRuntime(ctx context.Context, opts runtimeOptions) (*runtime, error) {
+	r, err := openStore(ctx, opts)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.buildEmbedding(ctx); err != nil {
+		r.close()
+		return nil, err
+	}
+	return r, nil
 }
 
 // defaultDataDir avoids importing internal/global just for one path join:
@@ -485,6 +577,326 @@ func runCLIScan(args []string) error {
 	return nil
 }
 
+// ---- CLI maintenance mode ----
+//
+// These three commands never embed anything, so they deliberately open only
+// the store (openStore, not buildRuntime): cleaning up after a project whose
+// provider config or API key has since gone away must not be blocked on
+// resolving that provider.
+
+// runCLIList prints what the database actually holds, largest project first.
+// It is the command every other one here is meant to be run after: chromem-go
+// names its collection directories by a hash of the project id, so without
+// this there is no way to find out which project owns the 300 MB directory.
+func runCLIList(args []string) error {
+	fs := flag.NewFlagSet("rag-plugin list", flag.ContinueOnError)
+	dbPath := fs.String("db", "", "sqlite path; defaults to $GOCODE_DATA/rag.db")
+	asJSON := fs.Bool("json", false, "emit the raw stats as JSON")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	r, err := openStore(ctx, runtimeOptions{DBPath: *dbPath})
+	if err != nil {
+		return err
+	}
+	defer r.close()
+
+	projects, err := r.store.Projects(ctx)
+	if err != nil {
+		return err
+	}
+	if *asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(projects)
+	}
+	fmt.Print(formatProjects(r.opts.DBPath, projects))
+	return nil
+}
+
+// runCLIClean removes indexed chunks: one subtree, one project, or the whole
+// database. Nothing here can be undone — the deleted chunks have to be
+// re-embedded, at the provider's price — so a destructive run needs either an
+// interactive confirmation or an explicit -yes.
+func runCLIClean(args []string) error {
+	fs := flag.NewFlagSet("rag-plugin clean", flag.ContinueOnError)
+	root := fs.String("root", ".", "project root, used to derive the project id when -project is omitted")
+	project := fs.String("project", "", "project id to clean; defaults to the resolved absolute root")
+	path := fs.String("path", "", "clean only this path prefix, relative to the project root")
+	all := fs.Bool("all", false, "clean EVERY project in the database, not just this one")
+	dryRun := fs.Bool("dry-run", false, "report what would be removed and remove nothing")
+	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	dbPath := fs.String("db", "", "sqlite path; defaults to $GOCODE_DATA/rag.db")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if *all && (*project != "" || *path != "") {
+		return fmt.Errorf("-all cleans every project; it cannot be combined with -project or -path")
+	}
+
+	absRoot, err := filepath.Abs(*root)
+	if err != nil {
+		return err
+	}
+	projectID := *project
+	if projectID == "" {
+		projectID = absRoot
+	}
+
+	ctx := context.Background()
+	r, err := openStore(ctx, runtimeOptions{DBPath: *dbPath})
+	if err != nil {
+		return err
+	}
+	defer r.close()
+
+	// Describe the exact target before asking, and size it from the same
+	// stats `list` prints — a confirmation prompt that cannot say how much is
+	// about to disappear is not really a confirmation.
+	projects, err := r.store.Projects(ctx)
+	if err != nil {
+		return err
+	}
+	var action, subject string
+	var affected store.ProjectStat
+	switch {
+	case *all:
+		action = "delete every project"
+		subject = fmt.Sprintf("%d project(s), %s", len(projects), formatBytes(totalBytes(projects)))
+	case *path != "":
+		affected = findProject(projects, projectID)
+		// HashesUnderPath applies exactly the scope rule DeleteUnderPath
+		// deletes by, so counting it here is a real preview rather than an
+		// estimate that could disagree with what follows.
+		scoped, err := r.store.HashesUnderPath(ctx, projectID, *path)
+		if err != nil {
+			return err
+		}
+		action = fmt.Sprintf("delete %d chunk(s) under %q", len(scoped), *path)
+		subject = fmt.Sprintf("project %s", projectID)
+	default:
+		affected = findProject(projects, projectID)
+		action = "delete project"
+		subject = fmt.Sprintf("%s (%d chunks, %s)", projectID, affected.Chunks, formatBytes(affected.Bytes))
+	}
+
+	if *dryRun {
+		fmt.Printf("dry run: would %s — %s\n", action, subject)
+		return nil
+	}
+	if !*yes {
+		ok, err := confirm(fmt.Sprintf("About to %s: %s. This cannot be undone and the chunks must be re-embedded to restore. Continue?", action, subject))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Println("aborted")
+			return nil
+		}
+	}
+
+	switch {
+	case *all:
+		if err := r.store.Reset(ctx); err != nil {
+			return err
+		}
+		fmt.Printf("removed every project (%s reclaimed)\n", formatBytes(totalBytes(projects)))
+	case *path != "":
+		removed, err := r.store.DeleteUnderPath(ctx, projectID, *path)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("removed %d chunk(s) under %q from %s\n", removed, *path, projectID)
+	default:
+		removed, err := r.store.DeleteProject(ctx, projectID)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("removed %d chunk(s) for %s (%s reclaimed)\n", removed, projectID, formatBytes(affected.Bytes))
+	}
+	return nil
+}
+
+// runCLIVacuum reconciles the database against itself. Unlike clean it
+// removes only data that is already unreachable, so it needs no target — but
+// it still confirms, because -prune-missing widens it to projects that are
+// merely absent rather than broken.
+func runCLIVacuum(args []string) error {
+	fs := flag.NewFlagSet("rag-plugin vacuum", flag.ContinueOnError)
+	dryRun := fs.Bool("dry-run", false, "report what would be removed and remove nothing")
+	pruneMissing := fs.Bool("prune-missing", false, "also drop projects whose root directory no longer exists")
+	yes := fs.Bool("yes", false, "skip the confirmation prompt")
+	dbPath := fs.String("db", "", "sqlite path; defaults to $GOCODE_DATA/rag.db")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+	r, err := openStore(ctx, runtimeOptions{DBPath: *dbPath})
+	if err != nil {
+		return err
+	}
+	defer r.close()
+
+	// Always run the scan as a dry run first: it is the only way to tell the
+	// user what they are confirming.
+	preview, err := r.store.Vacuum(ctx, store.VacuumOptions{DryRun: true, PruneMissing: *pruneMissing})
+	if err != nil {
+		return err
+	}
+	if preview.Empty() {
+		fmt.Println("nothing to vacuum: every project's collection and manifest agree")
+		return nil
+	}
+	fmt.Print(formatVacuum(preview))
+	if *dryRun {
+		return nil
+	}
+	if !*yes {
+		ok, err := confirm(fmt.Sprintf("Remove the above (%s)? This cannot be undone.", formatBytes(preview.BytesFreed)))
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Println("aborted")
+			return nil
+		}
+	}
+
+	report, err := r.store.Vacuum(ctx, store.VacuumOptions{PruneMissing: *pruneMissing})
+	if err != nil {
+		return err
+	}
+	fmt.Printf("removed %d chunk(s) across %d project(s), %s reclaimed\n",
+		report.ChunksRemoved,
+		len(report.OrphanCollections)+len(report.DanglingProjects)+len(report.MissingProjects),
+		formatBytes(report.BytesFreed))
+	return nil
+}
+
+// ---- Maintenance formatting ----
+
+func findProject(projects []store.ProjectStat, id string) store.ProjectStat {
+	for _, p := range projects {
+		if p.ProjectID == id {
+			return p
+		}
+	}
+	return store.ProjectStat{ProjectID: id}
+}
+
+func totalBytes(projects []store.ProjectStat) int64 {
+	var total int64
+	for _, p := range projects {
+		total += p.Bytes
+	}
+	return total
+}
+
+// projectStatus names the one thing about a project a reader needs to decide
+// whether to clean it. The states are mutually exclusive by construction:
+// Orphan and Dangling are the two directions the collection and the manifest
+// can disagree in, and a project can only be judged missing if it is
+// otherwise intact.
+func projectStatus(p store.ProjectStat) string {
+	switch {
+	case p.Orphan:
+		return "orphan (no manifest rows)"
+	case p.Dangling:
+		return "dangling (no collection)"
+	case p.RootMissing:
+		return "root missing"
+	default:
+		return "ok"
+	}
+}
+
+func formatProjects(dbPath string, projects []store.ProjectStat) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n\n", dbPath)
+	if len(projects) == 0 {
+		b.WriteString("no projects indexed\n")
+		return b.String()
+	}
+
+	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "PROJECT\tCHUNKS\tFILES\tSIZE\tMODIFIED\tSTATUS")
+	var chunks int
+	for _, p := range projects {
+		modified := "-"
+		if !p.ModTime.IsZero() {
+			modified = p.ModTime.Format("2006-01-02")
+		}
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\n",
+			p.ProjectID, p.Chunks, p.Paths, formatBytes(p.Bytes), modified, projectStatus(p))
+		chunks += p.Chunks
+	}
+	fmt.Fprintf(w, "%d project(s)\t%d\t\t%s\t\t\n", len(projects), chunks, formatBytes(totalBytes(projects)))
+	w.Flush()
+	return b.String()
+}
+
+func formatVacuum(report store.VacuumReport) string {
+	var b strings.Builder
+	section := func(title string, ids []string) {
+		if len(ids) == 0 {
+			return
+		}
+		fmt.Fprintf(&b, "%s:\n", title)
+		for _, id := range ids {
+			fmt.Fprintf(&b, "  %s\n", id)
+		}
+	}
+	section("orphan collections (vectors on disk, no manifest rows — unreachable)", report.OrphanCollections)
+	section("dangling projects (manifest rows, no collection — unsearchable)", report.DanglingProjects)
+	section("missing roots (project directory no longer exists)", report.MissingProjects)
+	fmt.Fprintf(&b, "%d chunk(s), %s\n", report.ChunksRemoved, formatBytes(report.BytesFreed))
+	return b.String()
+}
+
+// formatBytes renders a size the way `du -h` would. Exact byte counts are
+// noise in a report whose entire purpose is "which of these is the big one."
+func formatBytes(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for v := n / unit; v >= unit; v /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%c", float64(n)/float64(div), "KMGTPE"[exp])
+}
+
+// confirm asks for a y/N answer on stdin, and treats "nobody was there to
+// answer" as an error rather than as "no".
+//
+// That distinction is the whole point. A caller that cannot answer — CI, a
+// cron job, `< /dev/null` — must not have its cleanup silently turn into a
+// no-op it then reports as success; -yes is how a script says it meant it.
+// Emptiness is detected from the read rather than by inspecting stdin's
+// mode, because the obvious mode check is wrong: os.ModeCharDevice is set
+// for /dev/null exactly as it is for a terminal, so `clean < /dev/null`
+// would look interactive, read EOF, and quietly abort with a success exit
+// code. Reading first and judging what came back needs no platform-specific
+// tty ioctl and gets that case right.
+func confirm(prompt string) (bool, error) {
+	fmt.Printf("%s [y/N] ", prompt)
+	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	}
+	if line == "" && errors.Is(err, io.EOF) {
+		fmt.Println()
+		return false, fmt.Errorf("stdin closed without an answer; pass -yes to confirm non-interactively")
+	}
+	answer := strings.ToLower(strings.TrimSpace(line))
+	return answer == "y" || answer == "yes", nil
+}
+
 func splitCSV(s string) []string {
 	if strings.TrimSpace(s) == "" {
 		return nil
@@ -591,26 +1003,74 @@ func handleInitialize(message request) error {
 		"tools": []map[string]any{
 			{
 				"name":        "rag_index",
-				"description": "(Re)index project files for semantic search. Only embeds files that changed since the last index. Run this before rag_search if the project hasn't been indexed yet, or after making significant changes.",
+				"description": "(Re)index project files for semantic search. Incremental: only changed files are re-embedded. Run after large edits, or if rag_search finds nothing.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path":  map[string]any{"type": "string", "description": "Directory to index, relative to the project root. Defaults to the whole project."},
-						"force": map[string]any{"type": "boolean", "description": "Re-embed every chunk even if unchanged. Use after switching embedding models."},
+						"path":  map[string]any{"type": "string", "description": "Subdirectory to index, relative to the project root. Default: the whole project."},
+						"force": map[string]any{"type": "boolean", "description": "Re-embed every chunk. Needed after switching embedding models."},
 					},
 				},
 			},
 			{
-				"name":        "rag_search",
-				"description": "Semantically search the project's indexed files for chunks relevant to a natural-language query. Returns ranked snippets with file:line citations. Run rag_index first if the project hasn't been indexed.",
+				"name": "rag_search",
+				// The decision rule is the point of this description. Semantic
+				// search and grep fail in opposite directions — grep cannot
+				// find code whose wording you guessed wrong, semantic search
+				// cannot guarantee every literal occurrence — so a blanket
+				// "prefer this" would be wrong as often as it was right. What
+				// the model needs is which failure it is facing.
+				"description": "Search this project's code by meaning. Returns ranked path:line snippets. " +
+					"Try this FIRST when locating unfamiliar code — where a concept lives, how something is implemented, what handles a behaviour — instead of grep/ripgrep, find, or shell search, which only match text you can already spell. Use grep instead for an exact symbol or string you already know, or when you need every occurrence.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"query":      map[string]any{"type": "string", "description": "Natural-language search query."},
-						"k":          map[string]any{"type": "integer", "description": "Maximum number of results. Defaults to 8."},
-						"pathPrefix": map[string]any{"type": "string", "description": "Restrict results to paths starting with this prefix."},
+						"query":      map[string]any{"type": "string", "description": "What to find, in natural language."},
+						"k":          map[string]any{"type": "integer", "description": "Max results. Default 8."},
+						"pathPrefix": map[string]any{"type": "string", "description": "Only return paths under this prefix."},
 					},
 					"required": []string{"query"},
+				},
+			},
+			{
+				"name":        "rag_status",
+				"description": "List indexed projects with chunk counts, size on disk, and health. Read-only. Run before rag_clean or rag_vacuum.",
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				},
+			},
+			{
+				"name": "rag_clean",
+				// The irreversibility warning stays even under a tightening
+				// pass: it is the only brake on this tool. Nothing in the
+				// protocol can prompt the user (see handleMaintenanceTool),
+				// so the description is where the caution has to live.
+				"description": "Permanently delete indexed chunks. IRREVERSIBLE — restoring them means paying to re-embed. " +
+					"Prefer re-running rag_index, which prunes stale chunks on its own. Preview with dryRun.",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"scope":     map[string]any{"type": "string", "enum": []string{"path", "project", "all"}, "description": "\"path\": one subtree. \"project\": one whole project. \"all\": EVERY project on this machine."},
+						"path":      map[string]any{"type": "string", "description": "Path prefix relative to the project root. Required for scope \"path\"."},
+						"projectId": map[string]any{"type": "string", "description": "Only for scope \"project\". Default: the current project."},
+						"dryRun":    map[string]any{"type": "boolean", "description": "Report what would be deleted, delete nothing."},
+						"confirm":   map[string]any{"type": "boolean", "description": "Must be true to delete. Ask the user first."},
+					},
+					"required": []string{"scope", "confirm"},
+				},
+			},
+			{
+				"name":        "rag_vacuum",
+				"description": "Reclaim space by removing index data no re-index can reach (storage and bookkeeping out of sync). Never touches a healthy project. Preview with dryRun.",
+				"parameters": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"pruneMissing": map[string]any{"type": "boolean", "description": "Also drop projects whose directory is gone. Off by default; ask the user."},
+						"dryRun":       map[string]any{"type": "boolean", "description": "Report what would be removed, remove nothing."},
+						"confirm":      map[string]any{"type": "boolean", "description": "Must be true to remove. Ask the user first."},
+					},
+					"required": []string{"confirm"},
 				},
 			},
 		},
@@ -625,6 +1085,21 @@ func handleTool(message request) error {
 	if err := json.Unmarshal(message.Params, &params); err != nil {
 		return err
 	}
+
+	// The maintenance tools stop at the store tier. They only read and
+	// delete already-stored chunks, so routing them through ensureRuntime
+	// would fail them whenever the embeddings provider can't be resolved —
+	// which is precisely the state an index worth cleaning up tends to be
+	// in (provider removed from config, key rotated, project abandoned).
+	switch params.Name {
+	case "rag_status", "rag_clean", "rag_vacuum":
+		r, err := ensureStore()
+		if err != nil {
+			return reply(message.ID, nil, err)
+		}
+		return handleMaintenanceTool(message, r, params.Name, params.Args)
+	}
+
 	rt, err := ensureRuntime()
 	if err != nil {
 		return reply(message.ID, nil, err)
@@ -661,6 +1136,123 @@ func handleTool(message request) error {
 	default:
 		return reply(message.ID, nil, fmt.Errorf("unknown tool %q", params.Name))
 	}
+}
+
+// handleMaintenanceTool serves rag_status, rag_clean and rag_vacuum off a
+// store-only runtime.
+//
+// Every destructive branch here checks confirm before doing anything. That
+// is a guard against an accidental call, not a security boundary, and it is
+// worth being honest about which: the process-plugin protocol has no
+// permission field (internal/plugin's manifestTool carries only
+// name/description/parameters, and Process.hooks wires Execute straight
+// through), so nothing between the model and this code can prompt a human.
+// confirm is an argument the caller supplies about itself. The real
+// safeguards are that the destructive scopes are described as irreversible
+// in the manifest, that dryRun exists and is free, and that the -all
+// equivalent is reachable from the CLI where a person types it.
+func handleMaintenanceTool(message request, r *runtime, name string, args map[string]any) error {
+	ctx := context.Background()
+	confirmed := boolOpt(args, "confirm", false)
+	dryRun := boolOpt(args, "dryRun", false)
+
+	switch name {
+	case "rag_status":
+		projects, err := r.store.Projects(ctx)
+		if err != nil {
+			return reply(message.ID, nil, err)
+		}
+		return reply(message.ID, map[string]any{
+			"title":  "rag_status",
+			"output": formatProjects(r.opts.DBPath, projects),
+		}, nil)
+
+	case "rag_clean":
+		scope := stringOpt(args, "scope", "")
+		if !dryRun && !confirmed {
+			return reply(message.ID, nil, fmt.Errorf("rag_clean: nothing was deleted — set confirm=true to delete, or dryRun=true to preview. Ask the user before confirming: this cannot be undone and restoring means re-embedding"))
+		}
+		switch scope {
+		case "path":
+			path := stringOpt(args, "path", "")
+			if path == "" {
+				return reply(message.ID, nil, fmt.Errorf("rag_clean: scope \"path\" requires a path"))
+			}
+			if dryRun {
+				scoped, err := r.store.HashesUnderPath(ctx, r.opts.ProjectID, path)
+				if err != nil {
+					return reply(message.ID, nil, err)
+				}
+				return maintenanceReply(message, "rag_clean", fmt.Sprintf("dry run: would delete %d chunk(s) under %q from %s", len(scoped), path, r.opts.ProjectID))
+			}
+			removed, err := r.store.DeleteUnderPath(ctx, r.opts.ProjectID, path)
+			if err != nil {
+				return reply(message.ID, nil, err)
+			}
+			return maintenanceReply(message, "rag_clean", fmt.Sprintf("deleted %d chunk(s) under %q from %s. Re-run rag_index to restore them.", removed, path, r.opts.ProjectID))
+
+		case "project":
+			projectID := stringOpt(args, "projectId", r.opts.ProjectID)
+			projects, err := r.store.Projects(ctx)
+			if err != nil {
+				return reply(message.ID, nil, err)
+			}
+			target := findProject(projects, projectID)
+			if dryRun {
+				return maintenanceReply(message, "rag_clean", fmt.Sprintf("dry run: would delete project %s (%d chunks, %s)", projectID, target.Chunks, formatBytes(target.Bytes)))
+			}
+			removed, err := r.store.DeleteProject(ctx, projectID)
+			if err != nil {
+				return reply(message.ID, nil, err)
+			}
+			return maintenanceReply(message, "rag_clean", fmt.Sprintf("deleted project %s: %d chunk(s), %s reclaimed. Re-run rag_index to restore them.", projectID, removed, formatBytes(target.Bytes)))
+
+		case "all":
+			projects, err := r.store.Projects(ctx)
+			if err != nil {
+				return reply(message.ID, nil, err)
+			}
+			if dryRun {
+				return maintenanceReply(message, "rag_clean", fmt.Sprintf("dry run: would delete all %d project(s), %s", len(projects), formatBytes(totalBytes(projects))))
+			}
+			if err := r.store.Reset(ctx); err != nil {
+				return reply(message.ID, nil, err)
+			}
+			return maintenanceReply(message, "rag_clean", fmt.Sprintf("deleted all %d project(s), %s reclaimed. Every project sharing this database must be re-indexed.", len(projects), formatBytes(totalBytes(projects))))
+
+		default:
+			return reply(message.ID, nil, fmt.Errorf("rag_clean: scope must be \"path\", \"project\" or \"all\", got %q", scope))
+		}
+
+	case "rag_vacuum":
+		opts := store.VacuumOptions{
+			DryRun:       dryRun || !confirmed,
+			PruneMissing: boolOpt(args, "pruneMissing", false),
+		}
+		report, err := r.store.Vacuum(ctx, opts)
+		if err != nil {
+			return reply(message.ID, nil, err)
+		}
+		if report.Empty() {
+			return maintenanceReply(message, "rag_vacuum", "nothing to vacuum: every project's collection and manifest agree")
+		}
+		if opts.DryRun {
+			prefix := "dry run — nothing removed:\n"
+			if !confirmed && !dryRun {
+				prefix = "nothing was removed (confirm was not set):\n"
+			}
+			return maintenanceReply(message, "rag_vacuum", prefix+formatVacuum(report))
+		}
+		return maintenanceReply(message, "rag_vacuum", fmt.Sprintf("%sremoved %d chunk(s), %s reclaimed",
+			formatVacuum(report), report.ChunksRemoved, formatBytes(report.BytesFreed)))
+
+	default:
+		return reply(message.ID, nil, fmt.Errorf("unknown tool %q", name))
+	}
+}
+
+func maintenanceReply(message request, title, output string) error {
+	return reply(message.ID, map[string]any{"title": title, "output": output}, nil)
 }
 
 func reply(id *int64, result any, failure error) error {

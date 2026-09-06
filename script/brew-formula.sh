@@ -18,6 +18,10 @@
 #   libexec/rag-plugin/     the semantic-search process plugin: binary plus the
 #                           gocode-plugin.json manifest the loader needs
 #
+# libexec is not an arbitrary choice: gocode looks for bundled plugins in
+# <prefix>/libexec, relative to its own binary, so a plugin installed there is
+# found by bare name (internal/plugin.BundledRoots).
+#
 # Installing is not enabling: a plugin runs only when the config's `plugin`
 # array names it, and a server under libexec is not on PATH for the registry to
 # find. post_install closes both gaps by calling the binary's own config
@@ -104,8 +108,17 @@ class Gocode < Formula
   # user, so it reaches ~/.config/gocode; the edits are idempotent, preserve
   # every other key, and refuse to rewrite a config carrying comments.
   #
-  # opt_ paths are used rather than the versioned Cellar path so an upgrade
-  # does not leave the config pointing at a directory that no longer exists.
+  # The plugin is enabled by bare name. gocode searches <prefix>/libexec for
+  # plugins, relative to its own binary (plugin.BundledRoots), so the name is
+  # enough and the config stays free of installation-specific paths — it keeps
+  # working across a Homebrew prefix change, and `gocode plugin disable
+  # rag-plugin` is something a user can actually type.
+  #
+  # Earlier versions wrote the absolute libexec path instead, because no such
+  # search path existed. The disable below removes that stale entry on
+  # upgrade, and is a no-op on a fresh install. It matters: an absolute path
+  # and a bare name are different refs that nothing deduplicates, so leaving
+  # both would load rag-plugin twice and spawn two copies of it at every boot.
   #
   # A failure here is warned about, not raised: the binaries are installed and
   # usable either way, and a config this cannot parse is a reason to tell the
@@ -114,7 +127,8 @@ class Gocode < Formula
     [
       ["lsp", "enable", "mdlsp",
        "--global", "--command", opt_bin/"mdlsp", "--extensions", ".md,.markdown"],
-      ["plugin", "enable", (opt_libexec/"rag-plugin").to_s,
+      ["plugin", "disable", (opt_libexec/"rag-plugin").to_s, "--global"],
+      ["plugin", "enable", "rag-plugin",
        "--global", "--options", '{"embeddingProvider":"openai"}'],
     ].each do |args|
       system bin/"gocode", *args
@@ -140,7 +154,7 @@ class Gocode < Formula
       To turn either off again (the files stay installed):
 
         gocode lsp disable mdlsp
-        gocode plugin disable #{opt_libexec}/rag-plugin
+        gocode plugin disable rag-plugin
     EOS
   end
 
