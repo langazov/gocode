@@ -229,3 +229,53 @@ func TestChunksFromSymbolsDoesNotFragmentConstBlock(t *testing.T) {
 		t.Errorf("AssertInput should still be a complete chunk, got %+v", chunks)
 	}
 }
+
+// TestWalkSkipsBlankTrailingChunk covers the real-world index failure this
+// filtering exists for: a file that ends with a blank line after its last
+// symbol left a trailing chunk whose content was the empty string, which the
+// embeddings endpoint rejects outright ("input cannot be an empty string"),
+// failing the whole batch and aborting the index.
+func TestWalkSkipsBlankTrailingChunk(t *testing.T) {
+	root := t.TempDir()
+	content := strings.Join([]string{
+		"package main", // 0
+		"",             // 1
+		"func One() {", // 2
+		"}",            // 3
+		"",             // 4: blank line at EOF, after the last symbol
+	}, "\n")
+	writeFile(t, root, "a.go", content)
+	path := filepath.Join(root, "a.go")
+
+	resolver := &fakeResolver{symbols: map[string][]lsp.DocumentSymbol{
+		path: {sym("One", 2, 3)},
+	}}
+
+	chunks, err := Walk(context.Background(), root, Options{LSP: resolver})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("got %d chunks, want 1 (the trailing blank line is not a chunk): %+v", len(chunks), chunks)
+	}
+	for _, c := range chunks {
+		if strings.TrimSpace(c.Content) == "" {
+			t.Errorf("blank chunk %s:%d-%d %q", c.Path, c.StartLine, c.EndLine, c.Content)
+		}
+	}
+}
+
+func TestWalkSkipsWhitespaceOnlyChunks(t *testing.T) {
+	root := t.TempDir()
+	// Ten lines, the last six blank: with Lines=5/Overlap=0 the second
+	// window is nothing but whitespace.
+	writeFile(t, root, "a.go", "package main\nvar x = 1\nvar y = 2\nvar z = 3\n\n\n\n\n\n\n")
+
+	chunks, err := Walk(context.Background(), root, Options{Lines: 5, Overlap: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != 1 {
+		t.Fatalf("got %d chunks, want 1: %+v", len(chunks), chunks)
+	}
+}

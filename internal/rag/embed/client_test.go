@@ -341,3 +341,112 @@ func TestEmbedEmptyInput(t *testing.T) {
 		t.Errorf("got %v, want nil", vectors)
 	}
 }
+
+// TestEmbedSkipsBlankInputs pins the guard against the endpoint's hard 400
+// on an empty string: a blank input is never sent (it would fail every other
+// input sharing its batch) and comes back as a nil vector, leaving the
+// non-blank results in their original positions.
+func TestEmbedSkipsBlankInputs(t *testing.T) {
+	var gotInputs []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req request
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Fatal(err)
+		}
+		gotInputs = append(gotInputs, req.Input...)
+		var resp response
+		for i, in := range req.Input {
+			resp.Data = append(resp.Data, struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{Embedding: []float32{float32(len(in))}, Index: i})
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "sk-test", "m")
+	vectors, err := client.Embed(context.Background(), []string{"", "hello", "  \n\t ", "worldly"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(gotInputs) != 2 || gotInputs[0] != "hello" || gotInputs[1] != "worldly" {
+		t.Fatalf("only non-blank inputs should be sent, got %q", gotInputs)
+	}
+	if len(vectors) != 4 {
+		t.Fatalf("got %d vectors, want one per input (4)", len(vectors))
+	}
+	if vectors[0] != nil || vectors[2] != nil {
+		t.Errorf("blank inputs should map to nil vectors, got %v", vectors)
+	}
+	if len(vectors[1]) != 1 || vectors[1][0] != 5 || len(vectors[3]) != 1 || vectors[3][0] != 7 {
+		t.Errorf("non-blank vectors landed in the wrong positions: %v", vectors)
+	}
+}
+
+// TestEmbedAllBlankInputsSendsNothing: nothing to embed means no request at
+// all, not a request the endpoint will reject.
+func TestEmbedAllBlankInputsSendsNothing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("no request should be sent when every input is blank")
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "sk-test", "m")
+	vectors, err := client.Embed(context.Background(), []string{"", " "})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors) != 2 || vectors[0] != nil || vectors[1] != nil {
+		t.Errorf("got %v, want two nil vectors", vectors)
+	}
+}
+
+// TestEmbedBatchesSkipBlanksWhenSplitting checks the blank-skipping and the
+// batching interact correctly: batches are formed over the non-blank inputs,
+// so a run of blanks never leaves a short (or empty) request behind.
+func TestEmbedBatchesSkipBlanksWhenSplitting(t *testing.T) {
+	var batchSizes []int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req request
+		json.NewDecoder(r.Body).Decode(&req)
+		batchSizes = append(batchSizes, len(req.Input))
+		var resp response
+		for i, in := range req.Input {
+			if in == "" {
+				t.Error("an empty input reached the endpoint")
+			}
+			resp.Data = append(resp.Data, struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{Embedding: []float32{1}, Index: i})
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	texts := make([]string, 0, 10)
+	for i := range 10 {
+		if i%2 == 0 {
+			texts = append(texts, "")
+			continue
+		}
+		texts = append(texts, "text")
+	}
+
+	client := New(server.URL, "sk-test", "m")
+	client.BatchSize = 2
+	vectors, err := client.Embed(context.Background(), texts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 5 non-blank inputs at BatchSize 2: 2, 2, 1.
+	if len(batchSizes) != 3 || batchSizes[0] != 2 || batchSizes[1] != 2 || batchSizes[2] != 1 {
+		t.Fatalf("got batch sizes %v, want [2 2 1]", batchSizes)
+	}
+	for i, v := range vectors {
+		if (i%2 == 0) != (v == nil) {
+			t.Errorf("vector %d: got %v, want nil only for the blank inputs", i, v)
+		}
+	}
+}
