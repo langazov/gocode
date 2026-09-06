@@ -2,18 +2,23 @@ package provider
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/flag"
+	"github.com/langazov/gocode-go/internal/global"
 	"github.com/langazov/gocode-go/internal/installation"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 )
@@ -99,17 +104,104 @@ func (opencodeTransform) RefreshCredential(ctx context.Context, info auth.Info) 
 // not change within a session, so a short in-memory cache is enough.
 const zenOverlayTTL = 5 * time.Minute
 
-var zenOverlayCache struct {
-	sync.Mutex
-	key     string
-	catalog modelsdev.Catalog
-	err     error
-	at      time.Time
+// zenOverlayCache is the in-process half of the overlay cache. zenOverlayMu
+// is held across the network fetch as well as the cache reads, which
+// single-flights it: Resolve runs per message and once per candidate inside
+// Fallback, so several goroutines reaching a cold cache at once used to mean
+// several identical round trips.
+var (
+	zenOverlayMu    sync.Mutex
+	zenOverlayCache struct {
+		key     string
+		catalog modelsdev.Catalog
+		err     error
+		at      time.Time
+	}
+)
+
+// zenOverlayFile is the on-disk half, written next to models.json in the
+// cache directory.
+//
+// It exists because process boot always starts with a cold in-memory cache,
+// and Overlay sits on the boot-critical path — bootStack resolves a provider
+// before the server listens, so a ~0.9s round trip to opencode.ai was ~0.9s
+// before the TUI drew anything. The public catalog solved the same problem
+// the same way (see internal/modelsdev): serve whatever is on disk
+// immediately, and refresh it in the background.
+//
+// Key is the hash of the credential the entry was fetched with, so a
+// re-login or a different server is a miss rather than a wrong answer.
+//
+// What is cached is each endpoint's own answer rather than the merged
+// modelsdev.Catalog it decodes into. That keeps zenConfig's conversion the
+// one place the remote shape is interpreted, and it sidesteps a real trap:
+// Provider.Whitelist is `json:"-"` — it has no place in the public catalog's
+// wire format — so a catalog round-tripped through JSON silently comes back
+// with no whitelist and the picker stops being pruned.
+type zenOverlayFile struct {
+	// Version is the shape of this file. An entry written by a different
+	// version is a miss, not a best-effort decode: an empty overlay is a
+	// legitimate cached state (the account has no overrides), so a shape
+	// change that silently decodes to nothing would look exactly like one
+	// and suppress the account's real model list.
+	Version int    `json:"version"`
+	Key     string `json:"key"`
+	OrgID   string `json:"orgID,omitempty"`
+	// Config is the raw {server}/api/config body, empty when the account has
+	// no overrides.
+	Config json.RawMessage `json:"config,omitempty"`
+	// Models is the id list from the inference gateway's own /models, which
+	// is all an API-key credential can reach. See the fallback in overlay.
+	Models []string `json:"models,omitempty"`
 }
 
-// Overlay fetches the account's provider config, porting fetchProviders().
+// zenOverlayVersion is bumped whenever zenOverlayFile's shape changes.
+const zenOverlayVersion = 1
+
+// catalog decodes a cached entry back into the overlay it represents.
+func (f zenOverlayFile) catalog() (modelsdev.Catalog, error) {
+	if len(f.Config) > 0 {
+		return zenDecodeConfig(f.Config)
+	}
+	if len(f.Models) > 0 {
+		return modelsdev.Catalog{"opencode": {ID: "opencode", Whitelist: f.Models}}, nil
+	}
+	return nil, nil
+}
+
+// zenOverlayPath is where that file lives. A var so tests can redirect it.
+var zenOverlayPath = func() string {
+	return filepath.Join(global.Resolve().Cache, "zen-overlay.json")
+}
+
+// zenAccountKey identifies the credential an overlay belongs to. The token
+// is hashed rather than stored: the file is a cache, not a credential store,
+// and auth.json is the only place a token belongs.
+func zenAccountKey(server, token string) string {
+	sum := sha256.Sum256([]byte(server + "|" + token))
+	return hex.EncodeToString(sum[:])
+}
+
+// Overlay returns the account's provider config, porting fetchProviders().
 // Without a stored credential there is nothing to fetch and no overlay.
-func (opencodeTransform) Overlay(ctx context.Context) (modelsdev.Catalog, error) {
+//
+// It answers from memory, then from disk, and only fetches when neither has
+// anything for this credential — the first run after a login, and nothing
+// else. [RefreshOverlay] is what keeps the disk copy current, off the boot
+// path.
+func (t opencodeTransform) Overlay(ctx context.Context) (modelsdev.Catalog, error) {
+	return t.overlay(ctx, false)
+}
+
+// RefreshOverlay re-fetches the overlay and rewrites the disk cache,
+// implementing [OverlayRefresher]. The runtime calls it from a background
+// goroutine at boot, alongside modelsdev's own catalog refresh.
+func (t opencodeTransform) RefreshOverlay(ctx context.Context) error {
+	_, err := t.overlay(ctx, true)
+	return err
+}
+
+func (opencodeTransform) overlay(ctx context.Context, force bool) (modelsdev.Catalog, error) {
 	info, err := auth.Get("opencode")
 	if err != nil || info == nil {
 		return nil, err
@@ -122,18 +214,47 @@ func (opencodeTransform) Overlay(ctx context.Context) (modelsdev.Catalog, error)
 		return nil, nil
 	}
 	server := zenServer(info)
-	orgID := zenOrgID(ctx, server, token, info)
-	key := server + "|" + orgID + "|" + token
+	key := zenAccountKey(server, token)
 
-	zenOverlayCache.Lock()
-	if zenOverlayCache.key == key && time.Since(zenOverlayCache.at) < zenOverlayTTL {
-		catalog, cachedErr := zenOverlayCache.catalog, zenOverlayCache.err
-		zenOverlayCache.Unlock()
-		return catalog, cachedErr
+	zenOverlayMu.Lock()
+	defer zenOverlayMu.Unlock()
+
+	if !force && zenOverlayCache.key == key && time.Since(zenOverlayCache.at) < zenOverlayTTL {
+		return zenOverlayCache.catalog, zenOverlayCache.err
 	}
-	zenOverlayCache.Unlock()
+	if !force {
+		if cached, ok := readZenOverlay(key); ok {
+			if catalog, err := cached.catalog(); err == nil {
+				// The org id travels with the overlay because resolving it
+				// costs its own round trip (/api/orgs) for an OAuth
+				// credential stored before login started recording it — and
+				// Apply needs it on every inference request, so leaving it
+				// to be re-resolved would put that round trip back on the
+				// boot path this cache exists to clear.
+				seedZenOrgID(token, cached.OrgID)
+				zenOverlayCache.key, zenOverlayCache.catalog, zenOverlayCache.err, zenOverlayCache.at = key, catalog, nil, time.Now()
+				return catalog, nil
+			}
+		}
+	}
+	// Explicitly offline: serve nothing rather than reaching out. The public
+	// catalog honours the same flag, and an account overlay that silently
+	// ignored it was the one thing on the boot path that still hit the
+	// network with fetching disabled.
+	if flag.DisableModelsFetch() {
+		return nil, nil
+	}
 
-	catalog, fetchErr := zenConfig(ctx, server, token, orgID)
+	orgID := zenOrgID(ctx, server, token, info)
+	fetched := zenOverlayFile{Version: zenOverlayVersion, Key: key, OrgID: orgID}
+	raw, fetchErr := zenConfig(ctx, server, token, orgID)
+	catalog, decodeErr := zenDecodeConfig(raw)
+	if fetchErr == nil && decodeErr != nil {
+		fetchErr = decodeErr
+	}
+	if fetchErr == nil {
+		fetched.Config = raw
+	}
 	// A plain API key can never reach /api/config (opencode.ai answers it,
 	// like /api/user and /api/orgs, with a flat 401 — confirmed directly
 	// against the account API; only an OAuth session token is accepted
@@ -147,15 +268,60 @@ func (opencodeTransform) Overlay(ctx context.Context) (modelsdev.Catalog, error)
 	if (fetchErr != nil || len(catalog) == 0) && info.Type == "api" {
 		if ids, listErr := zenModelList(ctx, zenPublicBaseURL, token); listErr == nil && len(ids) > 0 {
 			catalog = modelsdev.Catalog{"opencode": {ID: "opencode", Whitelist: ids}}
+			fetched.Config, fetched.Models = nil, ids
 			fetchErr = nil
 		}
 	}
 
-	zenOverlayCache.Lock()
 	zenOverlayCache.key, zenOverlayCache.catalog, zenOverlayCache.err, zenOverlayCache.at = key, catalog, fetchErr, time.Now()
-	zenOverlayCache.Unlock()
-
+	// A failed fetch is not persisted: the disk copy is what the next boot
+	// trusts instead of the network, and caching an outage there would
+	// outlive the outage.
+	if fetchErr == nil {
+		writeZenOverlay(fetched)
+	}
 	return catalog, fetchErr
+}
+
+// readZenOverlay loads the disk cache when it belongs to this credential.
+func readZenOverlay(key string) (zenOverlayFile, bool) {
+	data, err := os.ReadFile(zenOverlayPath())
+	if err != nil {
+		return zenOverlayFile{}, false
+	}
+	var cached zenOverlayFile
+	if err := json.Unmarshal(data, &cached); err != nil {
+		return zenOverlayFile{}, false
+	}
+	if cached.Version != zenOverlayVersion || cached.Key != key {
+		return zenOverlayFile{}, false
+	}
+	return cached, true
+}
+
+// writeZenOverlay replaces the disk cache atomically. Failures are logged
+// and swallowed: the overlay is an enhancement, and an unwritable cache
+// directory must not fail a provider resolution.
+func writeZenOverlay(entry zenOverlayFile) {
+	path := zenOverlayPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		global.LogBackground("opencode: cache overlay: %v", err)
+		return
+	}
+	data, err := json.Marshal(entry)
+	if err != nil {
+		global.LogBackground("opencode: cache overlay: %v", err)
+		return
+	}
+	temp := fmt.Sprintf("%s.%d.tmp", path, os.Getpid())
+	if err := os.WriteFile(temp, data, 0o600); err != nil {
+		global.LogBackground("opencode: cache overlay: %v", err)
+		return
+	}
+	if err := os.Rename(temp, path); err != nil {
+		os.Remove(temp)
+		global.LogBackground("opencode: cache overlay: %v", err)
+	}
 }
 
 // zenPublicBaseURL is the default, accountless endpoint models.dev's public
@@ -212,6 +378,19 @@ var zenOrgIDCache struct {
 	token string
 	orgID string
 	at    time.Time
+}
+
+// seedZenOrgID primes the org-id cache from the overlay's disk copy, so a
+// boot that answered the overlay from disk does not turn around and resolve
+// the org id over the network anyway. An empty id is not seeded — that is
+// "not known", not "known to be none".
+func seedZenOrgID(token, orgID string) {
+	if token == "" || orgID == "" {
+		return
+	}
+	zenOrgIDCache.Lock()
+	defer zenOrgIDCache.Unlock()
+	zenOrgIDCache.token, zenOrgIDCache.orgID, zenOrgIDCache.at = token, orgID, time.Now()
 }
 
 // zenOrgID returns the account's org id: from stored metadata when present
@@ -434,8 +613,10 @@ type zenProviderConfig struct {
 	} `json:"models"`
 }
 
-// zenConfig fetches and converts {server}/api/config.
-func zenConfig(ctx context.Context, server, token, orgID string) (modelsdev.Catalog, error) {
+// zenConfig fetches {server}/api/config and returns its raw body, so the
+// caller can cache exactly what the server said. A nil body with a nil error
+// means the account simply has no overrides.
+func zenConfig(ctx context.Context, server, token, orgID string) ([]byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, server+"/api/config", nil)
 	if err != nil {
 		return nil, err
@@ -459,11 +640,15 @@ func zenConfig(ctx context.Context, server, token, orgID string) (modelsdev.Cata
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		return nil, fmt.Errorf("opencode: %s/api/config returned %d", server, res.StatusCode)
 	}
-	data, err := io.ReadAll(res.Body)
-	if err != nil {
-		return nil, err
-	}
+	return io.ReadAll(res.Body)
+}
 
+// zenDecodeConfig converts an /api/config body into catalog entries. An
+// empty body is no overlay, not an error.
+func zenDecodeConfig(data []byte) (modelsdev.Catalog, error) {
+	if len(data) == 0 {
+		return nil, nil
+	}
 	var payload struct {
 		Config struct {
 			Provider map[string]zenProviderConfig `json:"provider"`
@@ -521,8 +706,9 @@ func zenConfig(ctx context.Context, server, token, orgID string) (modelsdev.Cata
 }
 
 var (
-	_ Transform      = opencodeTransform{}
-	_ AuthProvider   = opencodeTransform{}
-	_ Refresher      = opencodeTransform{}
-	_ CatalogOverlay = opencodeTransform{}
+	_ Transform        = opencodeTransform{}
+	_ AuthProvider     = opencodeTransform{}
+	_ Refresher        = opencodeTransform{}
+	_ CatalogOverlay   = opencodeTransform{}
+	_ OverlayRefresher = opencodeTransform{}
 )

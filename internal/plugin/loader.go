@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/langazov/gocode-go/internal/global"
 )
@@ -166,6 +167,18 @@ func Load(ctx context.Context, in LoadInput) (*Host, error) {
 		return host, nil
 	}
 
+	// Configured plugins are resolved in order, spawned in parallel, and
+	// installed in order again.
+	//
+	// The parallel middle step is the only departure from TypeScript's
+	// sequential `for (const plan of plans) await load(plan)`, and it is here
+	// because a process plugin's `initialize` handshake is a round trip to
+	// another process (see process.go): two slow plugins used to cost the sum
+	// of their handshakes on the boot path rather than the longest one.
+	// Nothing observable changes, because a handshake has no side effects on
+	// this heap — install order, which is what the hook contract is actually
+	// about, is still config order.
+	loads := make([]*attempt, 0, len(in.Specs))
 	for _, spec := range in.Specs {
 		if spec.Ref == "" {
 			continue
@@ -175,47 +188,99 @@ func Load(ctx context.Context, in LoadInput) (*Host, error) {
 			continue
 		}
 		in.Report.start(spec)
-		instance, stage, err := load(ctx, spec, in.Input, log)
-		if err != nil {
-			in.Report.fail(spec, stage, err)
+		next := &attempt{spec: spec}
+		next.resolved, next.stage, next.err = Resolve(spec, in.Input.Directory)
+		loads = append(loads, next)
+	}
+
+	var wg sync.WaitGroup
+	for _, next := range loads {
+		if next.err != nil || next.resolved.Source != SourceProcess {
 			continue
 		}
-		host.Add(instance)
-		in.Report.loaded(instance)
+		wg.Add(1)
+		go func(next *attempt) {
+			defer wg.Done()
+			next.instance, next.err = Spawn(ctx, next.spec.Ref, SpawnConfig{
+				Command: next.resolved.Command,
+				Dir:     in.Input.Directory,
+				Env:     next.resolved.Env,
+			}, in.Input, next.spec.Options, log)
+			if next.err != nil {
+				next.stage = StageLoad
+			}
+		}(next)
+	}
+	wg.Wait()
+
+	// loaded tracks the ids already installed, native tier included, so a
+	// second copy of one plugin is refused rather than quietly doubled. Two
+	// config entries resolving to the same plugin — the bare name that finds
+	// ~/.config/gocode/plugin/<name> and the absolute path to the same
+	// program installed elsewhere — is an easy config to write and gives no
+	// other symptom than every hook firing twice and every spawn's startup
+	// cost being paid twice. Same reasoning as the native-options claim
+	// above; this is the process tier's half of it.
+	loaded := map[string]string{}
+	for _, instance := range host.Instances() {
+		loaded[instance.ID] = instance.Spec
+	}
+
+	for _, next := range loads {
+		if next.err == nil && next.instance == nil {
+			// A native ref: its factory runs here, in config order, so a
+			// later plugin still sees an earlier one's mutations.
+			next.instance, next.stage, next.err = loadResolved(ctx, next.spec, next.resolved, in.Input)
+		}
+		if next.err != nil {
+			in.Report.fail(next.spec, next.stage, next.err)
+			continue
+		}
+		if first, dup := loaded[next.instance.ID]; dup {
+			err := fmt.Errorf("plugin %q was already loaded from %q; drop one of the two entries from \"plugin\" in gocode.json",
+				next.instance.ID, first)
+			if first == next.spec.Ref {
+				err = fmt.Errorf("plugin %q is listed twice in \"plugin\" in gocode.json; loading it once", next.spec.Ref)
+			}
+			in.Report.fail(next.spec, StageLoad, err)
+			if next.instance.closer != nil {
+				_ = next.instance.closer(ctx)
+			}
+			continue
+		}
+		loaded[next.instance.ID] = next.spec.Ref
+		host.Add(next.instance)
+		in.Report.loaded(next.instance)
 	}
 	return host, nil
 }
 
-// load runs one spec through resolve-then-load, returning the stage that
-// failed so the report can say which step refused.
-func load(ctx context.Context, spec Spec, in Input, log func(string)) (*Instance, Stage, error) {
-	resolved, stage, err := Resolve(spec, in.Directory)
+// attempt is one configured spec on its way through resolve, spawn and
+// install. It exists so the spawn step can run concurrently while the two
+// steps around it stay in config order.
+type attempt struct {
+	spec     Spec
+	resolved Resolved
+	stage    Stage
+	err      error
+	instance *Instance
+}
+
+// loadResolved runs an already-resolved spec's native factory, returning the
+// stage that failed so the report can say which step refused. The process
+// tier does not come through here: Load spawns those concurrently, before it
+// walks the list to install them.
+func loadResolved(ctx context.Context, spec Spec, resolved Resolved, in Input) (*Instance, Stage, error) {
+	factory, ok := Native(resolved.Target)
+	if !ok {
+		return nil, StageResolve, fmt.Errorf("native plugin %q is not registered", resolved.Target)
+	}
+	instance, err := loadNative(ctx, resolved.Target, factory, in, spec.Options)
 	if err != nil {
-		return nil, stage, err
+		return nil, StageLoad, err
 	}
-	switch resolved.Source {
-	case SourceNative:
-		factory, ok := Native(resolved.Target)
-		if !ok {
-			return nil, StageResolve, fmt.Errorf("native plugin %q is not registered", resolved.Target)
-		}
-		instance, err := loadNative(ctx, resolved.Target, factory, in, spec.Options)
-		if err != nil {
-			return nil, StageLoad, err
-		}
-		instance.Spec = spec.Ref
-		return instance, "", nil
-	default:
-		instance, err := Spawn(ctx, spec.Ref, SpawnConfig{
-			Command: resolved.Command,
-			Dir:     in.Directory,
-			Env:     resolved.Env,
-		}, in, spec.Options, log)
-		if err != nil {
-			return nil, StageLoad, err
-		}
-		return instance, "", nil
-	}
+	instance.Spec = spec.Ref
+	return instance, "", nil
 }
 
 // loadNative runs a native factory. A factory returning nil hooks has opted

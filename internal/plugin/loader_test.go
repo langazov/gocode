@@ -308,3 +308,88 @@ func TestPluginSpecMarshalRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// helperPluginDir writes a plugin directory whose manifest re-executes the
+// test binary as the helper plugin from process_test.go. Two of these are two
+// distinct installs of one plugin — exactly the config that made boot spawn
+// (and pay for) the same plugin twice.
+func helperPluginDir(t *testing.T, name string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := json.Marshal(descriptor{
+		Command: []string{os.Args[0], "-test.run=TestHelperPlugin"},
+		Env:     map[string]string{helperEnv: "1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, manifestFile), manifest, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// Two config entries pointing at two copies of one plugin — a bare name that
+// finds the dev install and an absolute path to the packaged one — must load
+// it once. Before this, both spawned: every hook fired twice and the plugin's
+// startup cost was paid twice on the boot path, with nothing said about it.
+func TestLoadRefusesDuplicatePluginID(t *testing.T) {
+	withNatives(t)
+	first := helperPluginDir(t, "one")
+	second := helperPluginDir(t, "two")
+
+	var failures []string
+	host, err := Load(context.Background(), LoadInput{
+		Input: Input{Directory: t.TempDir()},
+		Specs: []Spec{{Ref: first}, {Ref: second}},
+		Report: &Report{Error: func(spec Spec, stage Stage, err error) {
+			failures = append(failures, spec.Ref+"@"+string(stage))
+		}},
+		Log: func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close(context.Background()) })
+
+	instances := host.Instances()
+	if len(instances) != 1 || instances[0].ID != "helper" {
+		t.Fatalf("instances = %+v, want the plugin loaded exactly once", instances)
+	}
+	// The first entry wins, and the second is reported rather than dropped
+	// silently — the whole point is that the user hears about the duplicate.
+	if instances[0].Spec != first {
+		t.Errorf("Spec = %q, want the first config entry %q", instances[0].Spec, first)
+	}
+	if len(failures) != 1 || failures[0] != second+"@load" {
+		t.Errorf("failures = %v, want the second entry reported at load", failures)
+	}
+}
+
+// The duplicate check must not confuse two genuinely different plugins, so a
+// single entry still loads and a second, distinct id still loads beside it.
+func TestLoadKeepsDistinctProcessPlugins(t *testing.T) {
+	withNatives(t)
+	Register("native-one", func(context.Context, Input, Options) (*Hooks, error) { return &Hooks{}, nil })
+
+	host, err := Load(context.Background(), LoadInput{
+		Input: Input{Directory: t.TempDir()},
+		Specs: []Spec{{Ref: helperPluginDir(t, "only")}},
+		Log:   func(string) {},
+	})
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	t.Cleanup(func() { _ = host.Close(context.Background()) })
+
+	var ids []string
+	for _, instance := range host.Instances() {
+		ids = append(ids, instance.ID)
+	}
+	if len(ids) != 2 || ids[0] != "native-one" || ids[1] != "helper" {
+		t.Errorf("ids = %v, want [native-one helper]", ids)
+	}
+}
