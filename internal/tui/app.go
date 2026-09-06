@@ -53,6 +53,11 @@ type App struct {
 	// of the latest snapshot. It is never written from an event directly:
 	// with subagents running, a child's deltas must not land here.
 	streaming map[string]*strings.Builder // assistantMessageID -> live text
+	// streamingReasoning is streaming's equivalent for extended thinking,
+	// keyed by reasoning part ID. Its keys also decide which stored reasoning
+	// parts renderAssistant suppresses, so that a part being streamed is not
+	// also drawn from the (identical, and staler) fetched message.
+	streamingReasoning map[string]*strings.Builder // reasoningID -> live thinking
 	// agents is the latest aggregated snapshot: one node per session,
 	// including subagent sessions. See aggregator.go.
 	agents       Snapshot
@@ -353,6 +358,7 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 		view:               viewHome,
 		sidebar:            true, // the original shows the sidebar by default
 		streaming:          map[string]*strings.Builder{},
+		streamingReasoning: map[string]*strings.Builder{},
 		input:              input,
 		tip:                randomTip(),
 		cwd:                cwd,
@@ -450,6 +456,14 @@ func (a *App) applySnapshot(snapshot Snapshot) snapshotEffect {
 		return snapshotEffect{}
 	}
 	a.streaming = node.Text
+	// Which parts are live decides which stored ones renderAssistant skips,
+	// and that is not part of the message data a cached block is keyed on —
+	// so a change to the set has to invalidate the render cache. The set
+	// changes when a reasoning part opens or a step settles, not per delta.
+	if !sameKeys(a.streamingReasoning, node.Reasoning) {
+		a.invalidateRenderCache()
+	}
+	a.streamingReasoning = node.Reasoning
 	// A switch the server made on its own (plan_enter/plan_exit) has to move
 	// the footer's agent indicator too, or the interface keeps claiming Build
 	// while the session runs as Plan.

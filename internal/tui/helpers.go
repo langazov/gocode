@@ -19,6 +19,19 @@ var appVersion = installation.Version
 // sortedKeys orders a map's keys so a render that walks it is stable frame to
 // frame. Go randomizes map iteration, which for anything on screen means rows
 // swapping places at random.
+// sameKeys reports whether two maps hold the same key set, ignoring values.
+func sameKeys[V any](a, b map[string]V) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for key := range a {
+		if _, ok := b[key]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))
 	for key := range m {

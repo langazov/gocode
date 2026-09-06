@@ -34,6 +34,12 @@ type SessionNode struct {
 	// liveness hint only: the bus drops events under pressure, so the
 	// authoritative timeline always comes from a Messages fetch.
 	Text map[string]*strings.Builder
+	// Reasoning is Text's equivalent for extended thinking, keyed by
+	// reasoning part ID (the assistant message ID plus a "-reasoning"
+	// suffix, so the keys sort in step order). Same liveness-hint caveat:
+	// reasoning.delta is non-durable, and the settled text arrives with the
+	// part itself on the next fetch.
+	Reasoning map[string]*strings.Builder
 	// Agent is the session's agent as of the last switch seen on the stream,
 	// empty until one arrives. Plan mode switches the agent server-side from
 	// inside a turn, so this is the only way the interface learns about a
@@ -53,7 +59,36 @@ type SessionNode struct {
 }
 
 func newSessionNode(id string) *SessionNode {
-	return &SessionNode{ID: id, Tools: map[string]ToolState{}, Text: map[string]*strings.Builder{}}
+	return &SessionNode{
+		ID:        id,
+		Tools:     map[string]ToolState{},
+		Text:      map[string]*strings.Builder{},
+		Reasoning: map[string]*strings.Builder{},
+	}
+}
+
+// resetStreams drops every live buffer for this session. Called wherever the
+// durable timeline catches up with what was streaming — a settled step, a new
+// prompt, the end of the turn — so the interface renders the stored parts
+// rather than a stale replica of them.
+func (n *SessionNode) resetStreams() {
+	n.Text = map[string]*strings.Builder{}
+	n.Reasoning = map[string]*strings.Builder{}
+}
+
+// stream returns the builder for one live part, creating it on first sight.
+// The nil-map guard matters for nodes built in tests rather than by
+// newSessionNode.
+func stream(buffers map[string]*strings.Builder, id string) (*strings.Builder, map[string]*strings.Builder) {
+	if buffers == nil {
+		buffers = map[string]*strings.Builder{}
+	}
+	builder := buffers[id]
+	if builder == nil {
+		builder = &strings.Builder{}
+		buffers[id] = builder
+	}
+	return builder, buffers
 }
 
 // clone deep-copies a node so a published snapshot is never mutated by later
@@ -67,8 +102,9 @@ func (n *SessionNode) clone() *SessionNode {
 		Asks:   n.Asks,
 		Queued: n.Queued,
 
-		Tools: make(map[string]ToolState, len(n.Tools)),
-		Text:  make(map[string]*strings.Builder, len(n.Text)),
+		Tools:     make(map[string]ToolState, len(n.Tools)),
+		Text:      make(map[string]*strings.Builder, len(n.Text)),
+		Reasoning: make(map[string]*strings.Builder, len(n.Reasoning)),
 	}
 	for k, v := range n.Tools {
 		out.Tools[k] = v
@@ -77,6 +113,11 @@ func (n *SessionNode) clone() *SessionNode {
 		builder := &strings.Builder{}
 		builder.WriteString(v.String())
 		out.Text[k] = builder
+	}
+	for k, v := range n.Reasoning {
+		builder := &strings.Builder{}
+		builder.WriteString(v.String())
+		out.Reasoning[k] = builder
 	}
 	return out
 }
@@ -129,7 +170,7 @@ func (t *tree) apply(e client.Event) bool {
 		return true
 	case "session.next.run.ended":
 		node.Busy = false
-		node.Text = map[string]*strings.Builder{}
+		node.resetStreams()
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.step.started":
@@ -143,13 +184,36 @@ func (t *tree) apply(e client.Event) bool {
 		if messageID == "" {
 			return false
 		}
-		builder := node.Text[messageID]
-		if builder == nil {
-			builder = &strings.Builder{}
-			node.Text[messageID] = builder
-		}
+		builder, buffers := stream(node.Text, messageID)
+		node.Text = buffers
 		delta, _ := e.Data["delta"].(string)
 		builder.WriteString(delta)
+		return true
+	case "session.next.reasoning.started", "session.next.reasoning.delta":
+		// Extended thinking streams the same way assistant text does, and is
+		// buffered the same way: the part exists in the stored message from
+		// its first delta (projectContentDelta), but nothing refetches the
+		// timeline per delta, so the live text is what the thinking block
+		// renders while the model is still in it. started carries no delta —
+		// it only opens the buffer, which is what puts the "Thinking" header
+		// on screen before the first token lands.
+		partID, _ := e.Data["reasoningID"].(string)
+		if partID == "" {
+			return false
+		}
+		builder, buffers := stream(node.Reasoning, partID)
+		node.Reasoning = buffers
+		delta, _ := e.Data["delta"].(string)
+		builder.WriteString(delta)
+		return true
+	case "session.next.reasoning.ended":
+		// The settled part has landed, so the timeline is behind — but the
+		// buffer deliberately stays. Refetching is an HTTP round trip, and
+		// dropping the text now would blink the block off screen until it
+		// came back. renderAssistant suppresses the stored copy of a part
+		// that is still buffered, so the overlap renders once, not twice;
+		// resetStreams clears it when the step settles.
+		t.dirty[sessionID] = true
 		return true
 	case "session.next.tool.called":
 		callID, _ := e.Data["callID"].(string)
@@ -188,7 +252,7 @@ func (t *tree) apply(e client.Event) bool {
 		// wall-clock time. Clearing here is what used to make the footer
 		// spinner drop out mid-task and come back seconds later. The turn's
 		// own end is run.ended, above.
-		node.Text = map[string]*strings.Builder{}
+		node.resetStreams()
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.prompt.admitted":
@@ -201,11 +265,11 @@ func (t *tree) apply(e client.Event) bool {
 		// Promotion: the prompt leaves the queue and becomes a real message,
 		// so both the queue and the timeline are now behind.
 		node.Queued++
-		node.Text = map[string]*strings.Builder{}
+		node.resetStreams()
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.text.ended", "session.next.compaction.ended", "todo.updated":
-		node.Text = map[string]*strings.Builder{}
+		node.resetStreams()
 		t.dirty[sessionID] = true
 		return true
 	}
