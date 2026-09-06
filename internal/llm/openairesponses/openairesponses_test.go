@@ -132,7 +132,9 @@ func TestStream(t *testing.T) {
 		t.Fatalf("expected accumulated arguments, got %v", toolCall.Input)
 	}
 	finish := events[len(events)-1]
-	if finish.Finish != "tool-calls" || finish.Usage.Input != 4 || finish.Usage.Output != 9 || finish.Usage.Reasoning != 2 {
+	// output_tokens is 9 inclusive of the 2 reasoning tokens; llm.Usage's
+	// buckets are disjoint, so Output carries the remaining 7.
+	if finish.Finish != "tool-calls" || finish.Usage.Input != 4 || finish.Usage.Output != 7 || finish.Usage.Reasoning != 2 {
 		t.Fatalf("unexpected finish: %+v", finish)
 	}
 }
@@ -279,5 +281,38 @@ func TestUserImageConversion(t *testing.T) {
 	}
 	if converted[0].Content[1].ImageURL != "data:image/png;base64,abc123" {
 		t.Errorf("image_url = %q", converted[0].Content[1].ImageURL)
+	}
+}
+
+// input_tokens is inclusive of input_tokens_details.cached_tokens, so passing
+// both through unadjusted priced every cached token twice — once at the input
+// rate and again at the cache-read rate (internal/session/cost.go sums the
+// buckets).
+func TestStreamUsageCachedTokens(t *testing.T) {
+	const stream = `data: {"type":"response.output_text.delta","delta":"hi"}
+
+data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tokens":1000,"output_tokens":300,"input_tokens_details":{"cached_tokens":900},"output_tokens_details":{"reasoning_tokens":200}}}}
+
+`
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(stream))
+	})
+	var finish llm.StreamEvent
+	err := client.Stream(context.Background(), llm.Request{
+		ProviderID: "openai",
+		ModelID:    "gpt-5",
+		Messages:   []llm.Message{llm.UserText("m1", "hi")},
+	}, func(event llm.StreamEvent) {
+		if event.Type == llm.EventFinish {
+			finish = event
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := llm.Usage{Input: 100, Output: 100, Reasoning: 200, CacheRead: 900}
+	if finish.Usage != want {
+		t.Fatalf("usage: want %+v, got %+v", want, finish.Usage)
 	}
 }

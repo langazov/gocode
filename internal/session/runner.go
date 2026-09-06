@@ -898,7 +898,11 @@ func (r *Runner) stepCost(providerID, modelID string, usage TokenUsage) float64 
 	if r.Pricing == nil {
 		return 0
 	}
-	rates, ok := r.Pricing(providerID, modelID, usage.Input)
+	// The tier is chosen by how big the *request* was, which is every input
+	// token the model read — cached ones included. usage.Input is the
+	// non-cached remainder (see llm.Usage), so it is not that number on its
+	// own. Upstream passes the same inclusive total as its contextTokens.
+	rates, ok := r.Pricing(providerID, modelID, usage.Input+usage.CacheRead+usage.CacheWrite)
 	if !ok {
 		return 0
 	}

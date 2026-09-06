@@ -102,12 +102,42 @@ type Request struct {
 	Reasoning map[string]any
 }
 
+// Usage is a *non-overlapping* breakdown: the five buckets partition the
+// step's tokens, so no token is counted twice. session.stepCost relies on it —
+// it prices the buckets additively (see internal/session/cost.go), which is
+// only correct if they are disjoint.
+//
+// Providers disagree about this. Anthropic reports `input_tokens` already
+// exclusive of its cache counters and needs no adjustment; every
+// OpenAI-shaped API reports inclusive totals (`prompt_tokens` contains
+// `prompt_tokens_details.cached_tokens`, `completion_tokens` contains
+// `completion_tokens_details.reasoning_tokens`) and each adapter subtracts the
+// subsets out with SubtractTokens before filling this in. Upstream does the
+// same normalization one layer up, in session.ts's getUsage.
+//
+// Input therefore excludes cache. Anything sizing the *request* — a pricing
+// tier, a context-window check — wants Input + CacheRead + CacheWrite.
 type Usage struct {
 	Input      int
 	Output     int
 	Reasoning  int
 	CacheRead  int
 	CacheWrite int
+}
+
+// SubtractTokens derives a non-overlapping count from a provider's inclusive
+// total, clamping at zero when the reported breakdown is nonsensical (a
+// `cached_tokens` larger than `prompt_tokens` is rare but not unheard of, and
+// a negative bucket would silently credit the step's cost). Ports
+// packages/llm/src/protocols/shared.ts's subtractTokens.
+func SubtractTokens(total, subset int) int {
+	if subset <= 0 {
+		return total
+	}
+	if subset >= total {
+		return 0
+	}
+	return total - subset
 }
 
 const (

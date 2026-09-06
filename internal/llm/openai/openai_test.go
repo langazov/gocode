@@ -180,3 +180,97 @@ func TestAssistantToolCallConversion(t *testing.T) {
 		t.Fatalf("unexpected tool call: %+v", msg.ToolCalls[0])
 	}
 }
+
+// The session this regression came from ran on an openai-compatible endpoint
+// that does cache — and every step recorded cache read 0 and reasoning 0,
+// because the usage decoder stopped at prompt_tokens/completion_tokens.
+func TestStreamUsageDetails(t *testing.T) {
+	const stream = `data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":300,"prompt_tokens_details":{"cached_tokens":900},"completion_tokens_details":{"reasoning_tokens":200}}}
+
+data: [DONE]
+
+`
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(stream))
+	})
+	var finish llm.StreamEvent
+	err := client.Stream(context.Background(), llm.Request{
+		ProviderID: "zhipuai-coding-plan",
+		ModelID:    "glm-5.3-flash",
+		Messages:   []llm.Message{llm.UserText("m1", "hi")},
+	}, func(event llm.StreamEvent) {
+		if event.Type == llm.EventFinish {
+			finish = event
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The buckets are disjoint: 100 non-cached input + 900 cached is the
+	// 1000 the provider reported, and 100 output + 200 reasoning is its 300.
+	want := llm.Usage{Input: 100, Output: 100, Reasoning: 200, CacheRead: 900}
+	if finish.Usage != want {
+		t.Fatalf("usage: want %+v, got %+v", want, finish.Usage)
+	}
+}
+
+// DeepSeek reports the same split as a pair of top-level fields.
+func TestStreamUsageCacheHitTokens(t *testing.T) {
+	const stream = `data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":50,"prompt_cache_hit_tokens":800,"prompt_cache_miss_tokens":200}}
+
+data: [DONE]
+
+`
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(stream))
+	})
+	var finish llm.StreamEvent
+	err := client.Stream(context.Background(), llm.Request{
+		ProviderID: "deepseek",
+		ModelID:    "deepseek-chat",
+		Messages:   []llm.Message{llm.UserText("m1", "hi")},
+	}, func(event llm.StreamEvent) {
+		if event.Type == llm.EventFinish {
+			finish = event
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := llm.Usage{Input: 200, Output: 50, CacheRead: 800}
+	if finish.Usage != want {
+		t.Fatalf("usage: want %+v, got %+v", want, finish.Usage)
+	}
+}
+
+// A provider that reports no details at all must keep the totals whole.
+func TestStreamUsageWithoutDetails(t *testing.T) {
+	const stream = `data: {"choices":[{"delta":{"content":"hi"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1000,"completion_tokens":50}}
+
+data: [DONE]
+
+`
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(stream))
+	})
+	var finish llm.StreamEvent
+	err := client.Stream(context.Background(), llm.Request{
+		ProviderID: "openai",
+		ModelID:    "gpt-5",
+		Messages:   []llm.Message{llm.UserText("m1", "hi")},
+	}, func(event llm.StreamEvent) {
+		if event.Type == llm.EventFinish {
+			finish = event
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := llm.Usage{Input: 1000, Output: 50}
+	if finish.Usage != want {
+		t.Fatalf("usage: want %+v, got %+v", want, finish.Usage)
+	}
+}
