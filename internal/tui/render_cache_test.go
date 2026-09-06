@@ -93,7 +93,7 @@ func TestModelNamesArrivingLateReRenderTheSettlementLine(t *testing.T) {
 		models:    []client.Model{{ProviderID: "anthropic", ID: "claude", Name: "Claude Sonnet"}},
 		providers: []client.Provider{{ID: "anthropic", Name: "Anthropic"}},
 	})
-	lines, _ := app.buildTimeline()
+	lines, _, _ := app.buildTimeline()
 	if !strings.Contains(ansi.Strip(strings.Join(lines, "\n")), "Claude Sonnet") {
 		t.Fatal("the settlement line should pick up the model's display name")
 	}
@@ -119,7 +119,7 @@ func TestTheLiveMessageIsCachedAndStillSpins(t *testing.T) {
 	app.busy = true
 
 	app.animationsEnabled = true
-	first, _ := app.buildTimeline()
+	first, _, _ := app.buildTimeline()
 	if _, cached := app.messageCache["m3"]; !cached {
 		t.Fatal("the live message should be cached like the rest")
 	}
@@ -133,7 +133,7 @@ func TestTheLiveMessageIsCachedAndStillSpins(t *testing.T) {
 	// A spinner tick must move the glyph even though the block itself is now
 	// served from the cache.
 	app.spinnerFrame += spinnerBrailleEvery
-	second, _ := app.buildTimeline()
+	second, _, _ := app.buildTimeline()
 	if !strings.Contains(strings.Join(second, "\n"), spinnerFrames[1]) {
 		t.Fatal("the cached live message stopped animating")
 	}

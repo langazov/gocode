@@ -247,14 +247,23 @@ type App struct {
 	// signal), keyed by the part's ID.
 	expandedReasoning map[string]bool
 
-	// chatReasoningRows/chatWindowPad/chatWindowStart cache the layout
-	// viewChat() last computed, so handleClick (run on the next Update(),
-	// against the frame viewChat() just produced) can hit-test a reasoning
-	// header row without re-deriving the same scroll/pad arithmetic — see
-	// viewChat's doc comment.
-	chatReasoningRows map[int]string
-	chatWindowPad     int
-	chatWindowStart   int
+	// expandedToolOutput tracks bash tool calls individually toggled open —
+	// the toolOutputHeaderRef/bashBlock equivalent of expandedReasoning,
+	// keyed by the tool part's ID. A bash call's output collapses to its
+	// first line by default; clicking it (toolOutputClickTarget in
+	// mouse.go) flips its entry here.
+	expandedToolOutput map[string]bool
+
+	// chatReasoningRows/chatToolOutputRows/chatWindowPad/chatWindowStart
+	// cache the layout viewChat() last computed, so handleClick (run on the
+	// next Update(), against the frame viewChat() just produced) can
+	// hit-test a reasoning header row or a collapsed tool-output row without
+	// re-deriving the same scroll/pad arithmetic — see viewChat's doc
+	// comment.
+	chatReasoningRows  map[int]string
+	chatToolOutputRows map[int]string
+	chatWindowPad      int
+	chatWindowStart    int
 	// chatColumnEnd is the screen column where the chat column stops and the
 	// docked sidebar begins, recorded by the same render that laid them out.
 	// A drag-selection is held inside whichever of the two it started in —
@@ -292,6 +301,7 @@ type cachedRender struct {
 	signature uint64
 	block     string
 	refs      []reasoningHeaderRef
+	toolRefs  []toolOutputHeaderRef
 }
 
 // placeholders mirrors the Home route's rotating prompt suggestions.
@@ -336,28 +346,29 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 	cwd, _ := os.Getwd()
 	home, _ := os.UserHomeDir()
 	return &App{
-		ctx:               ctx,
-		client:            c,
-		models:            newModelStore(),
-		theme:             resolved,
-		view:              viewHome,
-		sidebar:           true, // the original shows the sidebar by default
-		streaming:         map[string]*strings.Builder{},
-		input:             input,
-		tip:               randomTip(),
-		cwd:               cwd,
-		homeDir:           home,
-		gitBranch:         gitBranch(cwd),
-		animationsEnabled: true,
-		agentMetaFade:     newFadeAnim(false),
-		modelMetaFade:     newFadeAnim(false),
-		contextLimits:     map[string]int{},
-		modelCosts:        map[string]float64{},
-		history:           loadPromptHistory(filepath.Join(global.Resolve().State, promptHistoryFile)),
-		themeStatePath:    ThemeStatePath(),
-		windowTitle:       "GoCode",
-		thinkingMode:      "hide",
-		expandedReasoning: map[string]bool{},
+		ctx:                ctx,
+		client:             c,
+		models:             newModelStore(),
+		theme:              resolved,
+		view:               viewHome,
+		sidebar:            true, // the original shows the sidebar by default
+		streaming:          map[string]*strings.Builder{},
+		input:              input,
+		tip:                randomTip(),
+		cwd:                cwd,
+		homeDir:            home,
+		gitBranch:          gitBranch(cwd),
+		animationsEnabled:  true,
+		agentMetaFade:      newFadeAnim(false),
+		modelMetaFade:      newFadeAnim(false),
+		contextLimits:      map[string]int{},
+		modelCosts:         map[string]float64{},
+		history:            loadPromptHistory(filepath.Join(global.Resolve().State, promptHistoryFile)),
+		themeStatePath:     ThemeStatePath(),
+		windowTitle:        "GoCode",
+		thinkingMode:       "hide",
+		expandedReasoning:  map[string]bool{},
+		expandedToolOutput: map[string]bool{},
 	}
 }
 

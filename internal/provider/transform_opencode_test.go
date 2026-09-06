@@ -2,8 +2,12 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -267,7 +271,7 @@ func TestZenConfigConvertsRemoteProviders(t *testing.T) {
 	}))
 	defer server.Close()
 
-	catalog, err := zenConfig(context.Background(), server.URL, "tok", "org-1")
+	catalog, err := zenConfigCatalog(context.Background(), server.URL, "tok", "org-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -309,7 +313,7 @@ func TestZenConfigDecodesPerModelProviderOverride(t *testing.T) {
 	}))
 	defer server.Close()
 
-	catalog, err := zenConfig(context.Background(), server.URL, "tok", "")
+	catalog, err := zenConfigCatalog(context.Background(), server.URL, "tok", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -328,6 +332,16 @@ func TestZenConfigDecodesPerModelProviderOverride(t *testing.T) {
 	}
 }
 
+// zenConfigCatalog fetches and decodes in one step — the pairing overlay
+// does — so these tests stay about the conversion rather than the split.
+func zenConfigCatalog(ctx context.Context, server, token, orgID string) (modelsdev.Catalog, error) {
+	raw, err := zenConfig(ctx, server, token, orgID)
+	if err != nil {
+		return nil, err
+	}
+	return zenDecodeConfig(raw)
+}
+
 // TestZenConfigTreats404AsNoOverrides: an account with no overrides is the
 // normal case, not an error.
 func TestZenConfigTreats404AsNoOverrides(t *testing.T) {
@@ -336,7 +350,7 @@ func TestZenConfigTreats404AsNoOverrides(t *testing.T) {
 	}))
 	defer server.Close()
 
-	catalog, err := zenConfig(context.Background(), server.URL, "tok", "")
+	catalog, err := zenConfigCatalog(context.Background(), server.URL, "tok", "")
 	if err != nil {
 		t.Fatalf("a 404 must not be an error: %v", err)
 	}
@@ -559,5 +573,203 @@ func TestApplyOverlaysNoopWithoutCredential(t *testing.T) {
 	merged := ApplyOverlays(context.Background(), base)
 	if len(merged) != 1 {
 		t.Errorf("merged = %v, want the base catalog", merged)
+	}
+}
+
+// resetZenOverlayCache clears the in-process overlay cache, standing in for
+// the cold cache every new gocode process starts with.
+func resetZenOverlayCache(t *testing.T) {
+	t.Helper()
+	clear := func() {
+		zenOverlayMu.Lock()
+		zenOverlayCache.key, zenOverlayCache.catalog, zenOverlayCache.err = "", nil, nil
+		zenOverlayCache.at = time.Time{}
+		zenOverlayMu.Unlock()
+		zenOrgIDCache.Lock()
+		zenOrgIDCache.token, zenOrgIDCache.orgID, zenOrgIDCache.at = "", "", time.Time{}
+		zenOrgIDCache.Unlock()
+	}
+	clear()
+	t.Cleanup(clear)
+}
+
+// The overlay is fetched inside provider.Resolve, which bootStack runs before
+// the server listens — so a second process must answer it from disk rather
+// than repeating the round trip. This is the boot-path regression the disk
+// cache exists to prevent.
+func TestOverlayServesSecondBootFromDisk(t *testing.T) {
+	resetZenOverlayCache(t)
+	writeAuth(t, map[string]any{
+		"opencode": map[string]any{"type": "oauth", "access": "tok", "refresh": "ref", "metadata": map[string]any{"orgID": "org-1"}},
+	})
+	var requests int
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.Write([]byte(`{"config":{"provider":{"opencode":{"name":"Zen","whitelist":["claude-opus-5"]}}}}`))
+	}))
+	defer console.Close()
+	t.Setenv("GOCODE_CONSOLE_SERVER", console.URL)
+
+	first, err := (opencodeTransform{}).Overlay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := first["opencode"]; !ok {
+		t.Fatalf("first overlay = %v, want an opencode entry", first)
+	}
+	if requests != 1 {
+		t.Fatalf("requests after first overlay = %d, want 1", requests)
+	}
+
+	// A fresh process: same credential and cache directory, empty memory.
+	resetZenOverlayCache(t)
+	second, err := (opencodeTransform{}).Overlay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requests != 1 {
+		t.Errorf("requests after second overlay = %d, want the disk cache to answer it", requests)
+	}
+	entry, ok := second["opencode"]
+	if !ok || len(entry.Whitelist) != 1 || entry.Whitelist[0] != "claude-opus-5" {
+		t.Errorf("second overlay = %v, want the cached entry", second)
+	}
+}
+
+// A different credential must not be answered with the previous account's
+// overlay: the cache is keyed by the credential it was fetched with.
+func TestOverlayIgnoresDiskCacheFromAnotherCredential(t *testing.T) {
+	resetZenOverlayCache(t)
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	if err := os.MkdirAll(filepath.Join(dir, "gocode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := json.Marshal(zenOverlayFile{
+		Version: zenOverlayVersion,
+		Key:     zenAccountKey("https://elsewhere.example", "someone-else"),
+		Models:  []string{"stale"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(zenOverlayPath(), stale, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// writeAuth resets XDG_CACHE_HOME, so point it back at the primed one.
+	writeAuth(t, map[string]any{
+		"opencode": map[string]any{"type": "oauth", "access": "tok", "refresh": "ref", "metadata": map[string]any{"orgID": "org-1"}},
+	})
+	t.Setenv("XDG_CACHE_HOME", dir)
+
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"config":{"provider":{"opencode":{"name":"Zen","whitelist":["fresh"]}}}}`))
+	}))
+	defer console.Close()
+	t.Setenv("GOCODE_CONSOLE_SERVER", console.URL)
+
+	catalog, err := (opencodeTransform{}).Overlay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := catalog["opencode"]
+	if len(entry.Whitelist) != 1 || entry.Whitelist[0] != "fresh" {
+		t.Errorf("whitelist = %v, want the entry fetched for this credential", entry.Whitelist)
+	}
+}
+
+// GOCODE_DISABLE_MODELS_FETCH means offline. It gates the public catalog
+// already; the account overlay used to ignore it and was then the only thing
+// on the boot path still dialling out with fetching explicitly disabled.
+func TestOverlayHonoursDisableModelsFetch(t *testing.T) {
+	resetZenOverlayCache(t)
+	writeAuth(t, map[string]any{
+		"opencode": map[string]any{"type": "oauth", "access": "tok", "refresh": "ref", "metadata": map[string]any{"orgID": "org-1"}},
+	})
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Error("overlay reached the network with GOCODE_DISABLE_MODELS_FETCH set")
+	}))
+	defer console.Close()
+	t.Setenv("GOCODE_CONSOLE_SERVER", console.URL)
+	t.Setenv("GOCODE_DISABLE_MODELS_FETCH", "1")
+
+	catalog, err := (opencodeTransform{}).Overlay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(catalog) != 0 {
+		t.Errorf("catalog = %v, want nothing fetched", catalog)
+	}
+}
+
+// RefreshOverlay is what keeps the disk copy current now that Overlay itself
+// prefers it: it must re-fetch even when the cache would have answered.
+func TestRefreshOverlayRewritesDiskCache(t *testing.T) {
+	resetZenOverlayCache(t)
+	writeAuth(t, map[string]any{
+		"opencode": map[string]any{"type": "oauth", "access": "tok", "refresh": "ref", "metadata": map[string]any{"orgID": "org-1"}},
+	})
+	whitelist := "first"
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `{"config":{"provider":{"opencode":{"whitelist":[%q]}}}}`, whitelist)
+	}))
+	defer console.Close()
+	t.Setenv("GOCODE_CONSOLE_SERVER", console.URL)
+
+	if _, err := (opencodeTransform{}).Overlay(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	whitelist = "second"
+	if err := (opencodeTransform{}).RefreshOverlay(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	resetZenOverlayCache(t)
+	catalog, err := (opencodeTransform{}).Overlay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := catalog["opencode"]
+	if len(entry.Whitelist) != 1 || entry.Whitelist[0] != "second" {
+		t.Errorf("whitelist = %v, want the refreshed entry", entry.Whitelist)
+	}
+}
+
+// An entry written by an older gocode has an unknown shape, and "decoded to
+// nothing" is a legitimate cached state (the account has no overrides). The
+// version field is what keeps the two apart, so a shape change re-fetches
+// instead of silently reporting the account as having no models of its own.
+func TestOverlayIgnoresDiskCacheFromAnotherVersion(t *testing.T) {
+	resetZenOverlayCache(t)
+	dir := t.TempDir()
+	writeAuth(t, map[string]any{
+		"opencode": map[string]any{"type": "oauth", "access": "tok", "refresh": "ref", "metadata": map[string]any{"orgID": "org-1"}},
+	})
+	t.Setenv("XDG_CACHE_HOME", dir)
+
+	console := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"config":{"provider":{"opencode":{"whitelist":["fresh"]}}}}`))
+	}))
+	defer console.Close()
+	t.Setenv("GOCODE_CONSOLE_SERVER", console.URL)
+
+	// The right credential and server — so only the version can make this a
+	// miss — in a shape this build no longer understands.
+	if err := os.MkdirAll(filepath.Join(dir, "gocode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale := fmt.Sprintf(`{"version":0,"key":%q,"catalog":{"opencode":{"id":"opencode"}}}`,
+		zenAccountKey(console.URL, "tok"))
+	if err := os.WriteFile(zenOverlayPath(), []byte(stale), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	catalog, err := (opencodeTransform{}).Overlay(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry := catalog["opencode"]
+	if len(entry.Whitelist) != 1 || entry.Whitelist[0] != "fresh" {
+		t.Errorf("whitelist = %v, want the re-fetched entry", entry.Whitelist)
 	}
 }

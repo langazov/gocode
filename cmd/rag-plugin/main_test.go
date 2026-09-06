@@ -221,3 +221,40 @@ func TestRagPluginCLIIndex(t *testing.T) {
 		t.Errorf("expected db at %s: %v", dbPath, err)
 	}
 }
+
+// TestRagPluginHandshakeDefersStoreOpen pins the reason the runtime is built
+// lazily: the host blocks boot on this handshake, and store.Open reads the
+// entire vector DB into memory — seconds, for a large index, paid by every
+// `gocode tui`/`serve` start whether or not the session searches anything.
+//
+// The store directory is the observable proof: it does not exist until a
+// tool call actually needs it.
+func TestRagPluginHandshakeDefersStoreOpen(t *testing.T) {
+	server := fakeEmbeddingServer(t)
+	defer server.Close()
+
+	root := t.TempDir()
+	writeFile(t, root, "fruit.md", "apple apple apple is a fruit\n")
+	dbPath := filepath.Join(t.TempDir(), "rag.db")
+
+	instance := spawnRagPlugin(t, root, plugin.Options{
+		"embeddingBaseURL": server.URL,
+		"dbPath":           dbPath,
+	})
+	// The manifest is static, so the handshake still declares both tools.
+	if len(instance.Hooks.Tools) != 2 {
+		t.Fatalf("got %d tools, want 2: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
+	}
+	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
+		t.Fatalf("the handshake opened the store at %s (stat err = %v)", dbPath, err)
+	}
+
+	if _, err := findTool(t, instance, "rag_index").Execute(context.Background(), map[string]any{}, plugin.ToolContext{
+		SessionID: "s1", Directory: root, Worktree: root,
+	}); err != nil {
+		t.Fatalf("rag_index: %v", err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Errorf("the first tool call should have opened the store: %v", err)
+	}
+}

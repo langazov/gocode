@@ -2,6 +2,7 @@ package db_test
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,77 @@ import (
 
 	"github.com/langazov/gocode-go/internal/db"
 )
+
+// TestConcurrentWritesAcrossHandles covers what the write semaphore cannot:
+// two independent connection pools on one database file, which is what a
+// second gocode process is. Serializing writers inside one process says
+// nothing about a writer in another one, so a read-then-write transaction can
+// have its WAL snapshot invalidated between the read and the write and come
+// back SQLITE_BUSY_SNAPSHOT (517) — a code busy_timeout deliberately does not
+// wait out, because only a rollback and retry can refresh a stale snapshot.
+//
+// The shape here is Bus.commitDurable's: SELECT the aggregate's sequence, then
+// INSERT at seq+1. That is the transaction that lost a tool call's settlement
+// event in ses_f8d209148ffe1S8iDKNJ4tmW2i, leaving the call pending forever.
+func TestConcurrentWritesAcrossHandles(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "test.db")
+
+	first, err := db.OpenAndMigrate(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer first.Close()
+	second, err := db.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Close()
+
+	if _, err := first.Exec(ctx,
+		`CREATE TABLE seq (aggregate TEXT PRIMARY KEY, n INTEGER NOT NULL)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Exec(ctx, `INSERT INTO seq (aggregate, n) VALUES ('a', 0)`); err != nil {
+		t.Fatal(err)
+	}
+
+	const perHandle = 60
+	var wg sync.WaitGroup
+	errs := make(chan error, 2*perHandle)
+
+	for _, handle := range []*db.DB{first, second} {
+		wg.Add(1)
+		go func(handle *db.DB) {
+			defer wg.Done()
+			for range perHandle {
+				err := handle.Transaction(ctx, func(tx *sql.Tx) error {
+					// Read first, exactly as commitDurable does: this is what
+					// takes the snapshot that the other handle can invalidate.
+					var n int
+					if err := tx.QueryRowContext(ctx,
+						`SELECT n FROM seq WHERE aggregate = 'a'`).Scan(&n); err != nil {
+						return err
+					}
+					_, err := tx.ExecContext(ctx,
+						`UPDATE seq SET n = ? WHERE aggregate = 'a'`, n+1)
+					return err
+				})
+				if err != nil {
+					errs <- err
+					return
+				}
+			}
+		}(handle)
+	}
+
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		t.Fatalf("cross-process write contention leaked to the caller: %v", err)
+	}
+}
 
 // TestConcurrentWritesAndReads is the phase 0 acceptance check from
 // MULTI_AGENTS.md: concurrent writers must serialize without SQLITE_BUSY, and

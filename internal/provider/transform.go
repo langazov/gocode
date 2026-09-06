@@ -2,8 +2,10 @@ package provider
 
 import (
 	"context"
+	"errors"
 	"sort"
 
+	"github.com/langazov/gocode-go/internal/global"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
@@ -91,6 +93,40 @@ func applyTransforms(ctx context.Context, r *Resolved) error {
 // catalog-shaped rather than per-provider like ModelSource.
 type CatalogOverlay interface {
 	Overlay(ctx context.Context) (modelsdev.Catalog, error)
+}
+
+// OverlayRefresher is implemented by a CatalogOverlay whose data comes over
+// the network and is cached, so the runtime can renew it off the
+// boot-critical path.
+//
+// [Overlay] itself must never wait on a network call it could serve from a
+// cache: it runs inside Resolve, which runs before the server listens. This
+// is the other half of that bargain — the runtime calls it once, in the
+// background, at boot.
+type OverlayRefresher interface {
+	RefreshOverlay(ctx context.Context) error
+}
+
+// StartOverlayRefresh renews every refreshable overlay in the background,
+// the counterpart to modelsdev.Service.StartBackgroundRefresh. It returns
+// immediately; call it once, from the boot wiring, after the server is
+// listening or on its way to.
+//
+// A refresh that fails is logged and dropped: an account overlay is an
+// enhancement layered on the public catalog, so a failed renewal leaves the
+// last good copy in place rather than taking the catalog down with it.
+func StartOverlayRefresh(ctx context.Context) {
+	for _, t := range registry {
+		refresher, ok := t.(OverlayRefresher)
+		if !ok {
+			continue
+		}
+		go func(refresher OverlayRefresher) {
+			if err := refresher.RefreshOverlay(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				global.LogBackground("provider: overlay refresh failed: %v", err)
+			}
+		}(refresher)
+	}
 }
 
 // ApplyOverlays merges every registered overlay onto a catalog, entry by

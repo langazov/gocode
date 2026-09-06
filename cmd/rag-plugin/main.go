@@ -22,6 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/langazov/gocode-go/internal/lsp"
 	"github.com/langazov/gocode-go/internal/modelsdev"
@@ -102,7 +103,55 @@ func (r *runtime) close() {
 	r.store.Close()
 }
 
-var rt *runtime
+// rt is the process's single runtime, and pending holds the options the
+// handshake resolved it from. Both are guarded by rtMu: the plugin loop is
+// single-goroutine today, but the lazy build below is the kind of thing that
+// silently breaks the day a second reader appears.
+var (
+	rtMu    sync.Mutex
+	rt      *runtime
+	pending *runtimeOptions
+)
+
+// ensureRuntime builds the runtime on first use, from the options the
+// handshake stashed.
+//
+// It is deliberately not built during `initialize`. The host blocks boot on
+// that handshake (internal/plugin/process.go's Spawn), and store.Open eagerly
+// gob-decodes every collection in the vector DB into memory — several seconds
+// for a large index, paid by every `gocode tui`/`serve` start whether or not
+// the session ever searches anything. Deferring it to the first rag_index or
+// rag_search call moves that cost onto the caller that actually wants it.
+//
+// A failed build is not cached: an embeddings provider that was unreachable
+// at the first call may well answer the second.
+func ensureRuntime() (*runtime, error) {
+	rtMu.Lock()
+	defer rtMu.Unlock()
+	if rt != nil {
+		return rt, nil
+	}
+	if pending == nil {
+		return nil, fmt.Errorf("rag-plugin: not initialized")
+	}
+	built, err := buildRuntime(context.Background(), *pending)
+	if err != nil {
+		return nil, err
+	}
+	rt = built
+	return rt, nil
+}
+
+// closeRuntime releases the runtime if one was ever built. Safe to call when
+// the handshake happened but no tool call ever did.
+func closeRuntime() {
+	rtMu.Lock()
+	defer rtMu.Unlock()
+	if rt != nil {
+		rt.close()
+		rt = nil
+	}
+}
 
 func buildRuntime(ctx context.Context, opts runtimeOptions) (*runtime, error) {
 	if opts.ProjectID == "" {
@@ -468,15 +517,11 @@ func runPlugin() {
 			if !errors.Is(err, io.EOF) {
 				fmt.Fprintln(os.Stderr, "decode:", err)
 			}
-			if rt != nil {
-				rt.close()
-			}
+			closeRuntime()
 			return
 		}
 		if message.Method == "shutdown" {
-			if rt != nil {
-				rt.close()
-			}
+			closeRuntime()
 			return
 		}
 		if err := dispatch(message); err != nil {
@@ -533,11 +578,12 @@ func handleInitialize(message request) error {
 		DisableGitignore:  boolOpt(params.Options, "disableGitignore", false),
 	}
 
-	built, err := buildRuntime(context.Background(), opts)
-	if err != nil {
-		return reply(message.ID, nil, fmt.Errorf("rag-plugin: %w", err))
-	}
-	rt = built
+	// Only remembered here — see ensureRuntime for why the store is not
+	// opened until a tool call needs it. The manifest below is static, so
+	// nothing in this reply depends on the runtime existing yet.
+	rtMu.Lock()
+	pending = &opts
+	rtMu.Unlock()
 
 	return reply(message.ID, map[string]any{
 		"id":    "rag-plugin",
@@ -579,8 +625,9 @@ func handleTool(message request) error {
 	if err := json.Unmarshal(message.Params, &params); err != nil {
 		return err
 	}
-	if rt == nil {
-		return reply(message.ID, nil, fmt.Errorf("rag-plugin: not initialized"))
+	rt, err := ensureRuntime()
+	if err != nil {
+		return reply(message.ID, nil, err)
 	}
 
 	switch params.Name {

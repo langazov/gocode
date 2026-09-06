@@ -18,6 +18,10 @@ func writeAuth(t *testing.T, entries map[string]any) string {
 	t.Helper()
 	dir := t.TempDir()
 	t.Setenv("XDG_DATA_HOME", dir)
+	// The Zen overlay caches to XDG_CACHE_HOME (see zenOverlayPath); without
+	// redirecting it a test with a credential writes into the developer's own
+	// cache and the next test reads it back.
+	t.Setenv("XDG_CACHE_HOME", t.TempDir())
 	t.Setenv("GOCODE_AUTH_CONTENT", "")
 	payload, err := json.Marshal(entries)
 	if err != nil {

@@ -457,6 +457,12 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	// step events are not enough.
 	execution.OnStatus = session.PublishRunStatus(ctx, bus)
 	catalog.StartBackgroundRefresh(ctx)
+	// The per-account provider overlay (an opencode/Zen org's own model list)
+	// renews on the same terms as the public catalog: in the background,
+	// after boot. provider.Resolve above answered it from the cache this
+	// writes, so the fetch must not be waited on here — see
+	// provider.StartOverlayRefresh.
+	provider.StartOverlayRefresh(ctx)
 	service := session.NewService(database, bus)
 	// Plan mode needs both the question service and the session service, so it
 	// is registered here rather than in the builtins block above.

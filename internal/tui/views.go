@@ -157,7 +157,7 @@ func (a *App) contentWidth() int {
 // because Bubble Tea always finishes a View() before the next Update() sees
 // input, so nothing here changes between this render and that click.
 func (a *App) viewChat() string {
-	lines, reasoningRows := a.buildTimeline()
+	lines, reasoningRows, toolOutputRows := a.buildTimeline()
 	start := 0
 
 	viewportHeight := a.viewportHeight()
@@ -192,6 +192,7 @@ func (a *App) viewChat() string {
 		a.scrollOffset = 0
 	}
 	a.chatReasoningRows = reasoningRows
+	a.chatToolOutputRows = toolOutputRows
 	a.chatWindowStart = start
 
 	// The chat column is inset by one more cell than the frame provides
