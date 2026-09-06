@@ -360,6 +360,90 @@ func InstallDir(ref string) string {
 	return filepath.Join(InstallRoot(), ref)
 }
 
+// PluginPathEnv names a colon-separated (semicolon on Windows) list of extra
+// directories to search for bare-name plugins, ahead of the bundled ones. It
+// exists for packagers whose layout this cannot infer — a distro package that
+// splits the binary from its plugins, a Nix store path — and it is how the
+// bundled lookup is tested, since a test binary's own location tells us
+// nothing about where a release would have put things.
+const PluginPathEnv = "GOCODE_PLUGIN_PATH"
+
+// BundledRoots are the directories a packaged install puts plugins in, found
+// relative to the running binary so that no absolute path has to be baked in
+// or written into a user's config.
+//
+// Two layouts are recognized, which are the two this project actually ships:
+//
+//	<prefix>/bin/gocode + <prefix>/libexec/rag-plugin/   the Homebrew formula
+//	<dir>/gocode        + <dir>/rag-plugin/              the release tarball
+//
+// Deriving them from os.Executable rather than hardcoding a Homebrew prefix
+// is what makes this work across /opt/homebrew, /usr/local, Linuxbrew, and a
+// tarball unpacked anywhere at all.
+//
+// Before this existed there was no way for a packaged plugin to be found by
+// name, so the formula's post_install wrote the absolute libexec path into
+// the user's config instead. That worked, but it made the config
+// installation-specific: it broke when the Homebrew prefix changed, it named
+// a path no one could reasonably type at `gocode plugin disable`, and — since
+// an absolute path and a bare name are different refs that nothing
+// deduplicates — a user who also ran `make install-rag-plugin` ended up
+// loading the same plugin twice, spawning two copies of it at every boot.
+func BundledRoots() []string {
+	var roots []string
+	seen := map[string]bool{}
+	add := func(dir string) {
+		if dir == "" {
+			return
+		}
+		clean := filepath.Clean(dir)
+		if seen[clean] {
+			return
+		}
+		seen[clean] = true
+		roots = append(roots, clean)
+	}
+
+	for _, dir := range filepath.SplitList(os.Getenv(PluginPathEnv)) {
+		add(dir)
+	}
+
+	exe, err := os.Executable()
+	if err != nil {
+		return roots
+	}
+	// Resolve symlinks: Homebrew puts a link in <prefix>/bin pointing into
+	// the Cellar, and it is the Cellar copy that has libexec beside it.
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	dir := filepath.Dir(exe)
+	add(filepath.Join(filepath.Dir(dir), "libexec"))
+	add(dir)
+	return roots
+}
+
+// bundledDir returns the bundled directory holding the plugin named ref, and
+// whether one was found.
+//
+// Only a directory carrying a manifest counts. That is stricter than
+// [entrypoint]'s general rule, deliberately: one of the roots searched is the
+// directory the gocode binary itself sits in, which on a tarball install is
+// often something like /usr/local/bin, and the looser rule would treat every
+// executable sitting next to gocode as a plugin.
+func bundledDir(ref string) (string, bool) {
+	if ref == "" || strings.ContainsAny(ref, `/\`) {
+		return "", false
+	}
+	for _, root := range BundledRoots() {
+		candidate := filepath.Join(root, ref)
+		if _, err := os.Stat(filepath.Join(candidate, manifestFile)); err == nil {
+			return candidate, true
+		}
+	}
+	return "", false
+}
+
 // locate turns a spec into an existing path, or explains where it looked.
 func locate(ref, directory string) (string, error) {
 	if isPathLike(ref) {
@@ -373,13 +457,20 @@ func locate(ref, directory string) (string, error) {
 		return filepath.Clean(path), nil
 	}
 
+	// The user's own install root wins over anything the package manager
+	// shipped: someone who ran `make install-plugin` to try a local build is
+	// asking for that build, not the packaged copy of the same name.
 	installed := InstallDir(ref)
 	if _, err := os.Stat(installed); err == nil {
 		return installed, nil
 	}
+	if bundled, ok := bundledDir(ref); ok {
+		return bundled, nil
+	}
+	searched := append([]string{installed}, BundledRoots()...)
 	return "", fmt.Errorf(
-		"plugin %q is not installed: no native plugin by that name, and nothing at %s (this port does not install plugins at runtime)",
-		ref, installed)
+		"plugin %q is not installed: no native plugin by that name, and nothing in %s (this port does not install plugins at runtime)",
+		ref, strings.Join(searched, ", "))
 }
 
 // entrypoint decides how to run a resolved target: a manifest names the
