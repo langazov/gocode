@@ -133,6 +133,17 @@ type Snapshot struct {
 	// Dropped counts events the server-side subscription discarded. Non-zero
 	// means streamed text is incomplete — the refetch is what makes it whole.
 	Dropped int
+	// ReceivedBytes is how many bytes of model output — assistant text and
+	// reasoning, every session on the stream — have arrived since this
+	// process started. Monotonic, so a reader samples it and takes the
+	// difference; see tpsMeter, which turns that into the footer's rate.
+	//
+	// Bytes rather than tokens because a delta is not a token: providers
+	// split the stream on their own boundaries, and rounding each fragment up
+	// to a whole token would inflate the count by more than the estimate is
+	// worth. Converting once, at sample time, keeps the error to a single
+	// rounding per second.
+	ReceivedBytes int
 }
 
 // tree is the aggregator's mutable state. It lives on the aggregator
@@ -140,6 +151,11 @@ type Snapshot struct {
 type tree struct {
 	sessions map[string]*SessionNode
 	dirty    map[string]bool
+	// receivedBytes backs Snapshot.ReceivedBytes. It is deliberately not
+	// per-session: the footer reports what the model is producing for this
+	// process, and a turn that fans out to subagents is still one stream of
+	// work the user is waiting on.
+	receivedBytes int
 }
 
 func newTree() *tree {
@@ -188,6 +204,7 @@ func (t *tree) apply(e client.Event) bool {
 		node.Text = buffers
 		delta, _ := e.Data["delta"].(string)
 		builder.WriteString(delta)
+		t.receivedBytes += len(delta)
 		return true
 	case "session.next.reasoning.started", "session.next.reasoning.delta":
 		// Extended thinking streams the same way assistant text does, and is
@@ -205,6 +222,10 @@ func (t *tree) apply(e client.Event) bool {
 		node.Reasoning = buffers
 		delta, _ := e.Data["delta"].(string)
 		builder.WriteString(delta)
+		// Thinking is model output too, and on a reasoning model it is most
+		// of what a step produces — leaving it out would read as a stalled
+		// counter through the longest part of a turn.
+		t.receivedBytes += len(delta)
 		return true
 	case "session.next.reasoning.ended":
 		// The settled part has landed, so the timeline is behind — but the
@@ -279,9 +300,10 @@ func (t *tree) apply(e client.Event) bool {
 // snapshot publishes an immutable copy and clears the dirty set.
 func (t *tree) snapshot(dropped int) Snapshot {
 	out := Snapshot{
-		Sessions: make(map[string]*SessionNode, len(t.sessions)),
-		Dirty:    make(map[string]bool, len(t.dirty)),
-		Dropped:  dropped,
+		Sessions:      make(map[string]*SessionNode, len(t.sessions)),
+		Dirty:         make(map[string]bool, len(t.dirty)),
+		Dropped:       dropped,
+		ReceivedBytes: t.receivedBytes,
 	}
 	for id, node := range t.sessions {
 		out.Sessions[id] = node.clone()

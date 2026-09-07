@@ -321,7 +321,14 @@ func (a *App) footerNotice() string {
 // footerRight renders the hint row's right half, gated by the shared width
 // policy (see this file's header comment for why the policy is applied here).
 func (a *App) footerRight(policy footerPolicy) []string {
-	segments := make([]string, 0, 2)
+	segments := make([]string, 0, 3)
+	// Throughput leads the group: it is the segment that moves, and it sits
+	// under the same width gate as the usage meter it reads alongside.
+	if policy.ShowActivityMeta {
+		if tps := a.footerTPS(); tps != "" {
+			segments = append(segments, tps)
+		}
+	}
 	usage := a.sessionUsage()
 	switch {
 	case !usage.empty() && policy.ShowActivityMeta:

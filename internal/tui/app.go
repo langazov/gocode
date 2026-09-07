@@ -68,6 +68,11 @@ type App struct {
 
 	leaderArmed  bool
 	spinnerFrame int
+	// tps is the footer's throughput counter and tpsTicking its loop guard,
+	// the tpsTickMsg equivalent of spinning below. See tps.go.
+	tps        tpsMeter
+	tpsTicking bool
+
 	// spinning reports whether a spinnerTickMsg loop is in flight, so the
 	// several call sites that set busy can all call startSpinner without
 	// stacking duplicate loops. See startSpinner.
@@ -791,6 +796,10 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			}
 		}
 		return tea.Batch(cmds...)
+	case tpsTickMsg:
+		a.tpsTicking = false
+		a.tps.sample(a.agents.ReceivedBytes)
+		return a.startTPS()
 	case spinnerTickMsg:
 		a.spinning = false
 		if a.busy {
