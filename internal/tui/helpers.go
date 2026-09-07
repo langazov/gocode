@@ -51,6 +51,27 @@ func (a *App) homeDirectory() string {
 	return out
 }
 
+// displayPath shortens a file path for a tool row: relative to the working
+// directory when it is inside it, otherwise abbreviated against home. A tool
+// row is usually reporting on a file in the project, and "internal/tui/app.go"
+// carries the same information as the absolute path in a fraction of a narrow
+// terminal's width.
+func (a *App) displayPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	if !filepath.IsAbs(path) {
+		return filepath.ToSlash(path)
+	}
+	if a.cwd != "" {
+		if rel, err := filepath.Rel(a.cwd, path); err == nil &&
+			rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel) {
+			return filepath.ToSlash(rel)
+		}
+	}
+	return abbreviateHome(path, a.homeDir)
+}
+
 // abbreviateHome replaces the user's home prefix with "~", mirroring the
 // TypeScript abbreviateHome helper.
 func abbreviateHome(input, home string) string {

@@ -252,11 +252,11 @@ type App struct {
 	// signal), keyed by the part's ID.
 	expandedReasoning map[string]bool
 
-	// expandedToolOutput tracks bash tool calls individually toggled open —
-	// the toolOutputHeaderRef/bashBlock equivalent of expandedReasoning,
-	// keyed by the tool part's ID. A bash call's output collapses to its
-	// first line by default; clicking it (toolOutputClickTarget in
-	// mouse.go) flips its entry here.
+	// expandedToolOutput tracks tool calls individually toggled open — the
+	// toolOutputHeaderRef/collapsibleBlock equivalent of expandedReasoning,
+	// keyed by the tool part's ID. bash's output, read's file contents and
+	// write's stored content all collapse to their first line by default;
+	// clicking one (toolOutputClickTarget in mouse.go) flips its entry here.
 	expandedToolOutput map[string]bool
 
 	// chatReasoningRows/chatToolOutputRows/chatWindowPad/chatWindowStart
