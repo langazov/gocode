@@ -542,7 +542,7 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 			"sessionID":          sessionID,
 			"timestamp":          nowMillis(),
 			"assistantMessageID": assistantMessageID,
-			"error":              stepError(providerErr),
+			"error":              stepError(runCtx, providerErr),
 		}, event.PublishOptions{}); err != nil {
 			return turnResult{}, err
 		}
@@ -814,9 +814,20 @@ func (r *Runner) failInterruptedTools(ctx context.Context, sessionID string) err
 // stepError classifies a failed step for the settled assistant message. A
 // canceled run context means the user interrupted the turn, which every
 // consumer needs to tell apart from a provider failure — see ErrorTypeAborted.
-func stepError(err error) map[string]any {
+//
+// The run context is the authority on that, not the error alone: a deadline
+// that fired inside the HTTP client produces the very same
+// context.Canceled/context.DeadlineExceeded an interrupt does, and matching on
+// the error by itself filed those as interruptions — which the TUI renders as
+// a bare "· interrupted" with the error block suppressed, so a provider timing
+// out mid-stream was indistinguishable from the user pressing escape, message
+// and all. Only a run context that is actually done is the user's doing.
+//
+// runCtx, note, not the WithoutCancel copy runTurnAttempt publishes through:
+// that one is never done, by construction.
+func stepError(runCtx context.Context, err error) map[string]any {
 	errType := ErrorTypeUnknown
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if runCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		errType = ErrorTypeAborted
 	}
 	return map[string]any{"type": errType, "message": err.Error()}

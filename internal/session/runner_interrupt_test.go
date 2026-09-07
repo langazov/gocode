@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -89,13 +91,35 @@ func TestInterruptedRunStillSettlesTheAssistantMessage(t *testing.T) {
 
 // A genuine provider failure must stay distinguishable from an interruption.
 func TestStepErrorTagsOnlyCancellationAsAborted(t *testing.T) {
-	if got := stepError(context.Canceled)["type"]; got != ErrorTypeAborted {
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := stepError(canceled, context.Canceled)["type"]; got != ErrorTypeAborted {
 		t.Fatalf("a canceled context is an interruption, got %v", got)
 	}
-	if got := stepError(context.DeadlineExceeded)["type"]; got != ErrorTypeAborted {
-		t.Fatalf("a deadline is an interruption, got %v", got)
+	if got := stepError(canceled, context.DeadlineExceeded)["type"]; got != ErrorTypeAborted {
+		t.Fatalf("a deadline on a canceled run is an interruption, got %v", got)
 	}
-	if got := stepError(errors.New("503 upstream unavailable"))["type"]; got != ErrorTypeUnknown {
+	if got := stepError(canceled, errors.New("503 upstream unavailable"))["type"]; got != ErrorTypeUnknown {
 		t.Fatalf("a provider failure is not an interruption, got %v", got)
+	}
+}
+
+// The regression for turns that settled as a bare "· interrupted" with no
+// message: an http.Client deadline firing mid-stream returns
+// context.DeadlineExceeded while the run context is still perfectly live, and
+// tagging that as aborted made a provider timeout look exactly like the user
+// pressing escape.
+func TestStepErrorKeepsProviderTimeoutsVisible(t *testing.T) {
+	live := context.Background()
+	timeout := fmt.Errorf("Post %q: %w", "https://provider.example/v1/chat/completions", context.DeadlineExceeded)
+	got := stepError(live, timeout)
+	if got["type"] != ErrorTypeUnknown {
+		t.Fatalf("a timeout on a live run is a failure, not an interruption: type = %v", got["type"])
+	}
+	if !strings.Contains(got["message"].(string), "context deadline exceeded") {
+		t.Fatalf("the failure must carry the provider's own message, got %v", got["message"])
+	}
+	if got := stepError(live, context.Canceled)["type"]; got != ErrorTypeUnknown {
+		t.Fatalf("a cancellation the user did not order is a failure, got %v", got)
 	}
 }
