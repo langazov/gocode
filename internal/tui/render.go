@@ -522,7 +522,27 @@ func (a *App) settlementLine(message client.Message, data client.AssistantData) 
 	if aborted {
 		segments = append(segments, a.styles().Muted.Render(" · interrupted"))
 	}
+	// A step cut off at max_tokens produced no text and no tool call, so the
+	// turn ends here with nothing to show for it — from the outside, a
+	// session that stopped mid-thought. Say why, in the one place that is
+	// already explaining how the message ended.
+	if truncatedByOutputLimit(data.Finish) {
+		segments = append(segments, lipgloss.NewStyle().Foreground(a.theme.Error).
+			Render(" · stopped at the output limit"))
+	}
 	return strings.Join([]string{"   ", strings.Join(segments, "")}, "")
+}
+
+// truncatedByOutputLimit reports whether a step ended because it ran out of
+// output budget rather than because the model was done. Each protocol spells
+// it differently: "length" from the OpenAI shapes, "max_tokens" from
+// Anthropic's stop_reason and from Gemini's lowercased finishReason.
+func truncatedByOutputLimit(finish string) bool {
+	switch finish {
+	case "length", "max_tokens", "max-tokens":
+		return true
+	}
+	return false
 }
 
 // reasoningPartTime is the subset of a reasoning content part's Time this
