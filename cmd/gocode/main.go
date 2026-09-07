@@ -44,8 +44,9 @@ func main() {
 	os.Exit(runMain(os.Args[1:]))
 }
 
-// defaultContextLimit budgets compaction until per-model limits are resolved
-// from the catalog.
+// defaultContextLimit budgets compaction for models the catalog does not
+// describe. Known models resolve their real limit through
+// ContextLimitResolver instead.
 const defaultContextLimit = 200000
 
 // lazyProvider resolves the stream client per request's provider, so model
@@ -439,20 +440,21 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	}, nil)
 
 	runner := &session.Runner{
-		DB:                database,
-		Bus:               bus,
-		Messages:          session.NewMessageStore(database),
-		Provider:          streamClient,
-		Tools:             tools,
-		Agents:            agents,
-		Agent:             "build",
-		Model:             session.ModelRef{ProviderID: providerID, ID: modelID},
-		Permissions:       &session.EnginePermissionGate{Engine: permissionEngine},
-		Plugins:           plugins,
-		ContextLimit:      defaultContextLimit,
-		ReasoningVariants: reasoningVariantsResolver(catalog),
-		Pricing:           pricingResolver(catalog),
-		OutputLimit:       outputLimitResolver(catalog),
+		DB:                   database,
+		Bus:                  bus,
+		Messages:             session.NewMessageStore(database),
+		Provider:             streamClient,
+		Tools:                tools,
+		Agents:               agents,
+		Agent:                "build",
+		Model:                session.ModelRef{ProviderID: providerID, ID: modelID},
+		Permissions:          &session.EnginePermissionGate{Engine: permissionEngine},
+		Plugins:              plugins,
+		ContextLimit:         defaultContextLimit,
+		ContextLimitResolver: contextLimitResolver(catalog),
+		ReasoningVariants:    reasoningVariantsResolver(catalog),
+		Pricing:              pricingResolver(catalog),
+		OutputLimit:          outputLimitResolver(catalog),
 		// The same service the question tool asks through, so a runner-issued
 		// question (currently only "the network is down, keep waiting?")
 		// reaches the interface on the path that already exists for one.

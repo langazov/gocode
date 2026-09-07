@@ -145,8 +145,12 @@ You get a report of what happened instead of a truncated transcript.
 
 ## Compaction
 
-When history outgrows the context window, the provider rejects the request.
-`runTurn` catches exactly this case and recovers:
+The proactive check budgets against the turn model's own context window,
+resolved from the models.dev catalog through `Runner.ContextLimitResolver`
+(the static `Runner.ContextLimit`, 200k, is only the fallback for models the
+catalog does not know). When history approaches that boundary, `compactIfNeeded`
+runs before the turn is built. When history outgrows the window anyway, the
+provider rejects the request and `runTurn` catches exactly this case to recover:
 
 ```mermaid
 flowchart TD
