@@ -211,3 +211,33 @@ func TestStepStartedMarksBusyForALateJoiner(t *testing.T) {
 		t.Fatal("a step start must mark the session busy on its own")
 	}
 }
+
+// A drain failure has to reach the interface. It used to go to the background
+// log alone, so a turn stopped by a locked database (a second gocode instance
+// booting into it) simply vanished mid-task with nothing on screen.
+func TestRunFailedCarriesTheReason(t *testing.T) {
+	state := newTree()
+	state.apply(client.Event{Type: "session.next.run.started", Session: "ses_1"})
+	state.apply(client.Event{
+		Type:    "session.next.run.failed",
+		Session: "ses_1",
+		Data:    map[string]any{"error": "database is locked (517)"},
+	})
+	node := state.node("ses_1")
+	if node.Failure != "database is locked (517)" {
+		t.Fatalf("expected the reason, got %q", node.Failure)
+	}
+	if node.Failures != 1 {
+		t.Fatalf("expected one failure, got %d", node.Failures)
+	}
+	// The count is what a reader watches, so it has to survive cloning: a
+	// snapshot may be dropped, and the next one still has to say a turn died.
+	if clone := node.clone(); clone.Failures != 1 || clone.Failure != node.Failure {
+		t.Fatal("a snapshot must carry the failure")
+	}
+	// A failure with no reason still counts — silence is the bug.
+	state.apply(client.Event{Type: "session.next.run.failed", Session: "ses_1"})
+	if node.Failures != 2 || node.Failure == "" {
+		t.Fatalf("expected a second, described failure, got %d %q", node.Failures, node.Failure)
+	}
+}

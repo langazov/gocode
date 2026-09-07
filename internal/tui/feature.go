@@ -75,11 +75,15 @@ type spinnerTickMsg struct{}
 // the one that actually reports a live turn, and when it set a.busy without
 // starting a loop the spinner sat frozen on frame 0 for the whole turn.
 func (a *App) startSpinner() tea.Cmd {
+	// The footer's throughput meter needs arming at exactly the same moments,
+	// and for the same reason — so it rides along here rather than repeating
+	// the call at all six sites. Its own guard decides whether it starts.
+	tps := a.startTPS()
 	if !a.busy || a.spinning {
-		return nil
+		return tps
 	}
 	a.spinning = true
-	return tea.Tick(spinnerTick, func(time.Time) tea.Msg { return spinnerTickMsg{} })
+	return tea.Batch(tps, tea.Tick(spinnerTick, func(time.Time) tea.Msg { return spinnerTickMsg{} }))
 }
 
 // toastVariant mirrors ToastOptions.variant.

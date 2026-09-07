@@ -68,6 +68,11 @@ type App struct {
 
 	leaderArmed  bool
 	spinnerFrame int
+	// tps is the footer's throughput counter and tpsTicking its loop guard,
+	// the tpsTickMsg equivalent of spinning below. See tps.go.
+	tps        tpsMeter
+	tpsTicking bool
+
 	// spinning reports whether a spinnerTickMsg loop is in flight, so the
 	// several call sites that set busy can all call startSpinner without
 	// stacking duplicate loops. See startSpinner.
@@ -106,6 +111,10 @@ type App struct {
 	// queuedBlocks.
 	queued     []client.QueuedPrompt
 	queuedSeen int
+	// failuresSeen is the last SessionNode.Failures the active session
+	// reported, so one stopped turn raises exactly one notice however many
+	// snapshots carry it.
+	failuresSeen int
 
 	// interruptArmed ports the prompt's `store.interrupt` counter: the
 	// session.interrupt command is a two-press gesture, and the footer's hint
@@ -252,11 +261,11 @@ type App struct {
 	// signal), keyed by the part's ID.
 	expandedReasoning map[string]bool
 
-	// expandedToolOutput tracks bash tool calls individually toggled open —
-	// the toolOutputHeaderRef/bashBlock equivalent of expandedReasoning,
-	// keyed by the tool part's ID. A bash call's output collapses to its
-	// first line by default; clicking it (toolOutputClickTarget in
-	// mouse.go) flips its entry here.
+	// expandedToolOutput tracks tool calls individually toggled open — the
+	// toolOutputHeaderRef/collapsibleBlock equivalent of expandedReasoning,
+	// keyed by the tool part's ID. bash's output, read's file contents and
+	// write's stored content all collapse to their first line by default;
+	// clicking one (toolOutputClickTarget in mouse.go) flips its entry here.
 	expandedToolOutput map[string]bool
 
 	// chatReasoningRows/chatToolOutputRows/chatWindowPad/chatWindowStart
@@ -292,11 +301,17 @@ type App struct {
 	// assistant message, keyed by its message ID. See streamingTextBlock.
 	streamRender map[string]streamedBlock
 
-	// mdRenderer caches the glamour renderer built for the current
-	// theme+width (see markdown.go): constructing one loads chroma's lexer/
-	// style registries, too costly to redo on every streamed delta.
-	mdRenderer      *glamour.TermRenderer
-	mdRendererWidth int
+	// mdRenderers caches the glamour renderers built for the current theme,
+	// keyed by wrap width (see markdown.go): constructing one loads chroma's
+	// lexer/style registries, too costly to redo on every streamed delta.
+	//
+	// Keyed rather than a single slot because more than one width is in play
+	// on the same frame — an assistant message wraps to contentWidth-4, a
+	// markdown file inside a tool block to the narrower panel interior, and
+	// its collapsed one-line preview to narrower still. A single slot thrashed
+	// between them, rebuilding a renderer per call, which is the one thing the
+	// cache exists to prevent.
+	mdRenderers     map[int]*glamour.TermRenderer
 	mdRendererTheme string
 }
 
@@ -436,6 +451,10 @@ type snapshotEffect struct {
 	timeline bool
 	asks     bool
 	queue    bool
+	// failure is the reason a turn stopped short, empty when none did. The
+	// interface surfaces it: before this existed a drain failure went to the
+	// background log alone and the turn simply vanished mid-task.
+	failure string
 }
 
 // applySnapshot folds one aggregated snapshot into the model, reporting what
@@ -482,6 +501,10 @@ func (a *App) applySnapshot(snapshot Snapshot) snapshotEffect {
 	if node.Queued != a.queuedSeen {
 		a.queuedSeen = node.Queued
 		effect.queue = true
+	}
+	if node.Failures != a.failuresSeen {
+		a.failuresSeen = node.Failures
+		effect.failure = node.Failure
 	}
 	if snapshot.Dirty[a.active.ID] {
 		a.scrollOffset = 0
@@ -785,6 +808,10 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			}
 		}
 		return tea.Batch(cmds...)
+	case tpsTickMsg:
+		a.tpsTicking = false
+		a.tps.sample(a.agents.ReceivedBytes)
+		return a.startTPS()
 	case spinnerTickMsg:
 		a.spinning = false
 		if a.busy {
@@ -1009,6 +1036,12 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			// is now behind.
 			if effect.queue {
 				cmds = append(cmds, a.loadQueue(a.active.ID))
+			}
+			// The turn stopped without finishing. Say so: the timeline shows
+			// no error of its own, because the failure happened around the
+			// message rather than in it.
+			if effect.failure != "" {
+				cmds = append(cmds, a.showToast("Run stopped: "+effect.failure, true))
 			}
 		}
 		return tea.Batch(cmds...)

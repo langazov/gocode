@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/db"
 )
@@ -39,6 +40,24 @@ type Execution struct {
 	OnStatus func(sessionID string, busy bool)
 }
 
+// drainRetries bounds how many times a drain is re-entered after losing to
+// another process's database lock. The db layer already retries the individual
+// statement; this is the outer net for the case that beat it — a second gocode
+// instance booting into the same database while a turn is running, which is
+// what "starting a second instance stopped the first one's task" was.
+//
+// A turn is durable, so re-entering the drain is the same recovery a restart
+// performs: pending inputs are re-read, tools left mid-flight are failed, and
+// the turn continues from what actually committed.
+const drainRetries = 3
+
+// drainBackoff spaces the retries far enough apart to outlast another
+// process's boot — the migration check and project write a new instance does
+// before it settles.
+func drainBackoff(attempt int) time.Duration {
+	return time.Duration(attempt+1) * 250 * time.Millisecond
+}
+
 func NewExecution(lookup SessionLookup, runner SessionRunner) *Execution {
 	execution := &Execution{}
 	drain := func(ctx context.Context, sessionID string, force bool) error {
@@ -49,7 +68,17 @@ func NewExecution(lookup SessionLookup, runner SessionRunner) *Execution {
 		if !exists {
 			return notFound(sessionID)
 		}
-		err = runner.Run(ctx, RunInput{SessionID: sessionID, Force: force})
+		for attempt := 0; ; attempt++ {
+			err = runner.Run(ctx, RunInput{SessionID: sessionID, Force: force})
+			if !db.Retryable(err) || attempt >= drainRetries {
+				break
+			}
+			select {
+			case <-time.After(drainBackoff(attempt)):
+			case <-ctx.Done():
+				return err
+			}
+		}
 		if err != nil && execution.ErrorLogger != nil {
 			execution.ErrorLogger(sessionID, err)
 		}

@@ -866,6 +866,14 @@ func (a *App) toolRow(message client.Message, id, name string, state *toolState)
 		switch name {
 		case "bash":
 			return a.bashBlock(id, state)
+		case "read":
+			if block, ref := a.readBlock(id, state); block != "" {
+				return block, ref
+			}
+		case "write":
+			if block, ref := a.writeBlock(id, state); block != "" {
+				return block, ref
+			}
 		case "edit":
 			if block := a.editDiffBlock(state); block != "" {
 				return block, nil
@@ -876,7 +884,7 @@ func (a *App) toolRow(message client.Message, id, name string, state *toolState)
 			}
 		}
 	}
-	icon, label := toolLabel(name, state.Input)
+	icon, label := toolLabel(name, state.Input, a.displayPath)
 	if name == "task" && state.Status != "pending" && state.Status != "running" && state.Status != "error" {
 		icon = "✓" // TS: state.status === "completed" ? "✓" : "│"
 	}
@@ -957,34 +965,58 @@ func (a *App) bashBlock(id string, state *toolState) (string, *toolOutputHeaderR
 	if state.Status == "running" {
 		prefix = spinnerPlaceholder + " "
 	}
-	var lines []string
-	lines = append(lines, renderLines(a.styles().Text, strings.Join(wrapPrefixed(prefix, command, innerWidth), "\n")))
+	head := renderLines(a.styles().Text, strings.Join(wrapPrefixed(prefix, command, innerWidth), "\n"))
+	body := strings.TrimSpace(ansi.Strip(state.Output))
+	return a.collapsibleBlock(id, head, body, innerWidth, a.wrappedBody, state)
+}
+
+// collapsibleBlock is the shared body of every BlockTool that pairs a fixed
+// head line with content long enough to be worth hiding: bash's command and
+// its stdout, read's path and the file it returned, write's path and the
+// content it stored.
+//
+// Beyond one line the body collapses to just its first line plus a "click to
+// expand" hint (see toolOutputHeaderRef, mouse.go's toolOutputClickTarget),
+// mirroring reasoningBlock's toggle and keyed by id — the tool part's own ID,
+// so two calls in one message toggle independently. Once expanded the whole
+// body renders however long it is, and a click anywhere on the open block
+// collapses it again: there is no single header row left to re-click, the way
+// the collapsed summary has one.
+//
+// render draws the body: shell output wraps (wrappedBody), file contents are
+// highlighted and truncated (codeBody). It is called only on the rows that
+// will actually be shown, so a collapsed block tokenises one line rather than
+// the whole file.
+func (a *App) collapsibleBlock(id, head, body string, innerWidth int, render bodyRenderer, state *toolState) (string, *toolOutputHeaderRef) {
+	lines := []string{head}
 	var ref *toolOutputHeaderRef
 	expandedBlock := false
-	if output := strings.TrimSpace(ansi.Strip(state.Output)); output != "" {
-		outputLines := strings.Split(output, "\n")
+	if body != "" {
+		bodyLines := strings.Split(body, "\n")
 		switch {
-		case a.expandedToolOutput[id] && len(outputLines) > 1:
-			wrapped := wrapText(output, innerWidth)
-			lines = append(lines, "", renderLines(a.styles().Text, wrapped))
+		case a.expandedToolOutput[id] && len(bodyLines) > 1:
+			lines = append(lines, "", strings.Join(render(body, innerWidth), "\n"))
 			expandedBlock = true
-		case len(outputLines) == 1:
+		case len(bodyLines) == 1:
 			// Nothing was ever collapsed, so nothing to toggle back.
-			wrapped := wrapText(output, innerWidth)
-			lines = append(lines, "", renderLines(a.styles().Text, wrapped))
+			lines = append(lines, "", strings.Join(render(body, innerWidth), "\n"))
 		default:
-			// The click target lands on the last row the wrapped first line
-			// (and its hint) actually occupies, not the row the summary
-			// starts on: blockToolStyle's PaddingTop(1) row, plus the
-			// command's own (possibly wrapped) rows, plus the blank
-			// separator, plus the first output line's own wrapped rows.
-			commandRows := strings.Count(lines[0], "\n") + 1
-			first := wrapText(outputLines[0], innerWidth)
-			firstRows := strings.Count(first, "\n") + 1
-			hint := fmt.Sprintf(" (+%d lines — click to expand)", len(outputLines)-1)
-			summary := renderLines(a.styles().Text, first) + a.styles().Muted.Render(hint)
+			// The click target lands on the last row the first body line
+			// actually occupies, not the row the summary starts on:
+			// blockToolStyle's PaddingTop(1) row, plus the head's own
+			// (possibly wrapped) rows, plus the blank separator, plus the
+			// first body line's own rows.
+			headRows := strings.Count(head, "\n") + 1
+			hint := fmt.Sprintf(" (+%d lines — click to expand)", len(bodyLines)-1)
+			// The hint shares the summary's row, so the body gets the width
+			// left over. Without the reservation a full-width first line
+			// pushes the hint onto a row of its own — one the click target
+			// below does not cover, so clicking the visible "click to expand"
+			// did nothing.
+			first := render(bodyLines[0], max(innerWidth-lipgloss.Width(hint), 10))
+			summary := strings.Join(first, "\n") + a.styles().Muted.Render(hint)
 			lines = append(lines, "", summary)
-			row := 1 + commandRows + 1 + firstRows - 1
+			row := 1 + headRows + 1 + len(first) - 1
 			ref = &toolOutputHeaderRef{id: id, lineStart: row, lineEnd: row}
 		}
 	}
@@ -999,6 +1031,81 @@ func (a *App) bashBlock(id string, state *toolState) (string, *toolOutputHeaderR
 		ref = &toolOutputHeaderRef{id: id, lineStart: 0, lineEnd: contentRows + 1}
 	}
 	return a.blockToolStyle().Render(strings.Join(lines, "\n")), ref
+}
+
+// readBlock mirrors bashBlock for the read tool: the path that was read, then
+// the file's contents behind the same collapse toggle, syntax-highlighted for
+// the extension. The one-line row it replaces named neither the file nor a
+// single line of what came back.
+func (a *App) readBlock(id string, state *toolState) (string, *toolOutputHeaderRef) {
+	path := filePathArg(state.Input)
+	// A running read has nothing to show yet, and the one-line row it falls
+	// back to carries the spinner. The path is on that row too, now that the
+	// label reads the right key.
+	if path == "" || state.Status == "running" {
+		return "", nil
+	}
+	innerWidth := max(20, a.contentWidth()-6)
+	title := "→ Read " + a.displayPath(path)
+	if lines := countLines(state.Output); lines > 0 {
+		title += fmt.Sprintf("  (%s)", plural(lines, "line"))
+	}
+	head := renderLines(a.styles().Muted, wrapText(title, innerWidth))
+	return a.collapsibleBlock(id, head, trimBlankLines(state.Output), innerWidth, a.fileBody(path), state)
+}
+
+// writeBlock is readBlock's counterpart for write. The body is the content the
+// model sent, not the tool's output — the output is a one-line "Wrote file
+// successfully", while what was actually put in the file is the thing worth
+// being able to look at.
+func (a *App) writeBlock(id string, state *toolState) (string, *toolOutputHeaderRef) {
+	path := filePathArg(state.Input)
+	if path == "" || state.Status == "running" {
+		return "", nil
+	}
+	content, _ := state.Input["content"].(string)
+	innerWidth := max(20, a.contentWidth()-6)
+	title := "← Write " + a.displayPath(path)
+	if lines := countLines(content); lines > 0 {
+		title += fmt.Sprintf("  (%s)", plural(lines, "line"))
+	}
+	head := renderLines(a.styles().Muted, wrapText(title, innerWidth))
+	return a.collapsibleBlock(id, head, trimBlankLines(content), innerWidth, a.fileBody(path), state)
+}
+
+// trimBlankLines drops leading and trailing blank lines without touching the
+// indentation of the lines that remain — strings.TrimSpace would eat the
+// first line's leading whitespace, which in a file is structure, not padding.
+func trimBlankLines(text string) string {
+	lines := strings.Split(text, "\n")
+	start, end := 0, len(lines)
+	for start < end && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	if start == end {
+		return ""
+	}
+	return strings.Join(lines[start:end], "\n")
+}
+
+// countLines counts the lines of a block of text, ignoring surrounding blank
+// space so a trailing newline does not read as an extra line.
+func countLines(text string) int {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return 0
+	}
+	return strings.Count(trimmed, "\n") + 1
+}
+
+func plural(count int, noun string) string {
+	if count == 1 {
+		return fmt.Sprintf("%d %s", count, noun)
+	}
+	return fmt.Sprintf("%d %ss", count, noun)
 }
 
 // editDiffBlock renders a tool's unified diff.
@@ -1020,10 +1127,9 @@ func (a *App) editDiffBlock(state *toolState) string {
 		return ""
 	}
 
-	path, _ := state.Input["filePath"].(string)
 	title := "← Edit"
-	if path != "" {
-		title = "← Edit " + path
+	if path := filePathArg(state.Input); path != "" {
+		title = "← Edit " + a.displayPath(path)
 	}
 	var additions, deletions int
 	for _, file := range files {
@@ -1145,12 +1251,40 @@ func (a *App) todoWriteBlock(state *toolState) string {
 	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
 }
 
+// filePathArg reads the file path out of a tool's input.
+//
+// The builtins declare it as "path" (internal/tool/builtins/read.go,
+// write.go, edit.go); the TypeScript tools it was ported from call the same
+// field "filePath", which is what an MCP server or a plugin tool written
+// against the upstream schema still sends. Reading only the upstream spelling
+// is what left every read/write/edit row stuck on its "Reading file..." /
+// "Preparing write..." placeholder — the path was in hand the whole time,
+// under the other name.
+func filePathArg(input map[string]any) string {
+	for _, key := range []string{"path", "filePath"} {
+		if value, _ := input[key].(string); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
 // toolLabel maps a tool name plus its input to the InlineTool icon and
 // label, mirroring the per-tool renderers (Shell, Read, Edit, …).
-func toolLabel(name string, input map[string]any) (icon, label string) {
+//
+// display shortens a file path for the terminal (App.displayPath); nil shows
+// paths exactly as the tool reported them.
+func toolLabel(name string, input map[string]any, display func(string) string) (icon, label string) {
 	text := func(key string) string {
 		value, _ := input[key].(string)
 		return value
+	}
+	path := func() string {
+		value := filePathArg(input)
+		if value == "" || display == nil {
+			return value
+		}
+		return display(value)
 	}
 	switch name {
 	case "bash":
@@ -1159,27 +1293,35 @@ func toolLabel(name string, input map[string]any) (icon, label string) {
 		}
 		return "$", "Writing command..."
 	case "read":
-		if path := text("filePath"); path != "" {
-			return "→", "Read " + path
+		if file := path(); file != "" {
+			return "→", "Read " + file
 		}
 		return "→", "Reading file..."
 	case "edit":
-		if path := text("filePath"); path != "" {
-			return "←", "Edit " + path
+		if file := path(); file != "" {
+			return "←", "Edit " + file
 		}
 		return "←", "Preparing edit..."
 	case "write":
-		if path := text("filePath"); path != "" {
-			return "←", "Write " + path
+		if file := path(); file != "" {
+			return "←", "Write " + file
 		}
 		return "←", "Preparing write..."
 	case "glob":
 		if pattern := text("pattern"); pattern != "" {
+			// The optional "path" narrows the search to a subtree, and which
+			// subtree was searched is as much of the answer as the pattern.
+			if file := path(); file != "" {
+				return "✱", fmt.Sprintf("Glob %q in %s", pattern, file)
+			}
 			return "✱", fmt.Sprintf("Glob %q", pattern)
 		}
 		return "✱", "Finding files..."
 	case "grep":
 		if pattern := text("pattern"); pattern != "" {
+			if file := path(); file != "" {
+				return "✱", fmt.Sprintf("Grep %q in %s", pattern, file)
+			}
 			return "✱", fmt.Sprintf("Grep %q", pattern)
 		}
 		return "✱", "Searching content..."

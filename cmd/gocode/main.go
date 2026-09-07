@@ -206,6 +206,13 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		return nil, err
 	}
 	cwd, _ := os.Getwd()
+	// One line per boot, so a later failure can be read against who else was
+	// running. Instances only contend when they share a database file, and
+	// the file depends on the release channel — a dev build and an installed
+	// one do not collide, which is exactly the question a "the other window
+	// stopped" report has to answer.
+	global.LogBackground("boot: pid %d, version %s, channel %s, db %s, cwd %s",
+		os.Getpid(), installation.Version, installation.Channel, db.Path(), cwd)
 
 	// The project row has to exist before the plugins load: a native plugin
 	// scoped to the project (memory, for one) is handed the id in Services and
@@ -452,7 +459,17 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		},
 	}
 	execution := session.NewExecution(&session.DBSessionLookup{DB: database}, runner)
-	execution.ErrorLogger = logDrainError
+	// A drain failure is reported twice, on purpose. The background log takes
+	// the detail; the bus takes the fact, so the interface can tell the user
+	// the turn stopped instead of leaving them with a session that quietly
+	// went idle mid-task. See session.RunFailed.
+	reportRunFailure := session.PublishRunFailure(ctx, bus)
+	execution.ErrorLogger = func(sessionID string, err error) {
+		logDrainError(sessionID, err)
+		if reportableDrainError(err) {
+			reportRunFailure(sessionID, err)
+		}
+	}
 	// Turn-level busy/idle for clients. See session/run_events.go for why the
 	// step events are not enough.
 	execution.OnStatus = session.PublishRunStatus(ctx, bus)
@@ -543,8 +560,17 @@ func resolveProvider(ctx context.Context, providerID string, cfg *config.Config)
 // rendered frame (it is how "drain failed: context canceled" ended up on top
 // of the footer). See internal/global/diag.go.
 func logDrainError(sessionID string, err error) {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+	if !reportableDrainError(err) {
 		return
 	}
-	global.LogBackground("session %s drain failed: %v", sessionID, err)
+	// The pid pairs the failure with the boot line, which is what identifies
+	// a failure caused by another instance rather than by this one.
+	global.LogBackground("session %s drain failed (pid %d): %v", sessionID, os.Getpid(), err)
+}
+
+// reportableDrainError separates a real failure from the user's own
+// interrupt: an interrupted turn returns the context error the escape key
+// produced, and neither the log nor the interface should call that a failure.
+func reportableDrainError(err error) bool {
+	return err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, context.DeadlineExceeded)
 }

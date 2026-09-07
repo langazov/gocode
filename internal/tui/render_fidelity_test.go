@@ -505,7 +505,7 @@ func TestTodoWriteFallsBackToInlineWithoutDecodableList(t *testing.T) {
 }
 
 func TestTaskLabelPendingWithoutDescription(t *testing.T) {
-	icon, label := toolLabel("task", map[string]any{})
+	icon, label := toolLabel("task", map[string]any{}, nil)
 	if icon != "│" || label != "Delegating..." {
 		t.Fatalf("task label with no description = (%q, %q), want (\"│\", \"Delegating...\")", icon, label)
 	}
@@ -516,7 +516,7 @@ func TestTaskLabelFormatsSubagentTitle(t *testing.T) {
 		"subagent_type": "general",
 		"description":   "find the bug",
 		"background":    true,
-	})
+	}, nil)
 	if icon != "│" {
 		t.Fatalf("task icon = %q, want │ (toolRow upgrades to ✓ once completed)", icon)
 	}

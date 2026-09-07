@@ -43,11 +43,19 @@ func (a *App) renderMarkdown(text string, width int) string {
 	return strings.Trim(out, "\n")
 }
 
-// markdownRenderer returns the glamour renderer cached for width, rebuilding
-// it only when width or the active theme has actually changed.
+// markdownRenderer returns the glamour renderer cached for width, building one
+// only for a width not seen yet under the current theme.
+//
+// The cache is dropped wholesale on a theme change, and again once it holds
+// more widths than the interface plausibly uses at once — a terminal dragged
+// slowly wider walks through a new width every frame, and each entry pins
+// chroma's registries.
 func (a *App) markdownRenderer(width int) *glamour.TermRenderer {
-	if a.mdRenderer != nil && a.mdRendererWidth == width && a.mdRendererTheme == a.theme.Name {
-		return a.mdRenderer
+	if a.mdRendererTheme != a.theme.Name || len(a.mdRenderers) > 8 {
+		a.mdRenderers = nil
+	}
+	if r, ok := a.mdRenderers[width]; ok {
+		return r
 	}
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStyles(glamourStyleConfig(a.theme)),
@@ -60,7 +68,10 @@ func (a *App) markdownRenderer(width int) *glamour.TermRenderer {
 	if err != nil {
 		return nil
 	}
-	a.mdRenderer, a.mdRendererWidth, a.mdRendererTheme = r, width, a.theme.Name
+	if a.mdRenderers == nil {
+		a.mdRenderers = map[int]*glamour.TermRenderer{}
+	}
+	a.mdRenderers[width], a.mdRendererTheme = r, a.theme.Name
 	return r
 }
 
