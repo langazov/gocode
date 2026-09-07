@@ -213,7 +213,7 @@ func waitBeforeRetry(ctx context.Context, delay time.Duration) error {
 	watch, stopWatching := context.WithCancel(ctx)
 	defer stopWatching()
 	changes := watchLink(watch)
-	poll := time.NewTicker(linkPollIntervalVar)
+	poll := time.NewTicker(*linkPollIntervalVar.Load())
 	defer poll.Stop()
 
 	up := linkIsUp()

@@ -13,6 +13,15 @@ import (
 	"github.com/langazov/gocode-go/internal/tool"
 )
 
+// stubWatchLink replaces the kernel-notification hook for the duration of a
+// test. The swap and the restore go through the atomic cell: a watcher
+// goroutine can still be reading the hook when the cleanup runs.
+func stubWatchLink(t *testing.T, f func(context.Context) <-chan struct{}) {
+	t.Helper()
+	was := watchLinkVar.Swap(&f)
+	t.Cleanup(func() { watchLinkVar.Store(was) })
+}
+
 // forwardLinkChanges is the half of the watcher every platform shares, so a
 // pipe stands in for the kernel socket.
 func TestForwardLinkChangesWakesAndCoalesces(t *testing.T) {
@@ -99,14 +108,10 @@ func TestWaitEndsOnALinkNotification(t *testing.T) {
 	var up atomic.Bool
 	stubLink(t, up.Load)
 	// Long enough that neither the poll nor the timer can be what returns.
-	pollWas := linkPollIntervalVar
-	linkPollIntervalVar = time.Hour
-	t.Cleanup(func() { linkPollIntervalVar = pollWas })
+	stubLinkPollInterval(t, time.Hour)
 
 	notify := make(chan struct{}, 1)
-	watchWas := watchLink
-	watchLink = func(context.Context) <-chan struct{} { return notify }
-	t.Cleanup(func() { watchLink = watchWas })
+	stubWatchLink(t, func(context.Context) <-chan struct{} { return notify })
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)
@@ -161,13 +166,9 @@ func TestLinkLossCutsTheStreamAndTheTurnSurvives(t *testing.T) {
 	var up atomic.Bool
 	up.Store(true)
 	stubLink(t, up.Load)
-	pollWas := linkPollIntervalVar
-	linkPollIntervalVar = 5 * time.Millisecond
-	t.Cleanup(func() { linkPollIntervalVar = pollWas })
+	stubLinkPollInterval(t, 5*time.Millisecond)
 	// No kernel notifications in the test: the poll is the whole watcher.
-	watchWas := watchLink
-	watchLink = func(context.Context) <-chan struct{} { return nil }
-	t.Cleanup(func() { watchLink = watchWas })
+	stubWatchLink(t, func(context.Context) <-chan struct{} { return nil })
 
 	provider := &stallingProvider{stalls: 1, stalled: make(chan struct{}, 1)}
 	runner, bus := newRunnerFixture(t, nil, tool.NewRegistry())

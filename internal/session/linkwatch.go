@@ -7,8 +7,12 @@ import (
 
 // watchLink is the hook the wait loop calls, indirected so a test can supply
 // changes without an interface to unplug. The platform implementations are in
-// the linkwatch_*.go files.
-var watchLink = watchLinkChanges
+// the linkwatch_*.go files. Atomic for the same reason linkIsUpVar is: the
+// watcher goroutine reads it as it starts, and a test may be restoring it
+// while that goroutine winds down.
+var watchLinkVar = hookPtr(watchLinkChanges)
+
+func watchLink(ctx context.Context) <-chan struct{} { return (*watchLinkVar.Load())(ctx) }
 
 // linkChangeBuffer is a message-sized read buffer. The contents are discarded
 // — see the platform files for why — so it only has to be large enough that a
