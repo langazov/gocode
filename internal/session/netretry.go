@@ -162,7 +162,11 @@ func (r *Runner) awaitNetwork(runCtx, ctx context.Context, sessionID string, dow
 		hold.deadline = time.Now().Add(transportRetryBudget)
 		hold.delay = transportRetryFirstDelay
 	}
-	if time.Now().After(hold.deadline) {
+	// Not After: a deadline that has merely been *reached* is spent. Windows'
+	// clock granularity is coarse enough (up to ~15ms) that two time.Now()
+	// calls either side of a zero-length budget can return the same instant,
+	// which read as "budget remaining" and skipped the question entirely.
+	if !time.Now().Before(hold.deadline) {
 		keep, err := r.askKeepWaiting(runCtx, ctx, sessionID, down)
 		if err != nil {
 			return false, err
