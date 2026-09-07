@@ -9,11 +9,20 @@ import (
 )
 
 // stubLink replaces the interface-table read for the duration of a test.
+// The swap and the restore go through the atomic cell: a watcher goroutine
+// started for the turn can still be reading the hook when the cleanup runs.
 func stubLink(t *testing.T, up func() bool) {
 	t.Helper()
-	was := linkIsUp
-	linkIsUp = up
-	t.Cleanup(func() { linkIsUp = was })
+	was := linkIsUpVar.Swap(&up)
+	t.Cleanup(func() { linkIsUpVar.Store(was) })
+}
+
+// stubLinkPollInterval collapses the poll so a test need not spend a second
+// per tick.
+func stubLinkPollInterval(t *testing.T, d time.Duration) {
+	t.Helper()
+	was := linkPollIntervalVar.Swap(&d)
+	t.Cleanup(func() { linkPollIntervalVar.Store(was) })
 }
 
 // The shortcut that makes watching link state worth anything: a machine that
@@ -30,9 +39,7 @@ func TestWaitEndsEarlyWhenTheLinkReturns(t *testing.T) {
 		}
 	})
 	// Shorter than the default second, so the test does not spend one.
-	pollWas := linkPollIntervalVar
-	linkPollIntervalVar = 5 * time.Millisecond
-	t.Cleanup(func() { linkPollIntervalVar = pollWas })
+	stubLinkPollInterval(t, 5*time.Millisecond)
 
 	time.AfterFunc(20*time.Millisecond, func() { close(restored) })
 	start := time.Now()
@@ -52,9 +59,7 @@ func TestWaitEndsEarlyWhenTheLinkFlapsMidBackoff(t *testing.T) {
 	var state atomic.Int32 // 0 up, 1 down, 2 up again
 	state.Store(0)
 	stubLink(t, func() bool { return state.Load() != 1 })
-	pollWas := linkPollIntervalVar
-	linkPollIntervalVar = 5 * time.Millisecond
-	t.Cleanup(func() { linkPollIntervalVar = pollWas })
+	stubLinkPollInterval(t, 5*time.Millisecond)
 
 	go func() {
 		time.Sleep(20 * time.Millisecond)

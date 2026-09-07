@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,12 +28,26 @@ import (
 // backoff for nothing.
 //
 // linkIsUp is a variable so the wait loop can be tested without a network
-// interface to unplug.
-var linkIsUp = linkUp
+// interface to unplug. A test's cleanup can be restoring the hook while the
+// watcher goroutine is still reading it — cleanup runs on the test's
+// goroutine and nothing synchronizes the watcher's exit — so the hook is
+// swapped atomically behind a cell and reached through linkIsUp.
+var linkIsUpVar = hookPtr(linkUp)
+
+func linkIsUp() bool { return (*linkIsUpVar.Load())() }
 
 // linkPollIntervalVar is how often a held turn re-reads the interface table.
-// A variable only so a test need not spend a second per poll.
-var linkPollIntervalVar = time.Second
+// A variable only so a test need not spend a second per poll; atomic for the
+// same reason linkIsUpVar is.
+var linkPollIntervalVar = hookPtr(time.Second)
+
+// hookPtr returns a cell holding v, safe to swap while another goroutine
+// reads it.
+func hookPtr[T any](v T) *atomic.Pointer[T] {
+	p := new(atomic.Pointer[T])
+	p.Store(&v)
+	return p
+}
 
 // linkUp reports whether the machine has at least one interface that could
 // carry traffic: up, running, not loopback, and holding an address that is
@@ -103,7 +118,7 @@ const linkLossBackstopInterval = 10 * time.Second
 func watchLinkLoss(ctx context.Context, onLoss func()) {
 	go func() {
 		changes := watchLink(ctx)
-		interval := linkPollIntervalVar
+		interval := *linkPollIntervalVar.Load()
 		if changes != nil {
 			interval = linkLossBackstopInterval
 		}
