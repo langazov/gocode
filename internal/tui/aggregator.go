@@ -56,6 +56,14 @@ type SessionNode struct {
 	// inbox. Like Asks it is a change signal rather than a quantity: waiting
 	// prompts are fetched over HTTP, and this only says when to go look.
 	Queued int
+	// Failure is the last reason a turn on this session stopped short, and
+	// Failures counts them. The count is what the interface watches: a
+	// snapshot can be dropped under load, so a reader compares the count with
+	// what it has already shown rather than treating each snapshot's Failure
+	// as new. Both persist until the next failure — a stopped turn is worth
+	// keeping on screen, and nothing else has cause to clear it.
+	Failure  string
+	Failures int
 }
 
 func newSessionNode(id string) *SessionNode {
@@ -96,11 +104,13 @@ func stream(buffers map[string]*strings.Builder, id string) (*strings.Builder, m
 // a data race.
 func (n *SessionNode) clone() *SessionNode {
 	out := &SessionNode{
-		ID:     n.ID,
-		Busy:   n.Busy,
-		Agent:  n.Agent,
-		Asks:   n.Asks,
-		Queued: n.Queued,
+		ID:       n.ID,
+		Busy:     n.Busy,
+		Agent:    n.Agent,
+		Asks:     n.Asks,
+		Queued:   n.Queued,
+		Failure:  n.Failure,
+		Failures: n.Failures,
 
 		Tools:     make(map[string]ToolState, len(n.Tools)),
 		Text:      make(map[string]*strings.Builder, len(n.Text)),
@@ -187,6 +197,18 @@ func (t *tree) apply(e client.Event) bool {
 	case "session.next.run.ended":
 		node.Busy = false
 		node.resetStreams()
+		t.dirty[sessionID] = true
+		return true
+	case "session.next.run.failed":
+		// The turn stopped without finishing. run.ended follows it — the
+		// coordinator still reports the idle edge — so this only carries the
+		// reason, which is the part the user would otherwise never see.
+		reason, _ := e.Data["error"].(string)
+		if reason == "" {
+			reason = "the turn stopped unexpectedly"
+		}
+		node.Failure = reason
+		node.Failures++
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.step.started":

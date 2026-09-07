@@ -47,3 +47,29 @@ func PublishRunStatus(ctx context.Context, bus *event.Bus) func(sessionID string
 		}, event.PublishOptions{})
 	}
 }
+
+// RunFailed announces that a turn ended because the drain failed, rather than
+// because the work finished. It exists so the failure is not invisible: the
+// drain error used to go to the background log alone, and what the user saw
+// was a turn that simply stopped — no message, no error, no spinner. See
+// cmd/gocode/main.go's logDrainError for why it cannot be written to the
+// terminal directly.
+//
+// Live-only, like the pair above: it describes what just happened to this
+// process's run, not something a session replay should ever re-announce.
+var RunFailed = event.Definition{Type: "session.next.run.failed"}
+
+// PublishRunFailure puts a drain failure on the bus. It is the reporting half
+// of Execution.ErrorLogger; the caller still decides which errors are worth
+// reporting (a cancelled turn is the user's own interrupt, not a failure).
+func PublishRunFailure(ctx context.Context, bus *event.Bus) func(sessionID string, err error) {
+	return func(sessionID string, err error) {
+		if bus == nil || sessionID == "" || err == nil {
+			return
+		}
+		_, _ = bus.Publish(context.WithoutCancel(ctx), RunFailed, map[string]any{
+			"sessionID": sessionID,
+			"error":     err.Error(),
+		}, event.PublishOptions{})
+	}
+}

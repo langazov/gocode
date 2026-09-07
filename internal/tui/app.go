@@ -111,6 +111,10 @@ type App struct {
 	// queuedBlocks.
 	queued     []client.QueuedPrompt
 	queuedSeen int
+	// failuresSeen is the last SessionNode.Failures the active session
+	// reported, so one stopped turn raises exactly one notice however many
+	// snapshots carry it.
+	failuresSeen int
 
 	// interruptArmed ports the prompt's `store.interrupt` counter: the
 	// session.interrupt command is a two-press gesture, and the footer's hint
@@ -447,6 +451,10 @@ type snapshotEffect struct {
 	timeline bool
 	asks     bool
 	queue    bool
+	// failure is the reason a turn stopped short, empty when none did. The
+	// interface surfaces it: before this existed a drain failure went to the
+	// background log alone and the turn simply vanished mid-task.
+	failure string
 }
 
 // applySnapshot folds one aggregated snapshot into the model, reporting what
@@ -493,6 +501,10 @@ func (a *App) applySnapshot(snapshot Snapshot) snapshotEffect {
 	if node.Queued != a.queuedSeen {
 		a.queuedSeen = node.Queued
 		effect.queue = true
+	}
+	if node.Failures != a.failuresSeen {
+		a.failuresSeen = node.Failures
+		effect.failure = node.Failure
 	}
 	if snapshot.Dirty[a.active.ID] {
 		a.scrollOffset = 0
@@ -1024,6 +1036,12 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			// is now behind.
 			if effect.queue {
 				cmds = append(cmds, a.loadQueue(a.active.ID))
+			}
+			// The turn stopped without finishing. Say so: the timeline shows
+			// no error of its own, because the failure happened around the
+			// message rather than in it.
+			if effect.failure != "" {
+				cmds = append(cmds, a.showToast("Run stopped: "+effect.failure, true))
 			}
 		}
 		return tea.Batch(cmds...)

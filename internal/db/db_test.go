@@ -2,6 +2,9 @@ package db
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -129,3 +132,71 @@ func TestOpenCreatesParentDir(t *testing.T) {
 		t.Fatalf("expected db file: %v", err)
 	}
 }
+
+// QueryRow defers its query to Scan so the whole read can be retried. That
+// must not change what a caller sees, so the sql.Row contract is asserted
+// directly: a hit scans, a miss is sql.ErrNoRows, and a bad query still errors.
+func TestQueryRowMatchesSQLRowSemantics(t *testing.T) {
+	ctx := context.Background()
+	database, err := Open(":memory:")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	if _, err := database.Exec(ctx, `CREATE TABLE item (id TEXT PRIMARY KEY, n INTEGER)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(ctx, `INSERT INTO item VALUES ('a', 7)`); err != nil {
+		t.Fatal(err)
+	}
+
+	var n int
+	if err := database.QueryRow(ctx, `SELECT n FROM item WHERE id = ?`, "a").Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 7 {
+		t.Fatalf("expected 7, got %d", n)
+	}
+	err = database.QueryRow(ctx, `SELECT n FROM item WHERE id = ?`, "missing").Scan(&n)
+	if !errors.Is(err, sql.ErrNoRows) {
+		t.Fatalf("expected sql.ErrNoRows, got %v", err)
+	}
+	if err := database.QueryRow(ctx, `SELECT nope FROM item`).Scan(&n); err == nil {
+		t.Fatal("expected an error for an invalid query")
+	}
+}
+
+// Retryable is what lets a caller above the storage layer — session.Execution's
+// drain — tell "another gocode has the lock, try again" apart from a real
+// failure. The extended codes carry the primary one in their low byte.
+func TestRetryableCoversTheBusyFamily(t *testing.T) {
+	for _, tc := range []struct {
+		code int
+		want bool
+	}{
+		{5, true},     // SQLITE_BUSY
+		{6, true},     // SQLITE_LOCKED
+		{517, true},   // SQLITE_BUSY_SNAPSHOT
+		{773, true},   // SQLITE_BUSY_TIMEOUT
+		{262, true},   // SQLITE_LOCKED_SHAREDCACHE
+		{1, false},    // SQLITE_ERROR
+		{11, false},   // SQLITE_CORRUPT
+		{2067, false}, // SQLITE_CONSTRAINT_UNIQUE
+	} {
+		err := fmt.Errorf("wrapped: %w", &codedTestError{code: tc.code})
+		if got := Retryable(err); got != tc.want {
+			t.Errorf("Retryable(code %d) = %v, want %v", tc.code, got, tc.want)
+		}
+	}
+	if Retryable(nil) {
+		t.Error("nil is not retryable")
+	}
+	if Retryable(errors.New("plain")) {
+		t.Error("an error with no result code is not retryable")
+	}
+}
+
+type codedTestError struct{ code int }
+
+func (e *codedTestError) Error() string { return "database is locked" }
+func (e *codedTestError) Code() int     { return e.code }

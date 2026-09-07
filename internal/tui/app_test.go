@@ -1306,3 +1306,26 @@ func mustJSON(v any) string {
 	data, _ := json.Marshal(v)
 	return string(data)
 }
+
+// The user's report was a turn that stopped silently when a second gocode
+// instance started: the drain failed on the shared database, the session went
+// idle, and nothing said why. The failure now reaches the interface, once.
+func TestRunFailureSurfacesOnce(t *testing.T) {
+	_, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+	openSession(t, app)
+
+	state := newTree()
+	state.apply(client.Event{
+		Type:    "session.next.run.failed",
+		Session: "ses_1",
+		Data:    map[string]any{"error": "database is locked (517)"},
+	})
+	effect := app.applySnapshot(state.snapshot(0))
+	if effect.failure != "database is locked (517)" {
+		t.Fatalf("expected the reason to reach the model, got %q", effect.failure)
+	}
+	if again := app.applySnapshot(state.snapshot(0)); again.failure != "" {
+		t.Fatal("one stopped turn must not raise a notice per snapshot")
+	}
+}

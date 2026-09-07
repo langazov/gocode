@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 )
@@ -132,5 +133,84 @@ func TestMessageStoreAppendAndList(t *testing.T) {
 	}
 	if missing != nil {
 		t.Fatalf("expected nil for missing message, got %+v", missing)
+	}
+}
+
+// busyError is a stand-in for the driver error a second gocode process
+// produces when it holds the write lock: db.Retryable matches on the result
+// code, and the concrete driver type cannot be constructed from a test.
+type busyError struct{ code int }
+
+func (e *busyError) Error() string { return "database is locked" }
+func (e *busyError) Code() int     { return e.code }
+
+// flakyRunner fails the first failures runs with err, then succeeds.
+type flakyRunner struct {
+	failures int32
+	err      error
+	calls    atomic.Int32
+}
+
+func (r *flakyRunner) Run(ctx context.Context, input RunInput) error {
+	if r.calls.Add(1) <= r.failures {
+		return r.err
+	}
+	return nil
+}
+
+// A turn must survive another process taking the database lock. This is the
+// reported failure: starting a second gocode instance stopped the first one's
+// task, because the drain returned the lock error and the session went idle
+// mid-turn with nothing on screen to say why.
+func TestExecutionRetriesDrainOnLockedDatabase(t *testing.T) {
+	_, database := setup(t)
+	runner := &flakyRunner{failures: 2, err: &busyError{code: 517}} // SQLITE_BUSY_SNAPSHOT
+	execution := NewExecution(&DBSessionLookup{DB: database}, runner)
+	var reported atomic.Int32
+	execution.ErrorLogger = func(string, error) { reported.Add(1) }
+
+	if err := execution.Resume(context.Background(), "ses_1"); err != nil {
+		t.Fatalf("drain should have survived a transient lock: %v", err)
+	}
+	if runner.calls.Load() != 3 {
+		t.Fatalf("expected two retries then a success, got %d runs", runner.calls.Load())
+	}
+	if reported.Load() != 0 {
+		t.Fatal("a drain that recovered must not be reported as a failure")
+	}
+}
+
+// The retry is bounded, and a drain that stays locked still reports — the
+// point is to survive the transient case, not to hide a persistent one.
+func TestExecutionReportsPersistentLock(t *testing.T) {
+	_, database := setup(t)
+	runner := &flakyRunner{failures: 1 << 30, err: &busyError{code: 5}} // SQLITE_BUSY
+	execution := NewExecution(&DBSessionLookup{DB: database}, runner)
+	var reported atomic.Int32
+	execution.ErrorLogger = func(string, error) { reported.Add(1) }
+
+	if err := execution.Resume(context.Background(), "ses_1"); err == nil {
+		t.Fatal("expected the persistent lock to surface")
+	}
+	if got := runner.calls.Load(); got != drainRetries+1 {
+		t.Fatalf("expected %d attempts, got %d", drainRetries+1, got)
+	}
+	if reported.Load() != 1 {
+		t.Fatalf("expected one failure report, got %d", reported.Load())
+	}
+}
+
+// An error that is not contention is not retried: a provider failure or a
+// programming error must fail the turn immediately, as it always has.
+func TestExecutionDoesNotRetryOrdinaryErrors(t *testing.T) {
+	_, database := setup(t)
+	runner := &flakyRunner{failures: 1, err: errors.New("provider exploded")}
+	execution := NewExecution(&DBSessionLookup{DB: database}, runner)
+
+	if err := execution.Resume(context.Background(), "ses_1"); err == nil {
+		t.Fatal("expected the provider error to surface")
+	}
+	if runner.calls.Load() != 1 {
+		t.Fatalf("expected exactly one attempt, got %d", runner.calls.Load())
 	}
 }

@@ -13,7 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"modernc.org/sqlite"
+	// Registers the "sqlite" driver Open uses. The package's own types are
+	// not referenced here — isBusy matches the result code through the coded
+	// interface instead — so the import is blank.
+	_ "modernc.org/sqlite"
 )
 
 // maxReaders bounds the connection pool. WAL permits any number of concurrent
@@ -131,16 +134,29 @@ func busyBackoff(attempt int) time.Duration {
 	return base + time.Duration(rand.Int64N(int64(base/2+1)))
 }
 
+// Retryable reports whether err is SQLite refusing the call because another
+// process holds the lock — a second gocode instance, in practice. It is
+// transient by definition: the same call, run again, is expected to succeed,
+// which is what lets a caller further up (session.Execution's drain) retry a
+// unit of work this layer's own retries could not save.
+func Retryable(err error) bool { return isBusy(err) }
+
+// coded is the shape of a driver error carrying a SQLite result code, which
+// is all isBusy needs of *sqlite.Error. Matching on the method rather than the
+// concrete type keeps the check honest across a wrapped error and lets a test
+// hand the retry a busy failure without a real lock to lose.
+type coded interface{ Code() int }
+
 // isBusy reports whether err is SQLite refusing a write because someone else
 // holds the lock. The extended codes (SQLITE_BUSY_SNAPSHOT 517, _RECOVERY 261,
 // _TIMEOUT 773, SQLITE_LOCKED_SHAREDCACHE 262, ...) carry the primary code in
 // their low byte, so masking covers the family without naming each one.
 func isBusy(err error) bool {
-	var sqliteErr *sqlite.Error
-	if !errors.As(err, &sqliteErr) {
+	var codedErr coded
+	if !errors.As(err, &codedErr) {
 		return false
 	}
-	switch sqliteErr.Code() & 0xFF {
+	switch codedErr.Code() & 0xFF {
 	case 5, 6: // SQLITE_BUSY, SQLITE_LOCKED
 		return true
 	}
@@ -198,12 +214,66 @@ func (d *DB) Exec(ctx context.Context, query string, args ...any) (sql.Result, e
 	return result, nil
 }
 
+// Query runs a read. Reads never take the write semaphore — WAL admits any
+// number of them alongside the single writer — but they are still retried:
+// another process opening the database, or checkpointing it, can hand a reader
+// SQLITE_BUSY, and a read that fails is how a drain used to die mid-turn.
+//
+// The retry covers preparing and starting the statement. A busy that surfaces
+// later, while the caller iterates the returned rows, cannot be retried
+// transparently and reaches the caller as before; QueryRow, which reads its
+// single row here, is retried end to end.
 func (d *DB) Query(ctx context.Context, query string, args ...any) (*sql.Rows, error) {
-	return d.sql.QueryContext(ctx, query, args...)
+	var rows *sql.Rows
+	err := d.retryBusy(ctx, func() error {
+		var err error
+		rows, err = d.sql.QueryContext(ctx, query, args...)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
-func (d *DB) QueryRow(ctx context.Context, query string, args ...any) *sql.Row {
-	return d.sql.QueryRowContext(ctx, query, args...)
+// QueryRow reads a single row. Unlike sql.DB.QueryRow it defers the query to
+// Scan, so the whole read — query, step, scan — happens inside one retry and
+// a busy database is waited out rather than returned.
+func (d *DB) QueryRow(ctx context.Context, query string, args ...any) *Row {
+	return &Row{db: d, ctx: ctx, query: query, args: args}
+}
+
+// Row is the single-row result of QueryRow. It has sql.Row's semantics —
+// Scan reports sql.ErrNoRows when the query selected nothing, and every
+// caller that treats a *sql.Row as "something with Scan" works unchanged.
+type Row struct {
+	db    *DB
+	ctx   context.Context
+	query string
+	args  []any
+}
+
+// Scan runs the query and reads the first row into dest. A retry re-runs the
+// query from the start, so whatever a failed attempt wrote into dest is
+// overwritten by the attempt that succeeds.
+func (r *Row) Scan(dest ...any) error {
+	return r.db.retryBusy(r.ctx, func() error {
+		rows, err := r.db.sql.QueryContext(r.ctx, r.query, r.args...)
+		if err != nil {
+			return err
+		}
+		defer rows.Close()
+		if !rows.Next() {
+			if err := rows.Err(); err != nil {
+				return err
+			}
+			return sql.ErrNoRows
+		}
+		if err := rows.Scan(dest...); err != nil {
+			return err
+		}
+		return rows.Err()
+	})
 }
 
 // Transaction runs fn inside a SQLite transaction, rolling back on error.
