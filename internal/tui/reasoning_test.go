@@ -263,6 +263,54 @@ func TestClickOnReasoningHeaderTogglesExpansion(t *testing.T) {
 	}
 }
 
+// TestClickOnExpandedReasoningBodyCollapses covers the open block's whole
+// span being a click target (reasoningRef/reasoningHeaderRef): once a long
+// body has pushed the header out of easy reach, a click on any line of the
+// body has to close it again — the same affordance an expanded tool output
+// already has.
+func TestClickOnExpandedReasoningBodyCollapses(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.thinkingMode = "hide"
+	app.active = &client.Session{ID: "ses_1"}
+	app.view = viewChat
+	app.expandedReasoning["r1"] = true
+	app.timeline = []client.Message{
+		{ID: "m1", Type: "assistant", Data: json.RawMessage(`{"agent":"build","finish":"end_turn","content":[
+			{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nfirst body line\n\nsecond body line\n\nthird body line","time":{"created":1000,"completed":3500}}
+		]}`)},
+	}
+
+	_ = app.viewChat() // populates chatReasoningRows/chatWindowPad/chatWindowStart
+
+	lines, rows, _ := app.buildTimeline()
+	bodyRow := -1
+	for i, line := range lines {
+		if strings.Contains(plain(line), "third body line") {
+			bodyRow = i
+			break
+		}
+	}
+	if bodyRow == -1 {
+		t.Fatalf("expected the expanded body in the timeline, got %v", lines)
+	}
+	if got, ok := rows[bodyRow]; !ok || got != "r1" {
+		t.Fatalf("reasoningRows[%d] = (%q, %v), want (\"r1\", true) — body rows must toggle too", bodyRow, got, ok)
+	}
+
+	app.handleClick(5, bodyRow+app.chatWindowPad-app.chatWindowStart)
+	if app.expandedReasoning["r1"] {
+		t.Fatal("expected a click on the body to collapse r1")
+	}
+
+	// Collapsed again, only the header row toggles: the rows the body used
+	// to occupy belong to whatever is rendered there now.
+	_ = app.viewChat()
+	_, rows, _ = app.buildTimeline()
+	if len(rows) != 1 {
+		t.Fatalf("collapsed block should register exactly its header row, got %v", rows)
+	}
+}
+
 // TestThinkingSlashCommandCyclesMode is the regression for the global
 // toggle TS exposes as "/thinking" (session.toggle.thinking): the same
 // slash name here must cycle thinkingMode show <-> hide.
