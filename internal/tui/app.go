@@ -115,6 +115,12 @@ type App struct {
 	// reported, so one stopped turn raises exactly one notice however many
 	// snapshots carry it.
 	failuresSeen int
+	// networkWait describes a turn the runner is holding because it cannot
+	// reach the provider, or "" when nothing is being held. It replaces the
+	// interrupt hint in the footer: a turn parked on an outage produces no
+	// tokens, so without it the interface shows a spinner and nothing else
+	// for as long as the outage lasts.
+	networkWait string
 
 	// interruptArmed ports the prompt's `store.interrupt` counter: the
 	// session.interrupt command is a two-press gesture, and the footer's hint
@@ -506,6 +512,10 @@ func (a *App) applySnapshot(snapshot Snapshot) snapshotEffect {
 		a.failuresSeen = node.Failures
 		effect.failure = node.Failure
 	}
+	// A turn held back by an unreachable network. Copied straight across
+	// rather than counted like failures: it is the current state of the hold,
+	// and an empty one means the hold is over.
+	a.networkWait = node.Waiting
 	if snapshot.Dirty[a.active.ID] {
 		a.scrollOffset = 0
 		effect.timeline = true

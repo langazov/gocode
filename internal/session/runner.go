@@ -98,6 +98,13 @@ type Runner struct {
 	// from the interface, like it simply stopped. nil or an unknown model
 	// falls back to DefaultMaxOutputTokens.
 	OutputLimit OutputLimitResolver
+
+	// Asker puts a question to the user mid-turn and blocks on the answer —
+	// the same service the question tool uses. The runner needs it for the
+	// one decision it cannot make alone: whether to keep waiting out a
+	// network outage (see netretry.go). nil leaves the runner
+	// non-interactive, which is what a headless or embedded run wants.
+	Asker Asker
 }
 
 // OutputLimitResolver returns a model's maximum output tokens per step,
@@ -218,9 +225,79 @@ func (r *Runner) Run(ctx context.Context, input RunInput) error {
 	return nil
 }
 
-// runTurn runs one provider turn, recovering from a context-overflow failure
-// by compacting and retrying once.
+// runTurn runs one provider turn, holding it through a network outage: a step
+// that never reached the provider is re-attempted rather than settled, for as
+// long as the user is willing to wait (see netretry.go). Every other outcome,
+// including a provider that answered with an error, passes straight through.
 func (r *Runner) runTurn(runCtx context.Context, sessionID string, promotion Delivery, step int) (turnResult, error) {
+	// Publishes must outlive an interrupt, exactly as in runTurnAttempt.
+	ctx := context.WithoutCancel(runCtx)
+	var hold networkHold
+	for {
+		result, err := r.runTurnCompacting(runCtx, sessionID, promotion, step)
+		var down *transportDownError
+		if !errors.As(err, &down) {
+			return result, err
+		}
+		retry, settleWith := r.awaitNetwork(runCtx, ctx, sessionID, down, &hold)
+		if retry {
+			continue
+		}
+		// Waiting is over and the step was never settled — it returned before
+		// publishing anything — so settle it here with what actually stopped
+		// it: the transport error, or the interrupt that ended the wait.
+		if err := r.failTurn(ctx, runCtx, sessionID, settleWith); err != nil {
+			return turnResult{}, err
+		}
+		return turnResult{}, settleWith
+	}
+}
+
+// failTurn settles a turn that never produced an assistant message, giving the
+// failure somewhere to live. The normal path settles inside runTurnAttempt;
+// this is for the errors that are diagnosed above it.
+func (r *Runner) failTurn(ctx, runCtx context.Context, sessionID string, cause error) error {
+	resolved, err := r.resolveAgent(ctx, sessionID)
+	if err != nil {
+		return err
+	}
+	assistantMessageID, err := r.startAssistantMessage(ctx, sessionID, resolved)
+	if err != nil {
+		return err
+	}
+	_, err = r.Bus.Publish(ctx, StepFailed, map[string]any{
+		"sessionID":          sessionID,
+		"timestamp":          nowMillis(),
+		"assistantMessageID": assistantMessageID,
+		"error":              stepError(runCtx, cause),
+	}, event.PublishOptions{})
+	return err
+}
+
+// startAssistantMessage opens an assistant message for a step and announces
+// it. Shared by the streaming path (runTurnAttempt's startAssistant) and by
+// failTurn above, so both produce the same message shape.
+func (r *Runner) startAssistantMessage(ctx context.Context, sessionID string, resolved resolvedAgent) (string, error) {
+	assistantMessageID, err := id.Ascending(id.KindMessage)
+	if err != nil {
+		return "", err
+	}
+	_, err = r.Bus.Publish(ctx, StepStarted, map[string]any{
+		"sessionID":          sessionID,
+		"timestamp":          nowMillis(),
+		"assistantMessageID": assistantMessageID,
+		"agent":              resolved.ID,
+		"model":              map[string]any{"providerID": resolved.Model.ProviderID, "id": resolved.Model.ID},
+	}, event.PublishOptions{})
+	if err != nil {
+		return "", err
+	}
+	return assistantMessageID, nil
+}
+
+// runTurnCompacting runs one provider turn, recovering from a context-overflow
+// failure by compacting and retrying once.
+func (r *Runner) runTurnCompacting(runCtx context.Context, sessionID string, promotion Delivery, step int) (turnResult, error) {
 	result, err := r.runTurnAttempt(runCtx, sessionID, promotion, step)
 	if !errors.Is(err, errContextOverflow) || r.Compactor == nil {
 		return result, err
@@ -347,19 +424,12 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 		if assistantMessageID != "" {
 			return nil
 		}
-		generated, err := id.Ascending(id.KindMessage)
+		generated, err := r.startAssistantMessage(ctx, sessionID, resolved)
 		if err != nil {
 			return err
 		}
 		assistantMessageID = generated
-		_, err = r.Bus.Publish(ctx, StepStarted, map[string]any{
-			"sessionID":          sessionID,
-			"timestamp":          nowMillis(),
-			"assistantMessageID": assistantMessageID,
-			"agent":              resolved.ID,
-			"model":              map[string]any{"providerID": resolved.Model.ProviderID, "id": resolved.Model.ID},
-		}, event.PublishOptions{})
-		return err
+		return nil
 	}
 
 	startText := func() error {
@@ -532,6 +602,14 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	// wrapper to compact and retry instead of settling a failed step.
 	if providerErr != nil && assistantMessageID == "" && isContextOverflow(providerErr) {
 		return turnResult{}, errContextOverflow
+	}
+
+	// So is an outage before any assistant content: nothing was said, so the
+	// step can simply be re-attempted once the network is back. Signalled the
+	// same way, and guarded the same way — a step that already streamed text
+	// or dispatched a tool must settle, never silently run twice.
+	if providerErr != nil && assistantMessageID == "" && isTransportFailure(providerErr) {
+		return turnResult{}, &transportDownError{cause: providerErr}
 	}
 
 	if providerErr != nil {

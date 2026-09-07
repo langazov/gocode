@@ -25,6 +25,13 @@ var (
 		Type:    "session.next.step.failed",
 		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 2},
 	}
+	// StepWaiting announces a turn held back by an unreachable network, and
+	// repeats before every retry. Live-only, like the ask events: a past
+	// outage replayed into a reopened session would describe a wait that
+	// finished long ago.
+	StepWaiting = event.Definition{
+		Type: "session.next.step.waiting",
+	}
 	ToolCalled = event.Definition{
 		Type:    "session.next.tool.called",
 		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},

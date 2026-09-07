@@ -254,6 +254,14 @@ func footerSegmentsWidth(segments []string) int {
 // footerLeft renders the hint row's left half.
 func (a *App) footerLeft() string {
 	if a.busy {
+		// A turn held on an unreachable network says so, in place of the
+		// interrupt hint's usual wording — escape still works, and still
+		// cancels, so the key half is kept.
+		if a.networkWait != "" {
+			return " " + a.scannerSpinner(a.theme.Warning, a.theme.Background) + " " +
+				a.styles().Muted.Render(a.networkWait) + "  " +
+				a.styles().Text.Render("esc") + " " + a.styles().Muted.Render("interrupt")
+		}
 		// `<box marginLeft={1}>` around the spinner, then gap={1} to the
 		// interrupt hint.
 		armed := a.interruptIsArmed()
