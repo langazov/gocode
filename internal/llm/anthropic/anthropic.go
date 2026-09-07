@@ -12,7 +12,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/langazov/gocode-go/internal/llm"
 )
@@ -43,7 +42,7 @@ func New(apiKey string) *Client {
 	return &Client{
 		APIKey:  apiKey,
 		BaseURL: DefaultBaseURL,
-		HTTP:    &http.Client{Timeout: 10 * time.Minute},
+		HTTP:    llm.NewStreamHTTPClient(),
 	}
 }
 
@@ -289,7 +288,9 @@ func (c *Client) streamHandler(ctx context.Context, req Request, handler StreamH
 		data, _ := io.ReadAll(res.Body)
 		return nil, parseError(res.StatusCode, data)
 	}
-	return readSSE(res.Body, handler)
+	stream := llm.NewIdleReader(res.Body, llm.StreamIdleTimeout)
+	defer stream.Close()
+	return readSSE(stream, handler)
 }
 
 func parseError(status int, data []byte) error {
