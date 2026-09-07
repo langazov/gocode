@@ -751,7 +751,18 @@ func (a *App) reasoningBody(body string, extraIndent int) string {
 	if body == "" {
 		return ""
 	}
-	return aIndent(a.styles().Muted.Render(wrapText(body, a.contentWidth()-4-extraIndent)), 3+extraIndent)
+	// Same glamour pass assistantTextBlock uses (see markdown.go), but the
+	// dimmed palette: think bodies arrive as markdown (bold titles, lists,
+	// fenced code) and markdownRendererDim fades every color toward the
+	// background by ThinkingOpacity — the same fade the open header above
+	// uses — so the body reads as uniformly recessive thought. The wrap
+	// width and indent mirror the old wrapText version exactly — width
+	// contentWidth()-4-extraIndent so wrapped source fits the same indent(3)+
+	// extraIndent gutter. Muted still goes on line-by-line (renderLines) as
+	// the base color under glamour's own spans, without flattening the
+	// markdown styling.
+	md := a.renderMarkdownDim(body, a.contentWidth()-4-extraIndent)
+	return aIndent(renderLines(a.styles().Muted, md), 3+extraIndent)
 }
 
 // assistantTextBlock mirrors TextPart: markdown-rendered (see markdown.go),

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"image/color"
+	"strconv"
 	"strings"
 
 	"github.com/langazov/gocode-go/internal/tui/theme"
@@ -24,10 +25,22 @@ import (
 // markdownRenderer): constructing one loads chroma's lexer/style
 // registries, too costly to redo on every streamed delta.
 func (a *App) renderMarkdown(text string, width int) string {
+	return a.renderMarkdownStyled(text, width, a.markdownRenderer)
+}
+
+// renderMarkdownDim is renderMarkdown through the dimmed reasoning-body
+// palette (see markdownRendererDim / glamourStyleConfig's dim flag).
+func (a *App) renderMarkdownDim(text string, width int) string {
+	return a.renderMarkdownStyled(text, width, a.markdownRendererDim)
+}
+
+// renderMarkdownStyled is renderMarkdown's shared body: render + trim, with
+// the renderer picked by the caller.
+func (a *App) renderMarkdownStyled(text string, width int, pick func(int) *glamour.TermRenderer) string {
 	if width < 10 {
 		width = 10
 	}
-	r := a.markdownRenderer(width)
+	r := pick(width)
 	if r == nil {
 		return text
 	}
@@ -51,14 +64,37 @@ func (a *App) renderMarkdown(text string, width int) string {
 // slowly wider walks through a new width every frame, and each entry pins
 // chroma's registries.
 func (a *App) markdownRenderer(width int) *glamour.TermRenderer {
+	return a.markdownRendererStyled(width, glamourKeyNormal, glamourStyleConfig(a.theme, false))
+}
+
+// glamourKeyNormal and glamourKeyDim are the two cache keys a width can hold.
+// Normal is assistantTextBlock's full-brightness pass; dim fades every color
+// toward the background (see glamourStyleConfig's dim parameter) and is what
+// reasoning bodies render through, so a think block reads as one uniformly
+// recessive run of thought rather than full-brightness text sitting under an
+// already-faded header.
+const (
+	glamourKeyNormal = ""
+	glamourKeyDim    = "dim"
+)
+
+// markdownRendererDim is markdownRenderer for the reasoning body: same cached
+// machinery, dimmed palette.
+func (a *App) markdownRendererDim(width int) *glamour.TermRenderer {
+	return a.markdownRendererStyled(width, glamourKeyDim, glamourStyleConfig(a.theme, true))
+}
+
+// markdownRendererStyled is markdownRenderer's shared body: cache lookup by
+// (variant, width), construction, insertion.
+func (a *App) markdownRendererStyled(width int, variant string, styles ansi.StyleConfig) *glamour.TermRenderer {
 	if a.mdRendererTheme != a.theme.Name || len(a.mdRenderers) > 8 {
 		a.mdRenderers = nil
 	}
-	if r, ok := a.mdRenderers[width]; ok {
+	if r, ok := a.mdRenderers[variant+":"+strconv.Itoa(width)]; ok {
 		return r
 	}
 	r, err := glamour.NewTermRenderer(
-		glamour.WithStyles(glamourStyleConfig(a.theme)),
+		glamour.WithStyles(styles),
 		glamour.WithWordWrap(width),
 		// Truecolor to match every other truecolor hex color in this style
 		// (and the rest of the app) — chroma's own default formatter
@@ -69,9 +105,9 @@ func (a *App) markdownRenderer(width int) *glamour.TermRenderer {
 		return nil
 	}
 	if a.mdRenderers == nil {
-		a.mdRenderers = map[int]*glamour.TermRenderer{}
+		a.mdRenderers = map[string]*glamour.TermRenderer{}
 	}
-	a.mdRenderers[width], a.mdRendererTheme = r, a.theme.Name
+	a.mdRenderers[variant+":"+strconv.Itoa(width)], a.mdRendererTheme = r, a.theme.Name
 	return r
 }
 
@@ -104,23 +140,44 @@ func codeBlockTheme(t theme.Theme) string {
 // carry no Margin/BlockPrefix/BlockSuffix: this port's own layout
 // (assistantTextBlock's indent+leading blank line) already handles the
 // insetting glamour's bundled styles would otherwise add on top.
-func glamourStyleConfig(t theme.Theme) ansi.StyleConfig {
+//
+// dim builds the reasoning-body variant: every palette color is faded toward
+// the background by ThinkingOpacity — exactly the fade reasoningBlock's
+// header applies once its body shows — so the body cannot outshine its own
+// dimmed header. Structural styling (prefixes, indents, underline/bold/
+// italic) passes through untouched; only chroma code fences speak at full
+// brightness.
+func glamourStyleConfig(t theme.Theme, dim bool) ansi.StyleConfig {
 	c := t.Colors
 	str := func(s string) *string { return &s }
 	hex := func(col color.Color) *string { s := theme.Hex(col); return &s }
+	// dhex fades when dim is set, else delegates to hex. Body text keeps a
+	// hair more presence (0.75 alpha) than the rest so paragraphs stay
+	// readable rather than dissolving into the page.
+	dhex := func(col color.Color) *string {
+		if !dim {
+			return hex(col)
+		}
+		alpha := t.ThinkingOpacity
+		if col == c.Text {
+			alpha = 0.75
+		}
+		s := theme.Hex(theme.FadeColor(t.Background, col, alpha))
+		return &s
+	}
 	yes := func() *bool { b := true; return &b }
 	one := func() *uint { v := uint(1); return &v }
 
 	return ansi.StyleConfig{
-		Document: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: hex(c.Text)}},
+		Document: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: dhex(c.Text)}},
 		BlockQuote: ansi.StyleBlock{
-			StylePrimitive: ansi.StylePrimitive{Color: hex(c.TextMuted)},
+			StylePrimitive: ansi.StylePrimitive{Color: dhex(c.TextMuted)},
 			Indent:         one(),
 			IndentToken:    str("│ "),
 		},
-		List: ansi.StyleList{StyleBlock: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: hex(c.Text)}}},
+		List: ansi.StyleList{StyleBlock: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: dhex(c.Text)}}},
 
-		Heading: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: hex(c.Primary), Bold: yes()}},
+		Heading: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: dhex(c.Primary), Bold: yes()}},
 		H1:      ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "# ", Bold: yes()}},
 		H2:      ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "## "}},
 		H3:      ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Prefix: "### "}},
@@ -137,15 +194,15 @@ func glamourStyleConfig(t theme.Theme) ansi.StyleConfig {
 		// edge-to-edge the way the old hand-rolled renderer's
 		// strings.Repeat("─", width) did; a fixed-width divider is the best
 		// this mechanism supports.
-		HorizontalRule: ansi.StylePrimitive{Color: hex(c.BorderActive), Format: "\n" + strings.Repeat("─", 40) + "\n"},
+		HorizontalRule: ansi.StylePrimitive{Color: dhex(c.BorderActive), Format: "\n" + strings.Repeat("─", 40) + "\n"},
 
 		Item:        ansi.StylePrimitive{BlockPrefix: "• "},
-		Enumeration: ansi.StylePrimitive{BlockPrefix: ". ", Color: hex(c.Primary)},
+		Enumeration: ansi.StylePrimitive{BlockPrefix: ". ", Color: dhex(c.Primary)},
 
-		Link:      ansi.StylePrimitive{Color: hex(c.Primary), Underline: yes()},
-		LinkText:  ansi.StylePrimitive{Color: hex(c.Accent)},
-		Image:     ansi.StylePrimitive{Color: hex(c.Primary), Underline: yes()},
-		ImageText: ansi.StylePrimitive{Color: hex(c.Accent)},
+		Link:      ansi.StylePrimitive{Color: dhex(c.Primary), Underline: yes()},
+		LinkText:  ansi.StylePrimitive{Color: dhex(c.Accent)},
+		Image:     ansi.StylePrimitive{Color: dhex(c.Primary), Underline: yes()},
+		ImageText: ansi.StylePrimitive{Color: dhex(c.Accent)},
 
 		// TS's markup.raw.inline scope (theme/index.ts's getSyntaxRules) sets
 		// background to theme.background, not backgroundElement: on an opaque
@@ -154,11 +211,11 @@ func glamourStyleConfig(t theme.Theme) ansi.StyleConfig {
 		// backgroundElement here painted a visible box behind every inline
 		// code span that the original theme never draws.
 		Code: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{
-			Color:           hex(c.Accent),
-			BackgroundColor: hex(c.Background),
+			Color:           dhex(c.Accent),
+			BackgroundColor: dhex(c.Background),
 		}},
 		CodeBlock: ansi.StyleCodeBlock{
-			StyleBlock: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: hex(c.Text)}},
+			StyleBlock: ansi.StyleBlock{StylePrimitive: ansi.StylePrimitive{Color: dhex(c.Text)}},
 			Theme:      codeBlockTheme(t),
 		},
 	}
