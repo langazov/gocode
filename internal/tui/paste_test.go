@@ -220,6 +220,32 @@ func TestMultilinePasteBelowThresholdGrowsTheBox(t *testing.T) {
 	}
 }
 
+// TestPasteIntoMemorySlashCommand: pasting an instruction after "/memory "
+// must store the pasted content, not the "[Pasted ~N lines]" placeholder.
+// Expansion used to run only after slash dispatch, so the placeholder was
+// saved verbatim as the memory.
+func TestPasteIntoMemorySlashCommand(t *testing.T) {
+	app, state := memoryTestApp(t)
+	typeText(app, "/memory ")
+	content := "always run make check before pushing, and keep the changelog in sync —\n" +
+		"release notes are generated from it, so a stale entry breaks the script\n" +
+		"the team uses to cut a release"
+	app.Update(tea.PasteMsg{Content: content})
+	if !strings.Contains(app.input.Value(), "[Pasted ~3 lines]") {
+		t.Fatalf("prompt is %q, want the collapsed placeholder", app.input.Value())
+	}
+
+	applyCmd(t, app, app.Update(tea.KeyPressMsg{Code: tea.KeyEnter}))
+
+	saved := state.snapshot()
+	if len(saved) != 1 {
+		t.Fatalf("got %d memories, want 1: %+v", len(saved), saved)
+	}
+	if saved[0].Content != content {
+		t.Errorf("content = %q, want the pasted text, not the placeholder", saved[0].Content)
+	}
+}
+
 func TestEmptyPasteIsIgnored(t *testing.T) {
 	app := typingApp(t, 100, 40)
 	typeText(app, "keep")

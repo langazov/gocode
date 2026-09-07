@@ -1363,12 +1363,16 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		a.input.Reset()
 		// Restore any collapsed pastes before the text goes anywhere: what is
 		// sent is the real content, not the "[Pasted ~N lines]" stand-in.
+		// Slash dispatch included — expansion used to happen only after this
+		// branch, so "/memory <pasted block>" stored the placeholder itself
+		// as the instruction. A paste whose content starts with "/" now runs
+		// as a command, which is what submitting that content means.
 		pastes := a.takePastes()
 		files := a.takeAttachments()
+		text = expandPastes(text, pastes)
 		if strings.HasPrefix(text, "/") {
 			return a.runSlashCommand(strings.TrimPrefix(text, "/"))
 		}
-		text = expandPastes(text, pastes)
 		a.history.Append(text)
 		if a.view == viewHome {
 			return a.createAndPrompt(text)
