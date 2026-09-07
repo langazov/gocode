@@ -23,6 +23,10 @@ const (
 	// betaHeader matches packages/opencode/src/provider/provider.ts which
 	// enables interleaved thinking and fine-grained tool streaming.
 	betaHeader = "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
+	// extendedTTLBeta opts into hour-long cache entries. The default
+	// five-minute window needs no opt-in, and sending a `ttl` without this
+	// is a 400, so it is appended only for a request that asks for one.
+	extendedTTLBeta = "extended-cache-ttl-2025-04-11"
 )
 
 type Client struct {
@@ -50,18 +54,45 @@ type Source struct {
 	Data      string `json:"data"`
 }
 
+// CacheControl is a prompt-cache breakpoint: the block carrying it ends a
+// prefix the API should cache. TTL is empty for the default five-minute
+// window, or "1h" for the extended one — which the request must also ask for
+// in its anthropic-beta header (see newRequest).
+type CacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
+}
+
+// Ephemeral5m and Ephemeral1h are the only two markers there are, so they are
+// shared rather than allocated per block.
+var (
+	Ephemeral5m = &CacheControl{Type: "ephemeral"}
+	Ephemeral1h = &CacheControl{Type: "ephemeral", TTL: "1h"}
+)
+
 type ContentBlock struct {
-	Type      string          `json:"type"`
-	Source    *Source         `json:"source,omitempty"`
-	Text      string          `json:"text,omitempty"`
-	Thinking  string          `json:"thinking,omitempty"`
-	Signature string          `json:"signature,omitempty"`
-	ID        string          `json:"id,omitempty"`
-	Name      string          `json:"name,omitempty"`
-	Input     json.RawMessage `json:"input,omitempty"`
-	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
-	IsError   bool            `json:"is_error,omitempty"`
+	Type         string          `json:"type"`
+	Source       *Source         `json:"source,omitempty"`
+	Text         string          `json:"text,omitempty"`
+	Thinking     string          `json:"thinking,omitempty"`
+	Signature    string          `json:"signature,omitempty"`
+	ID           string          `json:"id,omitempty"`
+	Name         string          `json:"name,omitempty"`
+	Input        json.RawMessage `json:"input,omitempty"`
+	ToolUseID    string          `json:"tool_use_id,omitempty"`
+	Content      string          `json:"content,omitempty"`
+	IsError      bool            `json:"is_error,omitempty"`
+	CacheControl *CacheControl   `json:"cache_control,omitempty"`
+}
+
+// SystemBlock is one block of the system prompt. The API also accepts a bare
+// string there, which is what this port sent until breakpoints arrived — but
+// cache_control has to hang off something, so the system prompt is lowered as
+// the block array instead. The two forms are otherwise equivalent.
+type SystemBlock struct {
+	Type         string        `json:"type"`
+	Text         string        `json:"text"`
+	CacheControl *CacheControl `json:"cache_control,omitempty"`
 }
 
 type Message struct {
@@ -70,9 +101,10 @@ type Message struct {
 }
 
 type Tool struct {
-	Name        string         `json:"name"`
-	Description string         `json:"description,omitempty"`
-	InputSchema map[string]any `json:"input_schema"`
+	Name         string         `json:"name"`
+	Description  string         `json:"description,omitempty"`
+	InputSchema  map[string]any `json:"input_schema"`
+	CacheControl *CacheControl  `json:"cache_control,omitempty"`
 }
 
 type ToolChoice struct {
@@ -81,17 +113,17 @@ type ToolChoice struct {
 }
 
 type Request struct {
-	Model       string      `json:"model"`
-	MaxTokens   int         `json:"max_tokens"`
-	Messages    []Message   `json:"messages"`
-	System      string      `json:"system,omitempty"`
-	Temperature *float64    `json:"temperature,omitempty"`
-	TopP        *float64    `json:"top_p,omitempty"`
-	Stream      bool        `json:"stream,omitempty"`
-	StopSeqs    []string    `json:"stop_sequences,omitempty"`
-	Thinking    *Thinking   `json:"thinking,omitempty"`
-	Tools       []Tool      `json:"tools,omitempty"`
-	ToolChoice  *ToolChoice `json:"tool_choice,omitempty"`
+	Model       string        `json:"model"`
+	MaxTokens   int           `json:"max_tokens"`
+	Messages    []Message     `json:"messages"`
+	System      []SystemBlock `json:"system,omitempty"`
+	Temperature *float64      `json:"temperature,omitempty"`
+	TopP        *float64      `json:"top_p,omitempty"`
+	Stream      bool          `json:"stream,omitempty"`
+	StopSeqs    []string      `json:"stop_sequences,omitempty"`
+	Thinking    *Thinking     `json:"thinking,omitempty"`
+	Tools       []Tool        `json:"tools,omitempty"`
+	ToolChoice  *ToolChoice   `json:"tool_choice,omitempty"`
 }
 
 type Thinking struct {
@@ -151,7 +183,7 @@ func (c *Client) newRequest(ctx context.Context, req Request) (*http.Request, er
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("anthropic-version", apiVersion)
-	httpReq.Header.Set("anthropic-beta", betaHeader)
+	httpReq.Header.Set("anthropic-beta", betaHeaderFor(req))
 	signed, err := c.Options.Authenticate(httpReq, body)
 	if err != nil {
 		return nil, err
@@ -161,6 +193,38 @@ func (c *Client) newRequest(ctx context.Context, req Request) (*http.Request, er
 	}
 	c.Options.ApplyHeaders(httpReq)
 	return httpReq, nil
+}
+
+// betaHeaderFor returns the anthropic-beta value the request needs: the
+// standing set, plus the extended-cache opt-in when any breakpoint asked for
+// the hour-long window.
+func betaHeaderFor(req Request) string {
+	if !usesExtendedTTL(req) {
+		return betaHeader
+	}
+	return betaHeader + "," + extendedTTLBeta
+}
+
+func usesExtendedTTL(req Request) bool {
+	extended := func(cc *CacheControl) bool { return cc != nil && cc.TTL == "1h" }
+	for _, block := range req.System {
+		if extended(block.CacheControl) {
+			return true
+		}
+	}
+	for _, tool := range req.Tools {
+		if extended(tool.CacheControl) {
+			return true
+		}
+	}
+	for _, message := range req.Messages {
+		for _, block := range message.Content {
+			if extended(block.CacheControl) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (c *Client) baseURL() string {

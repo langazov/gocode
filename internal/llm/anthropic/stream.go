@@ -48,6 +48,14 @@ func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.
 }
 
 func convertRequest(request llm.Request) (Request, error) {
+	// Anthropic is the only protocol this port speaks that has a wire
+	// representation for a cache breakpoint, so it is where the placement
+	// policy runs. Upstream gates the same pass on a set of protocol ids
+	// (packages/llm/src/cache-policy.ts's RESPECTS_INLINE_HINTS); here the
+	// gate is structural — no other adapter calls it.
+	request = llm.ApplyCachePolicy(request)
+	breakpoints := llm.NewBreakpoints(llm.AnthropicBreakpointCap)
+
 	maxTokens := request.MaxTokens
 	if maxTokens == 0 {
 		maxTokens = 8192
@@ -68,44 +76,75 @@ func convertRequest(request llm.Request) (Request, error) {
 			out.MaxTokens = thinking.BudgetTokens + 1024
 		}
 	}
-	for _, system := range request.System {
-		if system != "" {
-			if out.System != "" {
-				out.System += "\n\n"
-			}
-			out.System += system
-		}
-	}
-	for _, message := range request.Messages {
-		if message.Role == llm.RoleSystem {
-			for _, part := range message.Content {
-				if part.Type == llm.PartText && part.Text != "" {
-					if out.System != "" {
-						out.System += "\n\n"
-					}
-					out.System += part.Text
-				}
-			}
-			continue
-		}
-		converted := convertMessage(message)
-		out.Messages = append(out.Messages, converted...)
-	}
+	// Tools, then system, then messages — the order the prefix is cached in,
+	// so that when hand-placed hints overrun the cap the markers that survive
+	// are the ones nearest the front of the request, where the reusable
+	// prefix actually is.
 	for _, tool := range request.Tools {
 		schema := tool.InputSchema
 		if schema == nil {
 			schema = map[string]any{"type": "object", "properties": map[string]any{}}
 		}
 		out.Tools = append(out.Tools, Tool{
-			Name:        tool.Name,
-			Description: tool.Description,
-			InputSchema: schema,
+			Name:         tool.Name,
+			Description:  tool.Description,
+			InputSchema:  schema,
+			CacheControl: cacheControl(breakpoints, tool.Cache),
 		})
+	}
+	// The system prompt arrives as separate strings and as any system-role
+	// messages, and lowers to one block per non-empty entry. It used to be
+	// joined into a single string with blank lines between; splitting on the
+	// same boundaries leaves the prompt the model reads unchanged.
+	var system []string
+	for _, text := range request.System {
+		if text != "" {
+			system = append(system, text)
+		}
+	}
+	for _, message := range request.Messages {
+		if message.Role != llm.RoleSystem {
+			continue
+		}
+		for _, part := range message.Content {
+			if part.Type == llm.PartText && part.Text != "" {
+				system = append(system, part.Text)
+			}
+		}
+	}
+	for i, text := range system {
+		block := SystemBlock{Type: "text", Text: text}
+		// The breakpoint covers the system prompt as a whole, so it goes on
+		// the final block.
+		if i == len(system)-1 {
+			block.CacheControl = cacheControl(breakpoints, request.SystemCache)
+		}
+		out.System = append(out.System, block)
+	}
+	for _, message := range request.Messages {
+		if message.Role == llm.RoleSystem {
+			continue
+		}
+		out.Messages = append(out.Messages, convertMessage(message, breakpoints)...)
 	}
 	if request.ToolChoice == "none" {
 		out.ToolChoice = &ToolChoice{Type: "none"}
 	}
 	return out, nil
+}
+
+// cacheControl lowers a canonical hint to the wire marker, spending one of the
+// request's four breakpoints. Returns nil for no hint and for a hint that
+// would overrun the cap — a fifth marker is a 400 from the API, so dropping it
+// costs a cache miss where failing the turn would cost the turn.
+func cacheControl(breakpoints *llm.Breakpoints, hint *llm.CacheHint) *CacheControl {
+	if !breakpoints.Take(hint) {
+		return nil
+	}
+	if hint.Extended() {
+		return Ephemeral1h
+	}
+	return Ephemeral5m
 }
 
 // parseThinking reads the "thinking" key a reasoning variant patches into
@@ -144,16 +183,22 @@ func imageBlock(part llm.ContentPart) ContentBlock {
 	}
 }
 
-func convertMessage(message llm.Message) []Message {
+func convertMessage(message llm.Message, breakpoints *llm.Breakpoints) []Message {
 	switch message.Role {
 	case llm.RoleUser:
 		blocks := make([]ContentBlock, 0, len(message.Content))
 		for _, part := range message.Content {
 			switch part.Type {
 			case llm.PartText:
-				blocks = append(blocks, ContentBlock{Type: "text", Text: part.Text})
+				blocks = append(blocks, ContentBlock{
+					Type:         "text",
+					Text:         part.Text,
+					CacheControl: cacheControl(breakpoints, part.Cache),
+				})
 			case llm.PartImage:
-				blocks = append(blocks, imageBlock(part))
+				block := imageBlock(part)
+				block.CacheControl = cacheControl(breakpoints, part.Cache)
+				blocks = append(blocks, block)
 			}
 		}
 		return []Message{{Role: "user", Content: blocks}}
@@ -162,17 +207,24 @@ func convertMessage(message llm.Message) []Message {
 		for _, part := range message.Content {
 			switch part.Type {
 			case llm.PartText:
-				blocks = append(blocks, ContentBlock{Type: "text", Text: part.Text})
+				blocks = append(blocks, ContentBlock{
+					Type:         "text",
+					Text:         part.Text,
+					CacheControl: cacheControl(breakpoints, part.Cache),
+				})
 			case llm.PartReasoning:
+				// No breakpoint on a thinking block: Anthropic rejects one
+				// there, and a hint can only reach this part by hand.
 				blocks = append(blocks, ContentBlock{Type: "thinking", Thinking: part.Text})
 			case llm.PartToolCall:
 				input, err := json.Marshal(part.Input)
 				if err == nil {
 					blocks = append(blocks, ContentBlock{
-						Type:  "tool_use",
-						ID:    part.ToolCallID,
-						Name:  part.ToolName,
-						Input: input,
+						Type:         "tool_use",
+						ID:           part.ToolCallID,
+						Name:         part.ToolName,
+						Input:        input,
+						CacheControl: cacheControl(breakpoints, part.Cache),
 					})
 				}
 			}
@@ -185,10 +237,11 @@ func convertMessage(message llm.Message) []Message {
 				continue
 			}
 			blocks = append(blocks, ContentBlock{
-				Type:      "tool_result",
-				ToolUseID: part.ToolCallID,
-				Content:   part.Result,
-				IsError:   part.IsError,
+				Type:         "tool_result",
+				ToolUseID:    part.ToolCallID,
+				Content:      part.Result,
+				IsError:      part.IsError,
+				CacheControl: cacheControl(breakpoints, part.Cache),
 			})
 		}
 		return []Message{{Role: "user", Content: blocks}}

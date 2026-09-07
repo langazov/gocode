@@ -35,6 +35,11 @@ type ContentPart struct {
 	// bytes, without a data: prefix.
 	Mime string
 	Data string
+	// Cache marks this part as a prompt-cache breakpoint: everything up to
+	// and including it is a stable prefix the provider may cache. Usually
+	// placed by ApplyCachePolicy rather than by hand. Adapters for APIs with
+	// no wire representation for a breakpoint ignore it. See cache.go.
+	Cache *CacheHint
 }
 
 type Message struct {
@@ -73,6 +78,10 @@ type ToolDefinition struct {
 	Name        string
 	Description string
 	InputSchema map[string]any
+	// Cache marks the end of the tool block as a cache breakpoint. Tool
+	// definitions lead the request and change only when the agent's toolset
+	// does, so this is the most stable prefix there is. See cache.go.
+	Cache *CacheHint
 }
 
 type Request struct {
@@ -100,6 +109,20 @@ type Request struct {
 	// "reasoning_effort" (a string). nil/empty means no reasoning requested,
 	// matching the original CLI's opt-in --variant behavior.
 	Reasoning map[string]any
+	// Cache selects where ApplyCachePolicy places prompt-cache breakpoints.
+	// nil asks for the default placement (AutoCachePolicy); an explicit
+	// &CachePolicy{} disables automatic placement without disturbing hints
+	// the caller set by hand. See cache.go.
+	Cache *CachePolicy
+	// SystemCache marks the end of the system prompt as a breakpoint.
+	//
+	// It hangs off the request rather than off a system part because System
+	// is a []string: the plugin system-transform hook
+	// (plugin.SystemTransformOutput) exchanges plain strings with code
+	// outside this package, and threading a per-part struct through that
+	// contract would buy nothing — every policy marks the end of the system
+	// prompt as a whole, never an interior block.
+	SystemCache *CacheHint
 }
 
 // Usage is a *non-overlapping* breakdown: the five buckets partition the
