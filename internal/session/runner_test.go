@@ -493,3 +493,35 @@ func TestRunnerQueuedPromptWaitsForIdle(t *testing.T) {
 		t.Fatal("queued input should be promoted after the drain")
 	}
 }
+
+// The runner used to cap every request at 8192 output tokens. On a thinking
+// model that budget is spent reasoning: glm-5.3-flash (131072 output tokens in
+// the catalog) burned 8190 of them thinking, came back finish "length" with no
+// text and no tool call, and the turn ended mid-thought.
+func TestMaxTokensFollowsTheModelOutputLimit(t *testing.T) {
+	model := ModelRef{ProviderID: "zhipuai-coding-plan", ID: "glm-5.3-flash"}
+
+	runner := &Runner{}
+	if got := runner.maxTokens(model); got != DefaultMaxOutputTokens {
+		t.Fatalf("with no resolver the default applies, got %d", got)
+	}
+
+	runner.OutputLimit = func(providerID, modelID string) (int, bool) {
+		if providerID != model.ProviderID || modelID != model.ID {
+			return 0, false
+		}
+		return 131072, true
+	}
+	if got := runner.maxTokens(model); got != 131072 {
+		t.Fatalf("expected the catalog limit, got %d", got)
+	}
+	// A model the catalog does not describe, and one it describes with a
+	// nonsense limit, both fall back rather than sending a bad cap.
+	if got := runner.maxTokens(ModelRef{ProviderID: "unknown", ID: "unknown"}); got != DefaultMaxOutputTokens {
+		t.Fatalf("an unknown model falls back, got %d", got)
+	}
+	runner.OutputLimit = func(string, string) (int, bool) { return 0, true }
+	if got := runner.maxTokens(model); got != DefaultMaxOutputTokens {
+		t.Fatalf("a zero limit falls back, got %d", got)
+	}
+}

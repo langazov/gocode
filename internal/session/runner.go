@@ -89,6 +89,36 @@ type Runner struct {
 	// to keep the catalog out of this package. When nil (or when the catalog
 	// has no entry) a step costs nothing rather than a guessed amount.
 	Pricing PricingResolver
+
+	// OutputLimit resolves how many tokens a model may produce in one step,
+	// injected from the catalog like Pricing. It is the cap sent as the
+	// request's max_tokens, and reasoning spends it: a thinking model given
+	// DefaultMaxOutputTokens against a 131k-output budget stops mid-thought
+	// with finish "length", no text, and no tool call — a turn that looks,
+	// from the interface, like it simply stopped. nil or an unknown model
+	// falls back to DefaultMaxOutputTokens.
+	OutputLimit OutputLimitResolver
+}
+
+// OutputLimitResolver returns a model's maximum output tokens per step,
+// reporting false when the catalog has no entry for it.
+type OutputLimitResolver func(providerID, modelID string) (int, bool)
+
+// DefaultMaxOutputTokens is the cap for a model the catalog does not describe.
+// It is deliberately modest — an unknown model is more likely to reject a cap
+// above its real limit than to need a large one.
+const DefaultMaxOutputTokens = 8192
+
+// maxTokens is the cap for one step of this model.
+func (r *Runner) maxTokens(model ModelRef) int {
+	if r.OutputLimit == nil {
+		return DefaultMaxOutputTokens
+	}
+	limit, ok := r.OutputLimit(model.ProviderID, model.ID)
+	if !ok || limit <= 0 {
+		return DefaultMaxOutputTokens
+	}
+	return limit
 }
 
 // resolvedAgent carries the effective per-turn agent configuration.
@@ -292,7 +322,7 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 		System:     system,
 		Messages:   llmMessages,
 		Tools:      tools,
-		MaxTokens:  8192,
+		MaxTokens:  r.maxTokens(resolved.Model),
 	}
 	if isLastStep {
 		request.ToolChoice = "none"

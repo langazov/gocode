@@ -452,6 +452,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		ContextLimit:      defaultContextLimit,
 		ReasoningVariants: reasoningVariantsResolver(catalog),
 		Pricing:           pricingResolver(catalog),
+		OutputLimit:       outputLimitResolver(catalog),
 		Compactor: &session.Compactor{
 			Bus:      bus,
 			Provider: streamClient,
