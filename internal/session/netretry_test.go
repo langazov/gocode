@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -66,6 +67,106 @@ func (a *recordingAsker) Ask(ctx context.Context, input question.AskInput) ([]qu
 	reply := a.replies[0]
 	a.replies = a.replies[1:]
 	return []question.Answer{{reply}}, nil
+}
+
+// cutoffProvider answers partially — reasoning, then half a sentence — and
+// then has its connection reset, which is the shape a flaky link actually
+// takes: not silence before the request, but a drop mid-answer.
+type cutoffProvider struct {
+	outages  int
+	attempts int
+}
+
+func (p *cutoffProvider) Stream(ctx context.Context, request llm.Request, emit func(llm.StreamEvent)) error {
+	p.attempts++
+	emit(llm.StreamEvent{Type: llm.EventReasoningDelta, Text: "Let me look at the entry point."})
+	if p.attempts <= p.outages {
+		emit(llm.StreamEvent{Type: llm.EventTextDelta, Text: "Good context so far. Let me dig into"})
+		err := &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+		emit(llm.StreamEvent{Type: llm.EventProviderError, Error: err})
+		return err
+	}
+	emit(llm.StreamEvent{Type: llm.EventTextDelta, Text: "The entry point is cmd/gocode/main.go."})
+	emit(llm.StreamEvent{Type: llm.EventFinish, Finish: "end_turn"})
+	return nil
+}
+
+// A reset mid-answer is the case that matters most, and the one a "nothing
+// streamed yet" guard would miss: the step said something, but nothing
+// irreversible happened, so the abandoned attempt is retracted and re-run.
+// What the user must not end up with is the truncated half-sentence sitting
+// above its replacement.
+func TestResetMidAnswerDiscardsThePartialAndRetries(t *testing.T) {
+	shortRetries(t, time.Minute)
+	provider := &cutoffProvider{outages: 1}
+	runner, bus := newRunnerFixture(t, nil, tool.NewRegistry())
+	runner.Provider = provider
+	admitPrompt(t, bus, runner, "investigate source code")
+
+	if err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"}); err != nil {
+		t.Fatalf("the turn should have survived the reset: %v", err)
+	}
+	if provider.attempts != 2 {
+		t.Fatalf("provider attempts = %d, want 2", provider.attempts)
+	}
+
+	messages, err := NewMessageStore(runner.DB).List(context.Background(), "ses_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistants := 0
+	for _, message := range messages {
+		if message.Type != TypeAssistant {
+			continue
+		}
+		assistants++
+		if strings.Contains(string(message.Data), "Let me dig into") {
+			t.Fatalf("the abandoned attempt survived into the timeline: %s", message.Data)
+		}
+		if !strings.Contains(string(message.Data), "cmd/gocode/main.go") {
+			t.Fatalf("expected the completed answer, got %s", message.Data)
+		}
+	}
+	if assistants != 1 {
+		t.Fatalf("assistant messages = %d, want 1 — the discarded attempt must leave none", assistants)
+	}
+}
+
+// The counterweight: a step that already ran a tool may have changed the
+// world, so a drop after that settles as a failure and is never re-run.
+func TestResetAfterAToolCallIsNotRetried(t *testing.T) {
+	shortRetries(t, time.Minute)
+	provider := &toolThenDropProvider{}
+	runner, bus := newRunnerFixture(t, nil, tool.NewRegistry())
+	runner.Provider = provider
+	registry := tool.NewRegistry()
+	registry.Register(&fakeTool{name: "echo", output: "echoed: hi"})
+	runner.Tools = registry
+	admitPrompt(t, bus, runner, "run it")
+
+	if err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"}); err == nil {
+		t.Fatal("expected the drop reported rather than replayed")
+	}
+	if provider.attempts != 1 {
+		t.Fatalf("provider attempts = %d, want 1 — a dispatched tool must not be re-run", provider.attempts)
+	}
+	assistant := lastAssistantData(t, runner)
+	if assistant["error"] == nil {
+		t.Fatalf("the step must settle with its error, got %v", assistant)
+	}
+}
+
+// toolThenDropProvider dispatches a tool and then loses the connection.
+type toolThenDropProvider struct{ attempts int }
+
+func (p *toolThenDropProvider) Stream(ctx context.Context, request llm.Request, emit func(llm.StreamEvent)) error {
+	p.attempts++
+	emit(llm.StreamEvent{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{
+		ID: "call_1", Name: "echo", Input: map[string]any{"text": "hi"},
+	}})
+	err := &net.OpError{Op: "read", Net: "tcp", Err: syscall.ECONNRESET}
+	emit(llm.StreamEvent{Type: llm.EventProviderError, Error: err})
+	return err
 }
 
 // The point of the whole mechanism: an outage before the model said anything

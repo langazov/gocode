@@ -241,31 +241,54 @@ func (r *Runner) runTurn(runCtx context.Context, sessionID string, promotion Del
 		}
 		retry, settleWith := r.awaitNetwork(runCtx, ctx, sessionID, down, &hold)
 		if retry {
+			// Retract whatever the cut-off attempt managed to say, so the
+			// re-attempt starts from the history the first one saw.
+			if err := r.discardStep(ctx, sessionID, down.assistantMessageID); err != nil {
+				return turnResult{}, err
+			}
 			continue
 		}
 		// Waiting is over and the step was never settled — it returned before
-		// publishing anything — so settle it here with what actually stopped
-		// it: the transport error, or the interrupt that ended the wait.
-		if err := r.failTurn(ctx, runCtx, sessionID, settleWith); err != nil {
+		// publishing its failure — so settle it here with what actually
+		// stopped it: the transport error, or the interrupt that ended the
+		// wait. The partial attempt keeps its own message and takes the error,
+		// rather than being thrown away in favour of an empty one.
+		if err := r.failTurn(ctx, runCtx, sessionID, down.assistantMessageID, settleWith); err != nil {
 			return turnResult{}, err
 		}
 		return turnResult{}, settleWith
 	}
 }
 
-// failTurn settles a turn that never produced an assistant message, giving the
-// failure somewhere to live. The normal path settles inside runTurnAttempt;
-// this is for the errors that are diagnosed above it.
-func (r *Runner) failTurn(ctx, runCtx context.Context, sessionID string, cause error) error {
-	resolved, err := r.resolveAgent(ctx, sessionID)
-	if err != nil {
-		return err
+// discardStep retracts a cut-off step's assistant message, if it opened one.
+func (r *Runner) discardStep(ctx context.Context, sessionID, assistantMessageID string) error {
+	if assistantMessageID == "" {
+		return nil
 	}
-	assistantMessageID, err := r.startAssistantMessage(ctx, sessionID, resolved)
-	if err != nil {
-		return err
+	_, err := r.Bus.Publish(ctx, StepDiscarded, map[string]any{
+		"sessionID":          sessionID,
+		"timestamp":          nowMillis(),
+		"assistantMessageID": assistantMessageID,
+	}, event.PublishOptions{})
+	return err
+}
+
+// failTurn settles a turn whose failure was diagnosed above runTurnAttempt,
+// giving it somewhere to live: the message the cut-off attempt already opened,
+// or a fresh one when it never got that far.
+func (r *Runner) failTurn(ctx, runCtx context.Context, sessionID, assistantMessageID string, cause error) error {
+	if assistantMessageID == "" {
+		resolved, err := r.resolveAgent(ctx, sessionID)
+		if err != nil {
+			return err
+		}
+		opened, err := r.startAssistantMessage(ctx, sessionID, resolved)
+		if err != nil {
+			return err
+		}
+		assistantMessageID = opened
 	}
-	_, err = r.Bus.Publish(ctx, StepFailed, map[string]any{
+	_, err := r.Bus.Publish(ctx, StepFailed, map[string]any{
 		"sessionID":          sessionID,
 		"timestamp":          nowMillis(),
 		"assistantMessageID": assistantMessageID,
@@ -604,12 +627,17 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 		return turnResult{}, errContextOverflow
 	}
 
-	// So is an outage before any assistant content: nothing was said, so the
-	// step can simply be re-attempted once the network is back. Signalled the
-	// same way, and guarded the same way — a step that already streamed text
-	// or dispatched a tool must settle, never silently run twice.
-	if providerErr != nil && assistantMessageID == "" && isTransportFailure(providerErr) {
-		return turnResult{}, &transportDownError{cause: providerErr}
+	// So is an outage that cut the step off before it did anything
+	// irreversible. The guard is dispatch, not silence: a connection reset
+	// mid-sentence — the common shape of a flaky link — has usually produced
+	// reasoning and half an answer, and re-running that costs nothing but the
+	// tokens, while a step that has already called a tool may have written a
+	// file or run a command and must never run twice. seq counts the tool
+	// calls this step made, provider-executed ones included.
+	if providerErr != nil && seq == 0 && isTransportFailure(providerErr) {
+		// The partial message rides along: the wrapper discards it before a
+		// retry, or settles the failure onto it if the user stops waiting.
+		return turnResult{}, &transportDownError{cause: providerErr, assistantMessageID: assistantMessageID}
 	}
 
 	if providerErr != nil {

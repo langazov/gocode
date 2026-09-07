@@ -43,10 +43,15 @@ var (
 	transportRetryMaxDelay   = 30 * time.Second
 )
 
-// transportDownError marks a step that never reached the provider. It carries
-// the original error, which is what the step finally settles with if the user
-// stops waiting.
-type transportDownError struct{ cause error }
+// transportDownError marks a step the network cut off before it could do
+// anything irreversible. It carries the original error — what the step finally
+// settles with if the user stops waiting — and the assistant message the
+// attempt had opened, if any, which the wrapper either discards before
+// retrying or settles the failure onto.
+type transportDownError struct {
+	cause              error
+	assistantMessageID string
+}
 
 func (e *transportDownError) Error() string {
 	return "session: transport unreachable: " + e.cause.Error()

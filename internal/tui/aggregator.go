@@ -237,6 +237,18 @@ func (t *tree) apply(e client.Event) bool {
 		node.Failures++
 		t.dirty[sessionID] = true
 		return true
+	case "session.next.step.discarded":
+		// The runner retracted a step it is about to re-run. Its message row
+		// is gone; the live buffers have to go with it, or the half-sentence
+		// the connection cut off keeps rendering next to its replacement.
+		messageID, _ := e.Data["assistantMessageID"].(string)
+		if messageID == "" {
+			return false
+		}
+		delete(node.Text, messageID)
+		delete(node.Reasoning, messageID+"-reasoning")
+		t.dirty[sessionID] = true
+		return true
 	case "session.next.step.waiting":
 		// The turn is parked on an outage. Carries the reason and how long
 		// until the next attempt; retryInMS of 0 means the runner is waiting

@@ -746,6 +746,12 @@ func TestScrolledConversationKeepsFooterVisible(t *testing.T) {
 	app.active = &client.Session{ID: "ses_1"}
 	app.width, app.height = 100, 30
 	app.sidebar = false // this test is about vertical layout, not the sidebar
+	// The footer's left half is the working directory plus the checked-out
+	// branch, both read from the real machine — so a deep checkout or a long
+	// branch name squeezed the right half until the `ctrl+p commands` hint
+	// this test looks for was dropped, failing on the branch rather than on
+	// the layout it is about. Pin both.
+	app.cwd, app.homeDir, app.gitBranch = "/home/dev/project", "/home/dev", "main"
 
 	messages := make([]client.Message, 0, 40)
 	for i := 0; i < 40; i++ {
