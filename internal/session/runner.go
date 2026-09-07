@@ -65,7 +65,18 @@ type Runner struct {
 	Plugins *plugin.Host
 
 	// ContextLimit bounds the model context window for compaction budgeting.
+	// It is the static fallback: when ContextLimitResolver resolves the
+	// turn's model from the models.dev catalog, that value wins. Zero
+	// disables proactive compaction entirely.
 	ContextLimit int
+
+	// ContextLimitResolver resolves the context window for the turn's model.
+	// Resolution is per-model because 128k and 1M models compact at wildly
+	// different points; a single static limit either compacts models that
+	// still had room or lets 128k models overflow before the proactive
+	// check fires. nil, or false for a model the catalog does not know,
+	// falls back to the static ContextLimit above.
+	ContextLimitResolver ContextLimitResolver
 
 	// ToolConcurrency caps how many tool calls one turn settles at once.
 	// Zero means DefaultToolConcurrency. One restores the pre-concurrency
@@ -110,6 +121,11 @@ type Runner struct {
 // OutputLimitResolver returns a model's maximum output tokens per step,
 // reporting false when the catalog has no entry for it.
 type OutputLimitResolver func(providerID, modelID string) (int, bool)
+
+// ContextLimitResolver returns a model's context window, the denominator the
+// proactive compaction check budgets against, reporting false when the
+// catalog has no entry for it.
+type ContextLimitResolver func(providerID, modelID string) (int, bool)
 
 // DefaultMaxOutputTokens is the cap for a model the catalog does not describe.
 // It is deliberately modest — an unknown model is more likely to reject a cap
@@ -981,11 +997,28 @@ func LoadSessionModel(ctx context.Context, database *db.DB, sessionID string) (*
 	return &ref, nil
 }
 
+// effectiveContextLimit resolves the budget the proactive compaction check
+// uses for a turn's model: the catalog's context window when it knows the
+// model, the static ContextLimit fallback when it does not. Zero means no
+// proactive compaction.
+func (r *Runner) effectiveContextLimit(model ModelRef) int {
+	if r.ContextLimitResolver != nil {
+		if limit, ok := r.ContextLimitResolver(model.ProviderID, model.ID); ok {
+			return limit
+		}
+	}
+	return r.ContextLimit
+}
+
 // compactIfNeeded estimates the history size and runs the compactor when the
 // context limit is approaching. Best-effort: compaction failures do not block
 // the turn.
 func (r *Runner) compactIfNeeded(ctx context.Context, sessionID string, model ModelRef) error {
-	if r.Compactor == nil || r.ContextLimit <= 0 {
+	if r.Compactor == nil {
+		return nil
+	}
+	contextLimit := r.effectiveContextLimit(model)
+	if contextLimit <= 0 {
 		return nil
 	}
 	history, err := r.Messages.ListForRunner(ctx, sessionID)
@@ -997,7 +1030,7 @@ func (r *Runner) compactIfNeeded(ctx context.Context, sessionID string, model Mo
 		requestTokens += estimateTokens(string(message.Data))
 	}
 	requestTokens += estimateTokens(r.System)
-	if !r.Compactor.NeedsCompaction(history, r.ContextLimit, requestTokens) {
+	if !r.Compactor.NeedsCompaction(history, contextLimit, requestTokens) {
 		return nil
 	}
 	if _, err := r.Compactor.Compact(ctx, sessionID, history, model); err != nil {
