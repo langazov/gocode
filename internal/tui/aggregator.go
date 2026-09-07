@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -64,6 +65,11 @@ type SessionNode struct {
 	// keeping on screen, and nothing else has cause to clear it.
 	Failure  string
 	Failures int
+	// Waiting describes a turn held back by an unreachable network, refreshed
+	// before every retry and cleared the moment the turn moves again. Unlike
+	// Failure it is transient by design: it describes what is happening now,
+	// and a stale copy of it would claim the session is stuck when it is not.
+	Waiting string
 }
 
 func newSessionNode(id string) *SessionNode {
@@ -99,6 +105,30 @@ func stream(buffers map[string]*strings.Builder, id string) (*strings.Builder, m
 	return builder, buffers
 }
 
+// waitingNotice phrases the hold for the footer: what went wrong, and when
+// the runner will try again. A zero delay means the runner has stopped
+// counting down and is waiting on the user's answer instead.
+func waitingNotice(reason string, linkDown bool, retryIn time.Duration) string {
+	// With no usable interface on the machine, the provider's error text
+	// describes a symptom of something the user can see and fix themselves.
+	// Say the cause instead.
+	if linkDown {
+		reason = "no network connection"
+	}
+	if reason == "" {
+		reason = "network unreachable"
+	}
+	// The provider errors this carries are long ("Post \"https://...\": dial
+	// tcp: ..."); the footer has one line, so keep the head of it.
+	if len(reason) > 60 {
+		reason = reason[:57] + "..."
+	}
+	if retryIn <= 0 {
+		return reason + " — waiting for your answer"
+	}
+	return fmt.Sprintf("%s — retrying in %s", reason, retryIn.Round(time.Second))
+}
+
 // clone deep-copies a node so a published snapshot is never mutated by later
 // events. Snapshots cross a goroutine boundary; sharing the live maps would be
 // a data race.
@@ -111,6 +141,7 @@ func (n *SessionNode) clone() *SessionNode {
 		Queued:   n.Queued,
 		Failure:  n.Failure,
 		Failures: n.Failures,
+		Waiting:  n.Waiting,
 
 		Tools:     make(map[string]ToolState, len(n.Tools)),
 		Text:      make(map[string]*strings.Builder, len(n.Text)),
@@ -196,6 +227,7 @@ func (t *tree) apply(e client.Event) bool {
 		return true
 	case "session.next.run.ended":
 		node.Busy = false
+		node.Waiting = ""
 		node.resetStreams()
 		t.dirty[sessionID] = true
 		return true
@@ -211,11 +243,36 @@ func (t *tree) apply(e client.Event) bool {
 		node.Failures++
 		t.dirty[sessionID] = true
 		return true
+	case "session.next.step.discarded":
+		// The runner retracted a step it is about to re-run. Its message row
+		// is gone; the live buffers have to go with it, or the half-sentence
+		// the connection cut off keeps rendering next to its replacement.
+		messageID, _ := e.Data["assistantMessageID"].(string)
+		if messageID == "" {
+			return false
+		}
+		delete(node.Text, messageID)
+		delete(node.Reasoning, messageID+"-reasoning")
+		t.dirty[sessionID] = true
+		return true
+	case "session.next.step.waiting":
+		// The turn is parked on an outage. Carries the reason and how long
+		// until the next attempt; retryInMS of 0 means the runner is waiting
+		// on the user's answer rather than on a timer.
+		reason, _ := e.Data["error"].(string)
+		retryMS, _ := e.Data["retryInMS"].(float64)
+		linkDown, _ := e.Data["linkDown"].(bool)
+		node.Busy = true
+		node.Waiting = waitingNotice(reason, linkDown, time.Duration(retryMS)*time.Millisecond)
+		t.dirty[sessionID] = true
+		return true
 	case "session.next.step.started":
 		// A step start still implies the turn is running: it is the earliest
 		// signal for a client that connected mid-turn and so never saw
 		// run.started. Only run.ended clears Busy.
 		node.Busy = true
+		// The retry got through — whatever the hold was waiting for is over.
+		node.Waiting = ""
 		return true
 	case "session.next.text.started", "session.next.text.delta":
 		messageID, _ := e.Data["assistantMessageID"].(string)

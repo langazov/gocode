@@ -16,6 +16,7 @@ require (
 	github.com/sourcegraph/go-diff v0.8.0
 	github.com/yuin/goldmark v1.8.6
 	golang.org/x/oauth2 v0.36.0
+	golang.org/x/sys v0.47.0
 	gopkg.in/yaml.v3 v3.0.1
 	modernc.org/sqlite v1.58.0
 	mvdan.cc/sh/v3 v3.14.0
@@ -53,7 +54,6 @@ require (
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842 // indirect
 	golang.org/x/net v0.58.0 // indirect
 	golang.org/x/sync v0.22.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.41.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	gopkg.in/check.v1 v1.0.0-20180628173108-788fd7840127 // indirect

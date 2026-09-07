@@ -25,6 +25,23 @@ var (
 		Type:    "session.next.step.failed",
 		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 2},
 	}
+	// StepDiscarded retracts a step that was cut off before it could do
+	// anything irreversible — the connection dropped mid-answer, no tool had
+	// been dispatched — so the runner can re-attempt it from a clean history.
+	// Durable, and deliberately so: it deletes a message the durable events
+	// before it created, and a replay that skipped it would resurrect a
+	// half-sentence the user has already seen replaced.
+	StepDiscarded = event.Definition{
+		Type:    "session.next.step.discarded",
+		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
+	}
+	// StepWaiting announces a turn held back by an unreachable network, and
+	// repeats before every retry. Live-only, like the ask events: a past
+	// outage replayed into a reopened session would describe a wait that
+	// finished long ago.
+	StepWaiting = event.Definition{
+		Type: "session.next.step.waiting",
+	}
 	ToolCalled = event.Definition{
 		Type:    "session.next.tool.called",
 		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
@@ -84,6 +101,7 @@ func RegisterRunnerProjectors(bus *event.Bus) {
 	bus.Project(StepStarted, projectStepStarted)
 	bus.Project(StepEnded, projectStepEnded)
 	bus.Project(StepFailed, projectStepFailed)
+	bus.Project(StepDiscarded, projectStepDiscarded)
 	bus.Project(ToolCalled, projectToolCalled)
 	bus.Project(ToolSuccess, projectToolSettled)
 	bus.Project(ToolFailed, projectToolSettled)
@@ -143,6 +161,24 @@ func projectStepStarted(ctx context.Context, tx *sql.Tx, payload event.Payload) 
 		INSERT INTO session_message (id, session_id, type, seq, data, time_created, time_updated)
 		VALUES (?, ?, 'assistant', ?, ?, ?, ?)`,
 		assistantMessageID, sessionID, payload.Durable.Seq, string(encoded), time.Now().UnixMilli(), time.Now().UnixMilli())
+	return err
+}
+
+// projectStepDiscarded removes a retracted step's assistant message. The one
+// projector in this package that deletes rather than appends: the step it
+// describes is being re-run, and leaving the abandoned attempt behind would
+// both show the user a truncated answer next to its replacement and feed the
+// model a dangling assistant turn it never finished.
+func projectStepDiscarded(ctx context.Context, tx *sql.Tx, payload event.Payload) error {
+	data := payload.Data
+	assistantMessageID, _ := data["assistantMessageID"].(string)
+	sessionID, _ := data["sessionID"].(string)
+	if assistantMessageID == "" || sessionID == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `
+		DELETE FROM session_message WHERE id = ? AND session_id = ? AND type = 'assistant'`,
+		assistantMessageID, sessionID)
 	return err
 }
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -239,5 +240,90 @@ func TestRunFailedCarriesTheReason(t *testing.T) {
 	state.apply(client.Event{Type: "session.next.run.failed", Session: "ses_1"})
 	if node.Failures != 2 || node.Failure == "" {
 		t.Fatalf("expected a second, described failure, got %d %q", node.Failures, node.Failure)
+	}
+}
+
+// A held turn produces no events of its own, so without the waiting notice
+// the interface shows a spinner over nothing for the length of an outage.
+func TestWaitingNoticeTracksTheHold(t *testing.T) {
+	state := newTree()
+	state.apply(client.Event{
+		Type:    "session.next.step.waiting",
+		Session: "ses_1",
+		Data: map[string]any{
+			"error":     `Post "https://provider.example/v1/chat": read tcp 10.0.0.2:1->1.2.3.4:443: read: connection reset by peer`,
+			"retryInMS": float64(8000),
+			"linkDown":  false,
+		},
+	})
+	node := state.node("ses_1")
+	if !node.Busy {
+		t.Fatal("a held turn is still running")
+	}
+	if !strings.Contains(node.Waiting, "retrying in 8s") {
+		t.Fatalf("the notice must say when the next attempt is: %q", node.Waiting)
+	}
+	if len(node.Waiting) > 100 {
+		t.Fatalf("the notice has one footer line to live in: %q", node.Waiting)
+	}
+
+	// With no interface on the machine, the provider's error describes a
+	// symptom; the cause is what the user can act on.
+	state.apply(client.Event{
+		Type:    "session.next.step.waiting",
+		Session: "ses_1",
+		Data:    map[string]any{"error": "dial tcp: connect: network is unreachable", "retryInMS": float64(2000), "linkDown": true},
+	})
+	if !strings.Contains(node.Waiting, "no network connection") {
+		t.Fatalf("a down link should be named as one: %q", node.Waiting)
+	}
+
+	// Waiting on the user's answer instead of a timer.
+	state.apply(client.Event{
+		Type:    "session.next.step.waiting",
+		Session: "ses_1",
+		Data:    map[string]any{"error": "boom", "retryInMS": float64(0), "linkDown": false},
+	})
+	if !strings.Contains(node.Waiting, "waiting for your answer") {
+		t.Fatalf("a question-bound hold should say so: %q", node.Waiting)
+	}
+
+	// The hold is over the moment the turn moves again.
+	state.apply(client.Event{
+		Type:    "session.next.step.started",
+		Session: "ses_1",
+		Data:    map[string]any{"assistantMessageID": "msg_1"},
+	})
+	if node.Waiting != "" {
+		t.Fatalf("a resumed turn is not waiting: %q", node.Waiting)
+	}
+}
+
+// The retracted attempt's live buffers go with its message row, or the
+// half-sentence the connection cut off keeps rendering beside its replacement.
+func TestDiscardedStepDropsItsBuffers(t *testing.T) {
+	state := newTree()
+	state.apply(client.Event{
+		Type:    "session.next.reasoning.delta",
+		Session: "ses_1",
+		Data:    map[string]any{"assistantMessageID": "msg_1", "reasoningID": "msg_1-reasoning", "delta": "thinking..."},
+	})
+	state.apply(client.Event{
+		Type:    "session.next.text.delta",
+		Session: "ses_1",
+		Data:    map[string]any{"assistantMessageID": "msg_1", "delta": "Good context so far. Let me dig into"},
+	})
+	node := state.node("ses_1")
+	if len(node.Text) != 1 || len(node.Reasoning) != 1 {
+		t.Fatalf("expected the partial buffered, got %d text and %d reasoning", len(node.Text), len(node.Reasoning))
+	}
+
+	state.apply(client.Event{
+		Type:    "session.next.step.discarded",
+		Session: "ses_1",
+		Data:    map[string]any{"assistantMessageID": "msg_1"},
+	})
+	if len(node.Text) != 0 || len(node.Reasoning) != 0 {
+		t.Fatalf("the retracted step left buffers behind: %v %v", node.Text, node.Reasoning)
 	}
 }

@@ -453,6 +453,10 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		ReasoningVariants: reasoningVariantsResolver(catalog),
 		Pricing:           pricingResolver(catalog),
 		OutputLimit:       outputLimitResolver(catalog),
+		// The same service the question tool asks through, so a runner-issued
+		// question (currently only "the network is down, keep waiting?")
+		// reaches the interface on the path that already exists for one.
+		Asker: questions,
 		Compactor: &session.Compactor{
 			Bus:      bus,
 			Provider: streamClient,
