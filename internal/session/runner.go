@@ -492,12 +492,22 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	settlements := make(chan settlement, 16)
 	sem := make(chan struct{}, r.toolConcurrency())
 	var streamErr error
+	// The stream gets its own cancellable context, derived from the run's.
+	// Losing the network stalls a read rather than failing it — no RST ever
+	// arrives — so the link watcher below cuts the stream the moment the
+	// interface goes away, and the turn reaches its hold in seconds instead
+	// of sitting on a dead socket until a timeout fires. Tools keep running
+	// on runCtx: a local command has no business being killed because the
+	// Wi-Fi dropped.
+	streamCtx, cancelStream := context.WithCancelCause(runCtx)
+	defer cancelStream(nil)
+	watchLinkLoss(streamCtx, func() { cancelStream(errLinkDown) })
 	go func() {
 		defer close(events)
-		streamErr = r.Provider.Stream(runCtx, request, func(streamEvent llm.StreamEvent) {
+		streamErr = r.Provider.Stream(streamCtx, request, func(streamEvent llm.StreamEvent) {
 			select {
 			case events <- streamEvent:
-			case <-runCtx.Done():
+			case <-streamCtx.Done():
 			}
 		})
 	}()
@@ -619,6 +629,14 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	}
 	if streamErr != nil && providerErr == nil {
 		providerErr = streamErr
+	}
+	// A stream cut by the link watcher reports the cancellation it was given;
+	// the cause is what actually happened, and what the classification below
+	// has to see. Guarded on runCtx being live so a real interrupt — which
+	// cancels this context too, without a cause of its own — still reads as
+	// an interrupt.
+	if cause := context.Cause(streamCtx); errors.Is(cause, errLinkDown) && runCtx.Err() == nil && providerErr != nil {
+		providerErr = cause
 	}
 
 	// An overflow before any assistant content is recoverable: signal the

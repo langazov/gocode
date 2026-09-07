@@ -108,7 +108,13 @@ func stream(buffers map[string]*strings.Builder, id string) (*strings.Builder, m
 // waitingNotice phrases the hold for the footer: what went wrong, and when
 // the runner will try again. A zero delay means the runner has stopped
 // counting down and is waiting on the user's answer instead.
-func waitingNotice(reason string, retryIn time.Duration) string {
+func waitingNotice(reason string, linkDown bool, retryIn time.Duration) string {
+	// With no usable interface on the machine, the provider's error text
+	// describes a symptom of something the user can see and fix themselves.
+	// Say the cause instead.
+	if linkDown {
+		reason = "no network connection"
+	}
 	if reason == "" {
 		reason = "network unreachable"
 	}
@@ -255,8 +261,9 @@ func (t *tree) apply(e client.Event) bool {
 		// on the user's answer rather than on a timer.
 		reason, _ := e.Data["error"].(string)
 		retryMS, _ := e.Data["retryInMS"].(float64)
+		linkDown, _ := e.Data["linkDown"].(bool)
 		node.Busy = true
-		node.Waiting = waitingNotice(reason, time.Duration(retryMS)*time.Millisecond)
+		node.Waiting = waitingNotice(reason, linkDown, time.Duration(retryMS)*time.Millisecond)
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.step.started":

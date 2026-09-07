@@ -70,8 +70,15 @@ func isTransportFailure(err error) bool {
 	if err == nil {
 		return false
 	}
+	// The link watcher's own verdict, from a stream it cut short (see
+	// watchLinkLoss). Checked first: it is the one case where the machine
+	// itself has already answered the question.
+	if errors.Is(err, errLinkDown) {
+		return true
+	}
 	// A canceled run is the user's doing, never a network fault, and it must
-	// not be waited out — check before anything else.
+	// not be waited out — check after the above, since a cut stream reports
+	// its cancellation too.
 	if errors.Is(err, context.Canceled) {
 		return false
 	}
@@ -167,15 +174,63 @@ func (r *Runner) awaitNetwork(runCtx, ctx context.Context, sessionID string, dow
 		hold.delay = transportRetryFirstDelay
 	}
 	r.publishWaiting(ctx, sessionID, down.cause, hold.delay)
-	select {
-	case <-time.After(jitter(hold.delay)):
-	case <-runCtx.Done():
-		return false, runCtx.Err()
+	if err := waitBeforeRetry(runCtx, hold.delay); err != nil {
+		return false, err
 	}
 	if hold.delay *= 2; hold.delay > transportRetryMaxDelay {
 		hold.delay = transportRetryMaxDelay
 	}
 	return true, nil
+}
+
+// waitBeforeRetry sleeps out the backoff, and cuts it short the instant the
+// machine's connection comes back.
+//
+// The rule is a transition, not a state: the wait ends early when the link is
+// observed going from unusable to usable, never merely because it is usable.
+// Both halves matter. A laptop that rejoins Wi-Fi two seconds into a
+// thirty-second backoff retries at once instead of idling for the other
+// twenty-eight — that is the whole point of watching link state. But a link
+// that was up all along says nothing new: the fault is somewhere past the
+// first hop, and retrying early would only hammer a provider that is down, so
+// the timer governs.
+//
+// Watching for the transition rather than the initial state is what catches
+// the common flap: the request fails, the backoff starts while the interface
+// is still nominally up, and only then does the interface actually go away and
+// come back. Sampling once at the start would have missed that entirely.
+//
+// Kernel notifications (linkwatch_*.go) make the observation immediate where
+// they exist; the poll is the backstop for platforms without them, a sandbox
+// that blocks the socket, and messages the kernel dropped.
+func waitBeforeRetry(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(jitter(delay))
+	defer timer.Stop()
+	watch, stopWatching := context.WithCancel(ctx)
+	defer stopWatching()
+	changes := watchLink(watch)
+	poll := time.NewTicker(linkPollIntervalVar)
+	defer poll.Stop()
+
+	up := linkIsUp()
+	for {
+		select {
+		case <-timer.C:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changes:
+			// Something about the network changed; the interface table says
+			// what, exactly as it does for the poll below.
+		case <-poll.C:
+		}
+		if now := linkIsUp(); now != up {
+			up = now
+			if up {
+				return nil
+			}
+		}
+	}
 }
 
 // askKeepWaiting puts the outage to the user. Declining the question at all
@@ -233,6 +288,11 @@ func (r *Runner) publishWaiting(ctx context.Context, sessionID string, cause err
 		"timestamp": nowMillis(),
 		"error":     cause.Error(),
 		"retryInMS": retryIn.Milliseconds(),
+		// Whether this machine has a usable interface at all. "The link is
+		// down" is worth saying plainly — it is the one case the user can
+		// actually fix — and it reads very differently from a provider that
+		// cannot be reached over a link that is perfectly fine.
+		"linkDown": !linkIsUp(),
 	}, event.PublishOptions{})
 }
 
