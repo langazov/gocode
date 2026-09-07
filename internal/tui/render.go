@@ -56,6 +56,25 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, too
 			blockToolRefs = append(blockToolRefs, toolRefs)
 		}
 	}
+	// Live thinking, above the live text: within a step the model reasons
+	// before it answers, and a reasoning part ID is its message's ID plus a
+	// fixed suffix, so sorting by ID sorts by step.
+	for _, id := range sortedKeys(a.streamingReasoning) {
+		builder := a.streamingReasoning[id]
+		if builder.Len() == 0 {
+			continue
+		}
+		block := a.streamingReasoningBlock(id, builder.String())
+		if block == "" {
+			continue
+		}
+		blocks = append(blocks, block)
+		// reasoningBlock's leading blank line is dropped below, which puts
+		// its header on the block's line 1 — same offset renderAssistant
+		// records for a stored part, so a live block is clickable too.
+		blockRefs = append(blockRefs, []reasoningHeaderRef{{id: id, line: 1}})
+		blockToolRefs = append(blockToolRefs, nil)
+	}
 	// Live assistant text, in message-ID order. The map iteration this used
 	// to do reordered concurrent live messages between frames.
 	for _, id := range sortedKeys(a.streaming) {
@@ -412,6 +431,14 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 	for _, part := range data.Content {
 		switch part.Type {
 		case "reasoning":
+			// A part still being streamed is rendered from the live buffer
+			// instead, as a block below this message (see buildTimeline).
+			// The projection writes every delta into the stored message too,
+			// so without this the same thinking would show twice from the
+			// first refetch that lands mid-part.
+			if _, live := a.streamingReasoning[part.ID]; live {
+				continue
+			}
 			var partTime *reasoningPartTime
 			if part.Time != nil {
 				partTime = &reasoningPartTime{Created: part.Time.Created, Completed: part.Time.Completed}
@@ -574,13 +601,22 @@ func reasoningSummary(text string) (title, body string) {
 
 // reasoningBlock mirrors ReasoningPart/ReasoningHeader exactly:
 //
-//   - running: a warning-colored spinner, "Thinking" or "Thinking: <title>".
+//   - running: a warning-colored spinner, "Thinking[: title] · ~tokens"; the
+//     body follows in show mode or once this part is expanded. While a part
+//     is still streaming this is called with the aggregator's live buffer
+//     rather than the stored text — see streamingReasoningBlock.
 //   - done, thinkingMode "show" (or this id individually expanded): a
-//     "Thought[: title · duration]" header, faded to thinkingOpacity once
-//     the body is showing, followed by the muted markdown body.
+//     "Thought[: title · duration · ~tokens]" header, faded to
+//     thinkingOpacity once the body is showing, followed by the muted
+//     markdown body.
 //   - done, thinkingMode "hide" and not expanded (the default): the same
 //     header collapsed to one line, prefixed "+ " (toggleable, closed) —
 //     full warning brightness so the one-line summary still stands out.
+//
+// The token estimate is this port's own addition, not upstream's: collapsed
+// is the default, so the header is all most blocks ever show, and the size of
+// the hidden body is the one thing it could not say. See
+// estimateReasoningTokens for why it is approximate.
 //
 // Not ported: TS's "opaque" (encrypted-with-no-text-but-metadata) case —
 // this port's wire schema carries no per-part metadata to detect it (no
@@ -613,6 +649,12 @@ func (a *App) reasoningBlock(id string, running bool, rawText string, partTime *
 		if title != "" {
 			label = "Thinking: " + title
 		}
+		// The count climbs with the stream. In the default hide mode the
+		// header is the whole of a live block, so without it a long think
+		// shows nothing but a spinner for however long it lasts.
+		if tokens := estimateReasoningTokens(content); tokens > 0 {
+			label += " · ~" + localeNumber(tokens) + " tokens"
+		}
 		header = headerStyle.Render(frame + " " + label)
 	} else {
 		prefix := ""
@@ -629,6 +671,9 @@ func (a *App) reasoningBlock(id string, running bool, rawText string, partTime *
 		}
 		if partTime != nil && partTime.Completed > 0 {
 			detail = append(detail, durationLabel(partTime.Completed-partTime.Created))
+		}
+		if tokens := estimateReasoningTokens(content); tokens > 0 {
+			detail = append(detail, "~"+localeNumber(tokens)+" tokens")
 		}
 		label := "Thought"
 		if len(detail) > 0 {
@@ -649,6 +694,20 @@ func (a *App) reasoningBlock(id string, running bool, rawText string, partTime *
 		out += "\n" + a.reasoningBody(body, extraIndent)
 	}
 	return out
+}
+
+// estimateReasoningTokens approximates how much thinking a finished reasoning
+// part carries, so the collapsed header can say something about a body the
+// reader cannot see. It is an estimate because no per-part count exists to
+// report: only OpenAI's Responses API returns reasoning tokens at all
+// (openairesponses.go's output_tokens_details), that figure covers a whole
+// response rather than one part, and StepEnded overwrites the message's
+// tokens each step — so a message with several reasoning parts could not
+// attribute it. This is therefore the same coarse chars/4 heuristic
+// session.estimateTokens uses for compaction budgeting, and the header prints
+// it behind a "~" to keep that honest.
+func estimateReasoningTokens(text string) int {
+	return (len(text) + 3) / 4
 }
 
 func (a *App) reasoningBody(body string, extraIndent int) string {
@@ -722,24 +781,70 @@ func (a *App) streamingTextBlock(id, text string) string {
 	}
 	start := time.Now()
 	block := a.assistantTextBlock(text)
-	if a.streamRender == nil {
-		a.streamRender = map[string]streamedBlock{}
-	}
-	// A session cycles through many assistant messages; only the ones still
-	// streaming are ever read, and applySnapshot replaces the whole set when
-	// a step settles, so drop the rest rather than let this grow.
-	if len(a.streamRender) > 8 {
-		a.streamRender = map[string]streamedBlock{}
-	}
-	a.streamRender[id] = streamedBlock{
+	a.putStreamRender(id, streamedBlock{
 		text:  text,
 		width: width,
 		epoch: a.renderEpoch,
 		block: block,
 		at:    start,
 		cost:  time.Since(start),
-	}
+	})
 	return block
+}
+
+// streamRenderCacheMax bounds the memo. A session cycles through many
+// assistant messages; only the ones still streaming are ever read, and
+// applySnapshot replaces the live buffers wholesale when a step settles, so
+// the rest are dropped rather than left to grow. The ceiling allows for a
+// handful of concurrent live parts — a running turn contributes up to two
+// entries of its own (its text and its thinking), and subagents stream
+// alongside it.
+const streamRenderCacheMax = 16
+
+func (a *App) putStreamRender(key string, entry streamedBlock) {
+	if a.streamRender == nil {
+		a.streamRender = map[string]streamedBlock{}
+	}
+	if len(a.streamRender) > streamRenderCacheMax {
+		a.streamRender = map[string]streamedBlock{}
+	}
+	a.streamRender[key] = entry
+}
+
+// streamingReasoningBlock is reasoningBlock for thinking that is still
+// arriving: the running header — and, in show mode or once this part has been
+// clicked open, the body — rendered from the aggregator's live buffer instead
+// of the fetched timeline. Memoized and rate-limited exactly like
+// streamingTextBlock, for the same reason: the body is re-wrapped on every
+// content change, and content changes with every delta.
+//
+// The spinner is substituted in after the memo lookup rather than baked into
+// the stored string, the way renderMessageCached does it for a cached message
+// block, so a memo entry held back by the duty cycle still animates.
+func (a *App) streamingReasoningBlock(id, text string) string {
+	width := a.contentWidth()
+	key := "reasoning:" + id
+	previous, ok := a.streamRender[key]
+	if ok && previous.text == text && previous.width == width && previous.epoch == a.renderEpoch {
+		return a.substituteSpinner(previous.block)
+	}
+	if ok && previous.width == width && previous.epoch == a.renderEpoch {
+		wait := max(streamRenderFloor, previous.cost*streamRenderDutyCycle)
+		if time.Since(previous.at) < wait {
+			return a.substituteSpinner(previous.block)
+		}
+	}
+	start := time.Now()
+	block := a.reasoningBlock(id, true, text, nil)
+	a.putStreamRender(key, streamedBlock{
+		text:  text,
+		width: width,
+		epoch: a.renderEpoch,
+		block: block,
+		at:    start,
+		cost:  time.Since(start),
+	})
+	return a.substituteSpinner(block)
 }
 
 // toolRow mirrors the InlineTool renderers: a muted icon row per tool with

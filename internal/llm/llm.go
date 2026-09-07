@@ -35,6 +35,11 @@ type ContentPart struct {
 	// bytes, without a data: prefix.
 	Mime string
 	Data string
+	// Cache marks this part as a prompt-cache breakpoint: everything up to
+	// and including it is a stable prefix the provider may cache. Usually
+	// placed by ApplyCachePolicy rather than by hand. Adapters for APIs with
+	// no wire representation for a breakpoint ignore it. See cache.go.
+	Cache *CacheHint
 }
 
 type Message struct {
@@ -73,6 +78,10 @@ type ToolDefinition struct {
 	Name        string
 	Description string
 	InputSchema map[string]any
+	// Cache marks the end of the tool block as a cache breakpoint. Tool
+	// definitions lead the request and change only when the agent's toolset
+	// does, so this is the most stable prefix there is. See cache.go.
+	Cache *CacheHint
 }
 
 type Request struct {
@@ -100,14 +109,58 @@ type Request struct {
 	// "reasoning_effort" (a string). nil/empty means no reasoning requested,
 	// matching the original CLI's opt-in --variant behavior.
 	Reasoning map[string]any
+	// Cache selects where ApplyCachePolicy places prompt-cache breakpoints.
+	// nil asks for the default placement (AutoCachePolicy); an explicit
+	// &CachePolicy{} disables automatic placement without disturbing hints
+	// the caller set by hand. See cache.go.
+	Cache *CachePolicy
+	// SystemCache marks the end of the system prompt as a breakpoint.
+	//
+	// It hangs off the request rather than off a system part because System
+	// is a []string: the plugin system-transform hook
+	// (plugin.SystemTransformOutput) exchanges plain strings with code
+	// outside this package, and threading a per-part struct through that
+	// contract would buy nothing — every policy marks the end of the system
+	// prompt as a whole, never an interior block.
+	SystemCache *CacheHint
 }
 
+// Usage is a *non-overlapping* breakdown: the five buckets partition the
+// step's tokens, so no token is counted twice. session.stepCost relies on it —
+// it prices the buckets additively (see internal/session/cost.go), which is
+// only correct if they are disjoint.
+//
+// Providers disagree about this. Anthropic reports `input_tokens` already
+// exclusive of its cache counters and needs no adjustment; every
+// OpenAI-shaped API reports inclusive totals (`prompt_tokens` contains
+// `prompt_tokens_details.cached_tokens`, `completion_tokens` contains
+// `completion_tokens_details.reasoning_tokens`) and each adapter subtracts the
+// subsets out with SubtractTokens before filling this in. Upstream does the
+// same normalization one layer up, in session.ts's getUsage.
+//
+// Input therefore excludes cache. Anything sizing the *request* — a pricing
+// tier, a context-window check — wants Input + CacheRead + CacheWrite.
 type Usage struct {
 	Input      int
 	Output     int
 	Reasoning  int
 	CacheRead  int
 	CacheWrite int
+}
+
+// SubtractTokens derives a non-overlapping count from a provider's inclusive
+// total, clamping at zero when the reported breakdown is nonsensical (a
+// `cached_tokens` larger than `prompt_tokens` is rare but not unheard of, and
+// a negative bucket would silently credit the step's cost). Ports
+// packages/llm/src/protocols/shared.ts's subtractTokens.
+func SubtractTokens(total, subset int) int {
+	if subset <= 0 {
+		return total
+	}
+	if subset >= total {
+		return 0
+	}
+	return total - subset
 }
 
 const (

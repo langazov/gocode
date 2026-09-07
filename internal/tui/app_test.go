@@ -477,6 +477,83 @@ func feed(app *App, events ...client.Event) bool {
 	return app.applySnapshot(state.snapshot(0)).timeline
 }
 
+// Thinking travels the same path assistant text does — SSE, aggregator,
+// coalesced snapshot — so the TUI can render it while the model is still
+// producing it rather than only after the next timeline fetch.
+func TestStreamingReasoningDeltas(t *testing.T) {
+	_, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+	openSession(t, app)
+
+	// One tree across the whole sequence: feed() starts a fresh one per call,
+	// which would lose the buffer this test is about.
+	state := newTree()
+	apply := func(events ...client.Event) bool {
+		for _, e := range events {
+			state.apply(e)
+		}
+		return app.applySnapshot(state.snapshot(0)).timeline
+	}
+
+	dirty := apply(
+		client.Event{Type: "session.next.step.started", Session: "ses_1"},
+		client.Event{Type: "session.next.reasoning.started", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_a1", "reasoningID": "msg_a1-reasoning",
+		}},
+		client.Event{Type: "session.next.reasoning.delta", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_a1", "reasoningID": "msg_a1-reasoning", "delta": "Weigh",
+		}},
+		client.Event{Type: "session.next.reasoning.delta", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_a1", "reasoningID": "msg_a1-reasoning", "delta": "ing it up",
+		}},
+	)
+	if got := app.streamingReasoning["msg_a1-reasoning"]; got == nil || got.String() != "Weighing it up" {
+		t.Fatalf("expected accumulated thinking, got %v", app.streamingReasoning["msg_a1-reasoning"])
+	}
+	if dirty {
+		t.Fatal("deltas render from the buffer; they must not each trigger a timeline refetch")
+	}
+
+	// reasoning.ended settles the part into the stored message — that needs a
+	// refetch, but the buffer stays until the step does, so the block on
+	// screen does not blink out while the fetch is in flight.
+	if !apply(client.Event{Type: "session.next.reasoning.ended", Session: "ses_1", Data: map[string]any{
+		"assistantMessageID": "msg_a1", "reasoningID": "msg_a1-reasoning", "text": "Weighing it up",
+	}}) {
+		t.Fatal("reasoning.ended should mark the timeline stale")
+	}
+	if len(app.streamingReasoning) != 1 {
+		t.Fatalf("buffer should survive until the step settles, got %v", app.streamingReasoning)
+	}
+
+	apply(client.Event{Type: "session.next.step.ended", Session: "ses_1"})
+	if len(app.streamingReasoning) != 0 {
+		t.Fatalf("thinking buffers should clear when the step ends, got %v", app.streamingReasoning)
+	}
+}
+
+// A subagent's thinking belongs to its own session, exactly like its text.
+func TestStreamingReasoningStaysInItsSession(t *testing.T) {
+	_, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+	openSession(t, app)
+
+	feed(app,
+		client.Event{Type: "session.next.reasoning.delta", Session: "ses_1", Data: map[string]any{
+			"assistantMessageID": "msg_parent", "reasoningID": "msg_parent-reasoning", "delta": "parent thinking",
+		}},
+		client.Event{Type: "session.next.reasoning.delta", Session: "ses_child", Data: map[string]any{
+			"assistantMessageID": "msg_child", "reasoningID": "msg_child-reasoning", "delta": "child thinking",
+		}},
+	)
+	if got := app.streamingReasoning["msg_parent-reasoning"]; got == nil || got.String() != "parent thinking" {
+		t.Fatalf("parent thinking = %v", app.streamingReasoning["msg_parent-reasoning"])
+	}
+	if _, leaked := app.streamingReasoning["msg_child-reasoning"]; leaked {
+		t.Fatal("a child session's thinking must not land in its parent's buffers")
+	}
+}
+
 func TestStreamingTextDeltas(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)

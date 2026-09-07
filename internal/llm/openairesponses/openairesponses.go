@@ -390,14 +390,19 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 			}
 			if event.Response != nil {
 				if u := event.Response.Usage; u != nil {
-					usage.Input = u.InputTokens
-					usage.Output = u.OutputTokens
 					if u.InputTokensDetails != nil {
 						usage.CacheRead = u.InputTokensDetails.CachedTokens
 					}
 					if u.OutputTokensDetails != nil {
 						usage.Reasoning = u.OutputTokensDetails.ReasoningTokens
 					}
+					// input_tokens and output_tokens are inclusive of the
+					// details above; llm.Usage's buckets are disjoint. Passing
+					// the totals through unadjusted billed every cached token
+					// twice — once at the input rate, once at the cache-read
+					// rate — and every reasoning token twice over.
+					usage.Input = llm.SubtractTokens(u.InputTokens, usage.CacheRead)
+					usage.Output = llm.SubtractTokens(u.OutputTokens, usage.Reasoning)
 				}
 				if d := event.Response.IncompleteDetails; d != nil {
 					switch d.Reason {

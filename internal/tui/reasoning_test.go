@@ -90,6 +90,52 @@ func TestReasoningBlockCollapsedByDefault(t *testing.T) {
 	}
 }
 
+// The token figure is an estimate (chars/4, see estimateReasoningTokens) and
+// is printed behind a "~": the collapsed header is all a hidden block shows,
+// so it carries the one fact the reader otherwise loses — how much thinking
+// is behind it.
+func TestReasoningBlockCollapsedShowsTokenEstimate(t *testing.T) {
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
+	body := strings.Repeat("word ", 1000) // 5000 chars -> ~1.3K estimated tokens
+	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
+		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\n`+body+`","time":{"created":1000,"completed":3500}}
+	]}`)
+	block, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	got := plain(block)
+	if !strings.Contains(got, "+ Thought: Investigating bug · 2.5s · ~1.3K tokens") {
+		t.Fatalf("expected collapsed header to carry a token estimate, got %q", got)
+	}
+}
+
+// Expanding keeps the same header: the count is a property of the part, and
+// having it disappear on toggle would read as the block having changed.
+func TestReasoningBlockExpandedKeepsTokenEstimate(t *testing.T) {
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{"r1": true}}
+	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
+		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
+	]}`)
+	block, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	got := plain(block)
+	if !strings.Contains(got, "· ~10 tokens") {
+		t.Fatalf("expected the same estimate once expanded, got %q", got)
+	}
+}
+
+// The running header carries the estimate too, climbing with the stream: in
+// the default hide mode the header is the whole of a live block, so it is the
+// only progress a long think shows.
+func TestReasoningBlockRunningShowsGrowingTokenEstimate(t *testing.T) {
+	app := &App{width: 100, height: 30, busy: true, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
+	short := plain(app.reasoningBlock("r1", true, "**Investigating**\n\n"+strings.Repeat("word ", 100), nil))
+	long := plain(app.reasoningBlock("r1", true, "**Investigating**\n\n"+strings.Repeat("word ", 1000), nil))
+	if !strings.Contains(short, "Thinking: Investigating · ~130 tokens") {
+		t.Fatalf("expected a live estimate in the running header, got %q", short)
+	}
+	if !strings.Contains(long, "Thinking: Investigating · ~1.3K tokens") {
+		t.Fatalf("expected the estimate to grow with the stream, got %q", long)
+	}
+}
+
 func TestReasoningBlockExpandedShowsBodyWithExtraIndent(t *testing.T) {
 	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{"r1": true}}
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
@@ -255,5 +301,97 @@ func TestReasoningHeaderColorFadesOnceOpen(t *testing.T) {
 	openANSI := strings.SplitN(openBlock, "Thought", 2)[0]
 	if closedANSI == openANSI {
 		t.Fatalf("expected the header's color escape to differ between collapsed and expanded, both were %q", closedANSI)
+	}
+}
+
+// builders is the shape applySnapshot hands the renderer: the aggregator's
+// live buffers, keyed by part ID.
+func builders(texts map[string]string) map[string]*strings.Builder {
+	out := map[string]*strings.Builder{}
+	for id, text := range texts {
+		builder := &strings.Builder{}
+		builder.WriteString(text)
+		out[id] = builder
+	}
+	return out
+}
+
+func liveApp(mode string, reasoning map[string]string) *App {
+	return &App{
+		width: 100, height: 30, busy: true,
+		theme:              themeResolve("gocode-dark"),
+		thinkingMode:       mode,
+		expandedReasoning:  map[string]bool{},
+		streamingReasoning: builders(reasoning),
+	}
+}
+
+// The point of the live buffer: thinking shows up while the model is still in
+// it, without waiting for the refetch that a settled part rides in on.
+func TestStreamingReasoningRendersLiveBlock(t *testing.T) {
+	app := liveApp("hide", map[string]string{"msg_a1-reasoning": "**Investigating bug**\n\nRoot cause is X"})
+	lines, rows, _ := app.buildTimeline()
+	got := plain(strings.Join(lines, "\n"))
+	if !strings.Contains(got, "Thinking: Investigating bug") {
+		t.Fatalf("expected the live thinking header in the timeline, got %q", got)
+	}
+	if strings.Contains(got, "Root cause is X") {
+		t.Fatalf("hide mode shows the header only until the block is opened, got %q", got)
+	}
+	found := false
+	for _, id := range rows {
+		if id == "msg_a1-reasoning" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("live header should be clickable to expand, rows = %v", rows)
+	}
+}
+
+// In show mode (and for an expanded part) the body itself streams: each frame
+// renders whatever the buffer holds at that moment.
+func TestStreamingReasoningBodyGrowsInShowMode(t *testing.T) {
+	app := liveApp("show", map[string]string{"msg_a1-reasoning": "**Investigating bug**\n\nfirst thought"})
+	first := plain(strings.Join(app.timelineLines(), "\n"))
+	if !strings.Contains(first, "first thought") {
+		t.Fatalf("expected the live body, got %q", first)
+	}
+	app.streamingReasoning["msg_a1-reasoning"].WriteString(" then another")
+	// The memo is rate-limited by wall clock (streamRenderFloor), so drop it
+	// to see the next frame rather than sleeping through the duty cycle.
+	app.streamRender = nil
+	second := plain(strings.Join(app.timelineLines(), "\n"))
+	if !strings.Contains(second, "first thought then another") {
+		t.Fatalf("expected the body to grow with the stream, got %q", second)
+	}
+}
+
+// Every delta is also written into the stored message, so once any refetch
+// lands mid-part the timeline holds a copy of what is streaming. Only one of
+// them may render.
+func TestStreamingReasoningSuppressesStoredCopy(t *testing.T) {
+	app := liveApp("hide", map[string]string{"msg_a-reasoning": "**Investigating bug**\n\nRoot cause is X"})
+	app.timeline = []client.Message{{
+		ID: "msg_a", SessionID: "ses_1", Type: "assistant", Seq: 1,
+		Data: json.RawMessage(`{"agent":"build","content":[{"type":"reasoning","id":"msg_a-reasoning","text":"**Investigating bug**\n\nRoot ca"}]}`),
+	}}
+	got := plain(strings.Join(app.timelineLines(), "\n"))
+	if n := strings.Count(got, "Investigating bug"); n != 1 {
+		t.Fatalf("expected the part to render exactly once, got %d in %q", n, got)
+	}
+
+	// Once the step settles the buffer is gone and the stored part — now with
+	// its duration — is what renders.
+	app.streamingReasoning = map[string]*strings.Builder{}
+	app.busy = false
+	app.timeline[0].Data = json.RawMessage(`{"agent":"build","finish":"stop","content":[{"type":"reasoning","id":"msg_a-reasoning","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}]}`)
+	app.invalidateRenderCache()
+	settled := plain(strings.Join(app.timelineLines(), "\n"))
+	if n := strings.Count(settled, "Investigating bug"); n != 1 {
+		t.Fatalf("expected one block after settling, got %d in %q", n, settled)
+	}
+	if !strings.Contains(settled, "+ Thought: Investigating bug · 2.5s") {
+		t.Fatalf("expected the settled header once the buffer cleared, got %q", settled)
 	}
 }

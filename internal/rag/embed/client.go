@@ -115,23 +115,42 @@ type response struct {
 // sent in batches of BatchSize (or DefaultBatchSize); a batch failure aborts
 // the whole call rather than returning a partial result, so a caller never
 // has to guess which vectors are missing.
+//
+// A blank input (empty or whitespace-only) is never sent and comes back as a
+// nil vector. An empty string is a hard 400 at the endpoint ("input cannot
+// be an empty string") that fails the entire batch carrying it — one blank
+// chunk would otherwise abort an index of thousands — and whitespace has
+// nothing to embed anyway. Callers that store results must skip the nil
+// entries rather than substituting a zero vector, which normalizes to NaN
+// and poisons every later similarity score.
 func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 	texts = clampInputs(texts, c.maxInputChars())
+	inputs := make([]string, 0, len(texts))
+	positions := make([]int, 0, len(texts))
+	for i, t := range texts {
+		if strings.TrimSpace(t) == "" {
+			continue
+		}
+		inputs = append(inputs, t)
+		positions = append(positions, i)
+	}
 	batchSize := c.BatchSize
 	if batchSize <= 0 {
 		batchSize = DefaultBatchSize
 	}
-	out := make([][]float32, 0, len(texts))
-	for start := 0; start < len(texts); start += batchSize {
-		end := min(start+batchSize, len(texts))
-		vectors, err := c.embedBatch(ctx, texts[start:end])
+	out := make([][]float32, len(texts))
+	for start := 0; start < len(inputs); start += batchSize {
+		end := min(start+batchSize, len(inputs))
+		vectors, err := c.embedBatch(ctx, inputs[start:end])
 		if err != nil {
 			return nil, fmt.Errorf("embed: batch %d-%d: %w", start, end, err)
 		}
-		out = append(out, vectors...)
+		for i, v := range vectors {
+			out[positions[start+i]] = v
+		}
 	}
 	return out, nil
 }
@@ -174,6 +193,11 @@ func clampInputs(texts []string, maxChars int) []string {
 // incomplete UTF-8 sequence the byte-boundary cut may have left behind —
 // cheaper than counting runes up front for text that's almost always well
 // under the limit anyway.
+//
+// Dropping invalid bytes can empty the result outright when the truncated
+// prefix was nothing but them (a latin-1 or otherwise mis-decoded file that
+// slipped past the caller's binary sniff). That is fine: Embed treats a
+// blank input as unembeddable and never sends it.
 func clampInput(s string, maxChars int) string {
 	return strings.ToValidUTF8(s[:maxChars], "")
 }

@@ -140,9 +140,20 @@ func (idx *Indexer) Index(ctx context.Context, opts IndexOptions) (IndexSummary,
 			return IndexSummary{}, fmt.Errorf("rag: embed %d chunks: %w", len(toEmbed), err)
 		}
 		now := time.Now().Unix()
-		records := make([]store.Record, len(toEmbed))
+		records := make([]store.Record, 0, len(toEmbed))
 		for i, c := range toEmbed {
-			records[i] = store.Record{
+			if vectors[i] == nil {
+				// Nothing embeddable in this chunk (blank content — the
+				// chunker filters those out, so this is a backstop): storing
+				// it vector-less would leave a row no query can ever rank.
+				if _, existed := existingHashes[c.ID]; existed {
+					summary.ChunksUpdated--
+				} else {
+					summary.ChunksAdded--
+				}
+				continue
+			}
+			records = append(records, store.Record{
 				ID:          c.ID,
 				ProjectID:   idx.ProjectID,
 				Path:        c.Path,
@@ -152,10 +163,12 @@ func (idx *Indexer) Index(ctx context.Context, opts IndexOptions) (IndexSummary,
 				ContentHash: c.ContentHash,
 				Embedding:   vectors[i],
 				UpdatedAt:   now,
-			}
+			})
 		}
-		if err := idx.Store.Put(ctx, records); err != nil {
-			return IndexSummary{}, fmt.Errorf("rag: store %d chunks: %w", len(records), err)
+		if len(records) > 0 {
+			if err := idx.Store.Put(ctx, records); err != nil {
+				return IndexSummary{}, fmt.Errorf("rag: store %d chunks: %w", len(records), err)
+			}
 		}
 	}
 

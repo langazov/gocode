@@ -319,12 +319,27 @@ func slidingWindow(relPath string, lines []string, opts Options) []Chunk {
 	var out []Chunk
 	for start := 0; start < len(lines); start += step {
 		end := min(start+opts.Lines, len(lines))
-		out = append(out, buildChunk(relPath, lines, start, end))
+		out = appendChunk(out, relPath, lines, start, end)
 		if end == len(lines) {
 			break
 		}
 	}
 	return out
+}
+
+// appendChunk appends a chunk for the 0-indexed, half-open [start, end) line
+// range to out, unless that range holds nothing but whitespace. A blank
+// chunk is worse than useless: it can never match a query, and an empty one
+// is a hard error at the embeddings endpoint ("input cannot be an empty
+// string") that fails the entire batch it rides in, aborting a whole index
+// over a file that happened to end in a blank line after its last symbol.
+// Every splitter funnels through here so neither can reintroduce one.
+func appendChunk(out []Chunk, relPath string, lines []string, start, end int) []Chunk {
+	c := buildChunk(relPath, lines, start, end)
+	if strings.TrimSpace(c.Content) == "" {
+		return out
+	}
+	return append(out, c)
 }
 
 // buildChunk turns a 0-indexed, half-open [start, end) line range into a

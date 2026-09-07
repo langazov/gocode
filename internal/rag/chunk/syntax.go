@@ -106,7 +106,7 @@ func clampLine(line, total int) int {
 // the sliding window if that range is too large to embed as one chunk.
 func splitIfOversized(relPath string, lines []string, start, end int, opts Options) []Chunk {
 	if end-start <= opts.Lines*maxDeclLinesMultiplier {
-		return []Chunk{buildChunk(relPath, lines, start, end)}
+		return appendChunk(nil, relPath, lines, start, end)
 	}
 	return slidingWindowRange(relPath, lines, start, end, opts)
 }
@@ -118,7 +118,7 @@ func slidingWindowRange(relPath string, lines []string, rangeStart, rangeEnd int
 	var out []Chunk
 	for start := rangeStart; start < rangeEnd; start += step {
 		end := min(start+opts.Lines, rangeEnd)
-		out = append(out, buildChunk(relPath, lines, start, end))
+		out = appendChunk(out, relPath, lines, start, end)
 		if end == rangeEnd {
 			break
 		}

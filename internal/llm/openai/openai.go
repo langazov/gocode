@@ -332,10 +332,24 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 			continue
 		}
 		if chunk.Usage != nil {
-			usage = llm.Usage{
-				Input:  chunk.Usage.PromptTokens,
-				Output: chunk.Usage.CompletionTokens,
+			cacheRead := chunk.Usage.PromptCacheHitTokens
+			if details := chunk.Usage.PromptTokensDetails; details != nil && details.CachedTokens != 0 {
+				cacheRead = details.CachedTokens
 			}
+			var reasoning int
+			if details := chunk.Usage.CompletionTokensDetails; details != nil {
+				reasoning = details.ReasoningTokens
+			}
+			usage = llm.Usage{
+				Input:     llm.SubtractTokens(chunk.Usage.PromptTokens, cacheRead),
+				Output:    llm.SubtractTokens(chunk.Usage.CompletionTokens, reasoning),
+				Reasoning: reasoning,
+				CacheRead: cacheRead,
+			}
+			// No CacheWrite: an openai-compatible endpoint caches implicitly
+			// and bills the write at the input rate, so there is no separate
+			// counter to read. Anthropic's explicit breakpoints are the only
+			// thing that fills that bucket.
 		}
 		for _, choice := range chunk.Choices {
 			delta := choice.Delta
@@ -418,9 +432,25 @@ type streamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
+	// PromptTokens and CompletionTokens are inclusive totals; the details
+	// objects break out subsets of each. Dropping the details is what made
+	// every openai-compatible provider report zero cached and zero reasoning
+	// tokens no matter what it actually returned — readStream lowers them to
+	// llm.Usage's disjoint buckets.
 	Usage *struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails *struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
+		CompletionTokensDetails *struct {
+			ReasoningTokens int `json:"reasoning_tokens"`
+		} `json:"completion_tokens_details"`
+		// DeepSeek predates prompt_tokens_details and reports the cache split
+		// as a pair of top-level fields instead. Only the hit side maps: its
+		// miss counter is the non-cached remainder, which is what subtracting
+		// the hits already yields.
+		PromptCacheHitTokens int `json:"prompt_cache_hit_tokens"`
 	} `json:"usage"`
 }
 
