@@ -5,8 +5,15 @@ import (
 	"strings"
 	"testing"
 
+	"charm.land/lipgloss/v2"
+
 	"github.com/langazov/gocode-go/internal/tui/client"
 )
+
+// first drops toolRow's click-target return so a call can be inlined. plain
+// (reasoning_test.go) strips the SGR sequences syntax highlighting puts
+// through a block, so an assertion can talk about the text the user reads.
+func first(block string, _ *toolOutputHeaderRef) string { return block }
 
 // --- file tool rows: path + collapsible content ---------------------------
 
@@ -78,7 +85,8 @@ func TestReadBlockShowsPathAndCollapsedContent(t *testing.T) {
 		Input:  map[string]any{"path": "/tmp/a.go"},
 		Output: strings.Join(lines, "\n"),
 	}
-	got, ref := app.toolRow(client.Message{}, "t1", "read", state)
+	raw, ref := app.toolRow(client.Message{}, "t1", "read", state)
+	got := plain(raw)
 	if !strings.Contains(got, "Read /tmp/a.go") {
 		t.Errorf("read block should name the file, got %q", got)
 	}
@@ -110,7 +118,8 @@ func TestReadBlockExpandedShowsWholeFile(t *testing.T) {
 		Input:  map[string]any{"path": "/tmp/a.go"},
 		Output: strings.Join(lines, "\n"),
 	}
-	got, ref := app.toolRow(client.Message{}, "t1", "read", state)
+	raw, ref := app.toolRow(client.Message{}, "t1", "read", state)
+	got := plain(raw)
 	if !strings.Contains(got, "200: line 200") {
 		t.Error("expanded read block should show the whole file")
 	}
@@ -132,7 +141,8 @@ func TestWriteBlockShowsTheContentItStored(t *testing.T) {
 		},
 		Output: "Created file successfully: /tmp/a.go",
 	}
-	got, ref := app.toolRow(client.Message{}, "t1", "write", state)
+	raw, ref := app.toolRow(client.Message{}, "t1", "write", state)
+	got := plain(raw)
 	if !strings.Contains(got, "Write /tmp/a.go") {
 		t.Errorf("write block should name the file, got %q", got)
 	}
@@ -161,8 +171,8 @@ func TestFileBlocksExpandIndependently(t *testing.T) {
 			Output: "1: first\n2: second",
 		}
 	}
-	open, _ := app.toolRow(client.Message{}, "t1", "read", state("/tmp/a.go"))
-	shut, _ := app.toolRow(client.Message{}, "t2", "read", state("/tmp/b.go"))
+	open := plain(first(app.toolRow(client.Message{}, "t1", "read", state("/tmp/a.go"))))
+	shut := plain(first(app.toolRow(client.Message{}, "t2", "read", state("/tmp/b.go"))))
 	if !strings.Contains(open, "2: second") {
 		t.Error("t1 was expanded and should show both lines")
 	}
@@ -176,7 +186,8 @@ func TestFileBlocksExpandIndependently(t *testing.T) {
 func TestRunningFileToolKeepsTheSpinnerRow(t *testing.T) {
 	app := &App{width: 100, height: 30, expandedToolOutput: map[string]bool{}}
 	state := &toolState{Status: "running", Input: map[string]any{"path": "/tmp/a.go"}}
-	got, ref := app.toolRow(client.Message{}, "t1", "read", state)
+	raw, ref := app.toolRow(client.Message{}, "t1", "read", state)
+	got := plain(raw)
 	if strings.Contains(got, "click to expand") {
 		t.Errorf("a running read has no content block, got %q", got)
 	}
@@ -193,7 +204,8 @@ func TestRunningFileToolKeepsTheSpinnerRow(t *testing.T) {
 func TestFileBlockWithoutPathFallsBackToRow(t *testing.T) {
 	app := &App{width: 100, height: 30, expandedToolOutput: map[string]bool{}}
 	state := &toolState{Status: "done", Input: map[string]any{}, Output: "whatever"}
-	got, _ := app.toolRow(client.Message{}, "t1", "read", state)
+	raw, _ := app.toolRow(client.Message{}, "t1", "read", state)
+	got := plain(raw)
 	if !strings.Contains(got, "Reading file...") {
 		t.Errorf("expected the placeholder row, got %q", got)
 	}
@@ -206,7 +218,8 @@ func TestEditDiffBlockNamesTheFile(t *testing.T) {
 		Input:  map[string]any{"path": "/tmp/a.go"},
 		Output: "```diff\n--- a/a.go\n+++ b/a.go\n@@ -1,1 +1,1 @@\n-old\n+new\n```",
 	}
-	got, _ := app.toolRow(client.Message{}, "t1", "edit", state)
+	raw, _ := app.toolRow(client.Message{}, "t1", "edit", state)
+	got := plain(raw)
 	if !strings.Contains(got, "Edit /tmp/a.go") {
 		t.Errorf("edit diff block should name the file, got %q", got)
 	}
@@ -226,5 +239,224 @@ func TestSearchLabelsNameTheSubtree(t *testing.T) {
 	_, label = toolLabel("grep", map[string]any{"pattern": "TODO"}, nil)
 	if label != `Grep "TODO"` {
 		t.Errorf("grep label without a path = %q", label)
+	}
+}
+
+// --- syntax highlighting --------------------------------------------------
+
+func TestFileHighlighterMatchesOnExtension(t *testing.T) {
+	app := &App{theme: themeResolve("gocode-dark")}
+	for _, path := range []string{"/tmp/a.go", "/tmp/a.py", "/tmp/a.tsx", "/tmp/Makefile", "/tmp/a.json"} {
+		if app.fileHighlighter(path) == nil {
+			t.Errorf("expected a lexer for %q", path)
+		}
+	}
+	// Nothing chroma recognises: the caller shows the text plain rather than
+	// guessing at a language.
+	if app.fileHighlighter("/tmp/a.zzzznotalanguage") != nil {
+		t.Error("expected no lexer for an unknown extension")
+	}
+}
+
+func TestFileHighlighterColorsCodeAndKeepsItsText(t *testing.T) {
+	app := &App{theme: themeResolve("gocode-dark")}
+	highlight := app.fileHighlighter("/tmp/a.go")
+	if highlight == nil {
+		t.Fatal("no Go lexer")
+	}
+	const code = "package main\n\nfunc main() {}"
+	got := highlight(code)
+	if !strings.Contains(got, "\x1b[") {
+		t.Error("highlighted code should carry SGR sequences")
+	}
+	if plain(got) != code {
+		t.Errorf("highlighting changed the text: %q", plain(got))
+	}
+}
+
+// The line numbers read puts in front of every line are not part of the
+// source; a lexer handed "1: package main" gives up on the whole line.
+func TestSplitLineNumbers(t *testing.T) {
+	numbers, code, ok := splitLineNumbers("1: package main\n2:\n3: func main() {}")
+	if !ok {
+		t.Fatal("expected the read gutter to be recognised")
+	}
+	if code != "package main\n\nfunc main() {}" {
+		t.Errorf("code = %q", code)
+	}
+	if numbers[0] != "1: " || numbers[2] != "3: " {
+		t.Errorf("numbers = %q", numbers)
+	}
+
+	// write's content is not numbered, and neither is a directory listing.
+	if _, _, ok := splitLineNumbers("package main\nfunc main() {}"); ok {
+		t.Error("plain content should not be read as numbered")
+	}
+	if _, _, ok := splitLineNumbers("cmd/\ninternal/"); ok {
+		t.Error("a directory listing should not be read as numbered")
+	}
+}
+
+// Indentation is the structure of a file, and wrapText (which shell output
+// uses) collapses it away with strings.Fields.
+func TestCodeBodyKeepsIndentation(t *testing.T) {
+	app := &App{theme: themeResolve("gocode-dark")}
+	rows := app.codeBody("/tmp/a.go")("func main() {\n\tif x {\n\t\treturn\n\t}\n}", 60)
+	if len(rows) != 5 {
+		t.Fatalf("rows = %d, want one per source line", len(rows))
+	}
+	if !strings.HasPrefix(plain(rows[2]), "\t\treturn") {
+		t.Errorf("indentation lost: %q", plain(rows[2]))
+	}
+}
+
+// One source line stays one row: wrapping it would break the numbering and
+// the alignment of everything under it.
+func TestCodeBodyTruncatesRatherThanWraps(t *testing.T) {
+	app := &App{theme: themeResolve("gocode-dark")}
+	long := "1: " + strings.Repeat("x", 400)
+	rows := app.codeBody("/tmp/a.go")(long, 40)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if width := lipgloss.Width(plain(rows[0])); width > 40 {
+		t.Errorf("row width = %d, want it to fit in 40", width)
+	}
+	if !strings.HasPrefix(plain(rows[0]), "1: ") {
+		t.Errorf("line number gutter lost: %q", plain(rows[0]))
+	}
+	if !strings.HasSuffix(plain(rows[0]), "…") {
+		t.Errorf("truncation should be marked: %q", plain(rows[0]))
+	}
+}
+
+// A file with no lexer still renders — plain, one line per row.
+func TestCodeBodyWithoutALexer(t *testing.T) {
+	app := &App{theme: themeResolve("gocode-dark")}
+	rows := app.codeBody("/tmp/notes.zzzznotalanguage")("  indented\nplain", 60)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	if plain(rows[0]) != "  indented" {
+		t.Errorf("row = %q, want the text untouched", plain(rows[0]))
+	}
+}
+
+// The read block highlights what it shows, and shows the file's own text.
+func TestReadBlockHighlightsByExtension(t *testing.T) {
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"),
+		expandedToolOutput: map[string]bool{"t1": true}}
+	state := &toolState{
+		Status: "done",
+		Input:  map[string]any{"path": "/tmp/a.go"},
+		Output: "1: package main\n2:\n3: func main() {}",
+	}
+	raw, _ := app.toolRow(client.Message{}, "t1", "read", state)
+	if !strings.Contains(raw, "\x1b[38;2;") {
+		t.Error("expanded read block should be syntax highlighted")
+	}
+	got := plain(raw)
+	if !strings.Contains(got, "3: func main() {}") {
+		t.Errorf("highlighting should not disturb the text, got %q", got)
+	}
+}
+
+// --- markdown files -------------------------------------------------------
+
+func TestIsMarkdownPath(t *testing.T) {
+	for _, path := range []string{"/x/README.md", "/x/notes.markdown", "/x/a.MD", "/x/doc.mdx"} {
+		if !isMarkdownPath(path) {
+			t.Errorf("%q should render as prose", path)
+		}
+	}
+	for _, path := range []string{"/x/main.go", "/x/notes.txt", "/x/mdfile", "/x/a.json"} {
+		if isMarkdownPath(path) {
+			t.Errorf("%q should not render as prose", path)
+		}
+	}
+}
+
+func TestMarkdownBodyRendersProse(t *testing.T) {
+	app := &App{theme: themeResolve("gocode-dark")}
+	rows := app.markdownBody("# Title\n\n- one\n- two\n\nSome **bold** text.", 60)
+	got := plain(strings.Join(rows, "\n"))
+	if !strings.Contains(got, "Title") {
+		t.Errorf("heading text missing: %q", got)
+	}
+	if !strings.Contains(got, "•") {
+		t.Errorf("list should render as bullets: %q", got)
+	}
+	if strings.Contains(got, "- one") {
+		t.Errorf("raw list markers should be gone: %q", got)
+	}
+	if strings.Contains(got, "**bold**") {
+		t.Errorf("emphasis markers should be gone: %q", got)
+	}
+}
+
+// glamour reflows the text, so read's line numbers cannot survive — they would
+// end up numbering rows that no longer match source lines.
+func TestMarkdownBodyDropsReadLineNumbers(t *testing.T) {
+	app := &App{theme: themeResolve("gocode-dark")}
+	rows := app.markdownBody("1: # Title\n2: \n3: body text", 60)
+	got := plain(strings.Join(rows, "\n"))
+	if strings.Contains(got, "1:") || strings.Contains(got, "3:") {
+		t.Errorf("line numbers should be gone: %q", got)
+	}
+	if !strings.Contains(got, "body text") {
+		t.Errorf("content should survive: %q", got)
+	}
+}
+
+// A markdown file reads as prose; anything else stays source.
+func TestFileBodyPicksProseOnlyForMarkdown(t *testing.T) {
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"),
+		expandedToolOutput: map[string]bool{"t1": true}}
+	body := "1: # Title\n2: \n3: - a bullet"
+
+	md := &toolState{Status: "done", Input: map[string]any{"path": "/x/NOTES.md"}, Output: body}
+	raw, _ := app.toolRow(client.Message{}, "t1", "read", md)
+	if got := plain(raw); !strings.Contains(got, "•") || strings.Contains(got, "3: ") {
+		t.Errorf("a markdown read should render as prose, got %q", got)
+	}
+
+	code := &toolState{Status: "done", Input: map[string]any{"path": "/x/notes.go"}, Output: body}
+	raw, _ = app.toolRow(client.Message{}, "t1", "read", code)
+	if got := plain(raw); !strings.Contains(got, "3: ") {
+		t.Errorf("a non-markdown read should stay source, got %q", got)
+	}
+}
+
+// Writing a markdown file previews it the same way reading one does.
+func TestWriteBlockRendersMarkdown(t *testing.T) {
+	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"),
+		expandedToolOutput: map[string]bool{"t1": true}}
+	state := &toolState{Status: "done", Input: map[string]any{
+		"path": "/x/NOTES.md", "content": "# Title\n\n- a bullet\n"}}
+	raw, _ := app.toolRow(client.Message{}, "t1", "write", state)
+	if got := plain(raw); !strings.Contains(got, "•") {
+		t.Errorf("a markdown write should render as prose, got %q", got)
+	}
+}
+
+// More than one width is live on the same frame, so the renderer cache has to
+// hold one per width — a single slot rebuilt a glamour renderer per call.
+func TestMarkdownRendererCachesPerWidth(t *testing.T) {
+	app := &App{theme: themeResolve("gocode-dark")}
+	wide, narrow := app.markdownRenderer(80), app.markdownRenderer(40)
+	if wide == nil || narrow == nil {
+		t.Fatal("expected renderers")
+	}
+	if wide == narrow {
+		t.Fatal("different widths need different renderers")
+	}
+	if again := app.markdownRenderer(80); again != wide {
+		t.Error("the same width should hit the cache, not rebuild")
+	}
+
+	// A theme change invalidates everything: the style config is baked in.
+	app.theme = themeResolve("gocode-light")
+	if after := app.markdownRenderer(80); after == wide {
+		t.Error("a theme change should rebuild the renderer")
 	}
 }

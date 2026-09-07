@@ -292,11 +292,17 @@ type App struct {
 	// assistant message, keyed by its message ID. See streamingTextBlock.
 	streamRender map[string]streamedBlock
 
-	// mdRenderer caches the glamour renderer built for the current
-	// theme+width (see markdown.go): constructing one loads chroma's lexer/
-	// style registries, too costly to redo on every streamed delta.
-	mdRenderer      *glamour.TermRenderer
-	mdRendererWidth int
+	// mdRenderers caches the glamour renderers built for the current theme,
+	// keyed by wrap width (see markdown.go): constructing one loads chroma's
+	// lexer/style registries, too costly to redo on every streamed delta.
+	//
+	// Keyed rather than a single slot because more than one width is in play
+	// on the same frame — an assistant message wraps to contentWidth-4, a
+	// markdown file inside a tool block to the narrower panel interior, and
+	// its collapsed one-line preview to narrower still. A single slot thrashed
+	// between them, rebuilding a renderer per call, which is the one thing the
+	// cache exists to prevent.
+	mdRenderers     map[int]*glamour.TermRenderer
 	mdRendererTheme string
 }
 

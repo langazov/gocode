@@ -966,13 +966,14 @@ func (a *App) bashBlock(id string, state *toolState) (string, *toolOutputHeaderR
 		prefix = spinnerPlaceholder + " "
 	}
 	head := renderLines(a.styles().Text, strings.Join(wrapPrefixed(prefix, command, innerWidth), "\n"))
-	return a.collapsibleBlock(id, head, ansi.Strip(state.Output), innerWidth, state)
+	body := strings.TrimSpace(ansi.Strip(state.Output))
+	return a.collapsibleBlock(id, head, body, innerWidth, a.wrappedBody, state)
 }
 
 // collapsibleBlock is the shared body of every BlockTool that pairs a fixed
-// head line with output long enough to be worth hiding: bash's command and its
-// stdout, read's path and the file it returned, write's path and the content
-// it stored.
+// head line with content long enough to be worth hiding: bash's command and
+// its stdout, read's path and the file it returned, write's path and the
+// content it stored.
 //
 // Beyond one line the body collapses to just its first line plus a "click to
 // expand" hint (see toolOutputHeaderRef, mouse.go's toolOutputClickTarget),
@@ -981,32 +982,41 @@ func (a *App) bashBlock(id string, state *toolState) (string, *toolOutputHeaderR
 // body renders however long it is, and a click anywhere on the open block
 // collapses it again: there is no single header row left to re-click, the way
 // the collapsed summary has one.
-func (a *App) collapsibleBlock(id, head, body string, innerWidth int, state *toolState) (string, *toolOutputHeaderRef) {
+//
+// render draws the body: shell output wraps (wrappedBody), file contents are
+// highlighted and truncated (codeBody). It is called only on the rows that
+// will actually be shown, so a collapsed block tokenises one line rather than
+// the whole file.
+func (a *App) collapsibleBlock(id, head, body string, innerWidth int, render bodyRenderer, state *toolState) (string, *toolOutputHeaderRef) {
 	lines := []string{head}
 	var ref *toolOutputHeaderRef
 	expandedBlock := false
-	if body := strings.TrimSpace(body); body != "" {
+	if body != "" {
 		bodyLines := strings.Split(body, "\n")
 		switch {
 		case a.expandedToolOutput[id] && len(bodyLines) > 1:
-			lines = append(lines, "", renderLines(a.styles().Text, wrapText(body, innerWidth)))
+			lines = append(lines, "", strings.Join(render(body, innerWidth), "\n"))
 			expandedBlock = true
 		case len(bodyLines) == 1:
 			// Nothing was ever collapsed, so nothing to toggle back.
-			lines = append(lines, "", renderLines(a.styles().Text, wrapText(body, innerWidth)))
+			lines = append(lines, "", strings.Join(render(body, innerWidth), "\n"))
 		default:
-			// The click target lands on the last row the wrapped first line
-			// (and its hint) actually occupies, not the row the summary
-			// starts on: blockToolStyle's PaddingTop(1) row, plus the head's
-			// own (possibly wrapped) rows, plus the blank separator, plus the
-			// first body line's own wrapped rows.
+			// The click target lands on the last row the first body line
+			// actually occupies, not the row the summary starts on:
+			// blockToolStyle's PaddingTop(1) row, plus the head's own
+			// (possibly wrapped) rows, plus the blank separator, plus the
+			// first body line's own rows.
 			headRows := strings.Count(head, "\n") + 1
-			first := wrapText(bodyLines[0], innerWidth)
-			firstRows := strings.Count(first, "\n") + 1
 			hint := fmt.Sprintf(" (+%d lines — click to expand)", len(bodyLines)-1)
-			summary := renderLines(a.styles().Text, first) + a.styles().Muted.Render(hint)
+			// The hint shares the summary's row, so the body gets the width
+			// left over. Without the reservation a full-width first line
+			// pushes the hint onto a row of its own — one the click target
+			// below does not cover, so clicking the visible "click to expand"
+			// did nothing.
+			first := render(bodyLines[0], max(innerWidth-lipgloss.Width(hint), 10))
+			summary := strings.Join(first, "\n") + a.styles().Muted.Render(hint)
 			lines = append(lines, "", summary)
-			row := 1 + headRows + 1 + firstRows - 1
+			row := 1 + headRows + 1 + len(first) - 1
 			ref = &toolOutputHeaderRef{id: id, lineStart: row, lineEnd: row}
 		}
 	}
@@ -1024,8 +1034,9 @@ func (a *App) collapsibleBlock(id, head, body string, innerWidth int, state *too
 }
 
 // readBlock mirrors bashBlock for the read tool: the path that was read, then
-// the file's contents behind the same collapse toggle. The one-line row it
-// replaces named neither the file nor a single line of what came back.
+// the file's contents behind the same collapse toggle, syntax-highlighted for
+// the extension. The one-line row it replaces named neither the file nor a
+// single line of what came back.
 func (a *App) readBlock(id string, state *toolState) (string, *toolOutputHeaderRef) {
 	path := filePathArg(state.Input)
 	// A running read has nothing to show yet, and the one-line row it falls
@@ -1040,7 +1051,7 @@ func (a *App) readBlock(id string, state *toolState) (string, *toolOutputHeaderR
 		title += fmt.Sprintf("  (%s)", plural(lines, "line"))
 	}
 	head := renderLines(a.styles().Muted, wrapText(title, innerWidth))
-	return a.collapsibleBlock(id, head, state.Output, innerWidth, state)
+	return a.collapsibleBlock(id, head, trimBlankLines(state.Output), innerWidth, a.fileBody(path), state)
 }
 
 // writeBlock is readBlock's counterpart for write. The body is the content the
@@ -1059,7 +1070,25 @@ func (a *App) writeBlock(id string, state *toolState) (string, *toolOutputHeader
 		title += fmt.Sprintf("  (%s)", plural(lines, "line"))
 	}
 	head := renderLines(a.styles().Muted, wrapText(title, innerWidth))
-	return a.collapsibleBlock(id, head, content, innerWidth, state)
+	return a.collapsibleBlock(id, head, trimBlankLines(content), innerWidth, a.fileBody(path), state)
+}
+
+// trimBlankLines drops leading and trailing blank lines without touching the
+// indentation of the lines that remain — strings.TrimSpace would eat the
+// first line's leading whitespace, which in a file is structure, not padding.
+func trimBlankLines(text string) string {
+	lines := strings.Split(text, "\n")
+	start, end := 0, len(lines)
+	for start < end && strings.TrimSpace(lines[start]) == "" {
+		start++
+	}
+	for end > start && strings.TrimSpace(lines[end-1]) == "" {
+		end--
+	}
+	if start == end {
+		return ""
+	}
+	return strings.Join(lines[start:end], "\n")
 }
 
 // countLines counts the lines of a block of text, ignoring surrounding blank
