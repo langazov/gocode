@@ -209,11 +209,14 @@ func (a *App) handleClick(x, y int) tea.Cmd {
 }
 
 // reasoningClickTarget resolves an absolute screen row against the reasoning
-// header rows viewChat's last render cached (chatReasoningRows/
+// toggle rows viewChat's last render cached (chatReasoningRows/
 // chatWindowPad/chatWindowStart), mirroring ReasoningPart's per-instance
 // `<box onMouseUp={toggle}>` — column is ignored (the header's own text is
 // short and left-aligned, and TS's toggle also doesn't require expanding
-// the whole width). Only meaningful when thinkingMode is "hide": a click
+// the whole width). A collapsed block registers only its header row; an
+// expanded one registers every row of its body too, so a click anywhere on
+// the open block collapses it again — the same rule toolOutputClickTarget's
+// refs follow. Only meaningful when thinkingMode is "hide": a click
 // while "show" toggles a per-part flag reasoningBlock never reads (every
 // block already renders open), matching TS's `toggle()` no-op when
 // `!inMinimal()`.

@@ -2,6 +2,8 @@ package tui
 
 import (
 	"fmt"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -56,16 +58,33 @@ func TestFileToolLabelsFallBackWithoutAPath(t *testing.T) {
 	}
 }
 
+// hostAbs builds a host-absolute path out of slash-separated segments. The
+// cases below used to spell their absolute paths as Unix literals, which
+// filepath.IsAbs rejects on Windows (no volume name) — so displayPath took
+// its "not absolute" branch there and every expectation about the project-
+// relative and ~-abbreviated forms went untested on that platform, failing
+// CI rather than exercising the logic.
+func hostAbs(segments ...string) string {
+	root := string(filepath.Separator)
+	if runtime.GOOS == "windows" {
+		root = `C:\`
+	}
+	return filepath.Join(append([]string{root}, segments...)...)
+}
+
 // A path inside the project shows relative to it; anything else falls back to
 // the home-abbreviated form.
 func TestDisplayPath(t *testing.T) {
-	app := &App{cwd: "/home/dev/project", homeDir: "/home/dev"}
+	app := &App{cwd: hostAbs("home", "dev", "project"), homeDir: hostAbs("home", "dev")}
+	// Outside both the project and home, the path comes back untouched — in
+	// the host's own separator, since that branch returns its input as-is.
+	outside := hostAbs("etc", "hosts")
 	cases := map[string]string{
-		"/home/dev/project/internal/tui/app.go": "internal/tui/app.go",
-		"/home/dev/notes.md":                    "~/notes.md",
-		"/etc/hosts":                            "/etc/hosts",
-		"relative/path.go":                      "relative/path.go",
-		"":                                      "",
+		hostAbs("home", "dev", "project", "internal", "tui", "app.go"): "internal/tui/app.go",
+		hostAbs("home", "dev", "notes.md"):                             "~/notes.md",
+		outside:                                                        outside,
+		"relative/path.go":                                             "relative/path.go",
+		"":                                                             "",
 	}
 	for in, want := range cases {
 		if got := app.displayPath(in); got != want {

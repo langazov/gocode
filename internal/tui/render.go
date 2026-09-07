@@ -38,9 +38,9 @@ func (a *App) timelineLines() []string {
 }
 
 // buildTimeline is timelineLines' real implementation, additionally
-// returning which absolute line (by index into the returned lines) is a
-// reasoning part's clickable header row (see reasoningHeaderRef) or a
-// collapsed tool-output's clickable summary row (see toolOutputHeaderRef).
+// returning which absolute lines (by index into the returned lines) toggle a
+// reasoning part (see reasoningHeaderRef) or a tool call's output (see
+// toolOutputHeaderRef).
 func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, toolOutputRows map[int]string) {
 	var blocks []string
 	var blockRefs [][]reasoningHeaderRef
@@ -72,7 +72,7 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, too
 		// reasoningBlock's leading blank line is dropped below, which puts
 		// its header on the block's line 1 — same offset renderAssistant
 		// records for a stored part, so a live block is clickable too.
-		blockRefs = append(blockRefs, []reasoningHeaderRef{{id: id, line: 1}})
+		blockRefs = append(blockRefs, []reasoningHeaderRef{a.reasoningRef(id, block, 0)})
 		blockToolRefs = append(blockToolRefs, nil)
 	}
 	// Live assistant text, in message-ID order. The map iteration this used
@@ -118,7 +118,9 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, too
 		}
 		base := len(out)
 		for _, ref := range blockRefs[i] {
-			reasoningRows[base+ref.line-dropped] = ref.id
+			for row := ref.lineStart; row <= ref.lineEnd; row++ {
+				reasoningRows[base+row-dropped] = ref.id
+			}
 		}
 		for _, ref := range blockToolRefs[i] {
 			for row := ref.lineStart; row <= ref.lineEnd; row++ {
@@ -415,9 +417,9 @@ func messageAborted(data client.AssistantData) bool {
 // renderAssistant mirrors AssistantMessage: reasoning, text, and tool parts,
 // then the error block, then the "▣ Agent · model · duration" settlement
 // line. The second return value locates each reasoning part's clickable
-// header line within the joined block this function returns (relative to
-// its own line 0) — see reasoningHeaderRef. The third does the same for a
-// collapsed tool-output's clickable summary line — see toolOutputHeaderRef.
+// rows within the joined block this function returns (relative to its own
+// line 0) — see reasoningHeaderRef. The third does the same for a tool
+// call's output — see toolOutputHeaderRef.
 func (a *App) renderAssistant(message client.Message, data client.AssistantData, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef) {
 	var blocks []string
 	var refs []reasoningHeaderRef
@@ -444,9 +446,7 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 				partTime = &reasoningPartTime{Created: part.Time.Created, Completed: part.Time.Completed}
 			}
 			if block := a.reasoningBlock(part.ID, running, part.Text, partTime); block != "" {
-				// reasoningBlock's leading "\n" (marginTop=1) puts the header
-				// on the block's line 1, not line 0.
-				refs = append(refs, reasoningHeaderRef{id: part.ID, line: lineOffset + 1})
+				refs = append(refs, a.reasoningRef(part.ID, block, lineOffset))
 				appendBlock(block)
 			}
 		case "text":
@@ -554,15 +554,32 @@ type reasoningPartTime struct {
 	Completed int64
 }
 
-// reasoningHeaderRef marks the line (relative to the start of the assistant
+// reasoningHeaderRef marks the lines (relative to the start of the assistant
 // message's own rendered block, i.e. before renderMessage/timelineLines
-// re-bases it into the full timeline) that is a reasoning part's clickable
-// header row — mirrors ReasoningPart's `<box onMouseUp={toggle}>`. Threaded
-// back up through renderAssistant/renderMessage/timelineLines so
-// handleClick (mouse.go) can hit-test it against what's actually on screen.
+// re-bases it into the full timeline, inclusive) that toggle a reasoning
+// part — mirrors ReasoningPart's `<box onMouseUp={toggle}>`. While collapsed
+// this is a single row, the header; while expanded it spans the whole block,
+// the same rule toolOutputHeaderRef follows and for the same reason: a long
+// body leaves no header row conveniently at hand, so clicking anywhere on an
+// open block collapses it again. Threaded back up through
+// renderAssistant/renderMessage/timelineLines so handleClick (mouse.go) can
+// hit-test it against what's actually on screen.
 type reasoningHeaderRef struct {
-	id   string
-	line int
+	id                 string
+	lineStart, lineEnd int
+}
+
+// reasoningRef locates a reasoning block's clickable rows within the
+// timeline, given the block reasoningBlock just returned and the offset of
+// its first line. reasoningBlock's leading "\n" (marginTop=1) puts the
+// header on the block's line 1, not line 0; an open block runs from there to
+// its last line.
+func (a *App) reasoningRef(id, block string, offset int) reasoningHeaderRef {
+	ref := reasoningHeaderRef{id: id, lineStart: offset + 1, lineEnd: offset + 1}
+	if a.thinkingMode != "show" && a.expandedReasoning[id] {
+		ref.lineEnd = offset + strings.Count(block, "\n")
+	}
+	return ref
 }
 
 // toolOutputHeaderRef marks the lines (relative to the start of the block
