@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ type modelCall struct {
 	sessionID string
 	provider  string
 	model     string
+	variant   string
 }
 
 type mockAPI struct {
@@ -40,10 +42,32 @@ type mockAPI struct {
 	answered   [][]([]string) // answers posted to /api/question/{id}/reply
 	rejected   []string       // request ids posted to /api/question/{id}/reject
 	renamed    []renameCall
-	models     []modelCall
 	forkedFrom string
 	mcpStatus  string // GET /api/mcp responds with this status for "test-server"; mutate mid-test to verify tickMsg re-fetches it
 	statsCalls int
+
+	// mu guards models, the one slice a background goroutine can append to
+	// (the variant pin is posted fire-and-forget) while a test polls it —
+	// the other fields are only touched from the test goroutine.
+	mu     sync.Mutex
+	models []modelCall
+}
+
+// recordModel appends a SetModel call from the handler goroutine.
+func (api *mockAPI) recordModel(call modelCall) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	api.models = append(api.models, call)
+}
+
+// lastModel returns the most recent SetModel call, if any.
+func (api *mockAPI) lastModel() (modelCall, bool) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.models) == 0 {
+		return modelCall{}, false
+	}
+	return api.models[len(api.models)-1], true
 }
 
 func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
@@ -125,14 +149,18 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 		var body struct {
 			ProviderID string `json:"providerID"`
 			ID         string `json:"id"`
+			Variant    string `json:"variant"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		api.models = append(api.models, modelCall{r.PathValue("sessionID"), body.ProviderID, body.ID})
+		api.recordModel(modelCall{r.PathValue("sessionID"), body.ProviderID, body.ID, body.Variant})
 		w.Write([]byte(`{"ok":true}`))
 	})
 	mux.HandleFunc("GET /api/model", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]client.Model{
-			{ProviderID: "anthropic", ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5"},
+			{ProviderID: "anthropic", ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5",
+				// claude-sonnet-4-5's real reasoning_options (budget_tokens
+				// min 1024) resolve to exactly high/max.
+				Variants: []string{"high", "max"}},
 			{ProviderID: "anthropic", ID: "claude-opus-4-5", Name: "Claude Opus 4.5"},
 		})
 	})
@@ -877,7 +905,10 @@ func TestHeadlessProgramRun(t *testing.T) {
 func TestCommandPalette(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
-	app.width, app.height = 120, 80 // tall enough to list every command
+	// Tall enough to list every command: the viewport caps at height/2-6
+	// rows like DialogSelect's own scrollbox, and the palette now carries
+	// the variant and connect/editor/copy entries too.
+	app.width, app.height = 120, 110
 	drive(t, app, tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 
 	if app.overlay == nil {

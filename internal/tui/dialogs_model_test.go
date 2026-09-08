@@ -18,8 +18,9 @@ func testApp(t *testing.T) *App {
 		theme:  themeResolve("gocode-dark"),
 		// update() drives these on catalogMsg; New() builds them, so a
 		// hand-rolled App has to as well.
-		agentMetaFade: newFadeAnim(false),
-		modelMetaFade: newFadeAnim(false),
+		agentMetaFade:   newFadeAnim(false),
+		modelMetaFade:   newFadeAnim(false),
+		variantMetaFade: newFadeAnim(false),
 	}
 }
 

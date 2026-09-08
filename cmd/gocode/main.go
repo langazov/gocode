@@ -447,7 +447,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Tools:                tools,
 		Agents:               agents,
 		Agent:                "build",
-		Model:                session.ModelRef{ProviderID: providerID, ID: modelID},
+		Model:                session.ModelRef{ProviderID: providerID, ID: modelID, Variant: lastUsed.Variant},
 		Permissions:          &session.EnginePermissionGate{Engine: permissionEngine},
 		Plugins:              plugins,
 		ContextLimit:         defaultContextLimit,
@@ -499,7 +499,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Provider: streamClient,
 		Settings: session.DefaultCompactionSettings(),
 	}
-	service.DefaultModel = session.ModelRef{ProviderID: providerID, ID: modelID}
+	service.DefaultModel = session.ModelRef{ProviderID: providerID, ID: modelID, Variant: lastUsed.Variant}
 	// The task tool closes the loop between the tool layer and the session
 	// layer through the tool.Spawner seam: builtins cannot import session
 	// (session imports tool), so the concrete spawner is injected here.

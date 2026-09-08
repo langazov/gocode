@@ -1001,6 +1001,7 @@ level 9 steals a key from the editor.
 | `tab` / `shift+tab` | Cycle agent forward / back |
 | `ctrl+r` | Rename session |
 | `ctrl+z` | Suspend |
+| `ctrl+t` | Cycle model variant (`variant.cycle`) — no-op when the model has none |
 | `shift+enter`, `ctrl+enter`, `alt+enter`, `ctrl+j` | Newline |
 | `enter` | Submit (or run a `/command`) |
 | `esc` | Arm interrupt while busy (two-press, 5 s window) |

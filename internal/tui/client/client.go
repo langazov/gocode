@@ -377,6 +377,12 @@ type Model struct {
 	// CostInput is models.dev's `cost.input`. Zero across every model of a
 	// provider is what marks that provider as free.
 	CostInput float64 `json:"costInput,omitempty"`
+	// Variants are the model's selectable reasoning variants, the ids the
+	// /variants dialog lists and variant.cycle steps through. Populated by
+	// /api/model from the same provider.ReasoningVariants the runner
+	// resolves a turn with, so the TUI can never offer one the server would
+	// ignore.
+	Variants []string `json:"variants,omitempty"`
 }
 
 type Provider struct {
@@ -706,9 +712,19 @@ func (c *Client) Plugins(ctx context.Context) ([]PluginStatus, []PluginSpec, []P
 }
 
 func (c *Client) SetModel(ctx context.Context, sessionID, providerID, modelID string) error {
-	return c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/model", map[string]string{
-		"providerID": providerID, "id": modelID,
-	}, nil)
+	return c.SetModelWithVariant(ctx, sessionID, providerID, modelID, "")
+}
+
+// SetModelWithVariant pins a model and its reasoning variant. variant is
+// normalized upstream of here: "default" (what the store keeps for
+// no-selection) never reaches the wire, matching the optional variant in
+// the original's Model.Ref.
+func (c *Client) SetModelWithVariant(ctx context.Context, sessionID, providerID, modelID, variant string) error {
+	body := map[string]string{"providerID": providerID, "id": modelID}
+	if variant != "" {
+		body["variant"] = variant
+	}
+	return c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/model", body, nil)
 }
 
 func (c *Client) SetAgent(ctx context.Context, sessionID, agent string) error {

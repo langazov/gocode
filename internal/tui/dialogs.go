@@ -1505,6 +1505,49 @@ func (a *App) themesOverlay() {
 	}
 }
 
+// variantsOverlay ports DialogVariant (component/dialog-variant.tsx): a flat
+// list of "Default" plus each variant, the current selection marked with the
+// ● bullet via overlay.current. The caller has already checked that the
+// model has variants — upstream's variant.list command toasts and stays put
+// when there are none.
+func (a *App) variantsOverlay() {
+	items := []overlayItem{{
+		label: "Default",
+		value: "default",
+		action: func() tea.Msg {
+			return a.setVariant("")
+		},
+	}}
+	for _, variant := range a.variantList() {
+		variant := variant
+		items = append(items, overlayItem{
+			label: variant,
+			value: variant,
+			action: func() tea.Msg {
+				return a.setVariant(variant)
+			},
+		})
+	}
+	a.openList("Select variant", items)
+	// flat={true} upstream: no category headers, one straight list — which is
+	// what a single-category openList already renders. current is the *raw*
+	// stored selection (variant.selected(), "default" included), and the
+	// Default row carries "default" as its value — so the bullet lands on
+	// Default exactly when an explicit cycle-off stored it, and no row is
+	// marked before the model ever had a selection. DialogSelect also moves
+	// the *selection* onto the current row (its createEffect over
+	// props.current), so the cursor and the bullet start together.
+	if ref, ok := a.variantRef(); ok {
+		a.overlay.current = a.models.selectedVariant(ref)
+		for i, item := range a.overlay.items {
+			if item.value == a.overlay.current {
+				a.overlay.selected = i
+				break
+			}
+		}
+	}
+}
+
 // commandsRegistry lists the palette commands, mirroring the TS palette
 // entry for entry (command-palette.tsx over the command tables in app.tsx,
 // routes/session/index.tsx and component/prompt/index.tsx): label is the
@@ -1632,6 +1675,26 @@ func (a *App) commandsRegistry() []overlayItem {
 			}},
 		{label: "Switch agent", value: "agent.list", slash: "agents", category: "Agent", footer: "ctrl+x a", action: func() tea.Msg {
 			return a.agentsOverlay()
+		}},
+		// variant.cycle, no slash of its own upstream — ctrl+t is the whole
+		// affordance, same as model.cycle_recent lives on f2.
+		{label: "Variant cycle", value: "variant.cycle", category: "Agent", footer: "ctrl+t", action: func() tea.Msg {
+			return a.cycleVariant()
+		}},
+		// variant.list, hidden when the current model has no variants
+		// (upstream: hidden: list().length === 0) — and the toast when it is
+		// reached anyway (a race between open and catalog, or /variants
+		// typed by hand).
+		{label: "Switch model variant", value: "variant.list", slash: "variants", category: "Agent", hidden: len(a.variantList()) == 0, action: func() tea.Msg {
+			if len(a.variantList()) == 0 {
+				return a.showToastOptions(toastOptions{
+					title:   "No variants available",
+					message: "The current model does not support any variants.",
+					variant: toastInfo,
+				})
+			}
+			a.variantsOverlay()
+			return nil
 		}},
 		// provider.connect, suggested while nothing is connected (upstream
 		// `suggested: !connected()`; paidProviderAvailable ports has()).
