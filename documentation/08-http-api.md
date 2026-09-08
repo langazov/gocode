@@ -42,6 +42,8 @@ a proxy that adds it.
 | `POST` | `/api/session/{id}/background` | run in background |
 | `GET` | `/api/session/{id}/stats` | tokens and cost |
 | `GET` | `/api/session/{id}/todo` | todo list |
+| `GET` | `/api/session/{id}/status` | busy flag — is a turn running |
+| `GET` | `/api/session/{id}/queue` | prompts admitted but not yet reached |
 
 ### Sending a prompt
 
@@ -157,6 +159,19 @@ attempt, get a URL and code to show the user, then poll until they finish.
 | `GET` | `/api/lsp` | language server status |
 | `GET` | `/api/mcp` | MCP server status |
 | `GET` | `/api/job` | background jobs |
+| `GET` | `/api/plugin` | loaded plugins, their hooks and tools |
+
+## Memories
+
+Durable memories (the `memory` native plugin's backing store) have their own
+management surface — this is what the interface's `/memory` manager talks to:
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/api/memory` | list memories (management view: includes disabled) |
+| `POST` | `/api/memory` | create one |
+| `PATCH` | `/api/memory/{id}` | edit, pin, silence |
+| `DELETE` | `/api/memory/{id}` | forget it |
 
 `Mux()` with no session service returns a **health-only** route tree, for
 callers that just need a liveness probe.

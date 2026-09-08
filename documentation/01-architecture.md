@@ -199,7 +199,7 @@ internal/
     hook.go            Definition/Trigger — the typed dispatch core
     process.go         the subprocess tier (JSON-RPC over stdio)
   server/              HTTP handlers
-  tui/                 Bubble Tea app (~11k lines, the largest package)
+  tui/                 Bubble Tea app (~15k lines, the largest package)
   lsp/  mcp/           external protocol clients
 ```
 

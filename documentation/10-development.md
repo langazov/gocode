@@ -51,7 +51,7 @@ LDFLAGS := -s -w -X $(VERSION_PKG).Version=$(VERSION)
 
 ## Testing
 
-862 test functions, ~22,000 lines. `go test ./...` runs in roughly a minute,
+~1,490 test functions, ~42,000 lines. `go test ./...` runs in a few minutes,
 the TUI package accounting for most of it.
 
 ```sh

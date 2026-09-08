@@ -47,16 +47,16 @@ One statically linked binary. No Node, no Bun, no runtime to install.
 
 The original opencode is a TypeScript application. This is a full rewrite in Go
 with the same behaviour, the same on-disk format, and the same HTTP API —
-delivered as a single ~25 MB executable you can drop on a box with nothing else
+delivered as a single ~26 MB executable you can drop on a box with nothing else
 installed.
 
 | | |
 |---|---|
 | **Zero runtime deps** | `CGO_ENABLED=0` everywhere. SQLite is [modernc](https://gitlab.com/cznic/sqlite), a pure-Go translation — so cross-compiling all six targets happens on one Linux runner. |
 | **Durable by construction** | Every turn is event-sourced into SQLite. Kill the process mid-stream and the session resumes exactly where it stopped. |
-| **Agent-native** | 13 built-in tools, sub-agent spawning, MCP servers, skills, plugins, and 28 language servers wired into the same permission engine. |
+| **Agent-native** | 15 built-in tools, sub-agent spawning, MCP servers, skills, plugins, durable memories, semantic code search, and 28 language servers wired into the same permission engine. |
 | **Extensible** | Plugins hook the request, the prompt, tool calls and permissions, and can add tools of their own. A plugin is an executable in any language — the binary stays one static file. |
-| **Actually tested** | 960 tests across 34 packages, ~25k lines of test code against ~41k lines of source. |
+| **Actually tested** | ~1,490 tests across 42 packages, ~42k lines of test code against ~56k lines of source. |
 
 ## Install
 
@@ -330,7 +330,7 @@ internal/
   session/          the agent loop: runner, coordinator, compaction
   llm/              provider clients (anthropic, openai, gemini)
   provider/         catalog, auth, transforms
-  tool/             tool registry + 13 builtins
+  tool/             tool registry + 15 builtins
   permission/       the allow/deny/ask engine
   plugin/           plugin host: hooks, subprocess tier, loader
   event/            event store, projections, replay
