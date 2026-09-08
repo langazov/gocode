@@ -3,6 +3,7 @@ package builtins
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os/exec"
 	"path/filepath"
@@ -17,6 +18,9 @@ const (
 	defaultTimeoutMS = 2 * 60 * 1000
 	maxTimeoutMS     = 10 * 60 * 1000
 	maxOutputBytes   = 512 * 1024
+	// orphanGrace bounds how long Run waits for the pipe once the command
+	// itself is gone. See Execute.
+	orphanGrace = 2 * time.Second
 )
 
 type BashTool struct {
@@ -85,12 +89,25 @@ func (t *BashTool) Execute(ctx context.Context, input map[string]any) (string, e
 		cmd = exec.CommandContext(runCtx, "/bin/sh", "-c", command)
 	}
 	cmd.Dir = workdir
+	// The context kills the shell, but a command like `server &` leaves the
+	// real worker alive holding a copy of our stdout pipe — and Run cannot
+	// return until every writer closes it. That turns a user's double-escape
+	// into an uninterruptible turn: the context is cancelled, the shell is
+	// dead, and the run still parks on the orphan until it exits on its own.
+	// WaitDelay cuts the wait and reports ErrWaitDelay, which reads below as
+	// "command still running" rather than a silent hang. The killed shell's
+	// own exit races with the orphan's pipe, so the grace is not zero.
+	cmd.WaitDelay = orphanGrace
 
 	var output bytes.Buffer
 	cmd.Stdout = &output
 	cmd.Stderr = &output
 	err := cmd.Run()
 	timedOut := runCtx.Err() == context.DeadlineExceeded
+	// ErrWaitDelay means the command was cancelled (a timeout, or the turn
+	// being interrupted) and an orphan held the pipe for the whole grace.
+	// timedOut above only recognizes the deadline, so consult the error too.
+	orphaned := errors.Is(err, exec.ErrWaitDelay)
 
 	text := output.String()
 	truncated := false
@@ -98,7 +115,7 @@ func (t *BashTool) Execute(ctx context.Context, input map[string]any) (string, e
 		text = text[:maxOutputBytes]
 		truncated = true
 	}
-	if timedOut {
+	if timedOut || orphaned {
 		return text, fmt.Errorf("bash: command timed out after %dms", timeoutMS)
 	}
 	if err != nil {
