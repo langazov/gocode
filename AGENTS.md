@@ -113,6 +113,14 @@ This is a port from TypeScript. Non-obvious behavior should cite its TypeScript 
 
 Deliberate divergences are documented in `documentation/10-development.md` (no runtime npm install, no MCP prompts, unmatched commands report instead of swallow).
 
+## Design recommendations
+
+`documentation/recomendations/` holds the normative design specs — how each surface should look and behave, as opposed to how it is built. **All design recommendations go there**, one file per surface, named `<SURFACE>_RECOMENDATIONS.md` and listed in that directory's `README.md`. Never beside the code they govern, never at the repo root, never in `docs/` (the published site).
+
+- [`TUI_RECOMENDATIONS.md`](documentation/recomendations/TUI_RECOMENDATIONS.md) — theme tokens, geometry, every view and dialog layout, controls, keyboard/mouse models, anti-patterns, checklists. Read it before adding a TUI view, dialog or control.
+
+A change that alters a documented rule updates the document in the same commit.
+
 ## CI
 
 `.github/workflows/ci.yml` runs on push to `main`/`dev` and on PRs: gofmt (Ubuntu only) → `go vet` → `go test -race` → `go build`, across Ubuntu/macOS/Windows. Actions are pinned to commit SHAs, not tags.

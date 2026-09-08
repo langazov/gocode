@@ -22,6 +22,22 @@ why it is put together that way, and where to look when changing it.
 | **9** | [LSP, MCP & plugins](09-integrations.md) | Language servers, Model Context Protocol clients, and the plugin host |
 | **10** | [Development](10-development.md) | Building, testing, releasing, and the porting conventions |
 
+## Design recommendations
+
+The chapters above describe how the code is built. [`recomendations/`](recomendations/README.md)
+describes how the product should look and behave — the normative visual and
+interaction contract a change is measured against.
+
+| | |
+|---|---|
+| [Design recommendations index](recomendations/README.md) | What belongs there, and the conventions a document follows |
+| [TUI recommendations](recomendations/TUI_RECOMENDATIONS.md) | Theme tokens, geometry, view and dialog layouts, controls, keyboard and mouse models, anti-patterns |
+
+**All design recommendations live under `documentation/recomendations/`** — one
+per surface, named `<SURFACE>_RECOMENDATIONS.md`, listed in that directory's
+index. Nothing of the kind belongs beside the code it governs, at the repository
+root, or in `docs/`.
+
 ## The 60-second version
 
 `gocode` is an AI coding agent that runs in your terminal. You type a request;
@@ -95,6 +111,14 @@ that and appear everywhere in the source:
 - **Deliberate divergences are documented as such.** Where the Go port does
   something different — no runtime `npm install`, for instance — the comment
   says so and says why. Silence means "same as upstream".
+
+A third convention governs the docs themselves:
+
+- **Design recommendations are normative and live in one place.** How a surface
+  should look and behave is specified in
+  [`documentation/recomendations/`](recomendations/README.md), not inferred from
+  the current render. A change that alters a documented rule updates the
+  document in the same commit.
 
 ## Numbers
 

@@ -8,6 +8,13 @@
 files. It is built on [Bubble Tea v2](https://charm.land) and talks to the core
 only over HTTP.
 
+> **Building or changing a surface?** This chapter explains how the TUI is
+> *architected*. How it should *look and behave* — theme tokens, geometry, every
+> view and dialog layout, controls, keyboard and mouse models, anti-patterns and
+> checklists — is specified in
+> [TUI recommendations](recomendations/TUI_RECOMENDATIONS.md). That document is
+> normative; this one is explanatory.
+
 ## The Elm loop
 
 Bubble Tea is The Elm Architecture: state, messages, update, view.
