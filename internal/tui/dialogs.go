@@ -35,6 +35,7 @@ const (
 	overlayStatus
 	overlayAlert
 	overlayConfirm
+	overlayStats
 )
 
 // overlayItem is one row of a list dialog, mirroring DialogSelectOption:
@@ -299,6 +300,30 @@ func (a *App) handleOverlayKey(key string) tea.Cmd {
 		// invention.
 		if key == "esc" || key == "enter" {
 			a.closeOverlay()
+		}
+		return nil
+	case overlayStats:
+		// esc/enter close; up/down/j/k scroll the content when it overflows.
+		switch key {
+		case "esc", "enter":
+			a.closeOverlay()
+		case "up", "ctrl+p":
+			if a.overlay.scrollTop > 0 {
+				a.overlay.scrollTop--
+			}
+		case "down", "ctrl+n":
+			a.overlay.scrollTop++
+		case "pgup", "pageup":
+			a.overlay.scrollTop -= 10
+			if a.overlay.scrollTop < 0 {
+				a.overlay.scrollTop = 0
+			}
+		case "pgdown", "pagedown":
+			a.overlay.scrollTop += 10
+		case "home":
+			a.overlay.scrollTop = 0
+		case "end":
+			a.overlay.scrollTop = 1 << 30 // clamp at render time
 		}
 		return nil
 	case overlayAlert:
@@ -719,6 +744,10 @@ func (a *App) overlayPanel() (string, *overlayHits) {
 		content = a.statusOverlay(w)
 		hits.escRow = 0
 		hits.escStart, hits.escEnd = a.escHintRange(2, "Status", "esc", w)
+	case overlayStats:
+		content = a.statsOverlay(w)
+		hits.escRow = 0
+		hits.escStart, hits.escEnd = a.escHintRange(2, "Stats", "esc", w)
 	case overlayInput:
 		content = a.inputOverlay(w)
 		hits.escRow = 0
@@ -1586,6 +1615,9 @@ func (a *App) commandsRegistry() []overlayItem {
 		{label: "status.view", slash: "status", hint: "Session status", category: "System", footer: "ctrl+x s", action: func() tea.Msg {
 			a.overlay = &overlay{kind: overlayStatus, title: "Status"}
 			return nil
+		}},
+		{label: "stats.view", slash: "stats", hint: "Usage statistics", category: "System", action: func() tea.Msg {
+			return a.openStatsOverlay()
 		}},
 		{label: "app.exit", slash: "exit", slashAliases: []string{"quit", "q"}, hint: "Quit", category: "System", footer: "ctrl+c", action: func() tea.Msg { return quitMsg{} }},
 	}

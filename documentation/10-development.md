@@ -184,7 +184,12 @@ step, no external resources beyond the GitHub API call that lists downloads.
 `pages.yml` deploys it on push to `main`, after a release, or manually.
 
 The engineering docs you are reading live in `documentation/` precisely so they
-don't collide with the published site.
+don't collide with the published site. Within it,
+[`recomendations/`](recomendations/README.md) holds the design recommendations —
+normative specs for how each surface should look and behave, one file per
+surface. **Every design recommendation goes there**, not beside the code it
+governs and not in `docs/`; a change that alters a documented rule updates the
+document in the same commit.
 
 ## Adding things
 
@@ -196,6 +201,8 @@ don't collide with the published site.
 | An API route | `internal/server/server.go` `Mux()` |
 | A slash command | `.gocode/command/*.md` — no Go needed |
 | A durable event | define it, register a projector, **then** publish it |
+| A TUI view, dialog or control | [TUI recommendations](recomendations/TUI_RECOMENDATIONS.md) — layouts, controls and checklists |
+| A design recommendation | `documentation/recomendations/<SURFACE>_RECOMENDATIONS.md`, listed in its [index](recomendations/README.md) |
 
 That last one has an order that matters: an event published with no registered
 projector commits successfully and updates nothing. The divergence check won't

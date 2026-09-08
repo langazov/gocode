@@ -92,6 +92,10 @@ type App struct {
 	permissionChoice int // selected option: 0 once, 1 always, 2 reject
 	stats            *client.Stats
 
+	// allStats holds per-session stats for the /stats overlay, keyed by
+	// session ID. Populated on demand by loadAllStats when the overlay opens.
+	allStats map[string]*client.Stats
+
 	// question is the pending ask blocking the active session's turn, and
 	// questionIndex which of its prompts is being answered — a request may
 	// carry several, answered in order, with questionAnswers accumulating the
@@ -1007,6 +1011,13 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return nil
 	case statsMsg:
 		a.stats = msg.stats
+		return nil
+	case allStatsMsg:
+		a.allStats = msg.stats
+		// If the stats overlay is open, refresh it with the loaded data.
+		if a.overlay != nil && a.overlay.kind == overlayStats {
+			a.invalidateRenderCache()
+		}
 		return nil
 	case queueMsg:
 		if a.active == nil || msg.sessionID != a.active.ID {
@@ -2342,6 +2353,48 @@ func (a *App) loadStats(sessionID string) tea.Cmd {
 }
 
 type statsMsg struct{ stats *client.Stats }
+
+// allStatsMsg delivers per-session stats for every session the server knows,
+// for the /stats overlay. The map is keyed by session ID.
+type allStatsMsg struct{ stats map[string]*client.Stats }
+
+// loadAllStats fetches stats for every session concurrently and returns a
+// single allStatsMsg once all complete (or the first error is swallowed,
+// matching loadStats's own nil-on-error behaviour — a missing stats endpoint
+// for one session must not blank the whole overlay).
+func (a *App) loadAllStats() tea.Cmd {
+	c := a.client
+	sessions := a.sessions
+	if len(sessions) == 0 {
+		return staticMsg(allStatsMsg{stats: map[string]*client.Stats{}})
+	}
+	return func() tea.Msg {
+		type result struct {
+			id    string
+			stats *client.Stats
+		}
+		ch := make(chan result, len(sessions))
+		for _, s := range sessions {
+			s := s
+			go func() {
+				stats, err := c.Stats(context.Background(), s.ID)
+				if err != nil {
+					ch <- result{s.ID, nil}
+					return
+				}
+				ch <- result{s.ID, stats}
+			}()
+		}
+		out := make(map[string]*client.Stats, len(sessions))
+		for range sessions {
+			r := <-ch
+			if r.stats != nil {
+				out[r.id] = r.stats
+			}
+		}
+		return allStatsMsg{stats: out}
+	}
+}
 
 // loadRunStatus asks the server whether a turn is actually running. The
 // run.started/run.ended events drive the spinner frame to frame; this runs on
