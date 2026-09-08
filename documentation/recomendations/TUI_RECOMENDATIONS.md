@@ -45,14 +45,14 @@ architecture) by specifying the *visual and interaction contract*.
 The TUI is **Bubble Tea v2** (`charm.land/bubbletea/v2`) with **lipgloss v2**
 for styling, **glamour v2** for markdown and **chroma** for syntax highlighting.
 There is no widget tree, no layout engine, no flexbox. Every frame is a single
-string built by string concatenation and then cropped.
+string built from styled segments and then cropped.
 
 ```
 App.Update(msg) ──▶ mutate App state, return tea.Cmd
 App.View()      ──▶ currentFrame() ──▶ one string
                      ├─ viewHome() | viewChat()      (route)
                      ├─ compositeToast(base)         (toast splice)
-                     ├─ viewOverlay()                (dialog splice over dimmed base)
+                     ├─ viewOverlay()                (canvas composite: dim + dialog layer)
                      └─ applySelectionHighlight()    (drag selection)
 program.View()  ──▶ tea.View{AltScreen, MouseModeAllMotion, BackgroundColor…}
 ```
@@ -63,20 +63,40 @@ program.View()  ──▶ tea.View{AltScreen, MouseModeAllMotion, BackgroundColo
 |---|---|
 | `Update` must never block | The key handler runs on the same goroutine; a 100 ms HTTP call is 100 ms of dead keyboard. Return a `tea.Cmd`. |
 | `View` must be cheap and side-effect-light | It runs every frame. The only writes allowed are **layout caches** the mouse handler needs (`chatWindowStart`, `chatWindowPad`, `chatReasoningRows`, `linkHits`, `overlayHits`). |
-| Composition is by **cell splicing**, not by nesting | `spliceAt()` / `compositeSidebarOverlay()` slice ANSI-styled lines by *display cell*, never by byte. Use `sliceCells()`, never `line[a:b]`. |
+| Modal composition is a **canvas composite** | `compositeDialog()` parses the base into a cell buffer, dims each cell, and layers the panel with lipgloss's `Compositor` — one pass. Non-modal overlays (toast, narrow sidebar) splice by *display cell* instead: `spliceAt()` / `sliceCells()`, never `line[a:b]`. |
 | Anything absolutely positioned must record its hit-test spans | Dialogs return `*overlayHits`; toasts return a `linkHit`. A clickable thing with no recorded span is a bug. |
 | Frames are cropped, never scrolled by the terminal | `frame()` truncates to `a.height`. If a block overflows its row budget, the *bottom* is lost — which is where the buttons are. Budget first, render second. |
+
+### Where lipgloss primitives are used — and where they deliberately are not
+
+Use lipgloss's layout primitives wherever they are equivalent:
+
+- `lipgloss.PlaceHorizontal(w, lipgloss.Center, block)` for centering (not
+  hand-rolled prefix padding).
+- `lipgloss.PlaceHorizontal(w, lipgloss.Right, x)` for right alignment.
+- `JoinHorizontal` / `JoinVertical` for side-by-side and stacked blocks.
+- `Style.Width/Height/Padding` for boxes whose width you actually want padded.
+
+Two patterns must stay manual, both for **measured** performance reasons
+(`frame_bench_test.go` keeps the numbers current):
+
+- **`frame()`** — the full-frame crop + side margins. `Style.Padding(0,1).MaxHeight(h)` measures the display width of every line of a ~90 KB styled frame: 18 ms against the manual form's 0.12 ms.
+- **Sticky-bottom / home centering pads** — `PlaceVertical` emits space-filled
+  filler lines where the manual form emits bare `\n`; same layout, more bytes,
+  no gain.
+
+lipgloss has **no space-between primitive**. `splitRow(width, left, right, minGap)` in `components.go` names that pattern once — do not re-derive the gap math at call sites.
 
 ### Border-box arithmetic
 
 lipgloss v2's `Width()` is **true border-box**: the declared value is the total
 rendered width, borders and padding included. Every single-left-border panel in
-this codebase is declared as `Width(borderBoxWidth(contentAndPadding))`, where
-`borderBoxWidth(n) = n + 1` adds the `┃` column back.
+this codebase is declared as `Width(withLeftBorder(contentAndPadding))`, where
+`withLeftBorder(n) = n + 1` adds the `┃` column back.
 
 **Rule:** never pass a raw content width to `Style.Width()` on a bordered box.
-Always go through `borderBoxWidth()`, and state the intended *total* in a
-comment.
+Always go through `withLeftBorder()` (or the `splitBorderPanel` /
+`splitBorderPanelCustom` helpers), and state the intended *total* in a comment.
 
 ### Multi-line rendering
 
@@ -85,8 +105,10 @@ line — but only *colors* that padding when the style itself sets a background.
 A foreground-only style leaves bare uncolored spaces that punch through the
 enclosing panel's fill.
 
-**Rule:** when a foreground-only style's output is embedded inside another
-style's background, render it **line by line** via `renderLines(style, text)`.
+**Rule:** when text is embedded inside a panel's fill, render it with the
+`onPanel…` helpers (`onPanelText`, `onPanelMuted`), which set the panel
+background and render line by line. Raw `renderLines` is for cases where the
+enclosing background genuinely is not a panel.
 
 ---
 
@@ -172,14 +194,22 @@ for text that sits on `BackgroundElement` produces a visibly wrong color.
 
 ### 3.3 Backdrop dimming
 
-`dim.go` implements the modal scrim by **rewriting the SGR sequences** of the
-already-rendered frame, blending every color toward black at `150/255 ≈ 59%`.
-Cells with no explicit color inherit terminal defaults that cannot be read back,
-so each line is opened with the theme's own pre-dimmed default pair.
+`composite.go` implements the modal scrim: the rendered frame is parsed into a
+lipgloss **Canvas** (a cell buffer), every cell's foreground and background are
+blended toward black at `150/255 ≈ 59%`, and the dialog panel is drawn on top
+as a `Layer` through the `Compositor` — one pass over cells instead of a
+string rewrite followed by a cell-splice.
 
-**Rule:** any new full-screen modal layer must reuse `dimBackdrop()` +
-`dimFrame()`. Do not invent a second dimming strategy, and do not skip dimming —
-an undimmed backdrop makes a dialog read as a panel rather than a mode.
+Cells with no explicit color inherit terminal defaults that cannot be read
+back, so a nil color resolves to the theme's own colors, pre-blended.
+
+**Rule:** any new full-screen modal layer must reuse `compositeDialog()`. Do
+not invent a second dimming strategy, and do not skip dimming — an undimmed
+backdrop makes a dialog read as a panel rather than a mode. Non-modal
+overlays (the toast, the narrow-terminal sidebar) deliberately use
+`spliceAt()` instead: they do not dim, and for a small panel over an
+unmodified base the string splice is ~3x cheaper than parsing the frame into
+cells.
 
 ### 3.4 Theme catalog and selection
 
@@ -224,7 +254,7 @@ subagent footer — renders to a **total of `chatWidth()−1`**, matching the
 maximum reach of an assistant text block (`indent(3)` + markdown wrap
 `contentWidth()−4`).
 
-**Rule:** new timeline panels are sized `Width(borderBoxWidth(contentWidth()−2))`.
+**Rule:** new timeline panels are sized `Width(withLeftBorder(contentWidth()−2))`.
 Do not widen a panel to fill the column; markdown wrap decisions run on *raw
 source* width (`**bold**` is 8 source columns for 4 rendered) and need that spare
 margin column.
@@ -430,7 +460,7 @@ The sidebar still reserves its 42 columns in `chatWidth()`, but renders as a
 **right-aligned full-height drawer spliced over** the chat via
 `compositeSidebarOverlay()`. The chat underneath is not dimmed (a known
 divergence — dimming it would require running the whole chat render through
-`dimBackdrop`, which the dialog layer already pays for and this one should not).
+`compositeDialog`'s dim pass, which the dialog layer already pays for and this one should not).
 
 ### 6.4 Sidebar
 
@@ -476,7 +506,7 @@ blank spacer row. Only the last **60** messages render.
 ```
 
 `splitBorder()` left, `BorderForeground(Primary)`, `BackgroundPanel`,
-`PaddingTop/Bottom 1`, `PaddingLeft 2`, `Width(borderBoxWidth(contentWidth()−2))`.
+`PaddingTop/Bottom 1`, `PaddingLeft 2`, `Width(withLeftBorder(contentWidth()−2))`.
 Text wraps at `contentWidth()−4`. File pills: `Secondary`-background badge +
 `BackgroundElement` name, wrapped without splitting a pill. The `QUEUED` badge
 (bold, `Primary` bg, `SelectedListItemText` fg) replaces the timestamp.
@@ -865,7 +895,7 @@ Reuse these; do not re-implement them.
 
 | Control | Helper | Spec |
 |---|---|---|
-| **Panel** | `lipgloss` + `splitBorder()` | `┃` left in a semantic color, `BackgroundPanel`, `PaddingTop/Bottom 1`, `PaddingLeft 2`, `Width(borderBoxWidth(…))` |
+| **Panel** | `lipgloss` + `splitBorder()` | `┃` left in a semantic color, `BackgroundPanel`, `PaddingTop/Bottom 1`, `PaddingLeft 2`, `Width(withLeftBorder(…))` |
 | **Panel text** | `a.onPanel(fg, bold)` | Any text on a dialog/sidebar panel. Never a bare `lipgloss.NewStyle().Foreground(…)` on a panel — the fill drops. |
 | **List row** | `listRow` | See §9.2 |
 | **Filter input** | `filterRow` | Muted text + `Primary` block cursor; placeholder with cursor on its first cell |
@@ -1119,6 +1149,7 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | A styled segment on a tinted surface without its own `Background()` | Tint drops after the first segment |
 | Widening a markdown block to fill its box | Overflow — glamour wraps on raw source width |
 | `line[a:b]` on styled text | Corrupt ANSI |
+| A literal tab in any rendered block | Width-ambiguous: `lipgloss.Width` counts 1 cell, `JoinHorizontal`'s `getLines` expands it to 4 — a tab-indented code block pushed the docked sidebar right. Expand tabs on the *source* before glamour sizes it (see `renderMarkdownStyled`), never after |
 | Fetch-then-open for a dialog | Reads as a 140 ms lag on the keypress |
 | Binding `j`/`k` in a list dialog | Those letters become unsearchable |
 | `len(key) == 1` to detect a typed character | Drops space and every non-ASCII rune |
@@ -1165,13 +1196,18 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 
 ### 19.3 New timeline block
 
-- [ ] Width `borderBoxWidth(contentWidth()−2)`; total lands at `chatWidth()−1`.
-- [ ] One leading blank line; multi-line content via `renderLines`.
+- [ ] Width `withLeftBorder(contentWidth()−2)`; total lands at `chatWidth()−1`.
+- [ ] One leading blank line; multi-line content via `onPanelText`/`onPanelMuted`.
 - [ ] Long content collapses with `collapsibleBlock` and records a
       `toolOutputHeaderRef`.
+- [ ] **Nothing wider than `blockToolInterior()`**: the panel's own `Width()`
+      soft-wraps, and a wrapped row's leading cells read as more content.
+      Wrap prose against `blockToolInnerWidth()`; truncate rows whose columns
+      carry meaning (diff gutters, code line numbers) with `ansi.Truncate`.
 - [ ] Colors from theme tokens only.
 - [ ] Render is cacheable — no state read that is not in `renderSignature`.
-- [ ] Fidelity test added in `render_fidelity_test.go`.
+- [ ] Fidelity test added in `render_fidelity_test.go`, fit asserted in
+      `render_blockfit_test.go`.
 
 ### 19.4 New footer / hint segment
 
@@ -1216,11 +1252,12 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | `feature.go` | Toasts, timeline dialog, fork/compact/copy/export |
 | `spinner.go` | Scanner and braille spinners |
 | `animate.go` | Fades and debouncing |
-| `dim.go` | Backdrop scrim (SGR rewriting) |
+| `composite.go` | Modal backdrop: Canvas + Compositor cell dimming |
 | `mouse.go` | Wheel, click routing, drag selection |
 | `link.go` | OSC 8 hyperlinks and hit spans |
 | `promptsize.go` | Prompt growth and clamping |
 | `styles.go` | Semantic style set derived from the theme |
+| `components.go` | Reusable panel/button/hint/row style builders |
 | `theme/` | `Colors`, `Tint`/`FadeColor`, catalog, 33 JSON palettes |
 | `tips.go` | Home-screen tip rotation |
 | `client/` | HTTP + SSE client |

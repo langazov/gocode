@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"hash/fnv"
+	"image/color"
 	"regexp"
 	"strconv"
 	"strings"
@@ -241,7 +242,7 @@ func (a *App) renderMessage(message client.Message, isLast bool) (string, []reas
 // backgroundPanel block (padding 1/1/2) with the plain message text, plus a
 // muted timestamp when enabled.
 //
-// Width is borderBoxWidth(contentWidth()-2) so the rendered total lands at
+// Width is withLeftBorder(contentWidth()-2) so the rendered total lands at
 // contentWidth()-1, matching assistantTextBlock's own max reach (indent(3) +
 // renderMarkdown wrap width contentWidth()-4 = contentWidth()-1) — every
 // bordered timeline panel (userBlock, errBlock, blockToolStyle) and the
@@ -263,7 +264,7 @@ func (a *App) userBlock(message client.Message, data client.UserData) string {
 // (`metadataVisible` in index.tsx).
 func (a *App) userBlockOf(data client.UserData, created int64, queued bool) string {
 	body := wrapText(data.Text, a.contentWidth()-4)
-	lines := []string{renderLines(a.styles().Text, body)}
+	lines := []string{a.onPanelText(body)}
 	metadata := queued || (a.timestamps && created > 0)
 	if len(data.Files) > 0 {
 		lines = append(lines, "")
@@ -282,15 +283,8 @@ func (a *App) userBlockOf(data client.UserData, created int64, queued bool) stri
 	case a.timestamps && created > 0:
 		lines = append(lines, a.styles().Muted.Render(todayTimeOrDateTime(created)))
 	}
-	style := lipgloss.NewStyle().
-		Border(splitBorder(), false, false, false, true).
-		BorderForeground(a.theme.Primary).
-		Background(a.theme.BackgroundPanel).
-		PaddingTop(1).
-		PaddingBottom(1).
-		PaddingLeft(2).
-		Width(borderBoxWidth(a.contentWidth() - 2))
-	return style.Render(strings.Join(lines, "\n"))
+	return a.userPanel(withLeftBorder(a.contentWidth() - 2)).
+		Render(strings.Join(lines, "\n"))
 }
 
 // queuedBlocks renders the prompts waiting behind the running turn, oldest
@@ -472,15 +466,8 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 	// with `error.name !== "MessageAbortedError"` and lets the settlement
 	// line's "· interrupted" marker carry it instead.
 	if data.Error != nil && data.Error.Message != "" && !messageAborted(data) {
-		errBlock := lipgloss.NewStyle().
-			Border(splitBorder(), false, false, false, true).
-			BorderForeground(a.theme.Error).
-			Background(a.theme.BackgroundPanel).
-			PaddingTop(1).
-			PaddingBottom(1).
-			PaddingLeft(2).
-			Width(borderBoxWidth(a.contentWidth() - 2))
-		appendBlock(errBlock.Render(renderLines(a.styles().Muted, data.Error.Message)))
+		appendBlock(a.errPanel(withLeftBorder(a.contentWidth() - 2)).
+			Render(a.onPanelMuted(data.Error.Message)))
 	}
 
 	final := data.Finish != "" && data.Finish != "tool-calls" && data.Finish != "unknown"
@@ -762,7 +749,7 @@ func (a *App) reasoningBody(body string, extraIndent int) string {
 	// the base color under glamour's own spans, without flattening the
 	// markdown styling.
 	md := a.renderMarkdownDim(body, a.contentWidth()-4-extraIndent)
-	return aIndent(renderLines(a.styles().Muted, md), 3+extraIndent)
+	return aIndent(a.onPanelMuted(md), 3+extraIndent)
 }
 
 // assistantTextBlock mirrors TextPart: markdown-rendered (see markdown.go),
@@ -961,14 +948,30 @@ func (a *App) toolRow(message client.Message, id, name string, state *toolState)
 // customBorderChars draws), backgroundPanel fill, and the same
 // padding/width every other timeline panel (errBlock, userBlock) uses.
 func (a *App) blockToolStyle() lipgloss.Style {
-	return lipgloss.NewStyle().
-		Border(splitBorder(), false, false, false, true).
-		BorderForeground(a.theme.Background).
-		Background(a.theme.BackgroundPanel).
-		PaddingTop(1).
-		PaddingBottom(1).
-		PaddingLeft(2).
-		Width(borderBoxWidth(a.contentWidth() - 2))
+	return a.toolPanel(withLeftBorder(a.contentWidth() - 2))
+}
+
+// blockToolInterior is the content width a blockToolStyle panel actually has
+// room for: the declared total (contentWidth()-1) less the border column and
+// the two padding columns. Content wider than this is soft-wrapped by the
+// panel's own Width() — which is the wrong treatment for anything whose rows
+// carry meaning (a diff's +/- gutter, a code line's number), so those paths
+// truncate to it instead.
+func (a *App) blockToolInterior() int {
+	return max(1, a.contentWidth()-4)
+}
+
+// blockToolInnerWidth is the wrap width BlockTool heads and bodies render
+// against: two columns inside blockToolInterior, the same spare right margin
+// the markdown column keeps (see renderMarkdown's doc comment — wrap
+// decisions run on source width, which can exceed the rendered form).
+//
+// Clamped small-positive rather than the historical flat 20: on a terminal
+// narrow enough that contentWidth()-6 dips below it, a floor above the
+// interior makes the wrap width wider than the panel, which is an overflow
+// by construction.
+func (a *App) blockToolInnerWidth() int {
+	return max(4, a.contentWidth()-6)
 }
 
 // renderLines applies style to each line of text independently rather than
@@ -1008,12 +1011,12 @@ func (a *App) bashBlock(id string, state *toolState) (string, *toolOutputHeaderR
 	if command == "" {
 		command = "Writing command..."
 	}
-	innerWidth := max(20, a.contentWidth()-6)
+	innerWidth := a.blockToolInnerWidth()
 	prefix := "$ "
 	if state.Status == "running" {
 		prefix = spinnerPlaceholder + " "
 	}
-	head := renderLines(a.styles().Text, strings.Join(wrapPrefixed(prefix, command, innerWidth), "\n"))
+	head := a.onPanelText(strings.Join(wrapPrefixed(prefix, command, innerWidth), "\n"))
 	body := strings.TrimSpace(ansi.Strip(state.Output))
 	return a.collapsibleBlock(id, head, body, innerWidth, a.wrappedBody, state)
 }
@@ -1055,21 +1058,36 @@ func (a *App) collapsibleBlock(id, head, body string, innerWidth int, render bod
 			// (possibly wrapped) rows, plus the blank separator, plus the
 			// first body line's own rows.
 			headRows := strings.Count(head, "\n") + 1
+			// The hint shares the summary's row and must stay on it: the
+			// click target below covers exactly one row, so a hint that
+			// wraps onto a second leaves "click to expand" visible where
+			// clicking does nothing. The label truncates (the count is the
+			// part that matters) to at most a third of the row, and is
+			// dropped entirely on a terminal too narrow to show any of it.
+			hintBudget := max(min(innerWidth, innerWidth/3), 3)
 			hint := fmt.Sprintf(" (+%d lines — click to expand)", len(bodyLines)-1)
-			// The hint shares the summary's row, so the body gets the width
-			// left over. Without the reservation a full-width first line
-			// pushes the hint onto a row of its own — one the click target
-			// below does not cover, so clicking the visible "click to expand"
-			// did nothing.
-			first := render(bodyLines[0], max(innerWidth-lipgloss.Width(hint), 10))
-			summary := strings.Join(first, "\n") + a.styles().Muted.Render(hint)
+			hint = truncateRunes(hint, hintBudget)
+			summaryWidth := innerWidth
+			if hint != "" {
+				summaryWidth = innerWidth - lipgloss.Width(hint)
+			}
+			first := render(bodyLines[0], max(summaryWidth, 1))
+			summary := strings.Join(first, "\n")
+			if hint != "" {
+				summary += a.styles().Muted.Render(hint)
+			}
 			lines = append(lines, "", summary)
 			row := 1 + headRows + 1 + len(first) - 1
 			ref = &toolOutputHeaderRef{id: id, lineStart: row, lineEnd: row}
 		}
 	}
 	if state.Status == "error" && state.Error != "" {
-		lines = append(lines, a.styles().Error.Render(state.Error))
+		// A long error must stay inside the panel rather than wrap onto rows
+		// the click target below does not cover — rendered on the panel
+		// background (see renderLines) with the error foreground kept.
+		lines = append(lines, renderLines(
+			lipgloss.NewStyle().Foreground(a.theme.Error).Background(a.theme.BackgroundPanel),
+			wrapText(state.Error, innerWidth)))
 	}
 	if expandedBlock {
 		// The whole rendered block, padding included (blockToolStyle's
@@ -1093,12 +1111,12 @@ func (a *App) readBlock(id string, state *toolState) (string, *toolOutputHeaderR
 	if path == "" || state.Status == "running" {
 		return "", nil
 	}
-	innerWidth := max(20, a.contentWidth()-6)
+	innerWidth := a.blockToolInnerWidth()
 	title := "→ Read " + a.displayPath(path)
 	if lines := countLines(state.Output); lines > 0 {
 		title += fmt.Sprintf("  (%s)", plural(lines, "line"))
 	}
-	head := renderLines(a.styles().Muted, wrapText(title, innerWidth))
+	head := a.onPanelMuted(wrapText(title, innerWidth))
 	return a.collapsibleBlock(id, head, trimBlankLines(state.Output), innerWidth, a.fileBody(path), state)
 }
 
@@ -1112,12 +1130,12 @@ func (a *App) writeBlock(id string, state *toolState) (string, *toolOutputHeader
 		return "", nil
 	}
 	content, _ := state.Input["content"].(string)
-	innerWidth := max(20, a.contentWidth()-6)
+	innerWidth := a.blockToolInnerWidth()
 	title := "← Write " + a.displayPath(path)
 	if lines := countLines(content); lines > 0 {
 		title += fmt.Sprintf("  (%s)", plural(lines, "line"))
 	}
-	head := renderLines(a.styles().Muted, wrapText(title, innerWidth))
+	head := a.onPanelMuted(wrapText(title, innerWidth))
 	return a.collapsibleBlock(id, head, trimBlankLines(content), innerWidth, a.fileBody(path), state)
 }
 
@@ -1189,13 +1207,18 @@ func (a *App) editDiffBlock(state *toolState) string {
 	}
 
 	styles := a.styles()
-	added := lipgloss.NewStyle().Foreground(a.theme.Success)
-	removed := lipgloss.NewStyle().Foreground(a.theme.Error)
-	lines := []string{styles.Muted.Render(title)}
+	lines := []string{styles.Muted.Render(truncateRunes(title, a.blockToolInterior()))}
 
 	// Line numbers are right-aligned to a width derived from the largest one
 	// on show, so the gutter does not jitter between hunks.
 	width := gutterWidth(files)
+	// A diff's rows carry meaning in their gutter: "+ " / "- " in the first
+	// two columns, the line numbers beside them. The panel's own Width()
+	// would soft-wrap an over-long line onto a second row whose leading
+	// cells look like more diff content — a wrapped "-" row reads as a
+	// continuation of the removal, not a new one. Truncating keeps every
+	// diff row on one panel row; the file is on disk if the tail matters.
+	room := a.blockToolInterior()
 	rendered := 0
 	for _, file := range files {
 		if len(files) > 1 {
@@ -1209,15 +1232,21 @@ func (a *App) editDiffBlock(state *toolState) string {
 			rendered++
 			switch line.Kind {
 			case diff.LineHunk:
-				lines = append(lines, styles.Muted.Render(line.Content))
+				lines = append(lines, styles.Muted.Render(ansi.Truncate(line.Content, room, "…")))
 			case diff.LineAdded:
-				lines = append(lines, added.Render(gutter(0, line.NewLine, width)+"+ "+line.Content))
+				lines = append(lines, renderLines(
+					lipgloss.NewStyle().Foreground(a.theme.Success).Background(a.theme.BackgroundPanel),
+					ansi.Truncate(gutter(0, line.NewLine, width)+"+ "+line.Content, room, "…")))
 			case diff.LineRemoved:
-				lines = append(lines, removed.Render(gutter(line.OldLine, 0, width)+"- "+line.Content))
+				lines = append(lines, renderLines(
+					lipgloss.NewStyle().Foreground(a.theme.Error).Background(a.theme.BackgroundPanel),
+					ansi.Truncate(gutter(line.OldLine, 0, width)+"- "+line.Content, room, "…")))
 			case diff.LineMeta:
-				lines = append(lines, styles.Muted.Render(line.Content))
+				lines = append(lines, styles.Muted.Render(ansi.Truncate(line.Content, room, "…")))
 			default:
-				lines = append(lines, styles.Muted.Render(gutter(line.OldLine, line.NewLine, width)+"  "+line.Content))
+				lines = append(lines, renderLines(
+					lipgloss.NewStyle().Foreground(a.theme.TextMuted).Background(a.theme.BackgroundPanel),
+					ansi.Truncate(gutter(line.OldLine, line.NewLine, width)+"  "+line.Content, room, "…")))
 			}
 		}
 	}
@@ -1287,16 +1316,43 @@ func parseDiffPreview(output string) string {
 // the same shape as client.Todo), so this decodes and renders it with the
 // same rows the sidebar uses. Returns "" (falling back to the one-line
 // "Updating todos..." summary) until the output decodes to a non-empty list.
+//
+// todoRow truncates to a fixed 32 cells (a sidebar width); inside the wider
+// timeline panel every row is clamped to the panel interior so a long todo
+// cannot push the block past the chat column.
 func (a *App) todoWriteBlock(state *toolState) string {
 	var todos []client.Todo
 	if err := json.Unmarshal([]byte(state.Output), &todos); err != nil || len(todos) == 0 {
 		return ""
 	}
+	room := a.blockToolInterior()
 	lines := []string{a.styles().Muted.Render("# Todos")}
 	for _, todo := range todos {
-		lines = append(lines, "  "+a.todoRow(todo))
+		lines = append(lines, renderLines(
+			lipgloss.NewStyle().Foreground(a.todoColor(todo.Status)).Background(a.theme.BackgroundPanel),
+			truncateRunes("  "+a.todoMark(todo)+" "+todo.Content, room)))
 	}
 	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
+}
+
+// todoColor is the row color for a todo's status, shared by the sidebar row
+// and the timeline's TodoWrite block.
+func (a *App) todoColor(status string) color.Color {
+	if status == "in_progress" {
+		return a.theme.Warning
+	}
+	return a.theme.TextMuted
+}
+
+// todoMark is the [✓]/[•]/[ ] prefix glyph for a todo's status.
+func (a *App) todoMark(todo client.Todo) string {
+	switch todo.Status {
+	case "completed":
+		return "✓"
+	case "in_progress":
+		return "•"
+	}
+	return " "
 }
 
 // filePathArg reads the file path out of a tool's input.
@@ -1438,6 +1494,11 @@ func titlecase(value string) string {
 	return strings.ToUpper(value[:1]) + value[1:]
 }
 
+// indent prefixes each non-blank line with spaces. Deliberately manual
+// rather than Style.PaddingLeft for the same reason as aIndent below
+// (lipgloss pads every line to the block's longest line, adding trailing
+// whitespace) plus one more: markdown bodies legitimately contain blank
+// lines that must stay empty, not become "   ".
 func indent(value string, spaces int) string {
 	pad := strings.Repeat(" ", spaces)
 	lines := strings.Split(value, "\n")
@@ -1450,6 +1511,14 @@ func indent(value string, spaces int) string {
 }
 
 // aIndent indents every line of a possibly styled block (ANSI-safe).
+//
+// Deliberately manual rather than Style.PaddingLeft: lipgloss's Render pads
+// every line of multi-line content out to the block's own longest line, which
+// would append trailing whitespace aIndent does not produce. The blocks this
+// is used on (the prompt box, banners, footer) flow straight into frame()
+// with no enclosing background to color that padding, so the ragged right
+// edge is correct here and byte-identical output keeps the fidelity tests
+// meaningful.
 func aIndent(value string, spaces int) string {
 	pad := strings.Repeat(" ", spaces)
 	lines := strings.Split(value, "\n")
@@ -1554,17 +1623,4 @@ func chunkToWidth(value string, width int) (head, tail string) {
 // splitBorder mirrors SplitBorder: the ┃ vertical bar.
 func splitBorder() lipgloss.Border {
 	return lipgloss.Border{Left: "┃"}
-}
-
-// borderBoxWidth converts a "content+padding width, with the single left
-// border column rendered outside it" total — what every single-left-border
-// panel in this file (userBlock, errBlock, blockToolStyle, promptBox) was
-// tuned against under lipgloss v1's Style.Width(), which excluded the
-// border — into what lipgloss v2's Width() needs: v2's Width() is true
-// border-box (the declared value IS the total rendered size, border
-// included), so reaching the same on-screen total now needs the border
-// column added back into the argument instead of left for the border to add
-// on top. One left border column, hence +1.
-func borderBoxWidth(contentAndPadding int) int {
-	return contentAndPadding + 1
 }

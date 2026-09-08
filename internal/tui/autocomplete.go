@@ -168,7 +168,7 @@ func (a *App) autocompleteView(width int) string {
 		Border(lipgloss.Border{Left: "┃"}, false, false, false, true).
 		BorderForeground(a.theme.Border).
 		Background(background).
-		Width(borderBoxWidth(width)).
+		Width(withLeftBorder(width)).
 		Render(strings.Join(rows, "\n"))
 }
 

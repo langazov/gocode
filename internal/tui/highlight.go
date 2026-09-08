@@ -143,7 +143,7 @@ type bodyRenderer func(text string, width int) []string
 // wrappedBody is the treatment shell output gets: word-wrapped to the panel,
 // in the plain text color.
 func (a *App) wrappedBody(text string, width int) []string {
-	return strings.Split(renderLines(a.styles().Text, wrapText(text, width)), "\n")
+	return strings.Split(a.onPanelText(wrapText(text, width)), "\n")
 }
 
 // markdownExtensions are the suffixes that get prose treatment rather than
@@ -196,6 +196,11 @@ func (a *App) codeBody(path string) bodyRenderer {
 	highlight := a.fileHighlighter(path)
 	return func(text string, width int) []string {
 		numbers, code, numbered := splitLineNumbers(text)
+		// A tab is width-ambiguous (see renderMarkdownStyled's note on the
+		// same problem): expand before highlighting so the lexer, the
+		// truncation below, and JoinHorizontal's measurement all agree, and
+		// an indented source line cannot push the chat column wide.
+		code = strings.ReplaceAll(code, "\t", "    ")
 		if highlight != nil {
 			code = highlight(code)
 		}

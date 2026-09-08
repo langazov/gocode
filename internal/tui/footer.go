@@ -260,7 +260,7 @@ func (a *App) footerLeft() string {
 		if a.networkWait != "" {
 			return " " + a.scannerSpinner(a.theme.Warning, a.theme.Background) + " " +
 				a.styles().Muted.Render(a.networkWait) + "  " +
-				a.styles().Text.Render("esc") + " " + a.styles().Muted.Render("interrupt")
+				a.hintPair("esc", "interrupt")
 		}
 		// `<box marginLeft={1}>` around the spinner, then gap={1} to the
 		// interrupt hint.
@@ -342,10 +342,10 @@ func (a *App) footerRight(policy footerPolicy) []string {
 	case !usage.empty() && policy.ShowActivityMeta:
 		segments = append(segments, a.styles().Muted.Render(usage.String()))
 	default:
-		segments = append(segments, a.styles().Text.Render("tab")+" "+a.styles().Muted.Render("agents"))
+		segments = append(segments, a.hintPair("tab", "agents"))
 	}
 	if policy.ShowCommandHint {
-		segments = append(segments, a.styles().Text.Render("ctrl+p")+" "+a.styles().Muted.Render("commands"))
+		segments = append(segments, a.hintPair("ctrl+p", "commands"))
 	}
 	return segments
 }
@@ -439,7 +439,7 @@ func (a *App) subagentFooter() string {
 		PaddingBottom(1).
 		PaddingLeft(2).
 		PaddingRight(1).
-		Width(borderBoxWidth(boxWidth)).
+		Width(withLeftBorder(boxWidth)).
 		Render(row)
 }
 

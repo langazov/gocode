@@ -595,11 +595,7 @@ func (a *App) onPanel(fg color.Color, bold bool) lipgloss.Style {
 func (a *App) dialogHeader(pad int, title, hint string, w int) string {
 	styled := a.onPanel(a.theme.Text, true).Render(title)
 	esc := a.onPanel(a.theme.TextMuted, false).Render(hint)
-	gap := w - 2*pad - lipgloss.Width(styled) - lipgloss.Width(esc)
-	if gap < 1 {
-		gap = 1
-	}
-	return strings.Repeat(" ", pad) + styled + strings.Repeat(" ", gap) + esc
+	return strings.Repeat(" ", pad) + splitRow(w-2*pad, styled, esc, 1)
 }
 
 // escHintRange mirrors dialogHeader's own layout math to report the column
@@ -653,22 +649,17 @@ func wrapWords(text string, width int) []string {
 
 // viewOverlay composites the dialog panel over the underlying route at
 // height/4, centered — the Dialog backdrop in ui/dialog.tsx.
+//
+// The base is framed first (its 1-column side margins are part of the
+// terminal's coordinate space the panel is placed against), then parsed into
+// a canvas, dimmed cell by cell, and composited with the panel layer in one
+// pass — see composite.go for why this replaced the two-pass
+// dimBackdrop+spliceAt chain.
 func (a *App) viewOverlay() string {
 	panel, _ := a.overlayPanel()
-	// The outer frame's own padding cells sit outside the composited base, so
-	// they carry the scrim's background explicitly — the backdrop covers the
-	// whole terminal in the original, margins included.
-	return a.dimFrame(a.compositeOverlay(a.underlay(), panel))
-}
-
-// dimFrame is frame() with the scrim's background under its padding.
-func (a *App) dimFrame(content string) string {
-	bg := dimChannels(a.theme.Background)
-	return lipgloss.NewStyle().
-		Background(lipgloss.Color(fmt.Sprintf("#%02x%02x%02x", bg[0], bg[1], bg[2]))).
-		Padding(0, 1).
-		MaxHeight(a.height).
-		Render(content)
+	base := a.frame(a.underlay())
+	top, left := a.overlayOrigin(lipgloss.Width(panel))
+	return a.compositeDialog(base, panel, top, left)
 }
 
 func (a *App) underlay() string {
@@ -780,16 +771,11 @@ func (a *App) overlayOrigin(panelW int) (top, left int) {
 	return a.height / 4, (a.width - panelW) / 2
 }
 
-// compositeOverlay dims the base render and splices the panel onto it,
-// reproducing the Dialog backdrop's black-at-59% scrim (see dim.go).
-func (a *App) compositeOverlay(base, panel string) string {
-	top, left := a.overlayOrigin(lipgloss.Width(panel))
-	return a.spliceAt(a.dimBackdrop(base), panel, top, left)
-}
-
 // spliceAt splices panel into base at the given absolute screen row/col,
-// the shared ANSI-safe technique behind compositeOverlay and the toast
-// panel's top-right placement (feature.go's compositeToast).
+// the ANSI-safe cell-slicing technique behind the toast panel's top-right
+// placement (feature.go's compositeToast) and the narrow-terminal sidebar
+// overlay (views.go's compositeSidebarOverlay). The dialog backdrop no
+// longer uses it — see composite.go's compositeDialog.
 func (a *App) spliceAt(base, panel string, top, left int) string {
 	baseLines := strings.Split(base, "\n")
 	for i, line := range baseLines {
@@ -1268,10 +1254,6 @@ func (a *App) helpOverlay(w int) string {
 		Foreground(a.theme.Background).
 		Background(a.theme.Primary).
 		Render("   ok   ")
-	align := w - 4 - lipgloss.Width(ok)
-	if align < 1 {
-		align = 1
-	}
 	lines := []string{a.dialogHeader(2, "Help", "esc/enter", w), ""}
 	for _, line := range wrapWords(
 		"Press ctrl+p to see all available actions and commands in any context.", w-4) {
@@ -1281,7 +1263,7 @@ func (a *App) helpOverlay(w int) string {
 	// separate rows between the paragraph and the button.
 	return strings.Join(append(lines,
 		"", "",
-		pad+strings.Repeat(" ", align)+ok,
+		pad+lipgloss.PlaceHorizontal(w-4, lipgloss.Right, ok),
 		"",
 	), "\n")
 }
