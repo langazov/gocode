@@ -247,6 +247,13 @@ has — a built-in array and a dynamic import — become two tiers:
 | **Native** | A Go factory registered at init and compiled in | `internalPlugins()` |
 | **Process** | A separate executable spoken to over stdio JSON-RPC | the dynamic `import()` |
 
+One native plugin ships in the binary: **memory** (`internal/memoryplugin`),
+which injects the project's durable memories into every system prompt and
+registers the `memory_write` / `memory_delete` tools. Storage and rendering
+live in `internal/memory`; the plugin tier is only the seam between that store
+and a turn, so memory appears in `/plugins` and `GET /api/plugin` like any
+other extension.
+
 ```mermaid
 flowchart LR
   subgraph Binary

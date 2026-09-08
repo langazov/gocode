@@ -44,7 +44,7 @@ Everything the agent does becomes a durable event in SQLite before visible state
 | `cmd/gocode/` | CLI entrypoint, subcommands, `bootStack()` |
 | `internal/session/` | Agent loop: runner, coordinator, compaction, event definitions |
 | `internal/llm/` | Provider clients (anthropic, openai, gemini, openairesponses) |
-| `internal/tool/` | Tool registry + 13 builtins in `builtins/` |
+| `internal/tool/` | Tool registry + 15 builtins in `builtins/` (`task` registers in `bootStack`) |
 | `internal/permission/` | Allow/deny/ask rules engine |
 | `internal/event/` | Event store, bus, replay, projections |
 | `internal/db/` | SQLite schema, migrations, connection pool |
@@ -52,6 +52,9 @@ Everything the agent does becomes a durable event in SQLite before visible state
 | `internal/tui/` | Bubble Tea interface |
 | `internal/lsp/` | 28 built-in language servers, lazy-started |
 | `internal/mdlsp/` | Markdown language server (`cmd/mdlsp`): actor-based, goldmark-backed |
+| `internal/rag/` | Semantic search: chunking, embeddings, vector store (powers `rag-plugin`) |
+| `internal/memory/` · `internal/memoryplugin/` | Durable agent memories: store + the native plugin that injects them into every system prompt |
+| `internal/background/` | Detached background jobs (subagents launched with `task(background: true)`) |
 | `internal/jsonrpc/` | Shared Content-Length JSON-RPC connection (client + server) |
 | `internal/lspprotocol/` | Shared LSP wire types |
 | `internal/mddoc/` | Markdown document model: headings, links, UTF-16 positions |

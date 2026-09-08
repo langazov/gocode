@@ -15,7 +15,7 @@ why it is put together that way, and where to look when changing it.
 | **2** | [Data model](02-data-model.md) | SQLite schema, event sourcing, projections, replay and divergence |
 | **3** | [The session runner](03-session-runner.md) | The agent loop, durability, concurrency, interrupts, compaction |
 | **4** | [Providers & models](04-providers.md) | The models.dev catalog, transforms, authentication, OAuth |
-| **5** | [Tools & permissions](05-tools-and-permissions.md) | The 13 builtins, the tool contract, the allow/deny/ask engine |
+| **5** | [Tools & permissions](05-tools-and-permissions.md) | The 15 builtins, the tool contract, the allow/deny/ask engine |
 | **6** | [The TUI](06-tui.md) | Bubble Tea architecture, the prompt, dialogs, streaming |
 | **7** | [Configuration](07-configuration.md) | Every config key, precedence, agents, skills, commands |
 | **8** | [HTTP API](08-http-api.md) | Route reference and the SSE event stream |
@@ -124,10 +124,10 @@ A third convention governs the docs themselves:
 
 | | |
 |---|---|
-| Source | ~40,700 lines across 34 internal packages |
-| Tests | ~25,100 lines, 960 test functions |
-| Direct dependencies | 13 |
-| Binary | ~25 MB, statically linked |
+| Source | ~56,000 lines across 42 internal packages |
+| Tests | ~42,000 lines, ~1,490 test functions |
+| Direct dependencies | 17 |
+| Binary | ~26 MB, statically linked |
 | Release targets | 6 (macOS/Linux/Windows × arm64/x64) |
-| Built-in tools | 13 |
-| Language servers | 27 |
+| Built-in tools | 15 |
+| Language servers | 28 |

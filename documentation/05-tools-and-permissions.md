@@ -42,7 +42,9 @@ prompt caching: unstable ordering would miss the cache on every request.
 
 ## The built-ins
 
-13 tools, registered by `builtins.RegisterWith`:
+15 built-in tools: 14 registered by `builtins.RegisterWith` (some
+conditional, below) plus `task`, which registers during `bootStack()` once
+the sub-agent spawner exists:
 
 ```mermaid
 mindmap
@@ -65,6 +67,9 @@ mindmap
       todowrite
       skill
       question
+    Plan
+      plan_enter
+      plan_exit
 ```
 
 | Tool | Does | Notes |
@@ -360,3 +365,4 @@ status leaves the engine's own evaluation in charge.
 ---
 
 [← Providers](04-providers.md) · [Index](README.md) · [Next: The TUI →](06-tui.md)
+tui.md)
