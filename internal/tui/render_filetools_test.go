@@ -324,7 +324,11 @@ func TestCodeBodyKeepsIndentation(t *testing.T) {
 	if len(rows) != 5 {
 		t.Fatalf("rows = %d, want one per source line", len(rows))
 	}
-	if !strings.HasPrefix(plain(rows[2]), "\t\treturn") {
+	// Indentation is preserved as *spaces*: a literal tab is width-ambiguous
+	// (lipgloss.Width counts 1 cell, JoinHorizontal's getLines expands it to
+	// 4), which made a tab-indented code block push the docked sidebar
+	// right. The depth is kept — one tab, four columns.
+	if !strings.HasPrefix(plain(rows[2]), "        return") {
 		t.Errorf("indentation lost: %q", plain(rows[2]))
 	}
 }

@@ -322,13 +322,14 @@ func TestArrowsCenterWhileHomeEndScrollMinimally(t *testing.T) {
 
 // ui/dialog.tsx's scrim is black at 150/255 over the whole screen. This port
 // had recorded it as impossible and left the content behind a dialog at full
-// brightness.
+// brightness. The scrim is now applied cell by cell inside compositeDialog's
+// canvas (see composite.go); these tests drive the same pass.
 func TestBackdropDimsTheContentBehindTheDialog(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.width, app.height = 90, 24
 
 	bright := lipgloss.NewStyle().Foreground(lipgloss.Color("#c0caf5")).Render("hello")
-	dimmed := app.dimBackdrop(bright)
+	dimmed := app.compositeDialog(bright, "", 0, 0)
 
 	if strings.Contains(dimmed, "192;202;245") {
 		t.Fatalf("the source color should not survive the scrim: %q", dimmed)
@@ -337,29 +338,33 @@ func TestBackdropDimsTheContentBehindTheDialog(t *testing.T) {
 	if !strings.Contains(dimmed, "79;83;101") {
 		t.Fatalf("expected the blended color, got %q", dimmed)
 	}
-	if ansi.Strip(dimmed) != "hello" {
-		t.Fatalf("dimming must not change the text, got %q", ansi.Strip(dimmed))
+	// The canvas pads every cell to the terminal dimensions, so compare the
+	// text of the first line rather than the whole frame.
+	if first := strings.SplitN(ansi.Strip(dimmed), "\n", 2)[0]; strings.TrimRight(first, " ") != "hello" {
+		t.Fatalf("dimming must not change the text, got %q", first)
 	}
 }
 
 func TestBackdropDimsUnstyledCellsToTheThemeDefaults(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	dimmed := app.dimBackdrop("plain")
-	if !strings.HasPrefix(dimmed, "\x1b[38;2;") {
-		t.Fatalf("an unstyled line should open with the dimmed defaults, got %q", dimmed)
+	dimmed := app.compositeDialog("plain", "", 0, 0)
+	// An unstyled cell resolves to the theme's own colors, pre-blended, so
+	// the whole frame reads dimmed rather than punching through the scrim.
+	if !strings.Contains(dimmed, "38;2;") {
+		t.Fatalf("an unstyled cell should carry the dimmed theme default, got %q", dimmed)
 	}
 }
 
 func TestBackdropConvertsIndexedColours(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	// 231 is the top of the 6x6x6 cube: pure white.
-	dimmed := app.dimBackdrop("\x1b[38;5;231mx\x1b[m")
+	dimmed := app.compositeDialog("\x1b[38;5;231mx\x1b[m", "", 0, 0)
 	if !strings.Contains(dimmed, "38;2;105;105;105") {
 		t.Fatalf("a 256-colour index should be converted then blended, got %q", dimmed)
 	}
 }
 
-// The dialog panel itself is spliced over the scrim and keeps full brightness.
+// The dialog panel itself is drawn on top of the scrim and keeps full brightness.
 func TestDialogPanelIsNotDimmed(t *testing.T) {
 	app := listApp(t, overlayItem{label: "alpha", value: "a"})
 	app.view = viewChat

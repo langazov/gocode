@@ -13,13 +13,17 @@ import (
 )
 
 // frame applies the screen's 1-column side margin and crops to the terminal
-// height. It used to be `lipgloss.NewStyle().Padding(0,1).MaxHeight(h)`, which
-// is the same thing but pays to measure the display width of every line in a
-// ~90KB fully-styled frame — a third of the render budget, and grapheme
-// segmentation is the single most expensive thing in the profile. Nothing
-// downstream needs the uniform right edge that padding produced: the
-// compositors (spliceAt, compositeSidebarOverlay) pad to a.width themselves,
-// and no background is set here for a ragged edge to expose.
+// height.
+//
+// Deliberately manual, and re-measured against lipgloss v2 (see
+// BenchmarkFrameManual/BenchmarkFrameStyle in frame_bench_test.go): the
+// equivalent Style.Padding(0,1).MaxHeight(h) pays to measure the display
+// width of every line in a ~90KB fully-styled frame, which is 18ms against
+// this implementation's 0.12ms — 155x, and over the whole frame budget.
+// Grapheme segmentation is the single most expensive thing in the profile.
+// Nothing downstream needs the uniform right edge that padding produced:
+// the compositors (spliceAt, compositeDialog) cover the full terminal width
+// themselves, and no background is set here for a ragged edge to expose.
 func (a *App) frame(content string) string {
 	lines := strings.Split(content, "\n")
 	if a.height > 0 && len(lines) > a.height {
@@ -229,6 +233,12 @@ func (a *App) viewChat() string {
 	// sit at the bottom of the column, with any unused space above them —
 	// not at the top with unused space below. Padding with leading blank
 	// lines here reproduces that anchor.
+	//
+	// Deliberately not lipgloss.PlaceVertical(height, Bottom, …), which
+	// would produce the same layout but pads each filler line with spaces
+	// as wide as the content — extra bytes on a frame that is deliberately
+	// ragged-edged, and for no gain: the manual form is both cheaper and
+	// byte-stable.
 	pad := a.height - strings.Count(main, "\n") - 1
 	if pad < 0 {
 		pad = 0
@@ -243,6 +253,18 @@ func (a *App) viewChat() string {
 			// The chat column is already sized to the chat width; no
 			// per-line truncation here — cutting styled lines corrupts ANSI
 			// sequences.
+			//
+			// Tabs are expanded first: JoinHorizontal measures a block after
+			// expanding tabs to 4 spaces (getLines), while every other
+			// measurer in this app counts a tab as 1 cell. A literal tab
+			// anywhere in the column therefore made the join 3 cells wider
+			// per tab than the column was rendered for — which pushed the
+			// docked sidebar right by exactly that much whenever a
+			// tab-indented code block was visible. Normalizing here makes
+			// the join agree with the render, whatever produced the tab.
+			if strings.ContainsRune(main, '\t') {
+				main = strings.ReplaceAll(main, "\t", "    ")
+			}
 			joined := lipgloss.JoinHorizontal(lipgloss.Top, main, sidebar)
 			// Record where the chat column stops so a drag-selection can be
 			// held inside it (see selectionColumnBounds). JoinHorizontal pads
@@ -319,7 +341,7 @@ func promptMaxWidth(width int) int {
 }
 
 // sessionPromptBoxWidth is the Width promptBox is given in the chat view.
-// It's chatWidth()-2, not chatWidth()-1: promptBox's own borderBoxWidth()
+// It's chatWidth()-2, not chatWidth()-1: promptBox's own withLeftBorder()
 // call adds the 1-char left border's column back on top of this value to
 // reach a total of chatWidth()-1 — matching every other bordered timeline
 // panel (userBlock, errBlock, blockToolStyle), all sized to the same total
@@ -345,7 +367,7 @@ func (a *App) promptBox(width int) string {
 		PaddingTop(1).
 		PaddingLeft(2).
 		PaddingRight(2).
-		Width(borderBoxWidth(width))
+		Width(withLeftBorder(width))
 	content := strings.TrimRight(a.input.View(), "\n")
 	// The editor's viewport pads its row with plain unstyled spaces, which
 	// would break the box tint; drop the tail and let Width() refill it.
@@ -387,8 +409,7 @@ func (a *App) modelMeta() string {
 func (a *App) homePromptBlock(width int) string {
 	corner := lipgloss.NewStyle().Foreground(a.theme.Primary).Render("╹")
 	shadow := lipgloss.NewStyle().Foreground(a.theme.BackgroundElement).Render(strings.Repeat("▀", width))
-	hints := a.styles().Text.Render("tab") + " " + a.styles().Muted.Render("agents") + "  " +
-		a.styles().Text.Render("ctrl+p") + " " + a.styles().Muted.Render("commands")
+	hints := a.hintPair("tab", "agents") + "  " + a.hintPair("ctrl+p", "commands")
 	blocks := []string{}
 	// Above the prompt, sharing its width — the popup's anchored position.
 	if popup := a.autocompleteView(width); popup != "" {
@@ -452,12 +473,6 @@ func (a *App) questionBanner() string {
 	}
 
 	button := func(label string, selected, ticked bool) string {
-		bg := a.theme.BackgroundElement
-		fg := a.theme.TextMuted
-		if selected {
-			bg = a.theme.Primary
-			fg = a.theme.Background
-		}
 		mark := ""
 		if prompt.Multiple {
 			// Multi-select needs the chosen set visible even for the options
@@ -467,19 +482,19 @@ func (a *App) questionBanner() string {
 				mark = "● "
 			}
 		}
-		return lipgloss.NewStyle().Foreground(fg).Background(bg).Render(" " + mark + label + " ")
+		return a.permissionButton(mark+label, selected, a.theme.Primary)
 	}
 	buttons := make([]string, 0, len(prompt.Options))
 	for i, option := range prompt.Options {
 		buttons = append(buttons, button(option.Label, a.questionChoice == i, a.questionPicked[i]))
 	}
 
-	hints := a.styles().Text.Render("⇆") + " " + a.styles().Muted.Render("select")
+	hints := a.hintPair("⇆", "select")
 	if prompt.Multiple {
-		hints += "  " + a.styles().Text.Render("space") + " " + a.styles().Muted.Render("toggle")
+		hints += "  " + a.hintPair("space", "toggle")
 	}
-	hints += "  " + a.styles().Text.Render("enter") + " " + a.styles().Muted.Render("confirm") +
-		"  " + a.styles().Text.Render("esc") + " " + a.styles().Muted.Render("skip")
+	hints += "  " + a.hintPair("enter", "confirm") +
+		"  " + a.hintPair("esc", "skip")
 
 	barLeft := strings.Join(buttons, " ")
 	inner := a.contentWidth() - 1 - 5
@@ -525,15 +540,7 @@ func (a *App) questionBanner() string {
 		}
 	}
 
-	style := lipgloss.NewStyle().
-		Border(splitBorder(), false, false, false, true).
-		BorderForeground(a.theme.Primary).
-		Background(a.theme.BackgroundPanel).
-		PaddingTop(1).
-		PaddingBottom(1).
-		PaddingLeft(1).
-		PaddingRight(3).
-		Width(borderBoxWidth(a.contentWidth() - 2))
+	style := a.splitBorderPanelCustom(withLeftBorder(a.contentWidth()-2), a.theme.Primary, 1, 3)
 	return style.Render(strings.Join(content, "\n")) + "\n" + barStyle.Render(bar)
 }
 
@@ -563,13 +570,7 @@ func (a *App) permissionBanner() string {
 	// Option buttons: selected is warning-filled with background text,
 	// unselected sit on backgroundElement in muted text (Prompt options bar).
 	button := func(label string, selected bool) string {
-		bg := a.theme.BackgroundElement
-		fg := a.theme.TextMuted
-		if selected {
-			bg = a.theme.Warning
-			fg = a.theme.Background
-		}
-		return lipgloss.NewStyle().Foreground(fg).Background(bg).Render(" " + label + " ")
+		return a.permissionButton(label, selected, a.theme.Warning)
 	}
 	buttons := []string{
 		button(once, a.permissionChoice == 0),
@@ -577,8 +578,8 @@ func (a *App) permissionBanner() string {
 		button(reject, a.permissionChoice == 2),
 	}
 	barLeft := strings.Join(buttons, " ")
-	barRight := a.styles().Text.Render("⇆") + " " + a.styles().Muted.Render("select") +
-		"  " + a.styles().Text.Render("enter") + " " + a.styles().Muted.Render("confirm")
+	barRight := a.hintPair("⇆", "select") +
+		"  " + a.hintPair("enter", "confirm")
 	// Inner width after the bar's own padding (2 left, 3 right).
 	inner := a.contentWidth() - 1 - 5
 	gap := inner - lipgloss.Width(barLeft) - lipgloss.Width(barRight)
@@ -621,15 +622,7 @@ func (a *App) permissionBanner() string {
 		content = append(content, "", body)
 	}
 
-	style := lipgloss.NewStyle().
-		Border(splitBorder(), false, false, false, true).
-		BorderForeground(a.theme.Warning).
-		Background(a.theme.BackgroundPanel).
-		PaddingTop(1).
-		PaddingBottom(1).
-		PaddingLeft(1).
-		PaddingRight(3).
-		Width(borderBoxWidth(a.contentWidth() - 2))
+	style := a.splitBorderPanelCustom(withLeftBorder(a.contentWidth()-2), a.theme.Warning, 1, 3)
 	return style.Render(strings.Join(content, "\n")) + "\n" + barStyle.Render(bar)
 }
 
@@ -1177,16 +1170,8 @@ func (a *App) viewHome() string {
 }
 
 // centerBlock centers a multi-line block within width, preserving internal
-// alignment (lipgloss.Place would center each line independently).
+// alignment. lipgloss.PlaceHorizontal with Center does the same per-line
+// prefix-padding.
 func centerBlock(width int, block string) string {
-	pad := (width - lipgloss.Width(block)) / 2
-	if pad < 0 {
-		pad = 0
-	}
-	prefix := strings.Repeat(" ", pad)
-	lines := strings.Split(block, "\n")
-	for i, line := range lines {
-		lines[i] = prefix + line
-	}
-	return strings.Join(lines, "\n")
+	return lipgloss.PlaceHorizontal(width, lipgloss.Center, block)
 }

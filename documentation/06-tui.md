@@ -98,7 +98,8 @@ dropping frames, never by applying back-pressure to the runner.
 | `autocomplete.go` | the inline `/` and `@` popup |
 | `footer.go` | status line — model, tokens, cost, LSP |
 | `styles.go` | theme-derived Lipgloss styles |
-| `dim.go` | backdrop dimming behind dialogs |
+| `components.go` | reusable panel/button/hint style builders |
+| `composite.go` | modal backdrop: Canvas + Compositor cell dimming |
 
 ### The autocomplete is not a dialog
 

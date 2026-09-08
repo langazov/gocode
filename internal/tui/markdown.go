@@ -40,6 +40,15 @@ func (a *App) renderMarkdownStyled(text string, width int, pick func(int) *glamo
 	if width < 10 {
 		width = 10
 	}
+	// Tabs are expanded on the *source*, before glamour sizes anything: a
+	// tab is width-ambiguous downstream — lipgloss.Width and
+	// ansi.StringWidth count it as 1 cell while JoinHorizontal's getLines
+	// expands it to 4 before measuring — and chroma passes a code fence's
+	// literal tabs straight through. Expanding after the render would leave
+	// each tab-indented line wider than the width glamour already wrapped
+	// and padded against; expanding before means the wrap decisions, the
+	// padding, and every later measurement all agree.
+	text = strings.ReplaceAll(text, "\t", "    ")
 	r := pick(width)
 	if r == nil {
 		return text
