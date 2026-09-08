@@ -378,7 +378,7 @@ pinned to the bottom.
 │                     ▀▀▀▀  ▀▀▀▀   ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀                │
 │                                                                     │
 │              ┃                                                      │  autocomplete popup
-│              ┃  ▸ /models   Choose model                            │  (only when open)
+│              ┃  ▸ /models   Switch model                            │  (only when open)
 │              ┃                                                      │
 │              ┃                                                      │  prompt box:
 │              ┃  Ask anything…                                       │  BackgroundElement
@@ -429,7 +429,7 @@ pinned to the bottom.
 │                                                              │                        │
 │                                                              │ ⬖ Getting started      │
 │  ┃                                                           │   GoCode includes …    │
-│  ┃  ▸ /compact   Compact context                             │   Connect provider     │
+│  ┃  ▸ /compact   Compact session                             │   Connect provider     │
 │  ┃                                                           │              /connect  │
 │  ┃  ┃                                                        │                        │
 │  ┃  ┃                                                        │ ~/Work/gocode:main     │
@@ -877,8 +877,11 @@ func (a *App) openThingList(things []client.Thing) {
 
 Then:
 
-7. Register it in `commandsRegistry()` with `label` (dotted internal name),
-   `slash` (+ aliases), `hint`, `category`, and `footer` if it has a keybind.
+7. Register it in `commandsRegistry()` with `label` (the title the row
+   shows — the original's `command.title`), `value` (the dotted command
+   name), `slash` (+ aliases), `hint` (the original's `desc`, usually
+   empty), `category`, and `footer` if it has a keybind, formatted like
+   the original ("<leader>x" → "ctrl+x x", bindings joined ", ").
 8. If it previews live (like themes), set `onCancel` to revert.
 9. If it toggles rather than picks, set `onActivate` so the dialog stays open.
 10. Add a layout test in `dialogs_layout_test.go`.
@@ -934,10 +937,10 @@ the `BackgroundMenu` surface. It has **no title, no filter field and no footer**
 text after the trigger.
 
 ```
-┃  /models      Choose model
+┃  /models      Switch model
 ┃  /memory      Manage memories
 ┃▓ /new         New session          ← selected: Primary fill
-┃  /compact     Compact context
+┃  /compact     Compact session
 ```
 
 Triggers: `@` anywhere; `/` **only at position 0** of an empty prompt (a slash

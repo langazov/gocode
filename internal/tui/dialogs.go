@@ -41,14 +41,16 @@ const (
 // overlayItem is one row of a list dialog, mirroring DialogSelectOption:
 // label is the title, hint the muted description, footer the right-aligned
 // annotation, category the group header, and value the stable id matched
-// against overlay.current for the ● current-item marker.
+// against overlay.current for the ● current-item marker. The palette's rows
+// carry their dotted command name ("session.list") in value, the slot the
+// original's command.name fills.
 type overlayItem struct {
 	label string
 	// slash is the name this item answers to after a "/", and slashAliases
-	// any additional ones. The interface command's own label is a dotted
+	// any additional ones. The interface command's own value is a dotted
 	// internal name ("session.new") that nobody types; the original gives each
 	// one an explicit slashName ("new") plus aliases ("clear"), and matching
-	// on the label alone means "/new" resolves to nothing.
+	// on that alone means "/new" resolves to nothing.
 	slash        string
 	slashAliases []string
 	hint         string
@@ -69,18 +71,24 @@ type overlayItem struct {
 	// command that existed before this field, and they keep behaving
 	// identically.
 	argAction func(string) tea.Msg
+	// suggested and hidden mirror command-palette.tsx's flags. A hidden
+	// command stays slash-resolvable but never shows in the palette or the
+	// "/" popup (isVisiblePaletteCommand); a suggested one is repeated under
+	// a "Suggested" header while the palette filter is empty.
+	suggested bool
+	hidden    bool
 }
 
 // matchesSlash reports whether an interface command answers to a "/" name.
 //
-// The dotted label is matched too, so "/session.new" keeps working for anyone
-// who learned it, and a namespace prefix still resolves ("/help" would reach
-// "help.show" even without its slash name).
+// The dotted command name in value is matched too, so "/session.new" keeps
+// working for anyone who learned it, and a namespace prefix still resolves
+// ("/help" would reach "help.show" even without its slash name).
 func (i overlayItem) matchesSlash(name string) bool {
 	if name == "" {
 		return false
 	}
-	if i.slash == name || i.label == name {
+	if i.slash == name || i.value == name {
 		return true
 	}
 	for _, alias := range i.slashAliases {
@@ -88,7 +96,7 @@ func (i overlayItem) matchesSlash(name string) bool {
 			return true
 		}
 	}
-	return strings.HasPrefix(i.label, name+".")
+	return strings.HasPrefix(i.value, name+".")
 }
 
 // dialogAction is a footer action (DialogSelect actions): a title plus the
@@ -211,6 +219,13 @@ func (o *overlay) applyFilter() {
 	needle := strings.ToLower(o.filter)
 	out := make([]overlayItem, 0, len(o.all))
 	for _, item := range o.all {
+		// The palette's Suggested mirrors carry a "suggested:"-prefixed
+		// value, and command-palette.tsx drops them the moment a filter is
+		// active (`if (ref?.filter) return options()`) — the commands
+		// themselves stay reachable in their real categories below.
+		if strings.HasPrefix(item.value, "suggested:") {
+			continue
+		}
 		if strings.Contains(strings.ToLower(item.label), needle) ||
 			strings.Contains(strings.ToLower(item.hint), needle) ||
 			strings.Contains(strings.ToLower(item.category), needle) ||
@@ -1490,22 +1505,54 @@ func (a *App) themesOverlay() {
 	}
 }
 
-// commandsRegistry lists the palette commands, mirroring the TS command set
-// with its categories and keybind footers.
+// commandsRegistry lists the palette commands, mirroring the TS palette
+// entry for entry (command-palette.tsx over the command tables in app.tsx,
+// routes/session/index.tsx and component/prompt/index.tsx): label is the
+// row title the original shows, value the dotted command name (upstream
+// command.name), category the group header, and footer the keybind
+// annotation the original formats from config/keybind.ts — "<leader>x"
+// renders as "ctrl+x x", multiple bindings join with ", ", and a "none"
+// keybind renders no footer at all. hint is upstream's desc, which none of
+// these commands set, so rows read "title … keybind" like the original.
+//
+// suggested and hidden mirror command-palette.tsx's flags: hidden entries
+// never show in the palette or the "/" popup (its isVisiblePaletteCommand)
+// but still resolve as slash commands, and suggested ones are repeated
+// under a "Suggested" header while the palette filter is empty.
+//
+// gocode-only entries — memory.list, stats.view, session.delete,
+// getting_started.dismiss — keep the same shape. Upstream reaches delete
+// only from the session list and dismisses the card with its "✕"; the
+// other two have no upstream counterpart.
 func (a *App) commandsRegistry() []overlayItem {
 	c := a.client
+	// Dynamic titles, verbatim from index.tsx: each names the action the
+	// command is about to *do*, not the state it is about to enter.
+	sidebarTitle := "Show sidebar"
+	if a.sidebar {
+		sidebarTitle = "Hide sidebar"
+	}
+	timestampsTitle := "Show timestamps"
+	if a.timestamps {
+		timestampsTitle = "Hide timestamps"
+	}
 	items := []overlayItem{
-		{label: "session.new", slash: "new", slashAliases: []string{"clear"}, hint: "New session", category: "Session", footer: "ctrl+x n", action: func() tea.Msg {
-			// The same call the ctrl+x n keybind makes. This used to return
-			// reloadMsg, which only reloads the *open* session's messages and
-			// is a no-op on the home screen — so the command did nothing.
-			return a.newSession()
-		}},
-		{label: "session.list", slash: "sessions", slashAliases: []string{"resume", "continue"}, hint: "List sessions", category: "Session", footer: "ctrl+x l", action: func() tea.Msg {
-			a.sessionsOverlay()
-			return nil
-		}},
-		{label: "session.interrupt", slash: "interrupt", hint: "Interrupt", category: "Session", footer: "esc", action: func() tea.Msg {
+		{label: "Switch session", value: "session.list", slash: "sessions", slashAliases: []string{"resume", "continue"}, category: "Session", footer: "ctrl+x l",
+			suggested: len(a.sessions) > 0, action: func() tea.Msg {
+				a.sessionsOverlay()
+				return nil
+			}},
+		{label: "New session", value: "session.new", slash: "new", slashAliases: []string{"clear"}, category: "Session", footer: "ctrl+x n",
+			suggested: a.view == viewChat, action: func() tea.Msg {
+				// The same call the ctrl+x n keybind makes. This used to return
+				// reloadMsg, which only reloads the *open* session's messages and
+				// is a no-op on the home screen — so the command did nothing.
+				return a.newSession()
+			}},
+		// Hidden exactly like upstream's prompt/index.tsx session.interrupt
+		// (hidden: true): esc is the affordance, the palette never lists it,
+		// and "/interrupt" still resolves.
+		{label: "Interrupt session", value: "session.interrupt", slash: "interrupt", category: "Session", footer: "esc", hidden: true, action: func() tea.Msg {
 			// Say why nothing happened. Every other command reports when it
 			// cannot act; this one returned silently, which from a command
 			// palette or a "/" prompt is indistinguishable from being broken.
@@ -1519,14 +1566,14 @@ func (a *App) commandsRegistry() []overlayItem {
 			a.busy = false
 			return statusMsg{text: "interrupted"}
 		}},
-		{label: "session.rename", slash: "rename", hint: "Rename session", category: "Session", footer: "ctrl+r", action: func() tea.Msg {
+		{label: "Rename session", value: "session.rename", slash: "rename", category: "Session", footer: "ctrl+r", action: func() tea.Msg {
 			if a.active == nil {
 				return statusMsg{text: "open a session first"}
 			}
 			a.renameSessionAction(overlayItem{value: a.active.ID, label: a.sessionTitle()})
 			return nil
 		}},
-		{label: "session.delete", slash: "delete", hint: "Delete session", category: "Session", footer: "ctrl+d", action: func() tea.Msg {
+		{label: "Delete session", value: "session.delete", slash: "delete", category: "Session", footer: "ctrl+d", action: func() tea.Msg {
 			if a.active == nil {
 				return statusMsg{text: "open a session first"}
 			}
@@ -1547,61 +1594,77 @@ func (a *App) commandsRegistry() []overlayItem {
 				}, nil)
 			return nil
 		}},
-		{label: "session.compact", slash: "compact", hint: "Compact context", category: "Session", footer: "ctrl+x c", action: func() tea.Msg {
+		{label: "Compact session", value: "session.compact", slash: "compact", slashAliases: []string{"summarize"}, category: "Session", footer: "ctrl+x c", action: func() tea.Msg {
 			// Was a placeholder message even though the server endpoint and
 			// the ctrl+x c binding both exist.
 			return a.compactNow()
 		}},
-		{label: "session.timeline", slash: "timeline", hint: "Jump to message", category: "Session", footer: "ctrl+x g", action: func() tea.Msg {
+		{label: "Jump to message", value: "session.timeline", slash: "timeline", category: "Session", footer: "ctrl+x g", action: func() tea.Msg {
 			a.openList("Timeline", a.timelineOverlayItems())
 			a.overlay.size = dialogLarge
 			return nil
 		}},
-		{label: "model.list", slash: "models", hint: "Choose model", category: "Model", footer: "ctrl+x m", action: func() tea.Msg {
-			return a.modelsOverlay()
-		}},
-		{label: "agent.list", slash: "agents", hint: "Choose agent", category: "Agent", footer: "ctrl+x a", action: func() tea.Msg {
-			return a.agentsOverlay()
-		}},
-		{label: "skill.list", slash: "skills", hint: "Browse skills", category: "System", action: func() tea.Msg {
-			return a.skillsOverlay()
-		}},
-		{label: "plugin.list", slash: "plugins", hint: "Manage plugins", category: "System", action: func() tea.Msg {
-			return a.pluginsOverlay()
-		}},
-		{label: "memory.list", slash: "memory", hint: "Manage memories", category: "System",
-			action: func() tea.Msg { return a.memoriesOverlay() },
-			// "/memory <instruction>" saves without opening the dialog.
-			argAction: func(arguments string) tea.Msg { return a.quickAddMemory(arguments) }},
-		{label: "theme.list", slash: "themes", hint: "Choose theme", category: "Theme", footer: "ctrl+x t", action: func() tea.Msg {
-			a.themesOverlay()
-			return nil
-		}},
-		{label: "sidebar.toggle", hint: "Toggle sidebar", category: "View", footer: "ctrl+x b", action: func() tea.Msg {
+		{label: sidebarTitle, value: "session.sidebar.toggle", category: "Session", footer: "ctrl+x b", action: func() tea.Msg {
 			a.sidebar = !a.sidebar
 			return nil
 		}},
-		{label: "timestamps.toggle", hint: "Toggle timestamps", category: "View", action: func() tea.Msg {
+		{label: timestampsTitle, value: "session.toggle.timestamps", slash: "timestamps", slashAliases: []string{"toggle-timestamps"}, category: "Session", action: func() tea.Msg {
 			a.timestamps = !a.timestamps
 			return nil
 		}},
-		{label: "thinking.toggle", hint: thinkingToggleHint(a.thinkingMode), category: "Session", action: func() tea.Msg {
+		{label: thinkingToggleHint(a.thinkingMode), value: "session.toggle.thinking", slash: "thinking", slashAliases: []string{"toggle-thinking"}, category: "Session", action: func() tea.Msg {
 			a.thinkingMode = nextThinkingMode(a.thinkingMode)
 			a.invalidateRenderCache()
 			return nil
 		}},
-		{label: "help.show", slash: "help", hint: "Keybinds", category: "System", action: func() tea.Msg {
+		// session.copy: the transcript to the clipboard.
+		{label: "Copy session transcript", value: "session.copy", slash: "copy", category: "Session", action: func() tea.Msg {
+			return a.copyTranscript()
+		}},
+		// prompt.editor shares the ctrl+x e binding with exportToEditor —
+		// the original's editor_open keybind maps to exactly this command.
+		{label: "Open editor", value: "prompt.editor", slash: "editor", category: "Session", footer: "ctrl+x e", action: func() tea.Msg {
+			return a.exportToEditor()
+		}},
+		{label: "Switch model", value: "model.list", slash: "models", slashAliases: []string{"mo"}, category: "Agent", footer: "ctrl+x m",
+			suggested: true, action: func() tea.Msg {
+				return a.modelsOverlay()
+			}},
+		{label: "Switch agent", value: "agent.list", slash: "agents", category: "Agent", footer: "ctrl+x a", action: func() tea.Msg {
+			return a.agentsOverlay()
+		}},
+		// provider.connect, suggested while nothing is connected (upstream
+		// `suggested: !connected()`; paidProviderAvailable ports has()).
+		{label: "Connect provider", value: "provider.connect", slash: "connect", category: "Provider",
+			suggested: !a.paidProviderAvailable(), action: func() tea.Msg {
+				return a.providersOverlay()
+			}},
+		{label: "Skills", value: "prompt.skills", slash: "skills", category: "Prompt", action: func() tea.Msg {
+			return a.skillsOverlay()
+		}},
+		{label: "Plugins", value: "plugins.list", slash: "plugins", category: "System", action: func() tea.Msg {
+			return a.pluginsOverlay()
+		}},
+		{label: "Manage memories", value: "memory.list", slash: "memory", category: "System",
+			action: func() tea.Msg { return a.memoriesOverlay() },
+			// "/memory <instruction>" saves without opening the dialog.
+			argAction: func(arguments string) tea.Msg { return a.quickAddMemory(arguments) }},
+		{label: "Switch theme", value: "theme.switch", slash: "themes", category: "System", footer: "ctrl+x t", action: func() tea.Msg {
+			a.themesOverlay()
+			return nil
+		}},
+		{label: "Help", value: "help.show", slash: "help", category: "System", action: func() tea.Msg {
 			a.overlay = &overlay{kind: overlayHelp, title: "Help"}
 			return nil
 		}},
-		{label: "status.view", slash: "status", hint: "Session status", category: "System", footer: "ctrl+x s", action: func() tea.Msg {
+		{label: "View status", value: "opencode.status", slash: "status", category: "System", footer: "ctrl+x s", action: func() tea.Msg {
 			a.overlay = &overlay{kind: overlayStatus, title: "Status"}
 			return nil
 		}},
-		{label: "stats.view", slash: "stats", hint: "Usage statistics", category: "System", action: func() tea.Msg {
+		{label: "Usage statistics", value: "stats.view", slash: "stats", category: "System", action: func() tea.Msg {
 			return a.openStatsOverlay()
 		}},
-		{label: "app.exit", slash: "exit", slashAliases: []string{"quit", "q"}, hint: "Quit", category: "System", footer: "ctrl+c", action: func() tea.Msg { return quitMsg{} }},
+		{label: "Exit the app", value: "app.exit", slash: "exit", slashAliases: []string{"quit", "q"}, category: "System", footer: "ctrl+c, ctrl+d, ctrl+x q", action: func() tea.Msg { return quitMsg{} }},
 	}
 	// The sidebar footer's getting-started card is dismissed by clicking its
 	// "✕" upstream. This port has no per-widget mouse targets inside the
@@ -1611,7 +1674,7 @@ func (a *App) commandsRegistry() []overlayItem {
 	// the card is actually showing, like the "✕" itself.
 	if !a.paidProviderAvailable() && !a.dismissedGettingStarted {
 		items = append(items, overlayItem{
-			label: "getting_started.dismiss", hint: "Dismiss getting started", category: "System",
+			label: "Dismiss getting started", value: "getting_started.dismiss", category: "System",
 			action: func() tea.Msg {
 				a.dismissedGettingStarted = true
 				return nil
@@ -1622,8 +1685,28 @@ func (a *App) commandsRegistry() []overlayItem {
 }
 
 // commandPalette opens the ctrl+p dialog.
+//
+// command-palette.tsx lists every reachable palette command that is not
+// hidden and — only while the filter is empty — repeats the suggested ones
+// first under their own "Suggested" header, with a "suggested:"-prefixed
+// value so the rows stay distinct while selecting either dispatches the
+// same command.
 func (a *App) commandPalette() {
-	a.openList("Commands", a.commandsRegistry())
+	all := a.commandsRegistry()
+	items := make([]overlayItem, 0, len(all))
+	for _, item := range all {
+		if item.hidden {
+			continue
+		}
+		if item.suggested {
+			first := item
+			first.value = "suggested:" + first.value
+			first.category = "Suggested"
+			items = append(items, first)
+		}
+		items = append(items, item)
+	}
+	a.openList("Commands", items)
 }
 
 // fileMentions lists workspace files for @ completion.

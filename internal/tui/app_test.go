@@ -883,18 +883,36 @@ func TestCommandPalette(t *testing.T) {
 	if app.overlay == nil {
 		t.Fatal("ctrl+p should open the command palette")
 	}
+	// Rows show the same titles the original does; the dotted command names
+	// live in value for slash matching, not on the rows.
 	view := app.View()
-	for _, want := range []string{"session.new", "model.list", "theme.list", "help.show"} {
+	for _, want := range []string{"Switch session", "New session", "Switch model", "Switch theme", "Help"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("palette missing command %s: %q", want, view)
 		}
 	}
+	// model.list is always suggested, and with nothing connected
+	// provider.connect joins it under the Suggested header. Hidden commands
+	// (session.interrupt) never list.
+	if !strings.Contains(view, "Suggested") || !strings.Contains(view, "Connect provider") {
+		t.Fatalf("palette should lead with suggested commands, got %q", view)
+	}
+	if strings.Contains(view, "Interrupt session") {
+		t.Fatalf("hidden session.interrupt must not list in the palette, got %q", view)
+	}
 
-	// filter narrows the list
+	// filter narrows the list, and drops the Suggested mirrors the moment
+	// it is active (command-palette.tsx returns options() alone while
+	// ref.filter is set)
 	press(t, app, "t")
 	press(t, app, "h")
 	if got := len(app.overlay.items); got >= len(app.overlay.all) {
 		t.Fatalf("filter should narrow commands, got %d of %d", got, len(app.overlay.all))
+	}
+	for _, item := range app.overlay.items {
+		if item.category == "Suggested" {
+			t.Fatalf("a filtered palette must not repeat suggested rows, got %q", item.label)
+		}
 	}
 }
 

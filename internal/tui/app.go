@@ -2118,10 +2118,18 @@ func (a *App) slashAutocompleteItems() []autocompleteItem {
 	}
 	for _, entry := range a.commandsRegistry() {
 		entry := entry
-		if entry.slash == "" {
+		// Hidden commands stay slash-resolvable but are not offered, the
+		// same isVisiblePaletteCommand gate the palette itself applies.
+		if entry.slash == "" || entry.hidden {
 			continue
 		}
+		// The description is the command's desc falling back to its title
+		// (useCommandSlashes), with this port's alias suffix so the extra
+		// names stay discoverable.
 		description := entry.hint
+		if description == "" {
+			description = entry.label
+		}
 		if len(entry.slashAliases) > 0 {
 			description = strings.TrimSpace(description + " (" + strings.Join(entry.slashAliases, ", ") + ")")
 		}
