@@ -118,6 +118,27 @@ type diffViewer struct {
 	// layoutRowHunk maps each laid-out row to its hunk index within the
 	// file (-1 when the row is not a hunk header).
 	layoutRowHunk []int
+	// layoutKey is the signature of every input buildDiffLayout renders
+	// from. Scrolling is deliberately not in it: the layout is content, the
+	// scroll is a window over it, and rebuilding thousands of styled rows
+	// on every wheel notch is what made the viewer feel like it was
+	// swimming (each notch re-rendered every row of every file, twice).
+	layoutKey string
+	// layoutBuilds counts layout rebuilds; tests assert wheel bursts do not
+	// multiply it.
+	layoutBuilds int
+	// fileOrder is every file's index in full tree order (TS
+	// patchFileIndexes: orderedPatchFileIndexes(flattenFileTree(fileTree()))
+	// — the whole tree, NOT the expansion-filtered rows, so collapsing a
+	// directory never hides its files from the pane). Fixed when the diff
+	// lands; the pane and n/p both walk it.
+	fileOrder []int
+	// reviewedVersion bumps on every reviewed toggle so the layout key can
+	// cheaply include the flag set without hashing it.
+	reviewedVersion int
+	// loadSeq distinguishes successive diff payloads with identical
+	// dimensions (a refetch that lands the same shape must still rebuild).
+	loadSeq int
 	// filler is the blank rows that keep the last file's bottom aligned
 	// (TS patchFillerHeight).
 	filler int
@@ -225,6 +246,7 @@ func (a *App) handleDiffResult(msg diffLoadedMsg) tea.Cmd {
 	}
 	d.err = ""
 	d.files = msg.files
+	d.loadSeq++
 	d.parsed = make([][]diff.File, len(msg.files))
 	items := make([]diffTreeItem, len(msg.files))
 	for i, file := range msg.files {
@@ -240,9 +262,14 @@ func (a *App) handleDiffResult(msg diffLoadedMsg) tea.Cmd {
 	d.selected = -1
 	d.selectedHunk = -1
 	d.reviewed = map[string]bool{}
+	d.reviewedVersion = 0
 	d.scroll = 0
 	d.treeScroll = 0
 	d.rows = flattenDiffFileTree(d.tree, d.expanded)
+	// fileOrder is every file in full tree order (TS patchFileIndexes), the
+	// pane's spine: expansion changes only the tree's rows, never this.
+	d.fileOrder = orderedDiffPatchFileIndexes(flattenDiffFileTree(d.tree, nil))
+	d.layoutKey = "" // force one rebuild against the new payload
 	return nil
 }
 
@@ -311,7 +338,22 @@ func (a *App) diffView() string {
 // can never disagree with the screen (§13's same-pass rule).
 func (a *App) buildDiffLayout() {
 	d := a.diff
-	visible := a.diffVisibleFiles()
+
+	// The layout is a pure function of these inputs. Anything else — the
+	// scroll above all — is a window over the result, not an input, so a
+	// wheel burst reuses one layout instead of re-rendering every row per
+	// notch. (Review flags enter through reviewedVersion: counting toggles
+	// is enough because any change to the set changes the count.)
+	key := fmt.Sprintf("v:%s w:%d r:%d s:%v u:%d f:%d n:%d sq:%d",
+		a.diffView(), a.diffPaneInterior(), d.reviewedVersion, d.single,
+		d.selected, d.active, len(d.files), d.loadSeq)
+	if key == d.layoutKey {
+		return
+	}
+	d.layoutKey = key
+	d.layoutBuilds++
+
+	visible := d.visibleFiles()
 	d.layoutRows = d.layoutRows[:0]
 	d.layoutRowFile = d.layoutRowFile[:0]
 	d.layoutRowHunk = d.layoutRowHunk[:0]
@@ -441,30 +483,27 @@ func (a *App) diffRow(line diff.Line, numberWidth, room int, panel color.Color, 
 	}
 }
 
-// diffVisibleFiles lists the file indexes the pane shows: every file, or
-// just the single-patch selection (TS visiblePatchFiles).
-func (a *App) diffVisibleFiles() []int {
-	d := a.diff
+// visibleFiles lists the file indexes the pane shows: every file, or just
+// the single-patch selection (TS visiblePatchFiles). It reads fileOrder,
+// which is fixed when the diff lands — NOT the expansion-filtered tree rows
+// — so collapsing a directory never hides its files from the pane. The TS
+// source computes patchFileIndexes from flattenFileTree(fileTree()), the
+// whole tree; this port had wrongly fed it the filtered rows, which both
+// diverged and made the layout depend on tree state.
+func (d *diffViewer) visibleFiles() []int {
 	if !d.single {
-		var out []int
-		for _, fileIndex := range orderedDiffPatchFileIndexes(d.rows) {
-			if fileIndex < len(d.files) {
-				out = append(out, fileIndex)
-			}
-		}
-		return out
+		return d.fileOrder
 	}
-	fileIndex := singleDiffPatchFileIndex(d.selected, d.active, a.diffCurrentFileIndex(), a.diffFirstFileIndex())
+	fileIndex := singleDiffPatchFileIndex(d.selected, d.active, d.currentFileIndex(), d.firstFileIndex())
 	if fileIndex < 0 || fileIndex >= len(d.files) {
 		return nil
 	}
 	return []int{fileIndex}
 }
 
-// diffCurrentFileIndex ports currentPatchFileIndex: the file whose content
-// is at the top of the viewport.
-func (a *App) diffCurrentFileIndex() int {
-	d := a.diff
+// currentFileIndex ports currentPatchFileIndex: the file whose content is
+// at the top of the viewport.
+func (d *diffViewer) currentFileIndex() int {
 	viewportRow := d.scroll
 	for i := len(d.layoutRowFile) - 1; i >= 0; i-- {
 		if i <= viewportRow && d.layoutRowFile[i] >= 0 {
@@ -477,12 +516,10 @@ func (a *App) diffCurrentFileIndex() int {
 	return -1
 }
 
-// diffFirstFileIndex is the first file in tree order (TS firstPatchFileIndex).
-func (a *App) diffFirstFileIndex() int {
-	for _, row := range a.diff.rows {
-		if row.fileIndex >= 0 && row.fileIndex < len(a.diff.files) {
-			return row.fileIndex
-		}
+// firstFileIndex is the first file in tree order (TS firstPatchFileIndex).
+func (d *diffViewer) firstFileIndex() int {
+	if len(d.fileOrder) > 0 {
+		return d.fileOrder[0]
 	}
 	return -1
 }
@@ -885,7 +922,7 @@ func (a *App) jumpToDiffFile(fileIndex int) {
 func (a *App) jumpRelativeDiffFile(offset int) {
 	d := a.diff
 	d.selectedHunk = -1
-	indexes := orderedDiffPatchFileIndexes(d.rows)
+	indexes := d.fileOrder
 	current := d.selected
 	if current < 0 {
 		current = d.active
@@ -964,7 +1001,7 @@ func (a *App) toggleDiffReviewed() {
 	} else if fileIndex < 0 {
 		fileIndex = d.active
 		if fileIndex < 0 {
-			fileIndex = a.diffCurrentFileIndex()
+			fileIndex = d.currentFileIndex()
 		}
 	}
 	if fileIndex < 0 || fileIndex >= len(d.files) {
@@ -976,6 +1013,9 @@ func (a *App) toggleDiffReviewed() {
 	} else {
 		d.reviewed[file] = true
 	}
+	// The toggle changes rendered colors, so the layout must rebuild; a
+	// count is enough to key it (any change to the set changes the count).
+	d.reviewedVersion++
 }
 
 // saveDiffPrefs writes the viewer's current toggles through to the state
@@ -1134,16 +1174,13 @@ func (a *App) diffPage(offset int) tea.Cmd {
 	return nil
 }
 
-// diffScrollBy moves the pane's window, clamped to the content.
+// diffScrollBy moves the pane's window. Deliberately layout-free: the
+// clamp happens against whatever layout the next render produces (the
+// windowed branch clamps again anyway), because building the layout here is
+// what made wheel scrolling queue a full re-render per notch.
 func (a *App) diffScrollBy(delta int) {
 	d := a.diff
-	a.buildDiffLayout()
-	total := len(d.layoutRows)
-	height := a.diffBodyHeight()
 	d.scroll += delta
-	if max := total - height; d.scroll > max {
-		d.scroll = max
-	}
 	if d.scroll < 0 {
 		d.scroll = 0
 	}
@@ -1232,9 +1269,9 @@ func (a *App) diffToggleSinglePatch() tea.Cmd {
 	d.selectedHunk = -1
 	if !d.single {
 		// Entering single-patch mode: make sure something is selected.
-		if fileIndex := a.diffCurrentFileIndex(); fileIndex >= 0 {
+		if fileIndex := d.currentFileIndex(); fileIndex >= 0 {
 			a.selectDiffFile(fileIndex)
-		} else if fileIndex := a.diffFirstFileIndex(); fileIndex >= 0 {
+		} else if fileIndex := d.firstFileIndex(); fileIndex >= 0 {
 			a.selectDiffFile(fileIndex)
 		}
 		d.single = true
@@ -1243,7 +1280,7 @@ func (a *App) diffToggleSinglePatch() tea.Cmd {
 		return nil
 	}
 	// Leaving: keep the selected file visible in the full pane.
-	fileIndex := a.diffCurrentFileIndex()
+	fileIndex := d.currentFileIndex()
 	d.single = false
 	d.saveDiffPrefs()
 	if fileIndex >= 0 {
@@ -1363,12 +1400,17 @@ func (a *App) diffMouseWheel(up bool) tea.Cmd {
 	if d == nil {
 		return nil
 	}
-	delta := -1
+	// scroll is the FIRST VISIBLE ROW, so wheel-up (earlier content)
+	// decreases it and wheel-down increases it. This was initially
+	// inverted — inherited from the timeline's scrollOffset, which counts
+	// the opposite thing (lines kept off the bottom) — and scrolled the
+	// pane backwards.
+	delta := 1
 	if up {
-		delta = 1
+		delta = -1
 	}
 	if d.focus == diffFocusTree {
-		d.treeScroll -= delta
+		d.treeScroll += delta
 		if d.treeScroll < 0 {
 			d.treeScroll = 0
 		}

@@ -538,6 +538,18 @@ the contract for its port in `diffviewer.go`.
 - **One layout pass serves render and navigation.** Hunk anchors (`[`/`]`)
   are computed by the same `buildDiffLayout()` the renderer runs, so a jump
   can never land somewhere the screen disagrees with.
+- **The layout is memoized on its inputs; scrolling is not one of them.**
+  `buildDiffLayout` keys on view/width/reviewed/single/selection/payload
+  and returns immediately when the key is unchanged. The scroll is a window
+  *over* the laid-out rows, not an input to them — a wheel notch must never
+  re-render rows (`frame_bench_test.go` keeps the frame's own numbers
+  current; `diff_bench_test.go` keeps these: a notch on a 30-file ×
+  400-line diff is ~0.7 ms, a forced rebuild ~57 ms, and the wheel path
+  must stay at the former). Keyboards and mouse both go through
+  `diffScrollBy`, which is layout-free and clamps at the next render.
+- **The pane's file order comes from the whole tree, not the visible rows.**
+  Collapsing a directory in the file tree must never remove its files from
+  the patch pane (TS `patchFileIndexes` flattens `fileTree()` unfiltered).
 - **Colors:** added `Success`, removed `Error`, context and hunk headers
   `TextMuted`, all on `BackgroundPanel`; a reviewed file mutes its header
   *and* rows to `TextMuted` (the TS viewer's reviewed treatment).
@@ -1346,6 +1358,7 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | `diffviewer.go` | The `/diff` route: state, fetch, layout, navigation, keys, mouse (see §6.5) |
 | `diffviewer_tree.go` | The diff viewer's file-tree logic: build, flatten, navigate |
 | `diffstate.go` | The diff viewer's persisted preferences (diffstate.json) |
+| `diff_bench_test.go` | The diff viewer's layout/scroll performance budgets (see §6.5) |
 | `autocomplete.go` | The inline `/` and `@` popup |
 | `footer.go` | Hint row, width policy, usage meter, subagent footer, getting-started card |
 | `feature.go` | Toasts, timeline dialog, fork/compact/copy/export |

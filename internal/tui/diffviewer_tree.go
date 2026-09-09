@@ -165,7 +165,10 @@ func flattenDiffFileTree(tree diffFileTree, expanded map[int]bool) []diffTreeRow
 			names = append(names, item.name)
 		}
 		rows = append(rows, diffTreeRow{id: node.id, depth: depth, dir: true, name: strings.Join(names, "/"), fileIndex: -1})
-		if expanded[node.id] {
+		// TS: `if (!expanded || expanded.has(node.id))` — an absent set
+		// means "everything expanded", not "nothing". fileOrder relies on
+		// that to enumerate every file without tracking expansion.
+		if expanded == nil || expanded[node.id] {
 			for _, child := range last.children {
 				visit(child, depth+1)
 			}

@@ -240,12 +240,12 @@ func TestDiffViewerSinglePatchShowsOneFile(t *testing.T) {
 	}
 	app := openDiff(t, files)
 
-	if visible := app.diffVisibleFiles(); len(visible) != 2 {
+	if visible := app.diff.visibleFiles(); len(visible) != 2 {
 		t.Fatalf("full pane shows %d files, want 2", len(visible))
 	}
 	pressKey(t, app, "n") // select a.txt
 	pressKey(t, app, "s")
-	visible := app.diffVisibleFiles()
+	visible := app.diff.visibleFiles()
 	if len(visible) != 1 {
 		t.Fatalf("single-patch pane shows %d files, want 1", len(visible))
 	}
@@ -257,7 +257,7 @@ func TestDiffViewerSinglePatchShowsOneFile(t *testing.T) {
 	}
 
 	pressKey(t, app, "s")
-	if visible := app.diffVisibleFiles(); len(visible) != 2 {
+	if visible := app.diff.visibleFiles(); len(visible) != 2 {
 		t.Fatalf("leaving single-patch mode shows %d files, want 2", len(visible))
 	}
 }
@@ -696,4 +696,111 @@ func TestDiffViewerRendersInLightTheme(t *testing.T) {
 	if !strings.Contains(rendered, "const newFirst = true") {
 		t.Fatal("light theme render lost the diff body")
 	}
+}
+
+func TestDiffViewerWheelBurstDoesNotRebuildLayout(t *testing.T) {
+	// The responsiveness bug: every wheel notch rebuilt the layout (every
+	// row of every file, styled), twice per event. A burst of notches then
+	// queued seconds of render behind the input. The layout is content; the
+	// scroll is a window over it — one build serves the whole burst.
+	files := []client.FileDiff{
+		{File: "a.txt", Additions: 400, Deletions: 0, Status: "added", Patch: bigPatch("a.txt", 400)},
+		{File: "b.txt", Additions: 400, Deletions: 0, Status: "added", Patch: bigPatch("b.txt", 400)},
+	}
+	app := openDiff(t, files)
+
+	app.View() // settle one layout
+	before := app.diff.layoutBuilds
+	if before == 0 {
+		t.Fatal("no layout was ever built")
+	}
+
+	// A wheel burst: many notches in quick succession.
+	for i := 0; i < 40; i++ {
+		app.diffMouseWheel(false)
+	}
+
+	if app.diff.layoutBuilds != before {
+		t.Fatalf("wheel burst rebuilt the layout %d times; scrolling must reuse one build",
+			app.diff.layoutBuilds-before)
+	}
+	// And the window actually moved.
+	if app.diff.scroll == 0 {
+		t.Fatal("wheel did not scroll")
+	}
+}
+
+func TestDiffViewerScrollClampsAtTheEnd(t *testing.T) {
+	// With clamping moved out of diffScrollBy, the render path is what
+	// holds the window to the content; assert it does.
+	files := []client.FileDiff{{File: "a.txt", Additions: 50, Deletions: 0, Status: "added", Patch: bigPatch("a.txt", 50)}}
+	app := openDiff(t, files)
+
+	for i := 0; i < 200; i++ {
+		app.diffScrollBy(10)
+	}
+	app.buildDiffLayout()            // no-op: unchanged key
+	rendered := app.renderDiffPane() // clamps
+	total := len(app.diff.layoutRows)
+	height := app.diffBodyHeight()
+	if app.diff.scroll != total-height {
+		t.Fatalf("scroll = %d, want the clamp %d (total %d, height %d)", app.diff.scroll, total-height, total, height)
+	}
+	_ = rendered
+	if app.diff.scroll < 0 || app.diff.scroll > total {
+		t.Fatalf("scroll escaped the content: %d of %d", app.diff.scroll, total)
+	}
+}
+
+func TestDiffViewerReviewedToggleRebuildsExactlyOnce(t *testing.T) {
+	app := openDiff(t, diffFixture())
+	pressKey(t, app, "n") // settle the selection-driven rebuild first
+	app.View()
+	before := app.diff.layoutBuilds
+
+	pressKey(t, app, "m")
+	app.View()
+
+	// The toggle changes rendered colors, so exactly one rebuild is owed —
+	// and no more.
+	if app.diff.layoutBuilds != before+1 {
+		t.Fatalf("reviewed toggle rebuilt %d times, want exactly 1 (colors changed)",
+			app.diff.layoutBuilds-before)
+	}
+}
+
+func TestDiffViewerCollapsingTreeKeepsEveryFile(t *testing.T) {
+	// The fidelity bug the fix surfaced: TS computes the pane's file order
+	// from the WHOLE tree, so collapsing a directory must never hide its
+	// files from the pane.
+	files := []client.FileDiff{
+		{File: "dir/a.txt", Additions: 1, Status: "added", Patch: smallPatch("dir/a.txt", "a")},
+		{File: "dir/b.txt", Additions: 1, Status: "added", Patch: smallPatch("dir/b.txt", "b")},
+		{File: "top.txt", Additions: 1, Status: "added", Patch: smallPatch("top.txt", "t")},
+	}
+	app := openDiff(t, files)
+	if got := len(app.diff.visibleFiles()); got != 3 {
+		t.Fatalf("full pane shows %d files, want 3", got)
+	}
+
+	// Collapse every directory in the tree.
+	for id := range app.diff.expanded {
+		app.diff.expanded[id] = false
+	}
+	if got := len(app.diff.visibleFiles()); got != 3 {
+		t.Fatalf("collapsed tree changed the pane's files: %d, want 3", got)
+	}
+}
+
+func bigPatch(name string, lines int) string {
+	var builder strings.Builder
+	builder.WriteString("--- a/" + name + "\n+++ b/" + name + "\n@@ -0,0 +1," + integerDigits(lines) + " @@\n")
+	for i := 0; i < lines; i++ {
+		builder.WriteString("+line " + integerDigits(i) + "\n")
+	}
+	return builder.String()
+}
+
+func smallPatch(name, line string) string {
+	return "--- a/" + name + "\n+++ b/" + name + "\n@@ -0,0 +1 @@\n+" + line + "\n"
 }
