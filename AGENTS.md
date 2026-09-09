@@ -43,6 +43,7 @@ Everything the agent does becomes a durable event in SQLite before visible state
 |---|---|
 | `cmd/gocode/` | CLI entrypoint, subcommands, `bootStack()` |
 | `internal/session/` | Agent loop: runner, coordinator, compaction, event definitions |
+| `internal/vcs/` | Git plumbing wrappers + the working-tree/branch diff service behind `/api/vcs` |
 | `internal/llm/` | Provider clients (anthropic, openai, gemini, openairesponses) |
 | `internal/tool/` | Tool registry + 15 builtins in `builtins/` (`task` registers in `bootStack`) |
 | `internal/permission/` | Allow/deny/ask rules engine |

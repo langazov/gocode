@@ -150,11 +150,19 @@ type App struct {
 	// session with a parent is opened.
 	subagentSiblings []client.Session
 
-	tip           string
-	mcpServers    []client.MCPServer
-	cwd           string
-	homeDir       string
-	gitBranch     string
+	tip        string
+	mcpServers []client.MCPServer
+	cwd        string
+	homeDir    string
+	gitBranch  string
+	// diff is the diff viewer route's state while it is open (nil
+	// otherwise), and diffReturn the view to restore on close — the TS
+	// plugin's route plus returnRoute params. See diffviewer.go.
+	diff       *diffViewer
+	diffReturn int
+	// diffStatePath is where the diff viewer's preferences persist; New
+	// resolves it once like the prompt-history path.
+	diffStatePath string
 	modelNames    map[string]string // "provider/model" -> display name
 	providerNames map[string]string // provider id -> display name
 	// providers is the raw catalog list, kept because the sidebar footer's
@@ -411,6 +419,7 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 		modelCosts:         map[string]float64{},
 		history:            loadPromptHistory(filepath.Join(global.Resolve().State, promptHistoryFile)),
 		themeStatePath:     ThemeStatePath(),
+		diffStatePath:      DiffStatePath(),
 		windowTitle:        "GoCode",
 		thinkingMode:       "hide",
 		expandedReasoning:  map[string]bool{},
@@ -859,6 +868,10 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			a.toast = nil
 		}
 		return nil
+	case diffLoadedMsg:
+		return a.handleDiffResult(msg)
+	case diffVcsInfoMsg:
+		return a.handleDiffVcsInfo(msg)
 	case quitMsg:
 		a.quitting = true
 		return tea.Quit
@@ -1218,6 +1231,12 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// A dialog owns the keyboard while open (modal mode in the original).
 	if a.overlay != nil {
 		return a.handleOverlayKey(msg.String())
+	}
+	// The diff viewer route owns the keyboard while open, the same way a
+	// dialog does — its commands (diff.* in keybind.ts) are scoped to the
+	// route and none of the global chords below apply inside it.
+	if a.diff != nil {
+		return a.handleDiffKey(msg)
 	}
 	switch msg.String() {
 	case "ctrl+c", "ctrl+d":

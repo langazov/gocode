@@ -137,6 +137,10 @@ type stack struct {
 	// ProjectID is the project this stack booted in, resolved once so the
 	// memory routes and the memory plugin agree on what "this project" means.
 	ProjectID string
+	// workdir is the directory the runtime booted in: the VCS routes diff
+	// against it, and anything else that means "the project" rather than
+	// "a project" should read it from here too.
+	workdir string
 }
 
 // newServer builds the HTTP server this stack backs.
@@ -163,6 +167,7 @@ func (s *stack) newServer() *server.Server {
 		Plugins:     s.Plugins,
 		Memory:      s.Memory,
 		ProjectID:   s.ProjectID,
+		VCSWorkdir:  s.workdir,
 	}
 }
 
@@ -539,6 +544,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Plugins:     plugins,
 		Memory:      memory.New(database),
 		ProjectID:   projectID,
+		workdir:     workdir,
 	}, nil
 }
 

@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -609,6 +611,47 @@ func (c *Client) LSP(ctx context.Context) (*LSPState, error) {
 func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	var out []Agent
 	err := c.do(ctx, http.MethodGet, "/api/agent", nil, &out)
+	return out, err
+}
+
+// VcsInfo is GET /api/vcs: the branch state the diff viewer gates its
+// "Main branch" source on, mirroring TuiPluginApi.state.vcs() in the
+// original ({branch, default_branch}) and the TS VcsInfo schema.
+type VcsInfo struct {
+	Branch        string `json:"branch,omitempty"`
+	DefaultBranch string `json:"defaultBranch,omitempty"`
+}
+
+// Vcs fetches repository info. An empty Branch and DefaultBranch is a valid
+// answer (detached HEAD, no remote) — it is not an error.
+func (c *Client) Vcs(ctx context.Context) (*VcsInfo, error) {
+	var out VcsInfo
+	if err := c.do(ctx, http.MethodGet, "/api/vcs", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// FileDiff is one entry from GET /api/vcs/diff, mirroring the VcsFileDiff
+// schema the TS viewer consumes: patch text, line counts, coarse status.
+type FileDiff struct {
+	File      string `json:"file"`
+	Patch     string `json:"patch"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+	Status    string `json:"status"`
+}
+
+// VcsDiff fetches the file diff for a mode. mode is the server's "git" or
+// "branch"; context is the context-line window the viewer wants (the TUI
+// passes 12, its VCS_DIFF_CONTEXT_LINES) and 0 leaves the server default.
+func (c *Client) VcsDiff(ctx context.Context, mode string, context int) ([]FileDiff, error) {
+	path := "/api/vcs/diff?mode=" + url.QueryEscape(mode)
+	if context > 0 {
+		path += "&context=" + strconv.Itoa(context)
+	}
+	var out []FileDiff
+	err := c.do(ctx, http.MethodGet, path, nil, &out)
 	return out, err
 }
 

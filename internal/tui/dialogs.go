@@ -13,6 +13,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/langazov/gocode-go/internal/tui/client"
 	"github.com/langazov/gocode-go/internal/tui/theme"
 )
@@ -151,6 +152,10 @@ type overlay struct {
 	onActivate func(item overlayItem) tea.Cmd
 	input      string // for overlayInput
 	onSubmit   func(string) tea.Msg
+	// helpLines overrides the help overlay's paragraph with caller-supplied
+	// rows (the diff viewer's shortcut sheet). Empty renders the default
+	// one-liner — same dialog kind, different content, not a ninth kind.
+	helpLines []string
 
 	// placeholder is the filter input's placeholder (DialogSelect's
 	// placeholder prop, "Search" when unset).
@@ -678,6 +683,9 @@ func (a *App) viewOverlay() string {
 }
 
 func (a *App) underlay() string {
+	if a.diff != nil {
+		return a.viewDiff()
+	}
 	if a.view == viewHome {
 		return a.viewHome()
 	}
@@ -1262,7 +1270,8 @@ func (a *App) inputOverlay(w int) string {
 }
 
 // helpOverlay mirrors ui/dialog-help.tsx: a short paragraph and a right
-// aligned ok button in the primary color.
+// aligned ok button in the primary color. helpLines replaces the paragraph
+// with pre-rendered rows (the diff viewer's shortcut sheet).
 func (a *App) helpOverlay(w int) string {
 	pad := strings.Repeat(" ", 2)
 	ok := lipgloss.NewStyle().
@@ -1270,9 +1279,16 @@ func (a *App) helpOverlay(w int) string {
 		Background(a.theme.Primary).
 		Render("   ok   ")
 	lines := []string{a.dialogHeader(2, "Help", "esc/enter", w), ""}
-	for _, line := range wrapWords(
-		"Press ctrl+p to see all available actions and commands in any context.", w-4) {
-		lines = append(lines, pad+a.onPanel(a.theme.TextMuted, false).Render(line))
+	if len(a.overlay.helpLines) > 0 {
+		for _, row := range a.overlay.helpLines {
+			lines = append(lines, pad+a.onPanel(a.theme.TextMuted, false).Render(
+				ansi.Truncate(row, max(4, w-4), "…")))
+		}
+	} else {
+		for _, line := range wrapWords(
+			"Press ctrl+p to see all available actions and commands in any context.", w-4) {
+			lines = append(lines, pad+a.onPanel(a.theme.TextMuted, false).Render(line))
+		}
 	}
 	// The message box's paddingBottom and the parent box's gap are two
 	// separate rows between the paragraph and the button.
@@ -1719,6 +1735,9 @@ func (a *App) commandsRegistry() []overlayItem {
 		{label: "Help", value: "help.show", slash: "help", category: "System", action: func() tea.Msg {
 			a.overlay = &overlay{kind: overlayHelp, title: "Help"}
 			return nil
+		}},
+		{label: "Open diff viewer", value: "diff.open", slash: "diff", slashAliases: []string{"dif"}, category: "VCS", action: func() tea.Msg {
+			return a.openDiffViewer()
 		}},
 		{label: "View status", value: "opencode.status", slash: "status", category: "System", footer: "ctrl+x s", action: func() tea.Msg {
 			a.overlay = &overlay{kind: overlayStatus, title: "Status"}

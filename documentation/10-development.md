@@ -124,6 +124,9 @@ Known deliberate divergences:
 | No runtime install for plugins either | same posture as language servers: a configured plugin is compiled in or already on disk |
 | A failing plugin hook is reported and skipped, not fatal | upstream's `Effect.promise` makes a rejected hook a defect that aborts the turn — one broken third-party plugin should not take down the agent |
 | Plugin auth/provider registrations are built-in only | an OAuth flow is a conversation, not a request/response, and modelling it over stdio would add a callback channel with no user yet |
+| `/api/vcs*` takes no `directory` parameter | this server is one project per process (`bootStack`); the TS server is multi-project and resolves the worktree per request |
+| Diff viewer has no "last turn" source | TS derives it from snapshot hashes (`snapshot.diffFull`); this port records no snapshots — `AssistantSnapshot` exists in the wire schema but nothing populates it, and rebuilding the snapshot system for one viewer is out of scope. The viewer offers working-tree and main-branch sources only |
+| Diff viewer does not read `diff_style: "stacked"` | the Go config schema has no such key; the viewer's split/unified toggle persists in its own state file like every other viewer preference |
 
 ## CI
 

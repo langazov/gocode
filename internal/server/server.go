@@ -55,6 +55,12 @@ type Server struct {
 	// resolved no project, which sends new memories to the global scope.
 	ProjectID string
 
+	// VCSWorkdir is the directory the /api/vcs routes diff against: the
+	// process working directory at boot. Empty disables the VCS surface
+	// (empty payloads, never 500s), so embedders that boot without one keep
+	// a working server.
+	VCSWorkdir string
+
 	// oauth tracks in-flight provider logins started from the interface. A
 	// device flow outlives the request that begins it, so the attempt is
 	// parked here and polled.
@@ -89,6 +95,11 @@ func (s *Server) Mux() *http.ServeMux {
 	if s.Agents != nil {
 		mux.HandleFunc("GET /api/agent", s.listAgents)
 	}
+	// VCS routes are unconditional: they answer empty payloads rather than
+	// 404 when the workdir is unset or not a repository, so the TUI's diff
+	// viewer can open anywhere and degrade to "No diff!" like the TS plugin.
+	mux.HandleFunc("GET /api/vcs", s.vcsInfo)
+	mux.HandleFunc("GET /api/vcs/diff", s.vcsDiff)
 	if s.MCP != nil {
 		mux.HandleFunc("GET /api/mcp", s.listMCP)
 	}

@@ -221,3 +221,74 @@ func parseLoose(unified string) File {
 	}
 	return out
 }
+
+// PairRow is one row of a side-by-side (split) rendering: the line as it
+// exists on the old side and the new side, with their line numbers. A line
+// that exists on only one side pairs with an empty slot on the other, the
+// way a two-column diff viewer aligns a removal against the addition that
+// replaces it.
+type PairRow struct {
+	OldKind LineKind
+	NewKind LineKind
+	Old     string
+	New     string
+	OldLine int
+	NewLine int
+}
+
+// PairRows walks a file's hunks and pairs old/new lines for a split view.
+//
+// Pairing rules, matching how two-column diff viewers align rows:
+//   - a context line pairs with itself;
+//   - within a hunk, runs of consecutive removals and additions pair
+//     index-by-index (first removed with first added), removals first;
+//   - leftovers on either side pair with empty slots.
+//
+// Hunk headers and file metadata do not participate: a split view renders
+// its own separator between hunks.
+func PairRows(file File) []PairRow {
+	var rows []PairRow
+	var pendingRemoved []Line
+	flush := func(added []Line) {
+		limit := max(len(pendingRemoved), len(added))
+		for i := 0; i < limit; i++ {
+			row := PairRow{}
+			if i < len(pendingRemoved) {
+				row.OldKind = LineRemoved
+				row.Old = pendingRemoved[i].Content
+				row.OldLine = pendingRemoved[i].OldLine
+			}
+			if i < len(added) {
+				row.NewKind = LineAdded
+				row.New = added[i].Content
+				row.NewLine = added[i].NewLine
+			}
+			rows = append(rows, row)
+		}
+		pendingRemoved = pendingRemoved[:0]
+	}
+	var pendingAdded []Line
+	for _, line := range file.Lines {
+		switch line.Kind {
+		case LineRemoved:
+			pendingRemoved = append(pendingRemoved, line)
+		case LineAdded:
+			pendingAdded = append(pendingAdded, line)
+		case LineHunk, LineMeta:
+			// A hunk boundary ends any open run: pending changes on either
+			// side of it are not a replacement pair.
+			flush(pendingAdded)
+			pendingAdded = pendingAdded[:0]
+		default:
+			flush(pendingAdded)
+			pendingAdded = pendingAdded[:0]
+			rows = append(rows, PairRow{
+				OldKind: LineContext, NewKind: LineContext,
+				Old: line.Content, New: line.Content,
+				OldLine: line.OldLine, NewLine: line.NewLine,
+			})
+		}
+	}
+	flush(pendingAdded)
+	return rows
+}

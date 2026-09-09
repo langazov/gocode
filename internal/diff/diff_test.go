@@ -227,3 +227,60 @@ func TestParseLooseHandlesNoNewlineMarker(t *testing.T) {
 		t.Fatalf("stat = %+v, marker should not be counted", loose.Stat)
 	}
 }
+
+func TestPairRowsAlignsRunsAndLeftovers(t *testing.T) {
+	patch := "--- a/f\n+++ b/f\n" +
+		"@@ -1,5 +1,4 @@\n" +
+		" ctx1\n" +
+		"-del1\n" +
+		"-del2\n" +
+		"+add1\n" +
+		" ctx2\n" +
+		"+solo\n"
+	files := Parse(patch)
+	if len(files) != 1 {
+		t.Fatalf("Parse produced %d files", len(files))
+	}
+	rows := PairRows(files[0])
+
+	// ctx1 pairs with itself.
+	if rows[0].Old != "ctx1" || rows[0].New != "ctx1" {
+		t.Fatalf("context row = %+v", rows[0])
+	}
+	// del1/add1 align on one row; del2 pairs with an empty right side.
+	if rows[1].Old != "del1" || rows[1].New != "add1" {
+		t.Fatalf("paired change row = %+v", rows[1])
+	}
+	if rows[2].Old != "del2" || rows[2].New != "" {
+		t.Fatalf("leftover removal row = %+v", rows[2])
+	}
+	// ctx2 pairs with itself; solo addition pairs with an empty left side.
+	if rows[3].Old != "ctx2" || rows[3].New != "ctx2" {
+		t.Fatalf("second context row = %+v", rows[3])
+	}
+	if rows[4].Old != "" || rows[4].New != "solo" {
+		t.Fatalf("solo addition row = %+v", rows[4])
+	}
+	if len(rows) != 5 {
+		t.Fatalf("PairRows produced %d rows: %+v", len(rows), rows)
+	}
+}
+
+func TestPairRowsCarriesLineNumbers(t *testing.T) {
+	patch := "--- a/f\n+++ b/f\n@@ -2,2 +2,2 @@\n-a\n+b\n"
+	files := Parse(patch)
+	rows := PairRows(files[0])
+	if rows[0].OldLine != 2 || rows[0].NewLine != 2 {
+		t.Fatalf("pair row numbers = %+v", rows[0])
+	}
+}
+
+func TestPairRowsSkipsHeaders(t *testing.T) {
+	patch := "--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n"
+	files := Parse(patch)
+	for _, row := range PairRows(files[0]) {
+		if row.OldKind == LineHunk || row.NewKind == LineHunk {
+			t.Fatalf("hunk header leaked into a pair row: %+v", row)
+		}
+	}
+}

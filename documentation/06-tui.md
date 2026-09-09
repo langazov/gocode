@@ -93,6 +93,7 @@ dropping frames, never by applying back-pressure to the runner.
 |---|---|
 | `views.go` | top-level screens (home, chat) |
 | `render.go` | messages, tool calls, diffs |
+| `diffviewer.go` | the `/diff` full-screen route (file tree + patch pane; see the recommendations' §6.5) |
 | `markdown.go` | assistant prose via Glamour |
 | `dialogs*.go` | modal dialogs — model picker, provider, confirm |
 | `autocomplete.go` | the inline `/` and `@` popup |
