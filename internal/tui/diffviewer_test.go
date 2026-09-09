@@ -2,6 +2,8 @@ package tui
 
 import (
 	"errors"
+	"fmt"
+	"image/color"
 	"strings"
 	"testing"
 
@@ -803,4 +805,121 @@ func bigPatch(name string, lines int) string {
 
 func smallPatch(name, line string) string {
 	return "--- a/" + name + "\n+++ b/" + name + "\n@@ -0,0 +1 @@\n+" + line + "\n"
+}
+
+func TestDiffViewerHighlightedTreeRowIsVisible(t *testing.T) {
+	// Regression: the highlighted row once rendered Background-colored text
+	// over an unpainted panel fill — black on black. The row's background
+	// belongs to the row box (§9.2): a Primary fill edge to edge, text in
+	// SelectedListItemText, every segment (including gaps) painting it.
+	app := openDiff(t, diffFixture())
+	pressKey(t, app, "tab") // focus the tree; ensureHighlighted picks the file row
+
+	rows := strings.Split(app.renderDiffTree(), "\n")
+	if len(rows) != 2 {
+		t.Fatalf("tree rendered %d rows, want 2 (dir + file)", len(rows))
+	}
+	highlighted := rows[1] // dirs sort first; the file row carries the highlight
+	if !strings.Contains(highlighted, "file.ts") {
+		t.Fatalf("second row is not the file row: %q", highlighted)
+	}
+
+	// The highlighted row must paint the theme's Primary background and its
+	// text the theme's SelectedListItemText (which falls back to Background,
+	// but explicitly — never an fg that happens to sit on an unpainted fill).
+	// Resolve both through lipgloss so the assertion holds for any palette.
+	wantBG := "48;" + colorSequence(app.theme.Primary)
+	if !strings.Contains(highlighted, wantBG) {
+		t.Fatalf("highlighted row does not paint the primary background %q:\n%q", wantBG, highlighted)
+	}
+	wantFG := "38;" + colorSequence(app.theme.SelectedListItemText)
+	if !strings.Contains(highlighted, wantFG) {
+		t.Fatalf("highlighted row does not paint selectedListItemText %q:\n%q", wantFG, highlighted)
+	}
+
+	// The fill covers the whole row box: the row's painted width is the
+	// pane's interior. lipgloss.Width counts display cells, and a trailing
+	// unstyled gap would still count — so also assert the row ends with a
+	// styled reset, not bare spaces.
+	if width := lipgloss.Width(highlighted); width > diffViewerTreeWidth-2 {
+		t.Fatalf("highlighted row is %d cells wide, max %d", width, diffViewerTreeWidth-2)
+	}
+	if strings.HasSuffix(strings.TrimRight(highlighted, " "), "[m") == false && !strings.HasSuffix(highlighted, "[m") {
+		t.Fatalf("highlighted row does not end inside a styled segment:\n%q", highlighted)
+	}
+}
+
+// colorSequence renders a theme color as its 24-bit SGR payload ("2;r;g;b"),
+// resolving named colors through lipgloss the way a render would.
+func colorSequence(c color.Color) string {
+	r, g, b, _ := themeToRGB(c)
+	return fmt.Sprintf("2;%d;%d;%d", r, g, b)
+}
+
+// themeToRGB resolves any theme color to its bytes, preferring the theme's
+// own resolution path (lipgloss converts at render time; tests need the
+// same values to assert against rendered output).
+func themeToRGB(c color.Color) (int, int, int, bool) {
+	// lipgloss.Color returns color.RGBA-compatible values (v2 converts the
+	// hex at construction); the assets and theme.go build every theme color
+	// from a #rrggbb literal, so the RGBA path covers them all.
+	if v, ok := c.(color.RGBA); ok {
+		return int(v.R), int(v.G), int(v.B), true
+	}
+	// Fall back to the generic interface for any profile-resolved color.
+	if rgb, ok := c.(interface{ RGBA() (r, g, b, a uint32) }); ok {
+		r, g, b, _ := rgb.RGBA()
+		return int(r >> 8), int(g >> 8), int(b >> 8), true
+	}
+	return 0, 0, 0, false
+}
+
+func hexToRGB(hex string) (int, int, int, bool) {
+	var r, g, b int
+	if _, err := fmt.Sscanf(hex, "#%02x%02x%02x", &r, &g, &b); err != nil {
+		return 0, 0, 0, false
+	}
+	return r, g, b, true
+}
+
+func TestDiffViewerSelectedTreeRowStaysVisibleWithoutFocus(t *testing.T) {
+	// The reported state: a file is selected while the pane holds focus, so
+	// no row is highlighted — the selected row must still be legible
+	// (Primary name on the panel, not lost against it). Both themes.
+	for _, themeName := range []string{"gocode-dark", "gocode-light"} {
+		app := newTestApp(t, "http://example.invalid")
+		app.setTheme(theme.Resolve(themeName))
+		app.diffStatePath = ""
+		drive(t, app, staticMsg(app.openDiffViewer()))
+		drive(t, app, diffLoadedMsg{mode: diffModeGit, files: []client.FileDiff{
+			{File: "a.txt", Additions: 1, Status: "added", Patch: smallPatch("a.txt", "a")},
+			{File: "b.txt", Additions: 1, Status: "added", Patch: smallPatch("b.txt", "b")},
+		}})
+		pressKey(t, app, "n") // select a.txt (first in tree order)
+
+		rows := strings.Split(app.renderDiffTree(), "\n")
+		var selected string
+		for _, row := range rows {
+			if strings.Contains(stripANSI(row), "a.txt") {
+				selected = row
+			}
+		}
+		if selected == "" {
+			t.Fatalf("[%s] selected row not found in:\n%s", themeName, app.renderDiffTree())
+		}
+
+		// Primary name on the panel background: both colors present and
+		// distinct.
+		wantFG := "38;" + colorSequence(app.theme.Primary)
+		wantBG := "48;" + colorSequence(app.theme.BackgroundPanel)
+		if !strings.Contains(selected, wantFG) {
+			t.Fatalf("[%s] selected name missing primary fg %q:\n%q", themeName, wantFG, selected)
+		}
+		if !strings.Contains(selected, wantBG) {
+			t.Fatalf("[%s] selected row missing panel bg %q:\n%q", themeName, wantBG, selected)
+		}
+		if colorSequence(app.theme.Primary) == colorSequence(app.theme.BackgroundPanel) {
+			t.Fatalf("[%s] theme has primary == backgroundPanel; the selected row can never read", themeName)
+		}
+	}
 }

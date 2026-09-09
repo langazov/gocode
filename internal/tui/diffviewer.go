@@ -668,36 +668,39 @@ func (a *App) renderDiffTree() string {
 		d.treeHits[i] = visible[i].fileIndex
 	}
 
-	// The tree's connector glyphs fade toward the panel they sit on
-	// (TS: tint(text, background, 0.75)); a fade must name its surface.
-	fadedPrefix := lipgloss.NewStyle().
-		Foreground(theme.FadeColor(a.theme.BackgroundPanel, a.theme.TextMuted, 0.75)).
-		Background(a.theme.BackgroundPanel)
 	rows := make([]string, 0, len(visible))
 	for i, row := range visible {
 		highlighted := d.focus == diffFocusTree && d.highlight == row.id
+		selected := row.fileIndex >= 0 && row.fileIndex == d.selected
 		rowIndex := d.treeScroll + i
 
 		prefix := diffTreeRowPrefix(d.rows, rowIndex, row, d.expanded)
 		status := diffTreeRowStatus(row, d.files, d.reviewed)
 
-		prefixStyle := fadedPrefix
+		// The row's background belongs to the row box (§9.2): a highlighted
+		// row is a Primary fill edge to edge, and every segment — prefix,
+		// name, gap, status — paints it, never a bare space. Text on the
+		// fill is SelectedListItemText, which themes may override away from
+		// Background (the same fallback listRow uses).
+		bg := a.theme.BackgroundPanel
+		prefixFg := theme.FadeColor(a.theme.BackgroundPanel, a.theme.TextMuted, 0.75)
 		nameFg := a.theme.Text
+		statusFg := a.theme.TextMuted
 		switch {
 		case highlighted:
-			prefixStyle = a.onPanel(a.theme.Background, false)
-			nameFg = a.theme.Background
-		case row.fileIndex >= 0 && row.fileIndex == d.selected:
+			bg = a.theme.Primary
+			prefixFg = a.theme.SelectedListItemText
+			nameFg = a.theme.SelectedListItemText
+			statusFg = a.theme.SelectedListItemText
+		case selected:
 			nameFg = a.theme.Primary
 		case d.reviewed[row.name] || row.dir:
 			nameFg = a.theme.TextMuted
 		}
-		nameStyle := a.onPanel(nameFg, false)
-		statusStyle := a.onPanel(a.theme.TextMuted, false)
-		if highlighted {
-			nameStyle = a.onPanel(a.theme.Background, false)
-			statusStyle = a.onPanel(a.theme.Background, false)
-		}
+		segment := lipgloss.NewStyle().Foreground(prefixFg).Background(bg)
+		nameStyle := lipgloss.NewStyle().Foreground(nameFg).Background(bg)
+		statusStyle := lipgloss.NewStyle().Foreground(statusFg).Background(bg)
+		fill := lipgloss.NewStyle().Background(bg)
 
 		// Name truncates to what remains after the prefix and the status
 		// column (TS Locale.truncate with the same budget).
@@ -705,11 +708,13 @@ func (a *App) renderDiffTree() string {
 		name := ansi.Truncate(row.name, nameWidth, "…")
 		gap := diffViewerTreeWidth - 4 - lipgloss.Width(prefix) - lipgloss.Width(name) - diffViewerStatusWidth
 
-		line := prefixStyle.Render(prefix) + nameStyle.Render(name) +
-			strings.Repeat(" ", max(0, gap)) + statusStyle.Render(status)
-		// The highlight belongs to the row box, edge to edge (§9.2).
-		if highlighted {
-			line = a.onPanel(a.theme.Primary, false).Render(ansi.Truncate(strings.Repeat(" ", 1)+line, diffViewerTreeWidth-2, ""))
+		line := segment.Render(prefix) + nameStyle.Render(name) +
+			fill.Render(strings.Repeat(" ", max(0, gap))) + statusStyle.Render(status)
+		// Pad the row box out to the pane's full width so the highlight
+		// reads edge to edge (§9.2: the background belongs to the row box,
+		// fill(n), never bare spaces).
+		if used := lipgloss.Width(prefix) + lipgloss.Width(name) + max(0, gap) + lipgloss.Width(status); used < diffViewerTreeWidth-2 {
+			line += fill.Render(strings.Repeat(" ", diffViewerTreeWidth-2-used))
 		}
 		rows = append(rows, line)
 	}

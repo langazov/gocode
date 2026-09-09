@@ -553,9 +553,13 @@ the contract for its port in `diffviewer.go`.
 - **Colors:** added `Success`, removed `Error`, context and hunk headers
   `TextMuted`, all on `BackgroundPanel`; a reviewed file mutes its header
   *and* rows to `TextMuted` (the TS viewer's reviewed treatment).
-- **Tree rows:** highlight is a `Primary` row fill with `Background` text,
-  edge to edge (§9.2); the selected file's name renders `Primary`; reviewed
-  and directory names `TextMuted`; connectors fade toward the panel via
+- **Tree rows:** highlight is a `Primary` row fill with
+  `SelectedListItemText` text, edge to edge (§9.2) — never `Background`
+  directly: a theme may override the selected-list color, and "fill + fg"
+  only reads as a highlight when every segment (including gaps and the
+  trailing pad) paints the row's own background. The selected file's name
+  renders `Primary` on the panel; reviewed and directory names
+  `TextMuted`; connectors fade toward the panel via
   `theme.FadeColor(BackgroundPanel, TextMuted, 0.75)`.
 - **Windowing:** only rows in `[scroll, scroll+bodyHeight)` render (§16.5),
   with a muted `↑/↓ N more lines` row that comes **out of the body budget**.
