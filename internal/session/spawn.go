@@ -23,6 +23,31 @@ const DefaultSubagentDepth = 1
 // keyed by their own session IDs, and Coordinator serializes per key while
 // running different keys concurrently. A child therefore runs on its own
 // goroutine alongside its parent and its siblings, with no extra machinery.
+//
+// # Channel topology (the ports of packages/opencode/src/tool/task.ts)
+//
+//	parent turn goroutine                child drain goroutine
+//	┌────────────────────────┐           ┌──────────────────────────┐
+//	│ runner.runTurnAttempt  │           │ Coordinator.Run(childID) │
+//	│   └─ settleTool        │ Spawn ──▶ │   └─ runner.Run(child)   │
+//	│       └─ task.Execute  │           │        ...turn...        │
+//	└───────────┬────────────┘           └───────────┬──────────────┘
+//	            │      done <-chan SpawnResult       │
+//	            └────────────────◀───────────────────┘
+//
+// Foreground: task.Execute blocks its worker goroutine on `done`; the runner
+// dispatches every tool call on its own goroutine (bounded by
+// DefaultToolConcurrency), so N concurrent task calls produce N concurrent
+// children whose results fan back over their own channels in any order.
+//
+// Background (task.go's runAsJob): the same `done` is consumed by the
+// background.Registry instead, and the result reaches the parent as a
+// synthetic queued prompt through Notify — the parent's turn never blocked.
+//
+// Cancellation travels downward only: interrupting the parent cancels its run
+// context, which the task tool observes and forwards as Cancel(childID) →
+// Execution.Interrupt. A child's own failure travels upward as SpawnResult.Err
+// and becomes the tool call's error.
 type Spawner struct {
 	Service   *Service
 	Execution *Execution

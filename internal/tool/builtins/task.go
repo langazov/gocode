@@ -148,6 +148,22 @@ func (t *TaskTool) ExecuteWithContext(ctx context.Context, input map[string]any,
 		return "", err
 	}
 
+	// Link the call to its child session the moment the child exists
+	// (ports task.ts's ctx.metadata: the TUI reads metadata.sessionID for
+	// click-to-open and live progress). The wire key is "sessionID" — the
+	// camelCase "sessionId" the TS SDK carries is a generated-client spelling
+	// this port's snake-case-ish JSON never uses (compare
+	// background.StartInput's metadata), so this stays consistent with the
+	// rest of the Go surface. Metadata only: a failure degrades the display,
+	// never the run.
+	if exec.SetMeta != nil {
+		_ = exec.SetMeta(description, map[string]any{
+			"parentSessionID": exec.SessionID,
+			"sessionID":       childID,
+			"background":      wantsBackground,
+		})
+	}
+
 	if t.jobs == nil {
 		return t.waitForeground(ctx, childID, done)
 	}

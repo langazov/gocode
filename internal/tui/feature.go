@@ -317,11 +317,14 @@ func (a *App) childrenOverlay() tea.Cmd {
 				hint:  hint,
 				value: child.ID,
 				action: func() tea.Msg {
-					a.active = &child
-					a.view = viewChat
-					a.timeline = nil
-					a.scrollOffset = 0
-					return reloadMsg{}
+					// The child session is already in hand (the list was
+					// fetched to build it), so no re-fetch: straight to the
+					// sessionOpenedMsg that resets the per-session state
+					// (child tracking, subagent siblings, queue, run
+					// status) — the overlay's shortcut used to assign
+					// a.active directly and skip all of that.
+					child := child
+					return sessionOpenedMsg{session: &child}
 				},
 			})
 		}

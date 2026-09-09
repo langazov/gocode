@@ -300,6 +300,12 @@ type AssistantData struct {
 			Input  map[string]any `json:"input"`
 			Output string         `json:"output"`
 			Error  string         `json:"error"`
+			// Title and Metadata are the running tool's own updates to its
+			// part (ExecContext.SetMeta → session.next.tool.metadata). The
+			// task tool carries { parentSessionID, sessionID, background } —
+			// the link the task row's click-to-open and live progress read.
+			Title    string         `json:"title,omitempty"`
+			Metadata map[string]any `json:"metadata,omitempty"`
 		} `json:"state"`
 	} `json:"content"`
 	Finish string `json:"finish"`
@@ -868,4 +874,32 @@ func (c *Client) Children(ctx context.Context, sessionID string) ([]Session, err
 	var out []Session
 	err := c.do(ctx, http.MethodGet, "/api/session/"+sessionID+"/children", nil, &out)
 	return out, err
+}
+
+// Background promotes a session's running foreground subagents to detached
+// background jobs (session.background). Returns how many were promoted.
+// Errors when the server runs without the background registry — the
+// caller treats that as "unavailable" rather than a failure.
+func (c *Client) Background(ctx context.Context, sessionID string) (int, error) {
+	var out struct {
+		Promoted int `json:"promoted"`
+	}
+	err := c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/background", nil, &out)
+	return out.Promoted, err
+}
+
+// BackgroundAvailable reports whether the server mounts the background-job
+// routes, which is exactly when background subagents are enabled
+// (GOCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS).
+func (c *Client) BackgroundAvailable(ctx context.Context) bool {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+"/api/job", nil)
+	if err != nil {
+		return false
+	}
+	res, err := c.HTTP.Do(req)
+	if err != nil {
+		return false
+	}
+	defer res.Body.Close()
+	return res.StatusCode >= 200 && res.StatusCode < 300
 }

@@ -861,6 +861,21 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 		Agent:              agentID,
 		AssistantMessageID: assistantMessageID,
 		CallID:             call.ID,
+		// The metadata seam (see ExecContext.SetMeta). Published with the
+		// context detached: a parent-turn cancellation racing the task tool's
+		// link write would leave the part without its child session ID, and
+		// the settlement that follows carries no metadata of its own.
+		SetMeta: func(title string, metadata map[string]any) error {
+			_, err := r.Bus.Publish(context.WithoutCancel(ctx), ToolMetaUpdated, map[string]any{
+				"sessionID":          sessionID,
+				"timestamp":          nowMillis(),
+				"assistantMessageID": assistantMessageID,
+				"callID":             call.ID,
+				"title":              title,
+				"metadata":           metadata,
+			}, event.PublishOptions{})
+			return err
+		},
 	})
 	if err != nil {
 		return "", err

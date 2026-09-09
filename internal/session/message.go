@@ -108,10 +108,18 @@ type ToolMeta struct {
 }
 
 type ToolState struct {
-	Status    string         `json:"status"`
-	Input     map[string]any `json:"input,omitempty"`
-	Error     string         `json:"error,omitempty"`
-	Output    string         `json:"output,omitempty"`
+	Status string         `json:"status"`
+	Input  map[string]any `json:"input,omitempty"`
+	Error  string         `json:"error,omitempty"`
+	Output string         `json:"output,omitempty"`
+	// Title is the running tool's own label for itself, set through
+	// ExecContext.SetMeta (the port of ctx.metadata's title half). Today only
+	// the task tool sets it — the task description.
+	Title string `json:"title,omitempty"`
+	// Metadata is the running tool's own attach point, same seam. The task
+	// tool carries { parentSessionID, sessionID, background } — the link the
+	// TUI uses to open and watch the subagent's session.
+	Metadata  map[string]any `json:"metadata,omitempty"`
 	Completed *int64         `json:"completed,omitempty"`
 }
 

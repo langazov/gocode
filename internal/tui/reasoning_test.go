@@ -62,7 +62,7 @@ func TestNextThinkingMode(t *testing.T) {
 func TestReasoningBlockRunningShowsSpinnerAndTitle(t *testing.T) {
 	app := &App{width: 100, height: 30, busy: true, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
 	data := assistantWithReasoning(t, `{"agent":"build","content":[{"type":"reasoning","id":"r1","text":"**Investigating**\n\nlooking into it"}]}`)
-	block, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, true)
+	block, _, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, true)
 	got := plain(block)
 	if !strings.Contains(got, "Thinking: Investigating") {
 		t.Fatalf("expected running spinner with title, got %q", got)
@@ -77,7 +77,7 @@ func TestReasoningBlockCollapsedByDefault(t *testing.T) {
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
 		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
 	]}`)
-	block, refs, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	block, refs, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
 	got := plain(block)
 	if !strings.Contains(got, "+ Thought: Investigating bug · 2.5s") {
 		t.Fatalf("expected collapsed header with title+duration, got %q", got)
@@ -100,7 +100,7 @@ func TestReasoningBlockCollapsedShowsTokenEstimate(t *testing.T) {
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
 		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\n`+body+`","time":{"created":1000,"completed":3500}}
 	]}`)
-	block, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	block, _, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
 	got := plain(block)
 	if !strings.Contains(got, "+ Thought: Investigating bug · 2.5s · ~1.3K tokens") {
 		t.Fatalf("expected collapsed header to carry a token estimate, got %q", got)
@@ -114,7 +114,7 @@ func TestReasoningBlockExpandedKeepsTokenEstimate(t *testing.T) {
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
 		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
 	]}`)
-	block, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	block, _, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
 	got := plain(block)
 	if !strings.Contains(got, "· ~10 tokens") {
 		t.Fatalf("expected the same estimate once expanded, got %q", got)
@@ -141,7 +141,7 @@ func TestReasoningBlockExpandedShowsBodyWithExtraIndent(t *testing.T) {
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
 		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
 	]}`)
-	block, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	block, _, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
 	got := plain(block)
 	if !strings.Contains(got, "- Thought: Investigating bug · 2.5s") {
 		t.Fatalf("expected expanded (open) header with '-' prefix, got %q", got)
@@ -165,7 +165,7 @@ func TestReasoningBlockShowModeAlwaysOpenNoPrefix(t *testing.T) {
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[
 		{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
 	]}`)
-	block, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	block, _, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
 	got := plain(block)
 	if !strings.Contains(got, "Thought: Investigating bug · 2.5s") {
 		t.Fatalf("expected header, got %q", got)
@@ -189,7 +189,7 @@ func TestReasoningBlockShowModeAlwaysOpenNoPrefix(t *testing.T) {
 func TestReasoningBlockRedactedPlaceholderStripped(t *testing.T) {
 	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[{"type":"reasoning","id":"r1","text":"[REDACTED]"}]}`)
-	block, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	block, _, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
 	if block != "" && strings.Contains(block, "Thought") {
 		t.Fatalf("a fully redacted block with no other text should render nothing, got %q", block)
 	}
@@ -207,7 +207,7 @@ func TestBuildTimelineLocatesReasoningHeaderRow(t *testing.T) {
 			{"type":"reasoning","id":"r1","text":"**Investigating bug**\n\nRoot cause is X","time":{"created":1000,"completed":3500}}
 		]}`)},
 	}
-	lines, rows, _ := app.buildTimeline()
+	lines, rows, _, _ := app.buildTimeline()
 	found := -1
 	for i, line := range lines {
 		if strings.Contains(plain(line), "Thought: Investigating bug") {
@@ -282,7 +282,7 @@ func TestClickOnExpandedReasoningBodyCollapses(t *testing.T) {
 
 	_ = app.viewChat() // populates chatReasoningRows/chatWindowPad/chatWindowStart
 
-	lines, rows, _ := app.buildTimeline()
+	lines, rows, _, _ := app.buildTimeline()
 	bodyRow := -1
 	for i, line := range lines {
 		if strings.Contains(plain(line), "third body line") {
@@ -305,7 +305,7 @@ func TestClickOnExpandedReasoningBodyCollapses(t *testing.T) {
 	// Collapsed again, only the header row toggles: the rows the body used
 	// to occupy belong to whatever is rendered there now.
 	_ = app.viewChat()
-	_, rows, _ = app.buildTimeline()
+	_, rows, _, _ = app.buildTimeline()
 	if len(rows) != 1 {
 		t.Fatalf("collapsed block should register exactly its header row, got %v", rows)
 	}
@@ -341,9 +341,9 @@ func TestReasoningHeaderColorFadesOnceOpen(t *testing.T) {
 	app := &App{width: 100, height: 30, theme: themeResolve("gocode-dark"), thinkingMode: "hide", expandedReasoning: map[string]bool{}}
 	data := assistantWithReasoning(t, `{"agent":"build","finish":"end_turn","content":[{"type":"reasoning","id":"r1","text":"plain body","time":{"created":1000,"completed":1500}}]}`)
 
-	closedBlock, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	closedBlock, _, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
 	app.expandedReasoning["r1"] = true
-	openBlock, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
+	openBlock, _, _, _ := app.renderAssistant(client.Message{Type: "assistant"}, data, false)
 
 	closedANSI := strings.SplitN(closedBlock, "Thought", 2)[0]
 	openANSI := strings.SplitN(openBlock, "Thought", 2)[0]
@@ -378,7 +378,7 @@ func liveApp(mode string, reasoning map[string]string) *App {
 // it, without waiting for the refetch that a settled part rides in on.
 func TestStreamingReasoningRendersLiveBlock(t *testing.T) {
 	app := liveApp("hide", map[string]string{"msg_a1-reasoning": "**Investigating bug**\n\nRoot cause is X"})
-	lines, rows, _ := app.buildTimeline()
+	lines, rows, _, _ := app.buildTimeline()
 	got := plain(strings.Join(lines, "\n"))
 	if !strings.Contains(got, "Thinking: Investigating bug") {
 		t.Fatalf("expected the live thinking header in the timeline, got %q", got)

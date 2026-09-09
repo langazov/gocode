@@ -1345,6 +1345,14 @@ func (a *App) sessionsOverlay() {
 	}
 	for i := range a.sessions {
 		session := a.sessions[i]
+		// Children stay out of the session list (dialog-session-list.tsx's
+		// `.filter(x => x.parentID === undefined)`): a subagent belongs to
+		// its parent's task row and the children overlay, and a fork belongs
+		// to the message it was forked from. Listing them here would bury
+		// the user's own conversations under every spawn.
+		if session.ParentID != "" {
+			continue
+		}
 		category := ""
 		if session.TimeUpdated > 0 {
 			category = time.UnixMilli(session.TimeUpdated).Format("Mon Jan 2 2006")
@@ -1363,11 +1371,11 @@ func (a *App) sessionsOverlay() {
 			category: category,
 			footer:   footer,
 			action: func() tea.Msg {
-				a.active = &sessionRef
-				a.view = viewChat
-				a.timeline = nil
-				a.scrollOffset = 0
-				return reloadMsg{}
+				// Same reasoning as the children overlay's action: through a
+				// sessionOpenedMsg so the per-session state (child tracking,
+				// subagent siblings, queue, run status) resets and reloads
+				// instead of surviving the switch.
+				return sessionOpenedMsg{session: &sessionRef}
 			},
 		})
 	}
@@ -1735,6 +1743,26 @@ func (a *App) commandsRegistry() []overlayItem {
 		{label: "Help", value: "help.show", slash: "help", category: "System", action: func() tea.Msg {
 			a.overlay = &overlay{kind: overlayHelp, title: "Help"}
 			return nil
+		}},
+		// session.background: push the running foreground subagents to the
+		// background (index.tsx's "Background subagents" entry, hidden like
+		// upstream — ctrl+b and the task row's hint are the affordances).
+		{label: "Background subagents", value: "session.background", slash: "background", category: "Session",
+			hidden: true, footer: "ctrl+b", action: func() tea.Msg {
+				return a.backgroundSubagents()
+			}},
+		// session.child.first / session.parent / session.child.next /
+		// session.child.previous are the subagent navigation commands behind
+		// the footer's Parent/Prev/Next and the up/left/right keys; they are
+		// also reachable as slash commands.
+		{label: "Go to child session", value: "session.child.first", slash: "subagents", slashAliases: []string{"children"}, category: "Session", footer: "ctrl+x ↓", action: func() tea.Msg {
+			return a.childrenOverlay()
+		}},
+		{label: "Go to parent session", value: "session.parent", slash: "parent", category: "Session", action: func() tea.Msg {
+			if cmd, handled := a.openParentSession(); handled {
+				return cmd
+			}
+			return statusMsg{text: "the open session has no parent"}
 		}},
 		{label: "Open diff viewer", value: "diff.open", slash: "diff", slashAliases: []string{"dif"}, category: "VCS", action: func() tea.Msg {
 			return a.openDiffViewer()

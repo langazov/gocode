@@ -650,6 +650,36 @@ blank line. No border, no panel — assistant prose is the page.
 
 Indent 3 (pending: 6), icon, space, label. Wrapped with `wrapToolLine`.
 
+**Task rows carry sub-lines** below the label, derived from the linked child
+session (`state.metadata.sessionID`), mirroring TS `Task()`:
+
+```
+   ⠹ General Task — find the bug                  running, spinner
+     ↳ Read internal/session/runner.go              the child's latest tool
+   ✓ General Task — find the bug                  done
+     ↳ 3 toolcalls · 12.5s                          formatCompletedSubagentDetail
+```
+
+- Live line: the child's most recent tool, labeled by the same input-derived
+  label every other tool row uses. Nothing renders until the child's first
+  tool call lands.
+- Done line: `N toolcalls · duration` (duration alone when the child called
+  no tools).
+- No link (or the child's timeline not loaded yet): label only — never a
+  fabricated progress line.
+- **Every line of the block is a click target** opening the child's session
+  (TS makes the whole InlineTool clickable); `chatTaskRows` records the rows.
+
+**The "view subagents" hint row** renders under any message containing a task
+call (settled ones included — the subagent's session stays openable):
+
+```
+   ctrl+x ↓ view subagents  ·  ctrl+b background
+```
+
+The `background` segment appears only while a foreground task runs and the
+server has the feature enabled.
+
 ### 7.5 Block tools (bash / read / write)
 
 An invisible-bordered `BackgroundPanel` block (border colored to the *page*
@@ -778,6 +808,17 @@ Shown above the prompt only for a child session, on `BackgroundPanel` with a
 ```
 
 Stacks the navigation on a second row when too narrow.
+
+**Rule:** renders for any session with a parent — forks included, not just
+subagents. Sibling positions come from the parent's children
+(`GET /api/session/{id}/children`), sorted by creation time.
+
+**Child asks bubble up.** While the parent is open, a tracked child's pending
+permission or question takes the parent's banner (the lists merge, matching
+TS `children().flatMap`). The banner's action line is prefixed with the
+child's title — `<task description> (@agent subagent) · Edit path` — so it
+says *which subagent* is asking; the reply settles in the child's own session.
+The open session's own ask wins when both are pending.
 
 ---
 
@@ -1023,6 +1064,7 @@ Reuse these; do not re-implement them.
 | **Link** | `renderLink(href, text, style)` | OSC 8 hyperlink; must also record a `linkHit` for the click |
 | **Scroll indicator** | inline | `↑ N more lines (pagedown to return)`, muted, costs one budget row |
 | **Collapse hint** | `collapsibleBlock` | `(+N lines — click to expand)`, muted, width reserved from the summary row |
+| **Task row** | `taskRow` + `chatTaskRows` | Label + `↳` sub-lines from the linked child; every line of the block is a click target opening the child session |
 
 **Rule for any new control:** it must (a) take its colors from theme tokens,
 (b) paint its own background on every styled segment if it sits on a tinted
@@ -1090,8 +1132,9 @@ errors that need a decision. Those are alerts or empty states.
 9. permission banner      →  then question banner
 10. history recall        →  up/down at the input boundary
 11. subagent navigation   →  up/left/right on an empty prompt only
-12. scroll + esc + enter
-13. the textarea
+12. background subagents  →  ctrl+b (chat view only; the diff viewer owns the key as pageup while open)
+13. scroll + esc + enter
+14. the textarea
 ```
 
 **Rule:** a new binding goes as *low* in this ladder as it can. Anything above
@@ -1321,6 +1364,17 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 - [ ] Fidelity test added in `render_fidelity_test.go`, fit asserted in
       `render_blockfit_test.go`.
 
+### 19.3a Anything clickable in the timeline
+
+- [ ] Rows recorded in the map `viewChat` caches (`chatReasoningRows`,
+      `chatToolOutputRows`, `chatTaskRows`), re-based by `buildTimeline`.
+- [ ] Resolved through the shared pad/start arithmetic
+      (`reasoningClickTarget`/`toolOutputClickTarget`/`taskClickTarget`).
+- [ ] Every line the affordance spans is a target, or the non-target lines
+      say why (a collapse target's summary row, not its body).
+- [ ] Hover-free: the affordance reads as clickable without a cursor
+      (label, icon, or hint row naming the key).
+
 ### 19.4 New footer / hint segment
 
 - [ ] Assigned a priority and dropped from the end when the row does not fit.
@@ -1350,9 +1404,8 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 
 | File | Owns |
 |---|---|
-| `app.go` | `App` state, `Update`, key handling, `View`, program wiring |
-| `views.go` | `frame`, geometry, `viewChat`, `viewHome`, sidebar, prompt box, status bar, ask banners |
-| `render.go` | Timeline construction, message/tool/diff blocks, wrapping and indent helpers |
+| `app.go` | `App` state, `Update`, key handling, `View`, program wiring, child-session tracking (`childMessages`), ask merge (`loadPermissions`/`loadQuestions`), `backgroundSubagents` |
+| `views.go` | `frame`, geometry, `viewChat`, `viewHome`, sidebar, prompt box, status bar, ask banners, child-ask attribution |
 | `markdown.go` | Glamour renderers, normal and dimmed, plus the chroma code theme |
 | `highlight.go` | File body renderers (code, markdown, wrapped) |
 | `dialogs.go` | Overlay model, list/input rendering, compositing, hit tests, command registry |
@@ -1365,6 +1418,7 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | `diff_bench_test.go` | The diff viewer's layout/scroll performance budgets (see §6.5) |
 | `autocomplete.go` | The inline `/` and `@` popup |
 | `footer.go` | Hint row, width policy, usage meter, subagent footer, getting-started card |
+| `render.go` | Timeline construction, message/tool/diff blocks, `taskRow` (sub-lines + link), `foregroundTaskRunning`, wrapping and indent helpers |
 | `feature.go` | Toasts, timeline dialog, fork/compact/copy/export |
 | `spinner.go` | Scanner and braille spinners |
 | `animate.go` | Fades and debouncing |

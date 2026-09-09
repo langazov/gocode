@@ -161,7 +161,7 @@ func (a *App) contentWidth() int {
 // because Bubble Tea always finishes a View() before the next Update() sees
 // input, so nothing here changes between this render and that click.
 func (a *App) viewChat() string {
-	lines, reasoningRows, toolOutputRows := a.buildTimeline()
+	lines, reasoningRows, toolOutputRows, taskRows := a.buildTimeline()
 	start := 0
 
 	viewportHeight := a.viewportHeight()
@@ -197,6 +197,7 @@ func (a *App) viewChat() string {
 	}
 	a.chatReasoningRows = reasoningRows
 	a.chatToolOutputRows = toolOutputRows
+	a.chatTaskRows = taskRows
 	a.chatWindowStart = start
 
 	// The chat column is inset by one more cell than the frame provides
@@ -217,15 +218,21 @@ func (a *App) viewChat() string {
 	if footer := a.subagentFooter(); footer != "" {
 		chat = append(chat, a.indentBlock(footer))
 	}
-	// The completion popup sits directly above the prompt and shares its
-	// width, porting the autocomplete's absolute position anchored to the
-	// prompt box.
-	if popup := a.autocompleteView(a.sessionPromptBoxWidth()); popup != "" {
-		chat = append(chat, a.indentBlock(popup))
+	// The prompt block — completion popup, prompt box, and the hint row —
+	// renders only where the prompt is mounted. A subagent's session shows
+	// the SubagentFooter instead (the `visible` memo upstream gates the
+	// `<Show>` that mounts the Prompt; see promptEnabled).
+	if a.promptEnabled() {
+		// The completion popup sits directly above the prompt and shares its
+		// width, porting the autocomplete's absolute position anchored to the
+		// prompt box.
+		if popup := a.autocompleteView(a.sessionPromptBoxWidth()); popup != "" {
+			chat = append(chat, a.indentBlock(popup))
+		}
+		chat = append(chat,
+			a.indentBlock(a.promptBox(a.sessionPromptBoxWidth())),
+			a.indentBlock(a.chatFooter()))
 	}
-	chat = append(chat,
-		a.indentBlock(a.promptBox(a.sessionPromptBoxWidth())),
-		a.indentBlock(a.chatFooter()))
 	main := strings.Join(chat, "\n")
 
 	// TS's timeline is a flexGrow scrollbox with stickyScroll="bottom": a
@@ -350,6 +357,34 @@ func promptMaxWidth(width int) int {
 // than widening the markdown side to fill a wider box.
 func (a *App) sessionPromptBoxWidth() int {
 	return a.chatWidth() - 2
+}
+
+// promptEnabled reports whether the prompt editor is mounted in the current
+// view. On the chat view it ports the Session route's `visible` memo:
+//
+//	const visible = createMemo(() =>
+//	  !session()?.parentID && permissions().length === 0 && questions().length === 0)
+//
+// A subagent's session has no prompt at all — `<Show when={visible()}>` does
+// not mount the Prompt component, so the textarea exists neither for typing
+// nor for the keymap to focus (the SubagentFooter renders in its place, and
+// up/left/right become session.parent / session.child.* navigation). The
+// home route mounts its own always-available Prompt, so it counts as
+// enabled there regardless of `active`.
+//
+// Upstream also hides the prompt while a permission or question banner is up
+// (`visible` folds both in); this port's banner already owns the keyboard
+// through handlePermissionKey/handleQuestionKey ahead of this, so only the
+// parentID arm changes behavior here — but the full memo is ported so the
+// gate matches upstream's when more of it becomes reachable.
+func (a *App) promptEnabled() bool {
+	if a.view != viewChat {
+		return true
+	}
+	if a.active == nil || a.active.ParentID != "" {
+		return false
+	}
+	return a.permission == nil && a.question == nil
 }
 
 // promptBox mirrors the Prompt component: left border in the agent color
@@ -676,10 +711,38 @@ func clampPermissionBody(body string, budget int) string {
 // concurrently, an unlabeled prompt is ambiguous about who is blocked.
 func (a *App) permissionTitle(request *client.PermissionRequest) (icon, title string) {
 	icon, title = a.permissionAction(request)
+	// An ask raised by a subagent says which one: the merged pending list
+	// carries children's requests alongside the session's own, and "Read
+	// x.go" alone does not say who is reading. The child's title carries the
+	// description the task call was launched with (spawn.go's
+	// "<description> (@<agent> subagent)").
+	if a.active != nil && request.SessionID != "" && request.SessionID != a.active.ID {
+		if child := a.childSessionTitle(request.SessionID); child != "" {
+			title = child + " · " + title
+		}
+	}
 	if agent := request.Agent; agent != "" && agent != "build" {
 		title = title + " (@" + agent + ")"
 	}
 	return icon, title
+}
+
+// childSessionTitle names a tracked child session for ask attribution, or ""
+// when it is not one of this session's children.
+func (a *App) childSessionTitle(childID string) string {
+	for _, child := range a.activeChildren {
+		if child.ID == childID {
+			return sessionTitleOf(child)
+		}
+	}
+	// Not fetched yet (the ask arrived before the children refresh): the ID
+	// is a poor label but better than nothing.
+	for _, id := range a.trackedChildren() {
+		if id == childID {
+			return "Subagent"
+		}
+	}
+	return ""
 }
 
 // externalDirectoryTarget recovers the directory an external_directory request

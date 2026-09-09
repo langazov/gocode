@@ -16,6 +16,14 @@ type ExecContext struct {
 	Agent              string
 	AssistantMessageID string
 	CallID             string
+	// SetMeta, when wired by the runner, lets a running tool attach a title
+	// and arbitrary metadata to its own part. It ports ctx.metadata from the
+	// TS tool context (packages/opencode/src/tool/tool.ts): the task tool
+	// publishes the child session ID here the moment the subagent exists, so
+	// the interface can link the call to it while it runs. Nil when the
+	// caller cannot support updates (tests, non-runner registries); tools
+	// must treat a failure as non-fatal — metadata is a display concern.
+	SetMeta func(title string, metadata map[string]any) error
 }
 
 // Tool is a local executable tool.

@@ -23,10 +23,12 @@ import (
 // client.AssistantData's Content items carry, so the render functions below
 // can name it without touching that decode struct's call sites.
 type toolState = struct {
-	Status string         `json:"status"`
-	Input  map[string]any `json:"input"`
-	Output string         `json:"output"`
-	Error  string         `json:"error"`
+	Status   string         `json:"status"`
+	Input    map[string]any `json:"input"`
+	Output   string         `json:"output"`
+	Error    string         `json:"error"`
+	Title    string         `json:"title,omitempty"`
+	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
 // timelineLines renders the message timeline like the session scrollbox:
@@ -34,27 +36,39 @@ type toolState = struct {
 // buildTimeline for callers that only need the lines (existing tests
 // included); handleClick needs the reasoning row map too.
 func (a *App) timelineLines() []string {
-	lines, _, _ := a.buildTimeline()
+	lines, _, _, _ := a.buildTimeline()
 	return lines
+}
+
+// taskHeaderRef locates a task row's clickable lines within the timeline.
+// Every line of the task block is a target (TS makes the whole InlineTool
+// clickable), so unlike the reasoning/output refs this spans the block from
+// its first to its last line.
+type taskHeaderRef struct {
+	childID            string
+	lineStart, lineEnd int
 }
 
 // buildTimeline is timelineLines' real implementation, additionally
 // returning which absolute lines (by index into the returned lines) toggle a
-// reasoning part (see reasoningHeaderRef) or a tool call's output (see
-// toolOutputHeaderRef).
-func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, toolOutputRows map[int]string) {
+// reasoning part (see reasoningHeaderRef), toggle a tool call's output (see
+// toolOutputHeaderRef), or open a task call's child session (see
+// taskHeaderRef).
+func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, toolOutputRows map[int]string, taskRows map[int]string) {
 	var blocks []string
 	var blockRefs [][]reasoningHeaderRef
 	var blockToolRefs [][]toolOutputHeaderRef
+	var blockTaskRefs [][]taskHeaderRef
 	messages := a.timeline
 	if len(messages) > 60 {
 		messages = messages[len(messages)-60:]
 	}
 	for i, message := range messages {
-		if block, refs, toolRefs := a.renderMessageCached(message, i == len(messages)-1); block != "" {
+		if block, refs, toolRefs, taskRefs := a.renderMessageCached(message, i == len(messages)-1); block != "" {
 			blocks = append(blocks, block)
 			blockRefs = append(blockRefs, refs)
 			blockToolRefs = append(blockToolRefs, toolRefs)
+			blockTaskRefs = append(blockTaskRefs, taskRefs)
 		}
 	}
 	// Live thinking, above the live text: within a step the model reasons
@@ -75,6 +89,7 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, too
 		// records for a stored part, so a live block is clickable too.
 		blockRefs = append(blockRefs, []reasoningHeaderRef{a.reasoningRef(id, block, 0)})
 		blockToolRefs = append(blockToolRefs, nil)
+		blockTaskRefs = append(blockTaskRefs, nil)
 	}
 	// Live assistant text, in message-ID order. The map iteration this used
 	// to do reordered concurrent live messages between frames.
@@ -86,6 +101,7 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, too
 		blocks = append(blocks, a.streamingTextBlock(id, builder.String()))
 		blockRefs = append(blockRefs, nil)
 		blockToolRefs = append(blockToolRefs, nil)
+		blockTaskRefs = append(blockTaskRefs, nil)
 	}
 	// Prompts sent while the turn was still running, below everything the
 	// assistant has produced so far — the position upstream's queued user
@@ -94,6 +110,7 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, too
 		blocks = append(blocks, block)
 		blockRefs = append(blockRefs, nil)
 		blockToolRefs = append(blockToolRefs, nil)
+		blockTaskRefs = append(blockTaskRefs, nil)
 	}
 	// TS's scrollbox opens with a `<box height={1}/>` spacer above the first
 	// message (index.tsx ~1199); only visible once scrolled to the top, but
@@ -101,6 +118,7 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, too
 	out := []string{""}
 	reasoningRows = map[int]string{}
 	toolOutputRows = map[int]string{}
+	taskRows = map[int]string{}
 	for i, block := range blocks {
 		if i > 0 {
 			out = append(out, "") // blank line between messages (marginTop=1)
@@ -128,9 +146,14 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, too
 				toolOutputRows[base+row-dropped] = ref.id
 			}
 		}
+		for _, ref := range blockTaskRefs[i] {
+			for row := ref.lineStart; row <= ref.lineEnd; row++ {
+				taskRows[base+row-dropped] = ref.childID
+			}
+		}
 		out = append(out, blockLines...)
 	}
-	return out, reasoningRows, toolOutputRows
+	return out, reasoningRows, toolOutputRows, taskRows
 }
 
 // renderMessage returns the message's rendered block plus any reasoning
@@ -166,12 +189,12 @@ func (a *App) buildTimeline() (lines []string, reasoningRows map[int]string, too
 // The spinner keeps animating because renderMessage emits spinnerPlaceholder
 // rather than the glyph, and the frame is substituted in below — on the
 // cached string, after the cache lookup.
-func (a *App) renderMessageCached(message client.Message, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef) {
+func (a *App) renderMessageCached(message client.Message, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef, []taskHeaderRef) {
 	signature := a.renderSignature(message, isLast)
 	if hit, ok := a.messageCache[message.ID]; ok && hit.signature == signature {
-		return a.substituteSpinner(hit.block), hit.refs, hit.toolRefs
+		return a.substituteSpinner(hit.block), hit.refs, hit.toolRefs, hit.taskRefs
 	}
-	block, refs, toolRefs := a.renderMessage(message, isLast)
+	block, refs, toolRefs, taskRefs := a.renderMessage(message, isLast)
 	if a.messageCache == nil {
 		a.messageCache = map[string]cachedRender{}
 	}
@@ -180,8 +203,8 @@ func (a *App) renderMessageCached(message client.Message, isLast bool) (string, 
 	if len(a.messageCache) > 256 {
 		a.messageCache = map[string]cachedRender{}
 	}
-	a.messageCache[message.ID] = cachedRender{signature: signature, block: block, refs: refs, toolRefs: toolRefs}
-	return a.substituteSpinner(block), refs, toolRefs
+	a.messageCache[message.ID] = cachedRender{signature: signature, block: block, refs: refs, toolRefs: toolRefs, taskRefs: taskRefs}
+	return a.substituteSpinner(block), refs, toolRefs, taskRefs
 }
 
 // renderSignature hashes everything renderMessage's output depends on. The
@@ -208,6 +231,11 @@ func (a *App) renderSignature(message client.Message, isLast bool) uint64 {
 	if a.timestamps {
 		flags |= 4
 	}
+	// The task hint row's "background" segment reads this flag, so it is a
+	// render input like the ones above.
+	if a.backgroundModeAvailable {
+		flags |= 8
+	}
 	h.Write([]byte{flags})
 	h.Write([]byte(message.Type))
 	return h.Sum64()
@@ -218,24 +246,24 @@ func (a *App) renderSignature(message client.Message, isLast bool) uint64 {
 // the theme, the thinking mode, and per-part reasoning expansion.
 func (a *App) invalidateRenderCache() { a.renderEpoch++ }
 
-func (a *App) renderMessage(message client.Message, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef) {
+func (a *App) renderMessage(message client.Message, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef, []taskHeaderRef) {
 	switch message.Type {
 	case "user":
 		data, err := client.DecodeUser(message.Data)
 		if err != nil || data.Text == "" {
-			return "", nil, nil
+			return "", nil, nil, nil
 		}
-		return a.userBlock(message, data), nil, nil
+		return a.userBlock(message, data), nil, nil, nil
 	case "assistant":
 		data, err := client.DecodeAssistant(message.Data)
 		if err != nil {
-			return "", nil, nil
+			return "", nil, nil, nil
 		}
 		return a.renderAssistant(message, data, isLast)
 	case "compaction":
-		return a.compactionSeparator(), nil, nil
+		return a.compactionSeparator(), nil, nil, nil
 	}
-	return "", nil, nil
+	return "", nil, nil, nil
 }
 
 // userBlock mirrors UserMessage: a ┃ left border in the agent color around a
@@ -414,10 +442,11 @@ func messageAborted(data client.AssistantData) bool {
 // rows within the joined block this function returns (relative to its own
 // line 0) — see reasoningHeaderRef. The third does the same for a tool
 // call's output — see toolOutputHeaderRef.
-func (a *App) renderAssistant(message client.Message, data client.AssistantData, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef) {
+func (a *App) renderAssistant(message client.Message, data client.AssistantData, isLast bool) (string, []reasoningHeaderRef, []toolOutputHeaderRef, []taskHeaderRef) {
 	var blocks []string
 	var refs []reasoningHeaderRef
 	var toolRefs []toolOutputHeaderRef
+	var taskRefs []taskHeaderRef
 	lineOffset := 0
 	appendBlock := func(block string) {
 		blocks = append(blocks, block)
@@ -457,9 +486,39 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 						lineEnd:   lineOffset + toolRef.lineEnd,
 					})
 				}
+				// A task call's whole block opens its child session on click
+				// (taskHeaderRef) — the InlineTool onClick in TS Task().
+				if part.Name == "task" && part.State != nil {
+					if childID, _ := part.State.Metadata["sessionID"].(string); childID != "" {
+						taskRefs = append(taskRefs, taskHeaderRef{
+							childID:   childID,
+							lineStart: lineOffset,
+							lineEnd:   lineOffset + strings.Count(block, "\n"),
+						})
+					}
+				}
 				appendBlock(block)
 			}
 		}
+	}
+
+	// The "view subagents" affordance, below every message that contains a
+	// task call (index.tsx ~1509: the hint row under the parts, with the
+	// child-shortcut label, plus "background" while a foreground task runs
+	// and background mode is available). It tells the user the task row is
+	// clickable and what opens it.
+	if hasTaskPart(data) {
+		segments := []string{
+			a.styles().Text.Render(leaderKey),
+			a.styles().Muted.Render("↓ view subagents"),
+		}
+		if foregroundTaskRunning(data) && a.backgroundModeAvailable {
+			segments = append(segments,
+				a.styles().Muted.Render("·"),
+				a.styles().Text.Render("ctrl+b"),
+				a.styles().Muted.Render("background"))
+		}
+		appendBlock("   " + strings.Join(segments, " "))
 	}
 
 	// An interruption is not an error to report: upstream guards this block
@@ -475,7 +534,7 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 		appendBlock("")
 		appendBlock(a.settlementLine(message, data))
 	}
-	return strings.Join(blocks, "\n"), refs, toolRefs
+	return strings.Join(blocks, "\n"), refs, toolRefs, taskRefs
 }
 
 // settlementLine mirrors the assistant's final row: ▣ (muted once aborted,
@@ -920,8 +979,8 @@ func (a *App) toolRow(message client.Message, id, name string, state *toolState)
 		}
 	}
 	icon, label := toolLabel(name, state.Input, a.displayPath)
-	if name == "task" && state.Status != "pending" && state.Status != "running" && state.Status != "error" {
-		icon = "✓" // TS: state.status === "completed" ? "✓" : "│"
+	if name == "task" {
+		return a.taskRow(id, state, icon, label)
 	}
 	width := a.contentWidth()
 	switch state.Status {
@@ -941,6 +1000,173 @@ func (a *App) toolRow(message client.Message, id, name string, state *toolState)
 	default:
 		return wrapToolLine(a.styles().Muted, "   "+icon+" ", label, width), nil
 	}
+}
+
+// taskRow is the task tool's InlineTool: the one-line label every tool gets,
+// plus the sub-lines the TS Task() renderer derives from the linked child
+// session's own timeline (routes/session/index.tsx ~2215). The link comes
+// from state.metadata.sessionID, published the moment the subagent exists
+// (ExecContext.SetMeta); without it — or before the child's timeline has
+// loaded — the row is just the label.
+func (a *App) taskRow(id string, state *toolState, icon, label string) (string, *toolOutputHeaderRef) {
+	width := a.contentWidth()
+	muted := a.styles().Muted
+
+	running := state.Status == "running" || state.Status == "pending"
+	if !running && state.Status != "error" {
+		icon = "✓" // TS: state.status === "completed" ? "✓" : "│"
+	}
+	prefix := "   " + icon + " "
+	if running {
+		prefix = "   " + spinnerPlaceholder + " "
+	}
+	style := muted
+	if state.Status == "error" {
+		style = a.styles().Error
+	}
+	lines := []string{wrapToolLine(style, prefix, label, width)}
+
+	childID, _ := state.Metadata["sessionID"].(string)
+	if childID == "" {
+		return strings.Join(lines, "\n"), nil
+	}
+	messages := a.childMessages[childID]
+	if messages == nil {
+		return strings.Join(lines, "\n"), nil
+	}
+
+	// The child's settled tool parts, in order — the source of both the live
+	// "↳ Tool label" line and the completion count.
+	type childTool struct {
+		name  string
+		state *toolState
+	}
+	var tools []childTool
+	for _, message := range messages {
+		if message.Type != "assistant" {
+			continue
+		}
+		data, err := client.DecodeAssistant(message.Data)
+		if err != nil {
+			continue
+		}
+		for _, part := range data.Content {
+			if part.Type != "tool" && part.Type != "tool_result" {
+				continue
+			}
+			if part.Type == "tool" && part.State != nil {
+				tools = append(tools, childTool{name: part.Name, state: &toolState{
+					Status:   part.State.Status,
+					Input:    part.State.Input,
+					Output:   part.State.Output,
+					Error:    part.State.Error,
+					Title:    part.State.Title,
+					Metadata: part.State.Metadata,
+				}})
+			}
+		}
+	}
+
+	if running {
+		// Live progress: the child's most recent tool with a label, exactly
+		// Task()'s findLast over running/completed parts. TS reads
+		// state.title off each part; this port's tools derive their label
+		// from input (toolLabel), so that derivation stands in. toolLabel
+		// already prefixes the tool name for most tools ("Read <path>"), so
+		// only an unlabeled one gets the bare titlecased name.
+		if len(tools) > 0 {
+			last := tools[len(tools)-1]
+			_, childLabel := toolLabel(last.name, last.state.Input, a.displayPath)
+			detail := "↳ " + childLabel
+			if childLabel == "" || childLabel == "..." {
+				detail = "↳ " + titlecase(last.name)
+			}
+			lines = append(lines, wrapToolLine(muted, "     ", detail, width))
+		}
+		return strings.Join(lines, "\n"), nil
+	}
+
+	// Completed (or errored): the summary line — "N toolcalls · duration",
+	// duration alone when the child never called a tool
+	// (formatCompletedSubagentDetail).
+	detail := ""
+	if len(tools) > 0 {
+		suffix := "s"
+		if len(tools) == 1 {
+			suffix = ""
+		}
+		detail = fmt.Sprintf("%d toolcall%s", len(tools), suffix)
+	}
+	if duration := childRunDuration(messages); duration != "" {
+		if detail != "" {
+			detail += " · " + duration
+		} else {
+			detail = duration
+		}
+	}
+	if detail != "" {
+		lines = append(lines, wrapToolLine(muted, "     ", "↳ "+detail, width))
+	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// hasTaskPart reports whether an assistant message contains a task tool
+// call — the gate for the "view subagents" hint row (index.tsx's
+// `props.parts.some(x => x.type === "tool" && x.tool === "task")`).
+func hasTaskPart(data client.AssistantData) bool {
+	for _, part := range data.Content {
+		if part.Type == "tool" && part.Name == "task" {
+			return true
+		}
+	}
+	return false
+}
+
+// foregroundTaskRunning reports whether a message holds a task call that is
+// running and not already detached — the "background" hint's gate, porting
+// index.tsx's foregroundTasks memo (running && metadata.background !== true).
+func foregroundTaskRunning(data client.AssistantData) bool {
+	for _, part := range data.Content {
+		if part.Type != "tool" || part.Name != "task" || part.State == nil {
+			continue
+		}
+		if part.State.Status != "running" {
+			continue
+		}
+		if background, _ := part.State.Metadata["background"].(bool); background {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+// childRunDuration measures a child session's wall time the way TS's Task()
+// does: first user message created → last assistant message completed.
+// Empty when either end is missing (a child still running has no completed
+// last assistant yet, and one that never started has no user message).
+func childRunDuration(messages []client.Message) string {
+	var firstUser, lastAssistant int64
+	for _, message := range messages {
+		switch message.Type {
+		case "user":
+			if firstUser == 0 || message.TimeCreated < firstUser {
+				firstUser = message.TimeCreated
+			}
+		case "assistant":
+			data, err := client.DecodeAssistant(message.Data)
+			if err != nil {
+				continue
+			}
+			if data.Time.Completed > lastAssistant {
+				lastAssistant = data.Time.Completed
+			}
+		}
+	}
+	if firstUser == 0 || lastAssistant == 0 || lastAssistant <= firstUser {
+		return ""
+	}
+	return durationLabel(lastAssistant - firstUser)
 }
 
 // blockToolStyle mirrors BlockTool's chrome: a border colored to match the
@@ -1437,10 +1663,9 @@ func toolLabel(name string, input map[string]any, display func(string) string) (
 	case "todowrite":
 		return "⚙", "Updating todos..."
 	case "task":
-		// Forward-looking: Go has no "task" (subagent spawn) tool yet
-		// (go-port-gaps.md P2), so this can't be exercised end to end today,
-		// but mirrors formatSubagentTitle's label shape (icon is finished by
-		// toolRow, which knows the status: ✓ once completed, │ otherwise).
+		// The label itself (icon is finished by toolRow/taskRow, which know
+		// the status: ✓ once completed, spinner while running, │ otherwise).
+		// Mirrors formatSubagentTitle's shape in routes/session/index.tsx.
 		description := text("description")
 		if description == "" {
 			return "│", "Delegating..."

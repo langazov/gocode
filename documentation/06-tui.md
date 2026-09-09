@@ -166,6 +166,35 @@ Height is capped at `max(6, height/3)`.
 Dialogs used to open with a visible delay on Ctrl-key combinations — the cause
 was work happening inside `Update` rather than in a `tea.Cmd`.
 
+## Subagent surfaces
+
+A `task` call spawns a child session that runs on its own goroutine through
+the execution coordinator, concurrently with its parent and siblings. The
+interface surfaces it in four places:
+
+- **The task row** (`render.go` `taskRow`): the one-line label plus `↳`
+  sub-lines derived from the linked child — its most recent tool while it
+  runs, `N toolcalls · duration` once done. The link is the tool part's
+  `state.metadata.sessionID`, published the moment the child exists. Every
+  line of the block is a click target that opens the child session.
+- **The "view subagents" hint** under any task-bearing message, plus
+  `ctrl+b background` while a foreground task runs and the server has the
+  feature (`GOCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS`). `ctrl+b` promotes the
+  running foreground subagents to detached background jobs and frees the
+  prompt.
+- **The subagent footer** (`footer.go`): a child session shows its agent,
+  `(n of N)` position among siblings, usage, and `Parent up · Prev left ·
+  Next right` navigation. `ctrl+x ↓` opens the children overlay from the
+  parent side.
+- **Ask bubbling**: while the parent is open, a tracked child's pending
+  permission or question takes the parent's banner, attributed with the
+  child's title; the reply settles in the child's own session.
+
+Child timelines live in `app.childMessages`, refreshed when the aggregator
+marks a child dirty. The session switcher excludes children
+(`parentID != ""`) — they belong to their parent's task row and the children
+overlay, not the conversation list.
+
 ## Themes
 
 `theme.Theme` carries semantic colours (`Text`, `TextMuted`, `Primary`,

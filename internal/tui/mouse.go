@@ -186,6 +186,10 @@ func (a *App) handleClick(x, y int) tea.Cmd {
 			} else if id, ok := a.toolOutputClickTarget(y); ok {
 				a.expandedToolOutput[id] = !a.expandedToolOutput[id]
 				a.invalidateRenderCache()
+			} else if childID, ok := a.taskClickTarget(y); ok {
+				// The task row's whole block opens its child session (TS
+				// Task()'s InlineTool onClick → navigate to the session).
+				return a.openChildSession(childID)
 			}
 		}
 		return nil
@@ -253,6 +257,19 @@ func (a *App) toolOutputClickTarget(row int) (id string, ok bool) {
 	}
 	id, found := a.chatToolOutputRows[a.chatWindowStart+i]
 	return id, found
+}
+
+// taskClickTarget is the reasoning/output targets' counterpart for a task
+// call's block (chatTaskRows/taskRow): the child session ID a click there
+// opens. Every rendered line of the block is a target, mirroring TS's
+// InlineTool onClick on the whole component.
+func (a *App) taskClickTarget(row int) (childID string, ok bool) {
+	i := row - a.chatWindowPad
+	if i < 0 {
+		return "", false
+	}
+	childID, found := a.chatTaskRows[a.chatWindowStart+i]
+	return childID, found
 }
 
 // overlayTargetKind classifies what an absolute screen cell lands on within

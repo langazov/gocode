@@ -32,19 +32,20 @@ type modelCall struct {
 }
 
 type mockAPI struct {
-	prompted   []string
-	replies    []string
-	interrupts int
-	created    int
-	compacts   int
-	pending    []client.PermissionRequest
-	questions  []client.QuestionRequest
-	answered   [][]([]string) // answers posted to /api/question/{id}/reply
-	rejected   []string       // request ids posted to /api/question/{id}/reject
-	renamed    []renameCall
-	forkedFrom string
-	mcpStatus  string // GET /api/mcp responds with this status for "test-server"; mutate mid-test to verify tickMsg re-fetches it
-	statsCalls int
+	prompted     []string
+	replies      []string
+	interrupts   int
+	created      int
+	compacts     int
+	pending      []client.PermissionRequest
+	questions    []client.QuestionRequest
+	answered     [][]([]string) // answers posted to /api/question/{id}/reply
+	rejected     []string       // request ids posted to /api/question/{id}/reject
+	renamed      []renameCall
+	forkedFrom   string
+	mcpStatus    string // GET /api/mcp responds with this status for "test-server"; mutate mid-test to verify tickMsg re-fetches it
+	statsCalls   int
+	backgrounded string // the sessionID POSTed to /background, "" when never
 
 	// mu guards models, the one slice a background goroutine can append to
 	// (the variant pin is posted fire-and-forget) while a test polls it —
@@ -184,6 +185,13 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 	})
 	mux.HandleFunc("GET /api/session/{sessionID}/children", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]client.Session{{ID: "ses_child", Title: "child", Directory: "/tmp", Version: "1"}})
+	})
+	mux.HandleFunc("POST /api/session/{sessionID}/background", func(w http.ResponseWriter, r *http.Request) {
+		api.backgrounded = r.PathValue("sessionID")
+		json.NewEncoder(w).Encode(map[string]int{"promoted": 2})
+	})
+	mux.HandleFunc("GET /api/job", func(w http.ResponseWriter, r *http.Request) {
+		json.NewEncoder(w).Encode([]map[string]any{})
 	})
 	mux.HandleFunc("GET /api/session/{sessionID}/stats", func(w http.ResponseWriter, r *http.Request) {
 		api.statsCalls++
