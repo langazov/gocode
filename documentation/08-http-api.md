@@ -39,11 +39,33 @@ a proxy that adds it.
 | `POST` | `/api/session/{id}/compact` | compact now |
 | `POST` | `/api/session/{id}/model` | switch model |
 | `POST` | `/api/session/{id}/agent` | switch agent |
-| `POST` | `/api/session/{id}/background` | run in background |
+| `POST` | `/api/session/{id}/background` | promote running foreground subagents to detached jobs |
 | `GET` | `/api/session/{id}/stats` | tokens and cost |
 | `GET` | `/api/session/{id}/todo` | todo list |
 | `GET` | `/api/session/{id}/status` | busy flag — is a turn running |
 | `GET` | `/api/session/{id}/queue` | prompts admitted but not yet reached |
+
+### Session shape
+
+`GET /api/session` and `GET /api/session/{id}` both carry `parentID` and
+`agent` on every session (they were previously dropped on read, which left
+every client unable to tell a subagent from a root):
+
+```json
+{
+  "id": "ses_child_1",
+  "parentID": "ses_root",
+  "agent": "general-purpose",
+  "title": "find the bug (@general-purpose subagent)"
+}
+```
+
+A subagent's task tool call also links back: the call's tool part carries
+`state.metadata.sessionID` (plus `parentSessionID`, `title`, and `background`
+when detached), published by the `session.next.tool.metadata` event the
+moment the child exists — mid-run, before the call settles. Clients use it to
+open the child session and to show live progress; `state.status` reads
+`"running"` from the call's first projection onward.
 
 ### Sending a prompt
 

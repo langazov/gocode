@@ -46,6 +46,17 @@ var (
 		Type:    "session.next.tool.called",
 		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
 	}
+	// ToolMetaUpdated carries a running tool's own update to its part: the
+	// title it wants shown and arbitrary metadata. Today only the task tool
+	// uses it — it publishes the child session ID the moment the subagent
+	// exists, which is the link the TUI's click-to-open and live progress
+	// rows key off (packages/opencode/src/tool/task.ts's ctx.metadata call).
+	//
+	// Durable so a task call replayed back still points at its child session.
+	ToolMetaUpdated = event.Definition{
+		Type:    "session.next.tool.metadata",
+		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
+	}
 	ToolSuccess = event.Definition{
 		Type:    "session.next.tool.success",
 		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
@@ -103,6 +114,7 @@ func RegisterRunnerProjectors(bus *event.Bus) {
 	bus.Project(StepFailed, projectStepFailed)
 	bus.Project(StepDiscarded, projectStepDiscarded)
 	bus.Project(ToolCalled, projectToolCalled)
+	bus.Project(ToolMetaUpdated, projectToolMetaUpdated)
 	bus.Project(ToolSuccess, projectToolSettled)
 	bus.Project(ToolFailed, projectToolSettled)
 	bus.Project(TextStarted, projectContentStarted)
@@ -230,11 +242,60 @@ func projectToolCalled(ctx context.Context, tx *sql.Tx, payload event.Payload) e
 			"id":   callID,
 			"name": toolName,
 			"state": map[string]any{
-				"status": ToolPending,
+				// Running, not pending: the TS processor marks the part
+				// running on tool-call (processor.ts's "status: running"
+				// case), and the TUI's spinner path keys on exactly that
+				// string. failInterruptedTools treats pending|running the
+				// same, so the interrupt cleanup is unaffected.
+				"status": ToolRunning,
 				"input":  input,
 			},
 			"time": map[string]any{"created": created},
 		})
+		message["content"] = content
+	})
+}
+
+// projectToolMetaUpdated merges a running tool's own metadata into its part:
+// state.title when the event carries one, and each metadata key into
+// state.metadata. Ports the ctx.metadata seam of the TS tool context — the
+// task tool publishes { parentSessionID, sessionID, background } the moment
+// its child session exists, long before the call settles.
+func projectToolMetaUpdated(ctx context.Context, tx *sql.Tx, payload event.Payload) error {
+	assistantMessageID, _ := payload.Data["assistantMessageID"].(string)
+	callID, _ := payload.Data["callID"].(string)
+	title, hasTitle := payload.Data["title"].(string)
+	metadata, _ := payload.Data["metadata"].(map[string]any)
+	if !hasTitle && len(metadata) == 0 {
+		return nil
+	}
+	return updateAssistant(ctx, tx, assistantMessageID, func(message map[string]any) {
+		content := contentSlice(message)
+		for i := range content {
+			part, ok := content[i].(map[string]any)
+			if !ok || part["id"] != callID {
+				continue
+			}
+			state, _ := part["state"].(map[string]any)
+			if state == nil {
+				state = map[string]any{}
+			}
+			if hasTitle && title != "" {
+				state["title"] = title
+			}
+			if len(metadata) > 0 {
+				existing, _ := state["metadata"].(map[string]any)
+				if existing == nil {
+					existing = map[string]any{}
+				}
+				for key, value := range metadata {
+					existing[key] = value
+				}
+				state["metadata"] = existing
+			}
+			part["state"] = state
+			content[i] = part
+		}
 		message["content"] = content
 	})
 }

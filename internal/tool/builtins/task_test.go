@@ -75,7 +75,7 @@ func (s *stubSpawner) notifications() []string {
 	return append([]string(nil), s.notified...)
 }
 
-var taskExec = tool.ExecContext{SessionID: "ses_parent", Agent: "build", CallID: "call_1"}
+var taskExec = tool.ExecContext{SessionID: "ses_parent", Agent: "build", CallID: "call_1", AssistantMessageID: "msg_asst_1"}
 
 func taskInput(extra map[string]any) map[string]any {
 	input := map[string]any{
@@ -299,5 +299,108 @@ func TestTaskToolSchemaGatesBackground(t *testing.T) {
 	enabled := NewBackgroundTaskTool(newStubSpawner(), background.NewRegistry()).InputSchema()
 	if _, ok := enabled["properties"].(map[string]any)["background"]; !ok {
 		t.Fatal("background is not advertised while the feature is enabled")
+	}
+}
+
+// TestTaskToolPublishesChildLink guards the metadata seam: the call must
+// attach its child session ID the moment the subagent exists, before it
+// settles — that link is what the TUI's click-to-open and live progress rows
+// read (state.metadata.sessionID). Ports task.ts's ctx.metadata call.
+func TestTaskToolPublishesChildLink(t *testing.T) {
+	spawner := newStubSpawner()
+	task := NewTaskTool(spawner)
+
+	var mu sync.Mutex
+	var gotTitle string
+	var gotMeta map[string]any
+	calls := 0
+	exec := taskExec
+	exec.SetMeta = func(title string, metadata map[string]any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		calls++
+		gotTitle = title
+		gotMeta = metadata
+		return nil
+	}
+
+	errs := make(chan error, 1)
+	go func() {
+		_, err := task.ExecuteWithContext(context.Background(), taskInput(nil), exec)
+		errs <- err
+	}()
+
+	// The link must be published while the child is still running, not with
+	// the result — poll briefly rather than waiting the task out.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		published := calls > 0
+		mu.Unlock()
+		if published {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("child link was never published while the subagent ran")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	spawner.finish("ses_child_general", tool.SpawnResult{
+		SessionID: "ses_child_general", Text: "done",
+	})
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if gotTitle != "research something" {
+		t.Fatalf("published title = %q, want the task description", gotTitle)
+	}
+	if gotMeta["sessionID"] != "ses_child_general" {
+		t.Fatalf("published metadata.sessionID = %v, want the child session", gotMeta["sessionID"])
+	}
+	if gotMeta["parentSessionID"] != "ses_parent" {
+		t.Fatalf("published metadata.parentSessionID = %v, want the parent session", gotMeta["parentSessionID"])
+	}
+	if gotMeta["batchID"] != taskExec.AssistantMessageID {
+		t.Fatalf("published metadata.batchID = %v, want the spawning message %q (the fan-out batch)", gotMeta["batchID"], taskExec.AssistantMessageID)
+	}
+	if background, ok := gotMeta["background"].(bool); ok && background {
+		t.Fatal("a foreground task must not be published as background")
+	}
+	if calls != 1 {
+		t.Fatalf("SetMeta called %d times, want exactly 1", calls)
+	}
+}
+
+// TestTaskToolPublishesBackgroundFlag: the link carries background: true for
+// a detached task, which is how the TUI knows not to offer the "background"
+// hint on it (TS's foregroundTasks filter).
+func TestTaskToolPublishesBackgroundFlag(t *testing.T) {
+	spawner := newStubSpawner()
+	jobs := background.NewRegistry()
+	task := NewBackgroundTaskTool(spawner, jobs)
+
+	var mu sync.Mutex
+	var gotMeta map[string]any
+	exec := taskExec
+	exec.SetMeta = func(title string, metadata map[string]any) error {
+		mu.Lock()
+		defer mu.Unlock()
+		gotMeta = metadata
+		return nil
+	}
+
+	if _, err := task.ExecuteWithContext(context.Background(),
+		taskInput(map[string]any{"background": true}), exec); err != nil {
+		t.Fatal(err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if background, _ := gotMeta["background"].(bool); !background {
+		t.Fatalf("background task's metadata = %v, want background: true", gotMeta)
 	}
 }

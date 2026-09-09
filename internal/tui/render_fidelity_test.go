@@ -21,7 +21,7 @@ func TestSettlementLineShowsOnLastMessageWhileStreaming(t *testing.T) {
 	msg := client.Message{ID: "m1", Type: "assistant", TimeCreated: 1000}
 	data := client.AssistantData{Agent: "build"} // no Finish yet: still streaming
 
-	block, _, _ := app.renderAssistant(msg, data, true) // isLast = true
+	block, _, _, _ := app.renderAssistant(msg, data, true) // isLast = true
 	if !strings.Contains(block, "▣") {
 		t.Fatalf("the last message should show the settlement line while streaming, got %q", block)
 	}
@@ -37,7 +37,7 @@ func TestSettlementLineHiddenOnEarlierUnfinishedMessage(t *testing.T) {
 	msg := client.Message{ID: "m1", Type: "assistant", TimeCreated: 1000}
 	data := client.AssistantData{Agent: "build"}
 
-	block, _, _ := app.renderAssistant(msg, data, false) // isLast = false
+	block, _, _, _ := app.renderAssistant(msg, data, false) // isLast = false
 	if strings.Contains(block, "▣") {
 		t.Fatalf("an earlier, unfinished message should not show the settlement line, got %q", block)
 	}
@@ -58,12 +58,7 @@ func TestSettlementLineShowsDurationOnlyWhenFinal(t *testing.T) {
 func TestToolRowOnlySpinsForBashAndRead(t *testing.T) {
 	app := &App{width: 100, height: 30, spinnerFrame: 0, animationsEnabled: true}
 	msg := client.Message{}
-	running := &struct {
-		Status string         `json:"status"`
-		Input  map[string]any `json:"input"`
-		Output string         `json:"output"`
-		Error  string         `json:"error"`
-	}{Status: "running", Input: map[string]any{}}
+	running := &toolState{Status: "running", Input: map[string]any{}}
 
 	// A rendered block holds spinnerPlaceholder where the glyph goes;
 	// renderMessageCached substitutes the frame on its way out, so the block

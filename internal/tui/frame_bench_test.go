@@ -10,7 +10,7 @@ import (
 // buildRawChat produces a frame-scale string without calling frame().
 func buildRawChat(b *testing.B, app *App) string {
 	b.Helper()
-	lines, _, _ := app.buildTimeline()
+	lines, _, _, _ := app.buildTimeline()
 	return strings.Join(lines, "\n")
 }
 

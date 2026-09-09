@@ -397,7 +397,7 @@ func (a *App) subagentFooter() string {
 	label := a.onPanel(a.theme.Text, true).Render(subagentLabel(a.active.Title))
 
 	parts := []string{label}
-	if index, total := subagentPosition(a.subagentSiblings, a.active.ID); total > 0 {
+	if index, total := subagentPosition(a.batchSiblings(), a.active.ID); total > 0 {
 		parts = append(parts, a.onPanel(a.theme.TextMuted, false).Render(fmt.Sprintf("(%d of %d)", index, total)))
 	}
 	if usage := a.sessionUsage(); !usage.empty() {
@@ -490,7 +490,13 @@ func (a *App) loadSubagentSiblings() tea.Cmd {
 		if err != nil {
 			return nil
 		}
-		return subagentSiblingsMsg{parentID: parentID, siblings: siblings}
+		messages, err := c.Messages(a.ctx, parentID)
+		if err != nil {
+			// Siblings alone still render a usable footer; batch scoping
+			// falls back to the full sibling list until a retry lands.
+			return subagentSiblingsMsg{parentID: parentID, siblings: siblings}
+		}
+		return subagentSiblingsMsg{parentID: parentID, siblings: siblings, parentMessages: messages}
 	}
 }
 
@@ -518,7 +524,7 @@ func (a *App) cycleSubagentSibling(direction int) (tea.Cmd, bool) {
 	if a.active == nil || a.active.ParentID == "" || len(a.subagentSiblings) < 2 {
 		return nil, false
 	}
-	ordered := append([]client.Session(nil), a.subagentSiblings...)
+	ordered := append([]client.Session(nil), a.batchSiblings()...)
 	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].TimeCreated < ordered[j].TimeCreated })
 	current := -1
 	for i, session := range ordered {

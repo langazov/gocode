@@ -5,6 +5,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -149,6 +150,44 @@ type App struct {
 	// is what the subagent footer counts to render "(2 of 5)". Loaded when a
 	// session with a parent is opened.
 	subagentSiblings []client.Session
+
+	// parentMessages caches the parent's timeline while a subagent view is
+	// open. batchSiblings reads it to resolve which children were launched
+	// together (one assistant message = one fan-out batch, keyed by
+	// metadata.batchID): the arrows and the footer's (n of N) describe that
+	// launch group, not every child the parent ever spawned. Nil on a root
+	// session, where batch scoping never applies.
+	parentMessages []client.Message
+
+	// childMessages caches the message timeline of every child session the
+	// open session's task calls linked to (state.metadata.sessionID — see
+	// taskBlock). It is the port of the TS sync store's per-session
+	// message/part maps: the task row reads it to show the subagent's live
+	// tool and its completion summary, exactly like Task() in
+	// routes/session/index.tsx reads sync.data.message[sessionID].
+	childMessages map[string][]client.Message
+	// childAsksSeen is the ask-count watermark per tracked child, so a child
+	// raising a permission/question bubbles up to the parent's view the way
+	// node.Asks does for the open session (index.tsx's children().flatMap
+	// over sync.data.permission).
+	childAsksSeen map[string]int
+	// childLoading collapses duplicate fetches of one child while its
+	// messages are in flight.
+	childLoading map[string]bool
+
+	// activeChildren is the open session's child sessions (fetched from
+	// GET /api/session/{id}/children), used to attribute a child's ask
+	// (permissionTitle) — a subagent's title carries the task description it
+	// was launched with.
+	activeChildren []client.Session
+
+	// backgroundModeAvailable reports whether the server runs with the
+	// background-job registry (GOCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS) —
+	// the gate for the "background" hint and the session.background command.
+	// Probed once at startup via GET /api/job, which the server only mounts
+	// when the registry exists (a 404 means foreground-only).
+	backgroundModeAvailable bool
+	backgroundModeProbed    bool
 
 	tip        string
 	mcpServers []client.MCPServer
@@ -297,14 +336,16 @@ type App struct {
 	// clicking one (toolOutputClickTarget in mouse.go) flips its entry here.
 	expandedToolOutput map[string]bool
 
-	// chatReasoningRows/chatToolOutputRows/chatWindowPad/chatWindowStart
-	// cache the layout viewChat() last computed, so handleClick (run on the
-	// next Update(), against the frame viewChat() just produced) can
-	// hit-test a reasoning header row or a collapsed tool-output row without
+	// chatReasoningRows/chatToolOutputRows/chatTaskRows/chatWindowPad/
+	// chatWindowStart cache the layout viewChat() last computed, so
+	// handleClick (run on the next Update(), against the frame viewChat()
+	// just produced) can hit-test a reasoning header row, a collapsed
+	// tool-output row or a task row (which opens its child session) without
 	// re-deriving the same scroll/pad arithmetic — see viewChat's doc
 	// comment.
 	chatReasoningRows  map[int]string
 	chatToolOutputRows map[int]string
+	chatTaskRows       map[int]string
 	chatWindowPad      int
 	chatWindowStart    int
 	// chatColumnEnd is the screen column where the chat column stops and the
@@ -354,6 +395,7 @@ type cachedRender struct {
 	block     string
 	refs      []reasoningHeaderRef
 	toolRefs  []toolOutputHeaderRef
+	taskRefs  []taskHeaderRef
 }
 
 // placeholders mirrors the Home route's rotating prompt suggestions.
@@ -424,6 +466,9 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 		thinkingMode:       "hide",
 		expandedReasoning:  map[string]bool{},
 		expandedToolOutput: map[string]bool{},
+		childMessages:      map[string][]client.Message{},
+		childAsksSeen:      map[string]int{},
+		childLoading:       map[string]bool{},
 	}
 }
 
@@ -433,7 +478,7 @@ type leaderTimeoutMsg struct{}
 
 func (a *App) Init() tea.Cmd {
 	a.windowTitle = a.desiredWindowTitle()
-	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadCommandsCmd(), a.loadAgentsCmd(0), a.loadPluginsCmd(), a.tick()}
+	cmds := []tea.Cmd{a.loadSessionsCmd(), a.loadCatalogCmd(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadCommandsCmd(), a.loadAgentsCmd(0), a.loadPluginsCmd(), a.probeBackgroundMode(), a.tick()}
 	if a.resumeSessionID != "" {
 		cmds = append(cmds, a.resumeSessionCmd(a.resumeSessionID))
 	}
@@ -485,6 +530,9 @@ type snapshotEffect struct {
 	timeline bool
 	asks     bool
 	queue    bool
+	// child carries the reloads a tracked child's dirty snapshot implies
+	// (its cached timeline feeds the task row's live progress).
+	child []tea.Cmd
 	// failure is the reason a turn stopped short, empty when none did. The
 	// interface surfaces it: before this existed a drain failure went to the
 	// background log alone and the turn simply vanished mid-task.
@@ -548,6 +596,24 @@ func (a *App) applySnapshot(snapshot Snapshot) snapshotEffect {
 		a.scrollOffset = 0
 		effect.timeline = true
 	}
+	// A tracked child settling a step makes its cached timeline stale: the
+	// task row quotes the child's last tool, so the parent has to reload it
+	// even though the parent's own timeline did not move.
+	if len(a.childMessages) > 0 {
+		for _, childID := range taskChildIDs(a.timeline) {
+			if !snapshot.Dirty[childID] {
+				continue
+			}
+			if cmd := a.loadChildMessages(childID); cmd != nil {
+				effect.child = append(effect.child, cmd)
+			}
+		}
+	}
+	// Any child's ask counter moving is the parent view's pending-ask signal
+	// (the lists merge — see childAsksEffect).
+	if cmd := a.childAsksEffect(); cmd != nil {
+		effect.asks = true
+	}
 	return effect
 }
 
@@ -574,6 +640,14 @@ type reloadMsg struct{}
 
 type sessionsMsg struct{ sessions []client.Session }
 type messagesMsg struct {
+	sessionID string
+	messages  []client.Message
+}
+
+// childMessagesMsg is messagesMsg's counterpart for a tracked child session
+// (see App.childMessages): the task row's live progress and completion
+// summary render from it.
+type childMessagesMsg struct {
 	sessionID string
 	messages  []client.Message
 }
@@ -608,10 +682,13 @@ type pluginsMsg struct {
 type commandsMsg struct{ commands []client.Command }
 
 // subagentSiblingsMsg carries the children of the open session's parent, the
-// list the subagent footer counts for its "(2 of 5)" position.
+// list the subagent footer counts for its "(2 of 5)" position. The parent's
+// own timeline rides along when it loaded: batch scoping (which children
+// were launched together) is derived from the task parts in it.
 type subagentSiblingsMsg struct {
-	parentID string
-	siblings []client.Session
+	parentID       string
+	siblings       []client.Session
+	parentMessages []client.Message
 }
 
 type sessionOpenedMsg struct{ session *client.Session }
@@ -629,6 +706,10 @@ type statusMsg struct {
 	// variant is inferred from the wording, which misses messages that are
 	// errors without saying "failed".
 	isErr bool
+	// next chains a command after the status lands — for statuses that also
+	// have an effect (a refetch) but want their message to be the one thing
+	// the update loop sees first.
+	next tea.Cmd
 }
 
 // variantChangedMsg reports a variant selection landing (a setVariant or
@@ -794,12 +875,296 @@ func (a *App) loadMessages(sessionID string) tea.Cmd {
 	}
 }
 
+// taskChildIDs scans a timeline for the child sessions its task calls link
+// to (state.metadata.sessionID), in call order without duplicates. This is
+// the port of Task()'s metadata.sessionId read in routes/session/index.tsx.
+func taskChildIDs(messages []client.Message) []string {
+	var ids []string
+	seen := map[string]bool{}
+	for _, message := range messages {
+		if message.Type != "assistant" {
+			continue
+		}
+		data, err := client.DecodeAssistant(message.Data)
+		if err != nil {
+			continue
+		}
+		for _, part := range data.Content {
+			if part.Type != "tool" || part.Name != "task" || part.State == nil {
+				continue
+			}
+			childID, _ := part.State.Metadata["sessionID"].(string)
+			if childID == "" || seen[childID] {
+				continue
+			}
+			seen[childID] = true
+			ids = append(ids, childID)
+		}
+	}
+	return ids
+}
+
+// taskBatchOf resolves the fan-out batch a linked child session belongs to:
+// every task call in one assistant message shares that message's ID as its
+// batchID (published by the task tool's SetMeta), so "these were launched
+// together" is exactly "same message". Older parts written before the key
+// existed fall back to the owning message's ID, which is the same value —
+// the batch and the message were always one thing, the metadata key just
+// made it explicit. Empty when the timeline links no such child (a fork,
+// for instance, has no task part).
+func taskBatchOf(messages []client.Message, childID string) string {
+	for _, message := range messages {
+		if message.Type != "assistant" {
+			continue
+		}
+		data, err := client.DecodeAssistant(message.Data)
+		if err != nil {
+			continue
+		}
+		for _, part := range data.Content {
+			if part.Type != "tool" || part.Name != "task" || part.State == nil {
+				continue
+			}
+			linked, _ := part.State.Metadata["sessionID"].(string)
+			if linked != childID {
+				continue
+			}
+			if batch, ok := part.State.Metadata["batchID"].(string); ok && batch != "" {
+				return batch
+			}
+			return message.ID
+		}
+	}
+	return ""
+}
+
+// batchSiblings narrows the sibling list to the open subagent's fan-out
+// batch: the arrows and the footer's (n of N) describe one launch group,
+// not every child the parent ever spawned. Falls back to the full sibling
+// list when the batch cannot be resolved (no timeline loaded, or the
+// session is not one of this timeline's linked children — a fork, say).
+func (a *App) batchSiblings() []client.Session {
+	if a.active == nil || a.active.ParentID == "" || len(a.subagentSiblings) < 2 {
+		return a.subagentSiblings
+	}
+	batch := taskBatchOf(a.parentTimeline(), a.active.ID)
+	if batch == "" {
+		return a.subagentSiblings
+	}
+	var scoped []client.Session
+	for _, sibling := range a.subagentSiblings {
+		if taskBatchOf(a.parentTimeline(), sibling.ID) == batch {
+			scoped = append(scoped, sibling)
+		}
+	}
+	// A resolved batch stands even with one member: it was launched alone,
+	// so the arrows have nobody to move to — that is the correct answer, not
+	// a reason to widen into other batches.
+	return scoped
+}
+
+// parentTimeline is the parent's messages, fetched for batch resolution when
+// a subagent view is open. Nil until parentTimelineMsg lands.
+func (a *App) parentTimeline() []client.Message {
+	return a.parentMessages
+}
+
+// trackChildSessions registers every child session the timeline's task calls
+// link to, kicking off a load for any not cached yet. Called whenever the
+// open session's timeline refreshes — the earliest a link can appear is the
+// task tool's SetMeta publish, which lands mid-run.
+func (a *App) trackChildSessions(messages []client.Message) tea.Cmd {
+	var cmds []tea.Cmd
+	for _, childID := range taskChildIDs(messages) {
+		if _, tracked := a.childMessages[childID]; tracked {
+			continue
+		}
+		if a.childLoading[childID] {
+			continue
+		}
+		// Register the empty entry now: the task row can already render the
+		// child's link from the part itself, and the map entry is what stops
+		// this loop from re-firing per snapshot.
+		a.childMessages[childID] = nil
+		if _, ok := a.childAsksSeen[childID]; !ok {
+			a.childAsksSeen[childID] = 0
+		}
+		cmds = append(cmds, a.loadChildMessages(childID))
+	}
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Batch(cmds...)
+}
+
+// loadChildMessages fetches one tracked child's timeline, collapsing
+// duplicate fetches through childLoading.
+func (a *App) loadChildMessages(sessionID string) tea.Cmd {
+	if a.childLoading[sessionID] {
+		return nil
+	}
+	a.childLoading[sessionID] = true
+	c := a.client
+	return func() tea.Msg {
+		messages, err := c.Messages(a.ctx, sessionID)
+		if err != nil {
+			// Errors are not cached: clear the in-flight flag so the next
+			// snapshot can retry, and keep whatever was last loaded.
+			return childLoadFailedMsg{sessionID: sessionID}
+		}
+		return childMessagesMsg{sessionID: sessionID, messages: messages}
+	}
+}
+
+// childLoadFailedMsg releases a child fetch's in-flight flag without caching
+// anything, so the next dirty snapshot retries the load.
+type childLoadFailedMsg struct{ sessionID string }
+
+// backgroundModeMsg is the startup probe's result: whether the server mounts
+// the background-job routes (and with them background subagents).
+type backgroundModeMsg struct{ available bool }
+
+// probeBackgroundMode learns once whether background subagents are enabled
+// server-side (sync.data.capabilities.experimentalBackgroundSubagents's
+// equivalent here: /api/job exists exactly when the registry does).
+func (a *App) probeBackgroundMode() tea.Cmd {
+	if a.backgroundModeProbed {
+		return nil
+	}
+	a.backgroundModeProbed = true
+	c := a.client
+	return func() tea.Msg {
+		return backgroundModeMsg{available: c.BackgroundAvailable(a.ctx)}
+	}
+}
+
+// childAsksEffect reports the refetch a child's raised ask implies: when a
+// tracked child's Asks counter moved, the parent view's pending permission
+// and question lists are behind, because those fetches include the children
+// (see loadPermissions/loadQuestions). Ports index.tsx's
+// children().flatMap(x => sync.data.permission[x.id]) — the lists merge, so
+// any child's change is the parent view's change.
+func (a *App) childAsksEffect() tea.Cmd {
+	if a.active == nil {
+		return nil
+	}
+	for childID, seen := range a.childAsksSeen {
+		if childID == a.active.ID {
+			continue
+		}
+		node := a.agents.Sessions[childID]
+		if node == nil || node.Asks == seen {
+			continue
+		}
+		a.childAsksSeen[childID] = node.Asks
+		return tea.Batch(a.loadPermissions(a.active.ID), a.loadQuestions(a.active.ID))
+	}
+	return nil
+}
+
+// openChildSession is the task row's click action: opening the subagent's
+// session, exactly like picking it from the children overlay would. The ID
+// path fetches first (a task row only carries the link); callers that
+// already hold the session post sessionOpenedMsg directly.
+func (a *App) openChildSession(childID string) tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		session, err := c.Session(a.ctx, childID)
+		if err != nil {
+			return statusMsg{text: "failed to open subagent: " + err.Error()}
+		}
+		if session == nil {
+			return statusMsg{text: "subagent session not found"}
+		}
+		return sessionOpenedMsg{session: session}
+	}
+}
+
+// foregroundTaskAnywhere reports whether the open session's timeline holds a
+// running foreground task call — the session.background command's enabled
+// gate (index.tsx's foregroundTasks memo, which the "Background subagents"
+// palette entry and the ctrl+b hint both read).
+func (a *App) foregroundTaskAnywhere() bool {
+	if a.active == nil {
+		return false
+	}
+	for _, message := range a.timeline {
+		if message.Type != "assistant" {
+			continue
+		}
+		data, err := client.DecodeAssistant(message.Data)
+		if err != nil {
+			continue
+		}
+		if foregroundTaskRunning(data) {
+			return true
+		}
+	}
+	return false
+}
+
+// backgroundSubagents ports session.background (index.tsx ~1022, keybind
+// ctrl+b in config/keybind.ts): promote every running foreground subagent of
+// the open session to a detached background job, so the parent's prompt
+// comes back while the children keep working.
+func (a *App) backgroundSubagents() tea.Cmd {
+	if a.active == nil {
+		return staticMsg(statusMsg{text: "open a session first"})
+	}
+	if !a.backgroundModeAvailable {
+		return staticMsg(statusMsg{text: "background subagents are disabled (GOCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true enables them)"})
+	}
+	if !a.foregroundTaskAnywhere() {
+		return staticMsg(statusMsg{text: "no foreground subagents running"})
+	}
+	c, sessionID := a.client, a.active.ID
+	reload := a.loadMessages(sessionID)
+	return func() tea.Msg {
+		promoted, err := c.Background(a.ctx, sessionID)
+		if err != nil {
+			return statusMsg{text: "background failed: " + err.Error()}
+		}
+		if promoted == 0 {
+			return statusMsg{text: "no foreground subagents running"}
+		}
+		// The promoted calls settle on the server ("Background task
+		// started"), so the timeline needs the refresh that follows. The
+		// status carries it: one message, both effects, in a defined order.
+		suffix := "s"
+		if promoted == 1 {
+			suffix = ""
+		}
+		return statusMsg{
+			text: fmt.Sprintf("%d task%s moved to the background", promoted, suffix),
+			next: reload,
+		}
+	}
+}
+
 func (a *App) loadPermissions(sessionID string) tea.Cmd {
 	c := a.client
+	// The open session's children ride along (index.tsx flatMaps every
+	// child's permission list into the parent view): a subagent blocked on
+	// an ask would otherwise look like a silent hang in the parent. The
+	// child set is exactly the tracked task links, so the extra fetches
+	// scale with running subagents, not with the whole session list.
+	children := a.trackedChildren()
 	return func() tea.Msg {
 		pending, err := c.Permissions(a.ctx, sessionID)
 		if err != nil {
 			return nil
+		}
+		for _, childID := range children {
+			// Children of children are possible (nested subagents) but the
+			// parent only surfaces its own children, matching TS.
+			if childID == sessionID {
+				continue
+			}
+			more, err := c.Permissions(a.ctx, childID)
+			if err != nil {
+				continue
+			}
+			pending = append(pending, more...)
 		}
 		return permissionsMsg{pending: pending}
 	}
@@ -808,14 +1173,69 @@ func (a *App) loadPermissions(sessionID string) tea.Cmd {
 // loadQuestions fetches the asks blocking this session. Paired with
 // loadPermissions everywhere: both park the turn, and a client that polls one
 // without the other leaves the session looking hung for whichever it missed.
+// Like loadPermissions it folds the tracked children's asks in.
 func (a *App) loadQuestions(sessionID string) tea.Cmd {
 	c := a.client
+	children := a.trackedChildren()
 	return func() tea.Msg {
 		pending, err := c.Questions(a.ctx, sessionID)
 		if err != nil {
 			return nil
 		}
+		for _, childID := range children {
+			if childID == sessionID {
+				continue
+			}
+			more, err := c.Questions(a.ctx, childID)
+			if err != nil {
+				continue
+			}
+			pending = append(pending, more...)
+		}
 		return questionsMsg{pending: pending}
+	}
+}
+
+// trackedChildren lists the child sessions the open session's task calls
+// linked to, in call order — the merge set for the ask lists and, in TS
+// terms, children() minus the parent's own entry.
+func (a *App) trackedChildren() []string {
+	return taskChildIDs(a.timeline)
+}
+
+// allowedAskSessions is the session-ID set whose asks may take the parent's
+// banner: the open session itself and its children. The merged ask lists can
+// carry anything else only by a client bug, but the banner is the one slot
+// that steals the keyboard, so the guard costs nothing.
+func (a *App) allowedAskSessions() map[string]bool {
+	allowed := map[string]bool{}
+	if a.active != nil {
+		allowed[a.active.ID] = true
+	}
+	for _, id := range a.trackedChildren() {
+		allowed[id] = true
+	}
+	return allowed
+}
+
+// activeChildrenMsg carries the open session's children (ask attribution and
+// the merge set's authoritative source).
+type activeChildrenMsg struct {
+	parentID string
+	children []client.Session
+}
+
+// loadActiveChildren fetches the open session's children. Called on open and
+// on the reconciliation tick: children are created server-side at spawn
+// time, and no event announces them to a client that was not watching.
+func (a *App) loadActiveChildren(sessionID string) tea.Cmd {
+	c := a.client
+	return func() tea.Msg {
+		children, err := c.Children(a.ctx, sessionID)
+		if err != nil {
+			return nil
+		}
+		return activeChildrenMsg{parentID: sessionID, children: children}
 	}
 }
 
@@ -847,6 +1267,12 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		if a.active != nil {
 			cmds = append(cmds, a.loadPermissions(a.active.ID), a.loadQuestions(a.active.ID))
 			cmds = append(cmds, a.loadStats(a.active.ID), a.loadRunStatus(a.active.ID), a.loadQueue(a.active.ID))
+			// Children appear server-side at spawn time with no announcing
+			// event, so the reconciliation tick is what picks them up for a
+			// client already looking at the parent.
+			if a.active.ParentID == "" {
+				cmds = append(cmds, a.loadActiveChildren(a.active.ID))
+			}
 			if a.sidebar {
 				cmds = append(cmds, a.loadSidebarTodos())
 			}
@@ -970,16 +1396,54 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.timeline = nil
 		a.queued = nil
 		a.subagentSiblings = nil
+		// The parent timeline is per open session too: it belongs to the
+		// parent of the session being left, and the next session's parent
+		// (if any) needs its own. Reloaded by loadSubagentSiblings.
+		a.parentMessages = nil
+		// Child tracking is per open session: the task rows that quote them
+		// belong to this session's timeline, and a link belongs to exactly
+		// one parent. Reset, and let messagesMsg re-track from the timeline
+		// that lands next.
+		a.childMessages = map[string][]client.Message{}
+		a.childAsksSeen = map[string]int{}
+		a.childLoading = map[string]bool{}
+		a.activeChildren = nil
+		// Upstream unmounts the whole Prompt component when it navigates
+		// (the route re-renders against a new sessionID), which drops any
+		// open completion popup with it. A switch into a subagent session
+		// must not carry the popup over: it would render against no prompt
+		// and keep claiming up/down keys.
+		a.autocomplete.close()
 		a.input.Reset()
 		a.input.Focus()
+		// Children ride along: a subagent's ask banner attributes itself
+		// through the child's title, and the ask merge needs the child set
+		// fresh (the timeline's task links only cover sessions this process
+		// spawned; a resumed conversation can reference older ones).
+		children := tea.Cmd(nil)
+		if a.active.ParentID == "" {
+			children = a.loadActiveChildren(a.active.ID)
+		}
 		// The run status comes along on open so a session already mid-turn
 		// (a subagent, or one resumed after a restart) shows the spinner
 		// immediately, rather than waiting for whichever event happens next.
 		return tea.Batch(a.loadMessages(a.active.ID), a.loadSubagentSiblings(),
-			a.loadRunStatus(a.active.ID), a.loadQueue(a.active.ID))
+			a.loadRunStatus(a.active.ID), a.loadQueue(a.active.ID), children)
 	case subagentSiblingsMsg:
 		if a.active != nil && a.active.ParentID == msg.parentID {
 			a.subagentSiblings = msg.siblings
+			if msg.parentMessages != nil {
+				a.parentMessages = msg.parentMessages
+			}
+		}
+		return nil
+	case activeChildrenMsg:
+		if a.active != nil && msg.parentID == a.active.ID {
+			a.activeChildren = msg.children
+			// Titles feed the ask banner's attribution; the banner only
+			// renders when a request is showing, so a cheap cache bump is
+			// enough rather than a targeted redraw.
+			a.invalidateRenderCache()
 		}
 		return nil
 	case openedWithPrompt:
@@ -1004,10 +1468,49 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			// reconciliation tick, which is what made the sidebar look frozen
 			// while a turn streamed.
 			cmds := []tea.Cmd{a.loadStats(msg.sessionID)}
+			// A task call may have just linked its child session (the link is
+			// published the moment the subagent exists); pick up any child
+			// not tracked yet so the task row can show its live progress.
+			if cmd := a.trackChildSessions(msg.messages); cmd != nil {
+				cmds = append(cmds, cmd)
+			}
 			if a.busy && !wasBusy {
 				cmds = append(cmds, a.startSpinner())
 			}
 			return tea.Batch(cmds...)
+		}
+		return nil
+	case childMessagesMsg:
+		delete(a.childLoading, msg.sessionID)
+		a.childMessages[msg.sessionID] = msg.messages
+		// The task rows read this cache, so a settled child invalidates the
+		// rendered blocks that quote it.
+		a.invalidateRenderCache()
+		// A child's asks land on its own session ID; the parent view has to
+		// notice them (index.tsx flatMaps children's permission/question
+		// lists into the parent's). The aggregator's per-child Asks counter
+		// is the change signal — see applySnapshot, which runs the same
+		// check on every snapshot.
+		var cmds []tea.Cmd
+		if cmd := a.childAsksEffect(); cmd != nil {
+			cmds = append(cmds, cmd)
+		}
+		if a.active != nil {
+			cmds = append(cmds, a.loadRunStatus(a.active.ID))
+		}
+		return tea.Batch(cmds...)
+	case childLoadFailedMsg:
+		delete(a.childLoading, msg.sessionID)
+		// Drop the placeholder so the next dirty snapshot retries; the row
+		// degrades to the plain label until then.
+		if messages, tracked := a.childMessages[msg.sessionID]; tracked && messages == nil {
+			delete(a.childMessages, msg.sessionID)
+		}
+		return nil
+	case backgroundModeMsg:
+		if msg.available != a.backgroundModeAvailable {
+			a.backgroundModeAvailable = msg.available
+			a.invalidateRenderCache()
 		}
 		return nil
 	case permissionsMsg:
@@ -1109,6 +1612,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 				cmds = append(cmds, a.showToast("Run stopped: "+effect.failure, true))
 			}
 		}
+		cmds = append(cmds, effect.child...)
 		return tea.Batch(cmds...)
 	case agentListMsg:
 		a.agentList = msg.agents
@@ -1201,10 +1705,21 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			strings.HasPrefix(msg.text, "failed") ||
 			strings.Contains(msg.text, "failed:") ||
 			strings.Contains(msg.text, "error")
-		return a.showToast(msg.text, isError)
+		toast := a.showToast(msg.text, isError)
+		if msg.next != nil {
+			return tea.Batch(toast, msg.next)
+		}
+		return toast
 	case tea.PasteMsg:
 		// Bracketed paste. Without this case the message falls through the
 		// switch and the pasted text is silently dropped.
+		//
+		// Gated on the prompt being mounted: an unmounted textarea has no
+		// paste target (upstream's pasteInputText runs inside the Prompt
+		// component's key handling).
+		if !a.promptEnabled() {
+			return nil
+		}
 		return a.handlePaste(msg)
 	case tea.KeyMsg:
 		return a.handleKey(msg)
@@ -1294,6 +1809,15 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return tea.Tick(time.Second, func(time.Time) tea.Msg { return leaderTimeoutMsg{} })
 	}
 
+	// The prompt owns every key below this point. A subagent's session has
+	// no prompt mounted (see promptEnabled): its bindings — the "/" and "@"
+	// completion triggers, prompt.submit, and the editor's own insert/cursor
+	// handling at the foot of this function — must not fire there. Upstream
+	// gets this for free from the keymap's focus tree: an unmounted textarea
+	// is nothing to focus, so only route-level bindings (session.parent and
+	// friends, handled further down) respond.
+	prompt := a.promptEnabled()
+
 	switch msg.String() {
 	case "ctrl+p":
 		// command_list
@@ -1317,6 +1841,9 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// input_newline. bubbles' textarea only treats a bare enter as a
 		// newline, and this handler claims that for input_submit, so the
 		// aliases have to insert one explicitly.
+		if !prompt {
+			return nil
+		}
 		a.input.InsertString("\n")
 		return nil
 	}
@@ -1336,12 +1863,12 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	// The inline popup takes the navigation keys while it is open; everything
 	// else falls through to the editor so typing keeps narrowing the list.
-	if a.autocomplete.visible() {
+	if prompt && a.autocomplete.visible() {
 		if cmd, handled := a.handleAutocompleteKey(msg); handled {
 			return cmd
 		}
 	}
-	if msg.String() == "@" {
+	if prompt && msg.String() == "@" {
 		a.input.InsertString("@")
 		a.openMentionAutocomplete()
 		return nil
@@ -1349,7 +1876,7 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// "/" opens command completion, but only at the very start of the prompt:
 	// a slash anywhere else is ordinary text (a path, a date, a fraction).
 	// Ports autocomplete.tsx's "/ at position 0" trigger.
-	if msg.String() == "/" && a.input.Value() == "" {
+	if prompt && msg.String() == "/" && a.input.Value() == "" {
 		a.input.InsertString("/")
 		a.openSlashAutocomplete()
 		return nil
@@ -1366,8 +1893,13 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	if msg.String() == "up" || msg.String() == "down" {
-		if cmd, handled := a.historyKey(msg.String()); handled {
-			return cmd
+		// In a subagent's session the prompt is unmounted (see
+		// promptEnabled), so its two-stage history gesture must not claim the
+		// key either: up belongs to session.parent there.
+		if prompt {
+			if cmd, handled := a.historyKey(msg.String()); handled {
+				return cmd
+			}
 		}
 		// Not at the input's boundary: fall through to the textarea's own
 		// multi-line cursor movement below.
@@ -1376,10 +1908,13 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// Subagent navigation (session_parent / session_child_cycle_reverse /
 	// session_child_cycle: up / left / right in config/keybind.ts). These are
 	// the commands the subagent footer's Parent/Prev/Next buttons dispatch.
-	// Upstream binds them on the session route and lets the focused textarea
-	// win; this port has no focus tree, so they only fire on an empty prompt
-	// and otherwise fall through to the textarea's own cursor movement.
-	if strings.TrimSpace(a.input.Value()) == "" {
+	// Upstream's bindings live on the session route with no target: when the
+	// prompt is unmounted nothing is focused to win the key, so they fire
+	// unconditionally. When the prompt is mounted, the history gesture above
+	// already had its chance, and left/right fall through to the textarea's
+	// own cursor movement below — which is also the upstream order (the
+	// focused textarea wins).
+	if !prompt {
 		switch msg.String() {
 		case "up":
 			if cmd, handled := a.openParentSession(); handled {
@@ -1397,6 +1932,15 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 
 	switch msg.String() {
+	case "ctrl+b":
+		// session.background (config/keybind.ts ~98). Gated on the chat view
+		// and on background mode: ctrl+b is also the diff viewer's pageup,
+		// but the viewer is a mode that owns its whole key table (see
+		// handleDiffKey), so this branch only sees the key while the chat is
+		// up.
+		if a.view == viewChat {
+			return a.backgroundSubagents()
+		}
 	case "esc", "escape":
 		if a.view == viewChat && a.busy && a.active != nil {
 			return a.armInterrupt()
@@ -1433,6 +1977,9 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// here; this is for the ones that send the key through instead.
 		return a.pasteFromClipboard()
 	case "enter":
+		if !prompt {
+			return nil
+		}
 		text := strings.TrimSpace(a.input.Value())
 		if text == "" {
 			return nil
@@ -1457,6 +2004,9 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return a.sendPromptWith(a.active.ID, text, files)
 	}
 
+	if !prompt {
+		return nil
+	}
 	var cmd tea.Cmd
 	a.input, cmd = a.input.Update(msg)
 	// The prompt is the popup's query: re-filter after every keystroke, and
@@ -1724,8 +2274,12 @@ func (a *App) applyQuestions(pending []client.QuestionRequest) {
 		a.clearQuestion()
 		return
 	}
+	// Same merge rule as applyPermissions: the list carries the open
+	// session's own asks and its tracked children's, and the first pending
+	// one wins. A request from anything else never takes the banner.
+	allowed := a.allowedAskSessions()
 	for i := range pending {
-		if pending[i].SessionID != a.active.ID {
+		if !allowed[pending[i].SessionID] {
 			continue
 		}
 		if a.question != nil && a.question.ID == pending[i].ID {
@@ -1746,14 +2300,20 @@ func (a *App) applyPermissions(pending []client.PermissionRequest) {
 	if a.active == nil {
 		return
 	}
+	// First pending wins — the merged list carries the open session's own
+	// requests and its tracked children's (index.tsx flatMaps them
+	// together); anything else never takes the banner. The reply posts to
+	// the request's own session, so a child's ask settles in the child.
+	allowed := a.allowedAskSessions()
 	for i := range pending {
-		if pending[i].SessionID == a.active.ID {
-			if a.permission == nil || a.permission.ID != pending[i].ID {
-				a.permissionChoice = 0
-			}
-			a.permission = &pending[i]
-			return
+		if !allowed[pending[i].SessionID] {
+			continue
 		}
+		if a.permission == nil || a.permission.ID != pending[i].ID {
+			a.permissionChoice = 0
+		}
+		a.permission = &pending[i]
+		return
 	}
 }
 

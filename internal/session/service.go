@@ -122,17 +122,19 @@ func nullableString(value string) any {
 // Get returns a session by ID.
 func (s *Service) Get(ctx context.Context, sessionID string) (*Info, error) {
 	row := s.DB.QueryRow(ctx, `
-		SELECT id, project_id, title, directory, version, model, time_created, time_updated
+		SELECT id, project_id, parent_id, agent, title, directory, version, model, time_created, time_updated
 		FROM session WHERE id = ?`, sessionID)
 	var info Info
-	var model sql.NullString
-	err := row.Scan(&info.ID, &info.ProjectID, &info.Title, &info.Directory, &info.Version, &model, &info.TimeCreated, &info.TimeUpdated)
+	var parent, agent, model sql.NullString
+	err := row.Scan(&info.ID, &info.ProjectID, &parent, &agent, &info.Title, &info.Directory, &info.Version, &model, &info.TimeCreated, &info.TimeUpdated)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
 	if err != nil {
 		return nil, err
 	}
+	info.ParentID = parent.String
+	info.Agent = agent.String
 	info.Model = parseModelColumn(model)
 	return &info, nil
 }
@@ -140,7 +142,7 @@ func (s *Service) Get(ctx context.Context, sessionID string) (*Info, error) {
 // List returns all sessions, newest first.
 func (s *Service) List(ctx context.Context) ([]Info, error) {
 	rows, err := s.DB.Query(ctx, `
-		SELECT id, project_id, title, directory, version, model, time_created, time_updated
+		SELECT id, project_id, parent_id, agent, title, directory, version, model, time_created, time_updated
 		FROM session ORDER BY time_created DESC`)
 	if err != nil {
 		return nil, err
@@ -149,10 +151,12 @@ func (s *Service) List(ctx context.Context) ([]Info, error) {
 	var result []Info
 	for rows.Next() {
 		var info Info
-		var model sql.NullString
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Title, &info.Directory, &info.Version, &model, &info.TimeCreated, &info.TimeUpdated); err != nil {
+		var parent, agent, model sql.NullString
+		if err := rows.Scan(&info.ID, &info.ProjectID, &parent, &agent, &info.Title, &info.Directory, &info.Version, &model, &info.TimeCreated, &info.TimeUpdated); err != nil {
 			return nil, err
 		}
+		info.ParentID = parent.String
+		info.Agent = agent.String
 		info.Model = parseModelColumn(model)
 		result = append(result, info)
 	}
@@ -508,7 +512,7 @@ func (s *Service) CompactNow(ctx context.Context, sessionID string) (bool, error
 // Children returns sessions forked from this one.
 func (s *Service) Children(ctx context.Context, sessionID string) ([]Info, error) {
 	rows, err := s.DB.Query(ctx, `
-		SELECT id, project_id, title, directory, version, time_created, time_updated
+		SELECT id, project_id, parent_id, agent, title, directory, version, time_created, time_updated
 		FROM session WHERE parent_id = ? ORDER BY time_created ASC`, sessionID)
 	if err != nil {
 		return nil, err
@@ -517,9 +521,12 @@ func (s *Service) Children(ctx context.Context, sessionID string) ([]Info, error
 	var out []Info
 	for rows.Next() {
 		var info Info
-		if err := rows.Scan(&info.ID, &info.ProjectID, &info.Title, &info.Directory, &info.Version, &info.TimeCreated, &info.TimeUpdated); err != nil {
+		var parent, agent sql.NullString
+		if err := rows.Scan(&info.ID, &info.ProjectID, &parent, &agent, &info.Title, &info.Directory, &info.Version, &info.TimeCreated, &info.TimeUpdated); err != nil {
 			return nil, err
 		}
+		info.ParentID = parent.String
+		info.Agent = agent.String
 		out = append(out, info)
 	}
 	return out, rows.Err()

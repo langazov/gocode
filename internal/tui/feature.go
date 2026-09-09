@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"image/color"
 	"os"
 	"os/exec"
@@ -290,7 +291,24 @@ func (a *App) forkFrom(messageID string) tea.Cmd {
 	}
 }
 
-// childrenOverlay lists forked child sessions (the subagent dialog).
+// isFork reports whether a child session was created by Fork rather than by
+// a task call. The distinction this dialog needs: a fork has no task row on
+// the parent's timeline to reopen from, so this overlay is its only entry
+// point. Fork marks it by title ("Fork: <parent title>", service.go's
+// Create input) — there is no dedicated column to read instead.
+func isFork(child client.Session) bool {
+	return strings.HasPrefix(child.Title, "Fork: ")
+}
+
+// childrenOverlay lists the parent's live subagent sessions — the running
+// ones, plus forks (which have no task row to reopen from and whose only
+// entry point this dialog is; the session switcher excludes children).
+// A settled subagent stays reachable through its parent's task row, so
+// hiding it here costs nothing.
+//
+// Rows are grouped by fan-out batch (one assistant message = one batch of
+// task calls), so a parent that launched two groups reads as two groups:
+// opening one of them scopes the subagent view's arrows to that batch.
 func (a *App) childrenOverlay() tea.Cmd {
 	if a.active == nil {
 		return staticMsg(statusMsg{text: "open a session first"})
@@ -302,35 +320,115 @@ func (a *App) childrenOverlay() tea.Cmd {
 		if err != nil {
 			return statusMsg{text: "failed to load children: " + err.Error()}
 		}
-		items := make([]overlayItem, 0, len(children))
+		// Group by batch, keeping first-seen order. The open session's
+		// timeline is the parent's here (this overlay opens from the parent
+		// view), so batch resolution reads it directly.
+		type batchGroup struct {
+			category string
+			items    []overlayItem
+		}
+		var groups []*batchGroup
+		batchIndex := map[string]int{}
+		forkCategory := "Forks"
+		ensureGroup := func(category string) *batchGroup {
+			if i, ok := batchIndex[category]; ok {
+				return groups[i]
+			}
+			groups = append(groups, &batchGroup{category: category})
+			batchIndex[category] = len(groups) - 1
+			return groups[len(groups)-1]
+		}
 		for i := range children {
 			child := children[i]
 			// Live status comes from the aggregated snapshot rather than a
 			// fetch: subagent sessions are children too, and their activity
 			// is already streaming in. See aggregator.go.
+			node := a.agents.Sessions[child.ID]
+			running := node != nil && node.Busy
+			if !isFork(child) && !running {
+				// A settled subagent: hidden here, still openable from its
+				// task row's completion summary.
+				continue
+			}
 			hint := relativeTime(child.TimeUpdated)
-			if node := a.agents.Sessions[child.ID]; node != nil && node.Busy {
+			if running {
 				hint = "running · " + hint
 			}
-			items = append(items, overlayItem{
+			item := overlayItem{
 				label: sessionTitleOf(child),
 				hint:  hint,
 				value: child.ID,
 				action: func() tea.Msg {
-					a.active = &child
-					a.view = viewChat
-					a.timeline = nil
-					a.scrollOffset = 0
-					return reloadMsg{}
+					// The child session is already in hand (the list was
+					// fetched to build it), so no re-fetch: straight to the
+					// sessionOpenedMsg that resets the per-session state
+					// (child tracking, subagent siblings, queue, run
+					// status) — the overlay's shortcut used to assign
+					// a.active directly and skip all of that.
+					child := child
+					return sessionOpenedMsg{session: &child}
 				},
-			})
+			}
+			if isFork(child) {
+				ensureGroup(forkCategory).items = append(ensureGroup(forkCategory).items, item)
+				continue
+			}
+			batch := taskBatchOf(a.timeline, child.ID)
+			category := "Subagents"
+			if batch != "" {
+				// Batches are keyed by message ID; name the group by its
+				// position among the timeline's fan-out messages so two
+				// groups read apart at a glance.
+				category = fmt.Sprintf("Batch %d", batchOrdinal(a.timeline, batch))
+			}
+			ensureGroup(category).items = append(ensureGroup(category).items, item)
+		}
+		items := make([]overlayItem, 0, len(children))
+		for _, group := range groups {
+			for i := range group.items {
+				group.items[i].category = group.category
+			}
+			items = append(items, group.items...)
 		}
 		if len(items) == 0 {
-			items = append(items, overlayItem{label: "(no forked or subagent sessions)"})
+			items = append(items, overlayItem{label: "(no running subagents)"})
 		}
-		a.openList("Forked & subagent sessions", items)
+		a.openList("Running subagents", items)
 		return nil
 	}
+}
+
+// batchOrdinal numbers a batch among the timeline's fan-out batches, 1-based,
+// in message order. Zero when the batch is not one of the timeline's.
+func batchOrdinal(messages []client.Message, batch string) int {
+	ordinal, seen := 0, map[string]bool{}
+	for _, message := range messages {
+		if message.Type != "assistant" {
+			continue
+		}
+		data, err := client.DecodeAssistant(message.Data)
+		if err != nil {
+			continue
+		}
+		for _, part := range data.Content {
+			if part.Type != "tool" || part.Name != "task" || part.State == nil {
+				continue
+			}
+			id, _ := part.State.Metadata["batchID"].(string)
+			if id == "" {
+				id = message.ID
+			}
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			ordinal++
+			if id == batch {
+				return ordinal
+			}
+		}
+	}
+	return 0
 }
 
 // compactNow triggers immediate compaction (leader+c / session.compact).
