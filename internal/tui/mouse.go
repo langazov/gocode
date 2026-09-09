@@ -98,6 +98,11 @@ func (a *App) handleWheel(msg tea.Mouse) tea.Cmd {
 		a.moveSelection(a.overlay, delta)
 		return nil
 	}
+	// The diff viewer owns the wheel while open: it scrolls whichever pane
+	// has focus, exactly as the TS scrollboxes scroll natively.
+	if a.diff != nil {
+		return a.diffMouseWheel(up)
+	}
 	if a.view != viewChat {
 		return nil
 	}
@@ -156,6 +161,11 @@ func (a *App) handleMouseRelease(msg tea.Mouse) tea.Cmd {
 	a.selection.clear()
 	if msg.Button != tea.MouseLeft {
 		return nil
+	}
+	// A click lands in the diff viewer: tree rows select, file headers
+	// jump. Hit spans were recorded by the render pass that drew them.
+	if a.diff != nil {
+		return a.diffMouseClick(msg.X, msg.Y)
 	}
 	return a.handleClick(msg.X, msg.Y)
 }
@@ -309,6 +319,13 @@ func (a *App) overlayMouseTarget(row, col int) overlayTarget {
 func (a *App) currentFrame() string {
 	if a.overlay != nil {
 		return a.viewOverlay()
+	}
+	if a.diff != nil {
+		// The diff viewer is a route, not a dialog: it replaces the base
+		// view entirely (dialog backdrops composite over underlay(), so a
+		// dialog opened from inside the viewer still shows the viewer
+		// underneath, dimmed).
+		return a.compositeToast(a.viewDiff())
 	}
 	if a.view == viewHome {
 		return a.compositeToast(a.viewHome())

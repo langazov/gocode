@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -302,15 +303,25 @@ func (a *App) modelRow(model client.Model, category string, favorite bool) overl
 		footer:   footer,
 		action: func() tea.Msg {
 			a.models.markRecent(modelRef{ProviderID: model.ProviderID, ModelID: model.ID})
+			// The new model's persisted variant rides along when it is still
+			// valid for it (variant.list includes it, or "default");
+			// otherwise the original hands off to DialogVariant to pick one —
+			// see dialog-model.tsx's onSelect.
+			ref := modelRef{ProviderID: model.ProviderID, ModelID: model.ID}
+			variant := a.models.selectedVariant(ref)
+			if variant != "default" && !slices.Contains(a.modelVariants[label], variant) {
+				variant = ""
+			}
 			if a.active == nil {
 				// Home view: no session exists yet to pin the model to.
 				// Remember the choice — newSession/createAndPrompt apply it
 				// via SetModel right after creating the session, and clear
 				// it once consumed (see sessionOpenedMsg/openedWithPrompt).
 				a.activeModel = label
+				a.openVariantPickerIfAny(label, ref, variant)
 				return statusMsg{text: "model: " + label}
 			}
-			if err := a.client.SetModel(a.ctx, a.active.ID, model.ProviderID, model.ID); err != nil {
+			if err := a.client.SetModelWithVariant(a.ctx, a.active.ID, model.ProviderID, model.ID, variant); err != nil {
 				return statusMsg{text: "model switch failed: " + err.Error()}
 			}
 			// Update the session's own Model field immediately rather than
@@ -318,10 +329,27 @@ func (a *App) modelRow(model client.Model, category string, favorite bool) overl
 			// a.active.Model directly (currentModelParts), which otherwise
 			// stayed on the old model until the next prompt triggered a
 			// full session refresh.
-			a.active.Model = &client.ModelRef{ProviderID: model.ProviderID, ID: model.ID}
+			a.active.Model = &client.ModelRef{ProviderID: model.ProviderID, ID: model.ID, Variant: variant}
+			a.openVariantPickerIfAny(label, ref, variant)
 			return statusMsg{text: "model: " + label}
 		},
 	}
+}
+
+// openVariantPickerIfAny ports the tail of dialog-model.tsx's onSelect: a
+// model that offers variants and has no valid selection for them replaces
+// the dialog with DialogVariant, so the pick is one gesture instead of two.
+// A model with no variants, or one whose persisted selection still applies,
+// just closes.
+func (a *App) openVariantPickerIfAny(label string, ref modelRef, applied string) {
+	if len(a.modelVariants[label]) == 0 {
+		return
+	}
+	if applied != "" {
+		return
+	}
+	a.models.setVariant(ref, "")
+	a.variantsOverlay()
 }
 
 // sortModelOptions ports sortModelOptions(options, newestFirst=false): free

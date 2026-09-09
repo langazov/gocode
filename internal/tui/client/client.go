@@ -10,7 +10,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -377,6 +379,12 @@ type Model struct {
 	// CostInput is models.dev's `cost.input`. Zero across every model of a
 	// provider is what marks that provider as free.
 	CostInput float64 `json:"costInput,omitempty"`
+	// Variants are the model's selectable reasoning variants, the ids the
+	// /variants dialog lists and variant.cycle steps through. Populated by
+	// /api/model from the same provider.ReasoningVariants the runner
+	// resolves a turn with, so the TUI can never offer one the server would
+	// ignore.
+	Variants []string `json:"variants,omitempty"`
 }
 
 type Provider struct {
@@ -606,6 +614,47 @@ func (c *Client) Agents(ctx context.Context) ([]Agent, error) {
 	return out, err
 }
 
+// VcsInfo is GET /api/vcs: the branch state the diff viewer gates its
+// "Main branch" source on, mirroring TuiPluginApi.state.vcs() in the
+// original ({branch, default_branch}) and the TS VcsInfo schema.
+type VcsInfo struct {
+	Branch        string `json:"branch,omitempty"`
+	DefaultBranch string `json:"defaultBranch,omitempty"`
+}
+
+// Vcs fetches repository info. An empty Branch and DefaultBranch is a valid
+// answer (detached HEAD, no remote) — it is not an error.
+func (c *Client) Vcs(ctx context.Context) (*VcsInfo, error) {
+	var out VcsInfo
+	if err := c.do(ctx, http.MethodGet, "/api/vcs", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// FileDiff is one entry from GET /api/vcs/diff, mirroring the VcsFileDiff
+// schema the TS viewer consumes: patch text, line counts, coarse status.
+type FileDiff struct {
+	File      string `json:"file"`
+	Patch     string `json:"patch"`
+	Additions int    `json:"additions"`
+	Deletions int    `json:"deletions"`
+	Status    string `json:"status"`
+}
+
+// VcsDiff fetches the file diff for a mode. mode is the server's "git" or
+// "branch"; context is the context-line window the viewer wants (the TUI
+// passes 12, its VCS_DIFF_CONTEXT_LINES) and 0 leaves the server default.
+func (c *Client) VcsDiff(ctx context.Context, mode string, context int) ([]FileDiff, error) {
+	path := "/api/vcs/diff?mode=" + url.QueryEscape(mode)
+	if context > 0 {
+		path += "&context=" + strconv.Itoa(context)
+	}
+	var out []FileDiff
+	err := c.do(ctx, http.MethodGet, path, nil, &out)
+	return out, err
+}
+
 // MCPServer is one entry from GET /api/mcp, mirroring the {name, status,
 // error?} shape TuiPluginApi.state.mcp() exposes to sidebar/footer/status
 // plugins in the original — status is one of "connected", "disabled",
@@ -706,9 +755,19 @@ func (c *Client) Plugins(ctx context.Context) ([]PluginStatus, []PluginSpec, []P
 }
 
 func (c *Client) SetModel(ctx context.Context, sessionID, providerID, modelID string) error {
-	return c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/model", map[string]string{
-		"providerID": providerID, "id": modelID,
-	}, nil)
+	return c.SetModelWithVariant(ctx, sessionID, providerID, modelID, "")
+}
+
+// SetModelWithVariant pins a model and its reasoning variant. variant is
+// normalized upstream of here: "default" (what the store keeps for
+// no-selection) never reaches the wire, matching the optional variant in
+// the original's Model.Ref.
+func (c *Client) SetModelWithVariant(ctx context.Context, sessionID, providerID, modelID, variant string) error {
+	body := map[string]string{"providerID": providerID, "id": modelID}
+	if variant != "" {
+		body["variant"] = variant
+	}
+	return c.do(ctx, http.MethodPost, "/api/session/"+sessionID+"/model", body, nil)
 }
 
 func (c *Client) SetAgent(ctx context.Context, sessionID, agent string) error {

@@ -55,6 +55,12 @@ type Server struct {
 	// resolved no project, which sends new memories to the global scope.
 	ProjectID string
 
+	// VCSWorkdir is the directory the /api/vcs routes diff against: the
+	// process working directory at boot. Empty disables the VCS surface
+	// (empty payloads, never 500s), so embedders that boot without one keep
+	// a working server.
+	VCSWorkdir string
+
 	// oauth tracks in-flight provider logins started from the interface. A
 	// device flow outlives the request that begins it, so the attempt is
 	// parked here and polled.
@@ -89,6 +95,11 @@ func (s *Server) Mux() *http.ServeMux {
 	if s.Agents != nil {
 		mux.HandleFunc("GET /api/agent", s.listAgents)
 	}
+	// VCS routes are unconditional: they answer empty payloads rather than
+	// 404 when the workdir is unset or not a repository, so the TUI's diff
+	// viewer can open anywhere and degrade to "No diff!" like the TS plugin.
+	mux.HandleFunc("GET /api/vcs", s.vcsInfo)
+	mux.HandleFunc("GET /api/vcs/diff", s.vcsDiff)
 	if s.MCP != nil {
 		mux.HandleFunc("GET /api/mcp", s.listMCP)
 	}
@@ -437,6 +448,12 @@ type modelEntry struct {
 	// tokens). The sidebar footer's getting-started card keys off exactly
 	// this: it greets users whose only usable models are the free ones.
 	CostInput float64 `json:"costInput,omitempty"`
+	// Variants are the model's selectable reasoning variants, the ids
+	// /variants offers and variant.cycle steps through. They mirror what the
+	// runner itself resolves for a turn (provider.ReasoningVariants over the
+	// catalog's reasoning_options), so the TUI can only ever offer variants
+	// the server will actually honor.
+	Variants []string `json:"variants,omitempty"`
 }
 
 func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
@@ -451,7 +468,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 	// Only providers the user can actually reach — see available.go. The
 	// catalog is the database, not the list.
 	availability := newProviderAvailability(s.Config)
-	appendModel := func(providerID string, provider config.Provider, modelID string, model modelsdev.Model) {
+	appendModel := func(providerID string, _ config.Provider, modelID string, model modelsdev.Model) {
 		key := providerID + "/" + modelID
 		if seen[key] {
 			return
@@ -469,6 +486,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 			ID:           modelID,
 			Name:         name,
 			ContextLimit: int(model.Limit.Context),
+			Variants:     modelVariants(providerID, catalog[providerID], model),
 		}
 		if model.Cost != nil {
 			entry.CostInput = model.Cost.Input
@@ -574,6 +592,11 @@ func (s *Server) listMCP(w http.ResponseWriter, r *http.Request) {
 type setModelRequest struct {
 	ProviderID string `json:"providerID"`
 	ID         string `json:"id"`
+	// Variant is the selected reasoning variant. Empty and "default" both
+	// mean "no variant" — the wire shape Model.Ref allows (packages/schema
+	// Model.Ref.variant is optional), and variant.set(undefined) stores
+	// "default" upstream, which the TUI normalizes before sending.
+	Variant string `json:"variant,omitempty"`
 }
 
 func (s *Server) setModel(w http.ResponseWriter, r *http.Request) {
@@ -583,8 +606,12 @@ func (s *Server) setModel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sessionID := r.PathValue("sessionID")
+	variant := body.Variant
+	if variant == "default" {
+		variant = ""
+	}
 	if err := s.Session.SetModel(r.Context(), sessionID, session.ModelRef{
-		ProviderID: body.ProviderID, ID: body.ID,
+		ProviderID: body.ProviderID, ID: body.ID, Variant: variant,
 	}); err != nil {
 		writeServiceError(w, err)
 		return
@@ -592,7 +619,7 @@ func (s *Server) setModel(w http.ResponseWriter, r *http.Request) {
 	// Remember the last-used model per directory so restarts resume with it.
 	if info, err := s.Session.Get(r.Context(), sessionID); err == nil && info != nil {
 		_ = modelstate.Save(info.Directory, modelstate.Ref{
-			ProviderID: body.ProviderID, ModelID: body.ID,
+			ProviderID: body.ProviderID, ModelID: body.ID, Variant: variant,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})

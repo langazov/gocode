@@ -15,6 +15,11 @@ import (
 type Ref struct {
 	ProviderID string `json:"providerID"`
 	ModelID    string `json:"modelID"`
+	// Variant is the selected reasoning variant, carried through so a
+	// restart resumes the last-used model *and* its variant. Empty means
+	// none — the API normalizes the "default" the TUI persists for
+	// no-selection before it reaches here.
+	Variant string `json:"variant,omitempty"`
 }
 
 var mu sync.Mutex

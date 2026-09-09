@@ -88,6 +88,13 @@ type App struct {
 	activeAgent       string
 	defaultModelLabel string
 
+	// modelVariants caches each model's selectable reasoning variants from
+	// the catalog ("provider/model" -> ids), the list /variants offers and
+	// variant.cycle walks. Filled by catalogMsg alongside modelNames; a
+	// model missing from it has no variants, exactly like local.tsx's
+	// variant.list() returning [] when the catalog entry has none.
+	modelVariants map[string][]string
+
 	permission       *client.PermissionRequest
 	permissionChoice int // selected option: 0 once, 1 always, 2 reject
 	stats            *client.Stats
@@ -143,11 +150,19 @@ type App struct {
 	// session with a parent is opened.
 	subagentSiblings []client.Session
 
-	tip           string
-	mcpServers    []client.MCPServer
-	cwd           string
-	homeDir       string
-	gitBranch     string
+	tip        string
+	mcpServers []client.MCPServer
+	cwd        string
+	homeDir    string
+	gitBranch  string
+	// diff is the diff viewer route's state while it is open (nil
+	// otherwise), and diffReturn the view to restore on close — the TS
+	// plugin's route plus returnRoute params. See diffviewer.go.
+	diff       *diffViewer
+	diffReturn int
+	// diffStatePath is where the diff viewer's preferences persist; New
+	// resolves it once like the prompt-history path.
+	diffStatePath string
 	modelNames    map[string]string // "provider/model" -> display name
 	providerNames map[string]string // provider id -> display name
 	// providers is the raw catalog list, kept because the sidebar footer's
@@ -237,6 +252,10 @@ type App struct {
 	animationsEnabled bool
 	agentMetaFade     *fadeAnim
 	modelMetaFade     *fadeAnim
+	// variantMetaFade ports variantMetaAlpha: the prompt's "· variant"
+	// segment fades in with the meta row when a variant is in effect, and
+	// holds steady thereafter (createFadeIn's revealed latch).
+	variantMetaFade *fadeAnim
 
 	// history ports prompt/history.tsx: up/down at the input's start/end
 	// recall submitted prompts (see historyKey below).
@@ -395,10 +414,12 @@ func New(ctx context.Context, c *client.Client, themeName string) *App {
 		animationsEnabled:  true,
 		agentMetaFade:      newFadeAnim(false),
 		modelMetaFade:      newFadeAnim(false),
+		variantMetaFade:    newFadeAnim(false),
 		contextLimits:      map[string]int{},
 		modelCosts:         map[string]float64{},
 		history:            loadPromptHistory(filepath.Join(global.Resolve().State, promptHistoryFile)),
 		themeStatePath:     ThemeStatePath(),
+		diffStatePath:      DiffStatePath(),
 		windowTitle:        "GoCode",
 		thinkingMode:       "hide",
 		expandedReasoning:  map[string]bool{},
@@ -609,6 +630,12 @@ type statusMsg struct {
 	// errors without saying "failed".
 	isErr bool
 }
+
+// variantChangedMsg reports a variant selection landing (a setVariant or
+// cycleVariant inside a palette/shortcut action), so the prompt meta row's
+// "· variant" segment can fade in or drop out reactively — the Solid
+// createFadeIn upstream gets for free from its reactive reads.
+type variantChangedMsg struct{}
 
 // staticMsg turns a ready message into a command.
 func staticMsg(msg tea.Msg) tea.Cmd {
@@ -841,6 +868,10 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			a.toast = nil
 		}
 		return nil
+	case diffLoadedMsg:
+		return a.handleDiffResult(msg)
+	case diffVcsInfoMsg:
+		return a.handleDiffVcsInfo(msg)
 	case quitMsg:
 		a.quitting = true
 		return tea.Quit
@@ -864,10 +895,14 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.modelNames = map[string]string{}
 		a.contextLimits = map[string]int{}
 		a.modelCosts = map[string]float64{}
+		a.modelVariants = map[string][]string{}
 		for _, model := range msg.models {
 			a.modelNames[model.ProviderID+"/"+model.ID] = model.Name
 			a.contextLimits[model.ProviderID+"/"+model.ID] = model.ContextLimit
 			a.modelCosts[model.ProviderID+"/"+model.ID] = model.CostInput
+			if len(model.Variants) > 0 {
+				a.modelVariants[model.ProviderID+"/"+model.ID] = model.Variants
+			}
 		}
 		if msg.providersOK {
 			a.providers = msg.providers
@@ -889,6 +924,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return tea.Batch(
 			a.agentMetaFade.Sync(true, a.animationsEnabled),
 			a.modelMetaFade.Sync(true, a.animationsEnabled),
+			a.variantMetaFade.Sync(a.variantCurrent() != "", a.animationsEnabled),
 		)
 	case mcpMsg:
 		a.mcpServers = msg.servers
@@ -917,9 +953,13 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		if cmd := a.agentMetaFade.Advance(msg); cmd != nil {
 			return cmd
 		}
-		return a.modelMetaFade.Advance(msg)
+		if cmd := a.modelMetaFade.Advance(msg); cmd != nil {
+			return cmd
+		}
+		return a.variantMetaFade.Advance(msg)
 	case sessionOpenedMsg:
 		a.active = msg.session
+		a.adoptSessionVariant()
 		// Consumed (applyPendingModel already pinned it to this session if
 		// it was created for that purpose) or stale (a leftover home-view
 		// pick that belongs to no session): either way it must not leak
@@ -945,6 +985,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case openedWithPrompt:
 		a.active = msg.session
 		a.activeModel = ""
+		a.adoptSessionVariant()
 		a.view = viewChat
 		a.timeline = nil
 		a.queued = nil
@@ -1152,6 +1193,8 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			text += ": " + msg.err
 		}
 		return a.showToast(text, true)
+	case variantChangedMsg:
+		return a.variantMetaFade.Sync(a.variantCurrent() != "", a.animationsEnabled)
 	case statusMsg:
 		a.statusMsg = msg.text
 		isError := msg.isErr ||
@@ -1188,6 +1231,12 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// A dialog owns the keyboard while open (modal mode in the original).
 	if a.overlay != nil {
 		return a.handleOverlayKey(msg.String())
+	}
+	// The diff viewer route owns the keyboard while open, the same way a
+	// dialog does — its commands (diff.* in keybind.ts) are scoped to the
+	// route and none of the global chords below apply inside it.
+	if a.diff != nil {
+		return a.handleDiffKey(msg)
 	}
 	switch msg.String() {
 	case "ctrl+c", "ctrl+d":
@@ -1260,6 +1309,10 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "ctrl+z":
 		// terminal_suspend
 		return tea.Suspend
+	case "ctrl+t":
+		// variant_cycle (config/keybind.ts's variant_cycle). A no-op for a
+		// model without variants, exactly like variant.cycle() upstream.
+		return staticMsg(a.cycleVariant())
 	case "shift+enter", "ctrl+enter", "alt+enter", "ctrl+j":
 		// input_newline. bubbles' textarea only treats a bare enter as a
 		// newline, and this handler claims that for input_submit, so the
@@ -1716,7 +1769,7 @@ func (a *App) newSession() tea.Cmd {
 		if err != nil {
 			return statusMsg{text: "failed to create session: " + err.Error()}
 		}
-		applyPendingModel(a.ctx, c, session, pendingModel)
+		applyPendingModel(a.ctx, c, session, pendingModel, a.models)
 		return sessionOpenedMsg{session: session}
 	}
 }
@@ -1726,7 +1779,7 @@ func (a *App) newSession() tea.Cmd {
 // in place so the caller's sessionOpenedMsg/openedWithPrompt already carries
 // the right value — sessionOpenedMsg clears a.activeModel once this has run,
 // consumed or not, so it never leaks into a later, unrelated session.
-func applyPendingModel(ctx context.Context, c *client.Client, session *client.Session, pending string) {
+func applyPendingModel(ctx context.Context, c *client.Client, session *client.Session, pending string, store *modelStore) {
 	if pending == "" {
 		return
 	}
@@ -1734,8 +1787,13 @@ func applyPendingModel(ctx context.Context, c *client.Client, session *client.Se
 	if !ok {
 		return
 	}
-	if err := c.SetModel(ctx, session.ID, providerID, modelID); err == nil {
-		session.Model = &client.ModelRef{ProviderID: providerID, ID: modelID}
+	// The pick carries whatever variant is persisted for the model — the
+	// store is the single source upstream too (session.create sends
+	// variant.current() from it, never a bare model).
+	ref := modelRef{ProviderID: providerID, ModelID: modelID}
+	variant := variantCurrentOrEmpty(store.selectedVariant(ref))
+	if err := c.SetModelWithVariant(ctx, session.ID, providerID, modelID, variant); err == nil {
+		session.Model = &client.ModelRef{ProviderID: providerID, ID: modelID, Variant: variant}
 	}
 }
 
@@ -1756,7 +1814,7 @@ func (a *App) createAndPrompt(text string) tea.Cmd {
 		if err != nil {
 			return statusMsg{text: "failed to create session: " + err.Error()}
 		}
-		applyPendingModel(a.ctx, c, session, pendingModel)
+		applyPendingModel(a.ctx, c, session, pendingModel, a.models)
 		if _, err := c.Prompt(a.ctx, session.ID, text); err != nil {
 			return statusMsg{text: "prompt failed: " + err.Error()}
 		}
@@ -2118,10 +2176,18 @@ func (a *App) slashAutocompleteItems() []autocompleteItem {
 	}
 	for _, entry := range a.commandsRegistry() {
 		entry := entry
-		if entry.slash == "" {
+		// Hidden commands stay slash-resolvable but are not offered, the
+		// same isVisiblePaletteCommand gate the palette itself applies.
+		if entry.slash == "" || entry.hidden {
 			continue
 		}
+		// The description is the command's desc falling back to its title
+		// (useCommandSlashes), with this port's alias suffix so the extra
+		// names stay discoverable.
 		description := entry.hint
+		if description == "" {
+			description = entry.label
+		}
 		if len(entry.slashAliases) > 0 {
 			description = strings.TrimSpace(description + " (" + strings.Join(entry.slashAliases, ", ") + ")")
 		}
@@ -2221,6 +2287,130 @@ func (a *App) currentModelParts() (providerID, modelID string, ok bool) {
 		}
 	}
 	return strings.Cut(a.defaultModelLabel, "/")
+}
+
+// variantList ports local.tsx's variant.list(): the current model's
+// selectable variants from the catalog, empty when the model has none (or
+// the catalog has not arrived yet — /variants then reports "none" the same
+// way, since nothing can be offered that the server would honor).
+func (a *App) variantList() []string {
+	providerID, modelID, ok := a.currentModelParts()
+	if !ok {
+		return nil
+	}
+	return a.modelVariants[providerID+"/"+modelID]
+}
+
+// variantRef is the model a variant selection applies to.
+func (a *App) variantRef() (modelRef, bool) {
+	providerID, modelID, ok := a.currentModelParts()
+	if !ok {
+		return modelRef{}, false
+	}
+	return modelRef{ProviderID: providerID, ModelID: modelID}, true
+}
+
+// variantCurrent ports variant.current(): the persisted selection, but only
+// when it is still one of the model's variants — a selection left behind by
+// a model switch (or one the catalog dropped) reads as none, exactly like
+// the upstream guard `if (!this.list().includes(v)) return undefined`.
+func (a *App) variantCurrent() string {
+	ref, ok := a.variantRef()
+	if !ok {
+		return ""
+	}
+	selected := a.models.selectedVariant(ref)
+	if selected == "" || selected == "default" {
+		return ""
+	}
+	for _, id := range a.variantList() {
+		if id == selected {
+			return selected
+		}
+	}
+	return ""
+}
+
+// setVariant ports variant.set(): persist the selection for the current
+// model and push it onto the open session's pinned model (a session without
+// a variant pinned would otherwise run the turn without it — the store is
+// this port's only memory of the choice, just like the TS store is upstream).
+// Persisting "default" for no-selection is upstream's own encoding, kept so
+// both binaries read each other's file.
+func (a *App) setVariant(variant string) tea.Msg {
+	ref, ok := a.variantRef()
+	if !ok {
+		return nil
+	}
+	a.models.setVariant(ref, variant)
+	if a.active != nil && a.active.Model != nil &&
+		a.active.Model.ProviderID == ref.ProviderID && a.active.Model.ID == ref.ModelID {
+		a.active.Model.Variant = variantCurrentOrEmpty(variant)
+		// Fire and forget like every other model pin: the response carries
+		// nothing the UI needs, and a failure would only desynchronize a
+		// selection the user can re-make. The session and client are
+		// captured now — a.active is UI state another message can swap mid-
+		// flight.
+		sessionID := a.active.ID
+		c := a.client
+		ctx := a.ctx
+		go func() {
+			_ = c.SetModelWithVariant(ctx, sessionID, ref.ProviderID, ref.ModelID, variantCurrentOrEmpty(variant))
+		}()
+	}
+	return variantChangedMsg{}
+}
+
+// adoptSessionVariant initializes the local variant selection from a newly
+// opened session's pinned model, porting the session-change effect in
+// prompt/index.tsx that reads the last message's model and calls
+// local.model.variant.set(msg.model.variant). gocode's user messages carry
+// no model ref, so the session row is the equivalent source — and it is
+// also what the server actually runs the turn with, which is the state the
+// meta row should mirror. A session pinned without a variant adopts
+// "default" so cycling starts from the top like upstream.
+func (a *App) adoptSessionVariant() {
+	if a.active == nil || a.active.Model == nil {
+		return
+	}
+	ref := modelRef{ProviderID: a.active.Model.ProviderID, ModelID: a.active.Model.ID}
+	if current := a.variantCurrent(); current == a.active.Model.Variant {
+		return
+	}
+	a.models.setVariant(ref, a.active.Model.Variant)
+}
+
+// variantCurrentOrEmpty normalizes the stored "default" back to the empty
+// variant the wire format carries.
+func variantCurrentOrEmpty(variant string) string {
+	if variant == "default" {
+		return ""
+	}
+	return variant
+}
+
+// cycleVariant ports variant.cycle(): none -> first -> ... -> last -> none.
+// With no variants it does nothing, matching the upstream early return.
+func (a *App) cycleVariant() tea.Msg {
+	variants := a.variantList()
+	if len(variants) == 0 {
+		return nil
+	}
+	current := a.variantCurrent()
+	if current == "" {
+		return a.setVariant(variants[0])
+	}
+	for i, id := range variants {
+		if id != current {
+			continue
+		}
+		if i == len(variants)-1 {
+			return a.setVariant("") // back to default
+		}
+		return a.setVariant(variants[i+1])
+	}
+	// A selection no longer in the list behaves like none.
+	return a.setVariant(variants[0])
 }
 
 func (a *App) modelName(providerID, modelID string) string {

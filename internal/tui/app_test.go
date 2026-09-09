@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -27,6 +28,7 @@ type modelCall struct {
 	sessionID string
 	provider  string
 	model     string
+	variant   string
 }
 
 type mockAPI struct {
@@ -40,10 +42,32 @@ type mockAPI struct {
 	answered   [][]([]string) // answers posted to /api/question/{id}/reply
 	rejected   []string       // request ids posted to /api/question/{id}/reject
 	renamed    []renameCall
-	models     []modelCall
 	forkedFrom string
 	mcpStatus  string // GET /api/mcp responds with this status for "test-server"; mutate mid-test to verify tickMsg re-fetches it
 	statsCalls int
+
+	// mu guards models, the one slice a background goroutine can append to
+	// (the variant pin is posted fire-and-forget) while a test polls it —
+	// the other fields are only touched from the test goroutine.
+	mu     sync.Mutex
+	models []modelCall
+}
+
+// recordModel appends a SetModel call from the handler goroutine.
+func (api *mockAPI) recordModel(call modelCall) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	api.models = append(api.models, call)
+}
+
+// lastModel returns the most recent SetModel call, if any.
+func (api *mockAPI) lastModel() (modelCall, bool) {
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.models) == 0 {
+		return modelCall{}, false
+	}
+	return api.models[len(api.models)-1], true
 }
 
 func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
@@ -125,14 +149,18 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 		var body struct {
 			ProviderID string `json:"providerID"`
 			ID         string `json:"id"`
+			Variant    string `json:"variant"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		api.models = append(api.models, modelCall{r.PathValue("sessionID"), body.ProviderID, body.ID})
+		api.recordModel(modelCall{r.PathValue("sessionID"), body.ProviderID, body.ID, body.Variant})
 		w.Write([]byte(`{"ok":true}`))
 	})
 	mux.HandleFunc("GET /api/model", func(w http.ResponseWriter, r *http.Request) {
 		json.NewEncoder(w).Encode([]client.Model{
-			{ProviderID: "anthropic", ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5"},
+			{ProviderID: "anthropic", ID: "claude-sonnet-4-5", Name: "Claude Sonnet 4.5",
+				// claude-sonnet-4-5's real reasoning_options (budget_tokens
+				// min 1024) resolve to exactly high/max.
+				Variants: []string{"high", "max"}},
 			{ProviderID: "anthropic", ID: "claude-opus-4-5", Name: "Claude Opus 4.5"},
 		})
 	})
@@ -877,24 +905,45 @@ func TestHeadlessProgramRun(t *testing.T) {
 func TestCommandPalette(t *testing.T) {
 	_, server := newMockAPI(t)
 	app := newTestApp(t, server.URL)
-	app.width, app.height = 120, 80 // tall enough to list every command
+	// Tall enough to list every command: the viewport caps at height/2-6
+	// rows like DialogSelect's own scrollbox, and the palette now carries
+	// the variant and connect/editor/copy entries too.
+	app.width, app.height = 120, 110
 	drive(t, app, tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl})
 
 	if app.overlay == nil {
 		t.Fatal("ctrl+p should open the command palette")
 	}
+	// Rows show the same titles the original does; the dotted command names
+	// live in value for slash matching, not on the rows.
 	view := app.View()
-	for _, want := range []string{"session.new", "model.list", "theme.list", "help.show"} {
+	for _, want := range []string{"Switch session", "New session", "Switch model", "Switch theme", "Help"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("palette missing command %s: %q", want, view)
 		}
 	}
+	// model.list is always suggested, and with nothing connected
+	// provider.connect joins it under the Suggested header. Hidden commands
+	// (session.interrupt) never list.
+	if !strings.Contains(view, "Suggested") || !strings.Contains(view, "Connect provider") {
+		t.Fatalf("palette should lead with suggested commands, got %q", view)
+	}
+	if strings.Contains(view, "Interrupt session") {
+		t.Fatalf("hidden session.interrupt must not list in the palette, got %q", view)
+	}
 
-	// filter narrows the list
+	// filter narrows the list, and drops the Suggested mirrors the moment
+	// it is active (command-palette.tsx returns options() alone while
+	// ref.filter is set)
 	press(t, app, "t")
 	press(t, app, "h")
 	if got := len(app.overlay.items); got >= len(app.overlay.all) {
 		t.Fatalf("filter should narrow commands, got %d of %d", got, len(app.overlay.all))
+	}
+	for _, item := range app.overlay.items {
+		if item.category == "Suggested" {
+			t.Fatalf("a filtered palette must not repeat suggested rows, got %q", item.label)
+		}
 	}
 }
 

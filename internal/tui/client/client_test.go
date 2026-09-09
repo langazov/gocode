@@ -141,3 +141,43 @@ func (p *scriptedProvider) Stream(ctx context.Context, request llm.Request, emit
 	}
 	return nil
 }
+
+// TestVcsRoundTrip proves the diff viewer's two endpoints through the real
+// server: the info shape the "Main branch" source gates on, and the per-file
+// diff list the viewer renders.
+func TestVcsRoundTrip(t *testing.T) {
+	database, err := db.OpenAndMigrate(context.Background(), filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	bus := event.NewBus(database)
+	api := httptest.NewServer((&server.Server{Bus: bus, VCSWorkdir: t.TempDir()}).Mux())
+	defer api.Close()
+
+	c := New(api.URL)
+	ctx := context.Background()
+
+	info, err := c.Vcs(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// t.TempDir() is not a repository: the payload is an empty object, and
+	// that is a successful answer the viewer renders as "working tree only".
+	if info.Branch != "" || info.DefaultBranch != "" {
+		t.Fatalf("info outside a repo = %+v", info)
+	}
+
+	files, err := c.VcsDiff(ctx, "git", 12)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != 0 {
+		t.Fatalf("diff outside a repo = %+v", files)
+	}
+
+	// The query the viewer actually sends round-trips without error.
+	if _, err := c.VcsDiff(ctx, "branch", 12); err != nil {
+		t.Fatalf("branch mode: %v", err)
+	}
+}

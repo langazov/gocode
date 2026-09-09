@@ -392,7 +392,7 @@ func (a *App) modelMeta() string {
 	bg := a.theme.BackgroundElement
 	agentAlpha := a.agentMetaFade.Alpha()
 	modelAlpha := a.modelMetaFade.Alpha()
-	return lipgloss.JoinHorizontal(lipgloss.Top,
+	blocks := []string{
 		lipgloss.NewStyle().Foreground(theme.FadeColor(bg, a.theme.Primary, agentAlpha)).Background(bg).
 			Render(titlecase(a.activeAgentOr("build"))),
 		lipgloss.NewStyle().Foreground(theme.FadeColor(bg, a.theme.TextMuted, modelAlpha)).Background(bg).
@@ -400,8 +400,21 @@ func (a *App) modelMeta() string {
 		lipgloss.NewStyle().Foreground(theme.FadeColor(bg, a.theme.Text, modelAlpha)).Background(bg).
 			Render(a.modelName(providerID, modelID)),
 		lipgloss.NewStyle().Foreground(theme.FadeColor(bg, a.theme.TextMuted, modelAlpha)).Background(bg).
-			Render(" "+a.providerName(providerID)),
-	)
+			Render(" " + a.providerName(providerID)),
+	}
+	// The "· variant" segment (prompt/index.tsx's showVariant + bold
+	// warning-colored variantMetaAlpha): shown only when the model has
+	// variants *and* one is selected, so picking Default clears it.
+	if variant := a.variantCurrent(); variant != "" && len(a.variantList()) > 0 {
+		variantAlpha := a.variantMetaFade.Alpha()
+		blocks = append(blocks,
+			lipgloss.NewStyle().Foreground(theme.FadeColor(bg, a.theme.TextMuted, variantAlpha)).Background(bg).
+				Render(" · "),
+			lipgloss.NewStyle().Foreground(theme.FadeColor(bg, a.theme.Warning, variantAlpha)).Background(bg).Bold(true).
+				Render(variant),
+		)
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, blocks...)
 }
 
 // homePromptBlock is the home-screen prompt: the box, the ╹ corner row with

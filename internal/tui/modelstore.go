@@ -27,20 +27,21 @@ func (m modelRef) same(other modelRef) bool {
 const recentLimit = 50
 
 // modelStore ports the model half of packages/tui/src/context/local.tsx: the
-// recent and favorite lists behind the model dialog's sections.
+// recent and favorite lists behind the model dialog's sections, and the
+// per-model variant selections behind /variants and variant.cycle.
 //
 // It reads and writes <state>/model.json, the same path and format the
 // TypeScript client uses, so the two binaries share one list — the precedent
-// set by prompthistory.go for prompt-history.jsonl. The `variant` key is
-// preserved verbatim on write even though this port does not read it, so
-// round-tripping through the Go binary does not discard the TS client's
-// variant selections.
+// set by prompthistory.go for prompt-history.jsonl. The `variant` key maps
+// "provider/model" -> selection exactly like local.tsx's
+// `Record<string, string | undefined>` (variant.set(undefined) stores
+// "default", so the TS client's own format round-trips through this port).
 type modelStore struct {
 	mu       sync.Mutex
 	path     string
 	Recent   []modelRef `json:"recent"`
 	Favorite []modelRef `json:"favorite"`
-	variant  json.RawMessage
+	variant  map[string]string
 	loaded   bool
 }
 
@@ -60,9 +61,9 @@ func (s *modelStore) load() {
 		return
 	}
 	var parsed struct {
-		Recent   []modelRef      `json:"recent"`
-		Favorite []modelRef      `json:"favorite"`
-		Variant  json.RawMessage `json:"variant"`
+		Recent   []modelRef        `json:"recent"`
+		Favorite []modelRef        `json:"favorite"`
+		Variant  map[string]string `json:"variant"`
 	}
 	if err := json.Unmarshal(data, &parsed); err != nil {
 		return
@@ -76,10 +77,10 @@ func (s *modelStore) save() {
 		"recent":   orEmpty(s.Recent),
 		"favorite": orEmpty(s.Favorite),
 	}
-	if len(s.variant) > 0 {
-		payload["variant"] = s.variant
-	} else {
+	if s.variant == nil {
 		payload["variant"] = map[string]any{}
+	} else {
+		payload["variant"] = s.variant
 	}
 	path := s.path
 	s.mu.Unlock()
@@ -108,6 +109,33 @@ func orEmpty(refs []modelRef) []modelRef {
 		return []modelRef{}
 	}
 	return refs
+}
+
+// selectedVariant returns the persisted variant selection for a model,
+// porting variant.selected(): the raw stored value, "default" included.
+func (s *modelStore) selectedVariant(ref modelRef) string {
+	s.load()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.variant[ref.label()]
+}
+
+// setVariant persists a model's variant selection, porting variant.set():
+// undefined is stored as "default", which is what cycle() lands on when it
+// walks off the end of the list and what DialogVariant's "Default" row
+// selects.
+func (s *modelStore) setVariant(ref modelRef, variant string) {
+	if variant == "" {
+		variant = "default"
+	}
+	s.load()
+	s.mu.Lock()
+	if s.variant == nil {
+		s.variant = map[string]string{}
+	}
+	s.variant[ref.label()] = variant
+	s.mu.Unlock()
+	s.save()
 }
 
 // recents returns the recent list, most recent first.

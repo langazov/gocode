@@ -278,3 +278,31 @@ func TestUnknownRoutes(t *testing.T) {
 func contains(haystack, needle string) bool { return strings.Contains(haystack, needle) }
 func trimSpace(s string) string             { return strings.TrimSpace(s) }
 func stringReader(s string) io.Reader       { return strings.NewReader(s) }
+
+// SetModel carries the variant through to the session row, normalizing the
+// TUI's persisted "default" (variant.set(undefined)'s encoding) back to the
+// empty variant the wire format carries — the runner treats empty as
+// "no reasoning override", so a literal "default" would resolve to nothing.
+func TestSetModelCarriesVariant(t *testing.T) {
+	server, _, _ := newTestServer(t)
+	info := newSession(t, server)
+
+	set := func(body map[string]string) session.Info {
+		t.Helper()
+		if rec := doJSON(t, server, "POST", "/api/session/"+info.ID+"/model", body); rec.Code != 200 {
+			t.Fatalf("set model %v: %d %s", body, rec.Code, rec.Body.String())
+		}
+		return decodeBody[session.Info](t, doJSON(t, server, "GET", "/api/session/"+info.ID, nil))
+	}
+
+	// A real selection pins verbatim.
+	after := set(map[string]string{"providerID": "anthropic", "id": "claude-sonnet-4-5", "variant": "high"})
+	if after.Model == nil || after.Model.Variant != "high" {
+		t.Fatalf("model = %+v, want variant high", after.Model)
+	}
+	// "default" means no selection upstream; the API normalizes it away.
+	after = set(map[string]string{"providerID": "anthropic", "id": "claude-sonnet-4-5", "variant": "default"})
+	if after.Model == nil || after.Model.Variant != "" {
+		t.Fatalf("model = %+v, want variant cleared", after.Model)
+	}
+}

@@ -161,6 +161,39 @@ attempt, get a URL and code to show the user, then poll until they finish.
 | `GET` | `/api/job` | background jobs |
 | `GET` | `/api/plugin` | loaded plugins, their hooks and tools |
 
+## VCS
+
+The diff viewer's two endpoints (`/diff` in the TUI). Both answer over the
+process's working directory — the TS server takes a `directory` per request
+because it is multi-project; this one is a single project per process.
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/api/vcs` | branch + default branch (`{}` outside a repository) |
+| `GET` | `/api/vcs/diff?mode=git\|branch&context=N` | per-file patches, counts, status |
+
+```json
+[
+  {
+    "file": "internal/tui/app.go",
+    "patch": "--- internal/tui/app.go\n+++ internal/tui/app.go\n@@ …",
+    "additions": 12,
+    "deletions": 3,
+    "status": "modified"
+  }
+]
+```
+
+- `mode` defaults to `git` (working tree against `HEAD`); `branch` diffs
+  against the merge base with the default branch and is empty when the
+  current branch already is it. An unknown mode is a 400.
+- `context` is the context-line window (the TUI passes 12). The server
+  default is full context, matching the TS producers.
+- A non-git directory is **not** an error: both routes answer empty
+  payloads (`{}` / `[]`), which the viewer renders as "working tree only"
+  and "No diff!". Patches beyond the total byte cap come back header-only,
+  exactly like the TS `emptyPatch` fallback.
+
 ## Memories
 
 Durable memories (the `memory` native plugin's backing store) have their own

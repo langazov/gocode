@@ -353,6 +353,9 @@ Use these; do not introduce synonyms. All are single-cell except where noted.
 | `⇆` | Move selection | banner hints |
 | `↑ N more lines` | Scrollback indicator | timeline |
 | `─` + ` Compaction ` | Compaction rule | timeline |
+| `▸` / `▾` | Collapsed / expanded directory | diff viewer file tree |
+| `│  ` / `   `, `├─ ` / `└─ ` | Tree connectors (indent run, branch) | diff viewer file tree |
+| `✓` / `A` / `M` / `D` / `?` | Reviewed / added / modified / deleted / unknown file status | diff viewer file tree status column |
 | `+ ` / `- ` | Collapsed / expanded reasoning | reasoning header |
 | `⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏` | Inline braille spinner | running tool rows |
 | `■` / `⬝` | Scanner spinner active/inactive cell | prompt hint row |
@@ -378,7 +381,7 @@ pinned to the bottom.
 │                     ▀▀▀▀  ▀▀▀▀   ▀▀▀▀ ▀▀▀▀ ▀▀▀▀ ▀▀▀▀                │
 │                                                                     │
 │              ┃                                                      │  autocomplete popup
-│              ┃  ▸ /models   Choose model                            │  (only when open)
+│              ┃  ▸ /models   Switch model                            │  (only when open)
 │              ┃                                                      │
 │              ┃                                                      │  prompt box:
 │              ┃  Ask anything…                                       │  BackgroundElement
@@ -429,7 +432,7 @@ pinned to the bottom.
 │                                                              │                        │
 │                                                              │ ⬖ Getting started      │
 │  ┃                                                           │   GoCode includes …    │
-│  ┃  ▸ /compact   Compact context                             │   Connect provider     │
+│  ┃  ▸ /compact   Compact session                             │   Connect provider     │
 │  ┃                                                           │              /connect  │
 │  ┃  ┃                                                        │                        │
 │  ┃  ┃                                                        │ ~/Work/gocode:main     │
@@ -486,6 +489,108 @@ IDs to 24.
 
 **Context** reports the *last assistant turn's own* context against the model's
 limit — not a session total. Only "spent" is cumulative.
+
+### 6.5 Diff viewer (`/diff`)
+
+A **full-screen route**, not a dialog: it replaces the base view entirely,
+owns the keyboard while open, and `q`/`esc` return to the view it opened
+from. The TS source is
+`packages/tui/src/feature-plugins/system/diff-viewer.tsx`; this section is
+the contract for its port in `diffviewer.go`.
+
+```
+┌ terminal ──────────────────────────────────────────────────────────────────┐
+│  Diff working tree                                              3 files   │ header
+│                                                                             │
+│  ┃ ▾ internal/       ✓M │  ← file tree (32 cols, ┃ in Border,             │ body
+│  ┃ │  └─ tui         A  │     BackgroundPanel)   ← patch pane             │
+│  ┃ │    ├─ app.go  +12 -3                       │                         │
+│  ┃ │    │  12  12    I'll start by reading…                             │
+│  ┃ │    │  12  12  - ...old line…                                        │
+│  ┃ │    │  12  12  + ...new line…                                        │
+│  ┃ │    │  @@ -40,3 +40,3 @@                                             │
+│  ┃ ▴ docs           M  │                                                 │
+│                                                                             │
+│  tab focus file tree  n next file  ] next hunk  [ previous hunk  …        │ footer
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+**Geometry**
+
+| Quantity | Value | Notes |
+|---|---|---|
+| Tree width | `32` | TS `FILE_TREE_WIDTH`; hidden entirely when toggled off (`b`) or there are no files |
+| Patch pane width | `width − (tree? 33 : 0) − 4` | TS `patchPaneWidth` |
+| Split threshold | pane ≥ `100` | TS `MIN_SPLIT_WIDTH`; below it the view is unified regardless of the persisted choice |
+| Body height | `height − 4` | header row + blank, footer row + blank |
+| Tree status column | `2` cells, right-aligned | TS `FILE_TREE_STATUS_WIDTH` |
+
+**Rules**
+
+- **Three empty states, three messages** (principle 9): `Loading diff…`
+  (muted), `Failed to load diff` (Error), `No diff!` (muted). The fetch
+  opens the route synchronously and lands in the background — the keypress
+  never waits on HTTP.
+- **Diff rows truncate, never wrap.** A wrapped `-` row reads as another
+  removal. Every row is `ansi.Truncate`d to the pane's interior; in split
+  view each half truncates to half the room. (Same rule as §19.3's gutter
+  rows.)
+- **One layout pass serves render and navigation.** Hunk anchors (`[`/`]`)
+  are computed by the same `buildDiffLayout()` the renderer runs, so a jump
+  can never land somewhere the screen disagrees with.
+- **The layout is memoized on its inputs; scrolling is not one of them.**
+  `buildDiffLayout` keys on view/width/reviewed/single/selection/payload
+  and returns immediately when the key is unchanged. The scroll is a window
+  *over* the laid-out rows, not an input to them — a wheel notch must never
+  re-render rows (`frame_bench_test.go` keeps the frame's own numbers
+  current; `diff_bench_test.go` keeps these: a notch on a 30-file ×
+  400-line diff is ~0.7 ms, a forced rebuild ~57 ms, and the wheel path
+  must stay at the former). Keyboards and mouse both go through
+  `diffScrollBy`, which is layout-free and clamps at the next render.
+- **The pane's file order comes from the whole tree, not the visible rows.**
+  Collapsing a directory in the file tree must never remove its files from
+  the patch pane (TS `patchFileIndexes` flattens `fileTree()` unfiltered).
+- **Colors:** added `Success`, removed `Error`, context and hunk headers
+  `TextMuted`, all on `BackgroundPanel`; a reviewed file mutes its header
+  *and* rows to `TextMuted` (the TS viewer's reviewed treatment).
+- **Tree rows:** highlight is a `Primary` row fill with
+  `SelectedListItemText` text, edge to edge (§9.2) — never `Background`
+  directly: a theme may override the selected-list color, and "fill + fg"
+  only reads as a highlight when every segment (including gaps and the
+  trailing pad) paints the row's own background. The selected file's name
+  renders `Primary` on the panel; reviewed and directory names
+  `TextMuted`; connectors fade toward the panel via
+  `theme.FadeColor(BackgroundPanel, TextMuted, 0.75)`.
+- **Windowing:** only rows in `[scroll, scroll+bodyHeight)` render (§16.5),
+  with a muted `↑/↓ N more lines` row that comes **out of the body budget**.
+- **Footer hints** drop from the end when the row does not fit (§8.2), and
+  the `tab focus file tree` pair disappears while the tree is hidden.
+- **Divergences** (see `documentation/10-development.md`): no "last turn"
+  source (no snapshot system), no `diff_style: "stacked"` config.
+
+**Keys** (all scoped to the route; a dialog opened inside it — `d`'s source
+picker, `?`'s help — still wins per §12's ladder):
+
+| Key | Action |
+|---|---|
+| `q`, `esc` | close, restoring the opening view |
+| `j`/`k`, `up`/`down`, `pgup`/`pgdn` | move the focused pane (tree rows / pane rows) |
+| `enter`, `space` | tree: open file or toggle directory |
+| `right` / `left` | expand / collapse (with move-to-child / move-to-parent fallbacks) |
+| `E` | expand all folders |
+| `tab` | switch focus between tree and pane |
+| `]` / `[` | next / previous hunk (sticky: `] ] [` returns exactly) |
+| `n` / `p` | next / previous file in tree order |
+| `m` | toggle reviewed on the focused file |
+| `d` | switch source (working tree / main branch, gated on `/api/vcs`) |
+| `v` | toggle split / unified (persisted; no-op below the threshold) |
+| `s` | single-patch mode (persisted) |
+| `b` | toggle the file tree (persisted) |
+| `g` / `G` | top / bottom of the pane |
+| `?` | shortcut sheet (the help overlay, extended with these rows) |
+
+Preferences persist in `diffstate.json` beside `theme.json`, best-effort,
+never touching the config file.
 
 ---
 
@@ -877,8 +982,11 @@ func (a *App) openThingList(things []client.Thing) {
 
 Then:
 
-7. Register it in `commandsRegistry()` with `label` (dotted internal name),
-   `slash` (+ aliases), `hint`, `category`, and `footer` if it has a keybind.
+7. Register it in `commandsRegistry()` with `label` (the title the row
+   shows — the original's `command.title`), `value` (the dotted command
+   name), `slash` (+ aliases), `hint` (the original's `desc`, usually
+   empty), `category`, and `footer` if it has a keybind, formatted like
+   the original ("<leader>x" → "ctrl+x x", bindings joined ", ").
 8. If it previews live (like themes), set `onCancel` to revert.
 9. If it toggles rather than picks, set `onActivate` so the dialog stays open.
 10. Add a layout test in `dialogs_layout_test.go`.
@@ -934,10 +1042,10 @@ the `BackgroundMenu` surface. It has **no title, no filter field and no footer**
 text after the trigger.
 
 ```
-┃  /models      Choose model
+┃  /models      Switch model
 ┃  /memory      Manage memories
 ┃▓ /new         New session          ← selected: Primary fill
-┃  /compact     Compact context
+┃  /compact     Compact session
 ```
 
 Triggers: `@` anywhere; `/` **only at position 0** of an empty prompt (a slash
@@ -973,20 +1081,23 @@ errors that need a decision. Those are alerts or empty states.
 ```
 1. active drag-selection  →  ctrl+c copies, esc clears
 2. open dialog            →  owns everything; ctrl+c closes like esc (runs onCancel)
-3. ctrl+c / ctrl+d        →  quit
-4. armed leader (ctrl+x)  →  one-shot chord, 1 s timeout
-5. global chords          →  ctrl+p, tab, shift+tab, ctrl+z, ctrl+r, newline aliases
-6. autocomplete popup     →  navigation keys only; everything else falls through
-7. trigger keys           →  @ , / (at position 0)
-8. permission banner      →  then question banner
-9. history recall         →  up/down at the input boundary
-10. subagent navigation   →  up/left/right on an empty prompt only
-11. scroll + esc + enter
-12. the textarea
+3. the diff viewer route  →  owns everything while open (q/esc close); dialogs it opens still sit above it
+4. ctrl+c / ctrl+d        →  quit
+5. armed leader (ctrl+x)  →  one-shot chord, 1 s timeout
+6. global chords          →  ctrl+p, tab, shift+tab, ctrl+z, ctrl+r, newline aliases
+7. autocomplete popup     →  navigation keys only; everything else falls through
+8. trigger keys           →  @ , / (at position 0)
+9. permission banner      →  then question banner
+10. history recall        →  up/down at the input boundary
+11. subagent navigation   →  up/left/right on an empty prompt only
+12. scroll + esc + enter
+13. the textarea
 ```
 
 **Rule:** a new binding goes as *low* in this ladder as it can. Anything above
-level 9 steals a key from the editor.
+level 10 steals a key from the editor. (The diff viewer sits at level 3
+because it is a mode, like a dialog: every key inside it is the viewer's
+own command table, and none of the global chords apply.)
 
 ### 12.2 Bindings
 
@@ -998,6 +1109,7 @@ level 9 steals a key from the editor.
 | `tab` / `shift+tab` | Cycle agent forward / back |
 | `ctrl+r` | Rename session |
 | `ctrl+z` | Suspend |
+| `ctrl+t` | Cycle model variant (`variant.cycle`) — no-op when the model has none |
 | `shift+enter`, `ctrl+enter`, `alt+enter`, `ctrl+j` | Newline |
 | `enter` | Submit (or run a `/command`) |
 | `esc` | Arm interrupt while busy (two-press, 5 s window) |
@@ -1247,6 +1359,10 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | `dialogs_confirm.go` | Buttons, button rows, alert/confirm, filter row, empty view |
 | `dialogs_{model,provider,plugins,memory,skill}.go` | Individual dialog content |
 | `stats_overlay.go` | `/stats` panel |
+| `diffviewer.go` | The `/diff` route: state, fetch, layout, navigation, keys, mouse (see §6.5) |
+| `diffviewer_tree.go` | The diff viewer's file-tree logic: build, flatten, navigate |
+| `diffstate.go` | The diff viewer's persisted preferences (diffstate.json) |
+| `diff_bench_test.go` | The diff viewer's layout/scroll performance budgets (see §6.5) |
 | `autocomplete.go` | The inline `/` and `@` popup |
 | `footer.go` | Hint row, width policy, usage meter, subagent footer, getting-started card |
 | `feature.go` | Toasts, timeline dialog, fork/compact/copy/export |
