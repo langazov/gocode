@@ -17,6 +17,7 @@ work. A reviewer is entitled to cite one of these against a diff.
 | Surface | Document | Covers |
 |---|---|---|
 | TUI | [TUI recommendations](TUI_RECOMENDATIONS.md) | Rendering model, theme tokens, geometry, glyph vocabulary, every view and dialog layout, controls, keyboard and mouse models, responsiveness, performance, anti-patterns, checklists |
+| Permissions | [Permissions recommendations](PERMISSIONS_RECOMENDATIONS.md) | Rule semantics and precedence, policy sources, the ask lifecycle and save granularity, `external_directory`, tool advertisement, subagent inheritance, prompt surface contract (banner content, always-confirmation, reject-with-reason), HTTP API, auto-accept, bypass tiers, persistence and revocation, anti-patterns, checklists |
 
 ## The rule
 
