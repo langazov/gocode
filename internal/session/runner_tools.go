@@ -98,5 +98,9 @@ func (r *Runner) publishSettlement(ctx context.Context, sessionID, assistantMess
 // drainDeadline bounds how long an interrupted turn waits for in-flight tools
 // to report back before it gives up and lets failInterruptedTools settle the
 // leftovers on the next drain. Mirrors the TypeScript processor's 250ms grace
-// (packages/opencode/src/session/processor.ts).
+// (packages/opencode/src/session/processor.ts). Enforced by the turn loop's
+// abandon watcher in runTurnAttempt: without it, a tool that never consults
+// its context (a wedged MCP server, an orphan no kill can reach) held the turn
+// — and with it the coordinator entry, and with it the interface's spinner —
+// open forever.
 const drainDeadline = 250 * time.Millisecond

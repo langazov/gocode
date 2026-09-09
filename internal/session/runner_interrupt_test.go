@@ -123,3 +123,96 @@ func TestStepErrorKeepsProviderTimeoutsVisible(t *testing.T) {
 		t.Fatalf("a cancellation the user did not order is a failure, got %v", got)
 	}
 }
+
+// wedgedTool ignores its context entirely: nothing short of process exit can
+// unblock it. This is the shape a misbehaving MCP server or an unkillable
+// orphan takes — and, before the abandonment below, it held the turn open
+// forever, which the interface showed as a spinner that no double-escape
+// could stop.
+type wedgedTool struct {
+	started chan struct{}
+}
+
+func (t *wedgedTool) Name() string        { return "wedged" }
+func (t *wedgedTool) Description() string { return "a tool that never returns" }
+func (t *wedgedTool) InputSchema() map[string]any {
+	return map[string]any{"type": "object"}
+}
+
+func (t *wedgedTool) Execute(ctx context.Context, input map[string]any) (string, error) {
+	close(t.started)
+	<-make(chan struct{}) // park forever; ctx is deliberately not consulted
+	return "", nil
+}
+
+// The regression for "double escape does nothing, the spinner keeps going": a
+// turn whose tool ignores its context used to wedge the drain loop open. The
+// loop now abandons in-flight tools drainDeadline after the run context is
+// cancelled, settles the turn as interrupted, and — critically for the
+// interface — releases the coordinator entry, which is what Busy() reads.
+func TestInterruptAbandonsWedgedTool(t *testing.T) {
+	wedged := &wedgedTool{started: make(chan struct{})}
+	tools := tool.NewRegistry()
+	tools.Register(wedged)
+	provider := &fakeProvider{turns: [][]llm.StreamEvent{
+		{
+			{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{ID: "call_1", Name: "wedged", Input: map[string]any{}}},
+			{Type: llm.EventFinish, Finish: "tool_calls"},
+		},
+	}}
+	runner, bus := newRunnerFixture(t, provider, tools)
+	admitPrompt(t, bus, runner, "go on then")
+
+	// Route the run through Execution, exactly as the server does, so the
+	// interrupt below exercises the real double-escape path.
+	lookup := &fixedLookup{}
+	execution := NewExecution(lookup, runner)
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- execution.Resume(context.Background(), "ses_1")
+	}()
+
+	select {
+	case <-wedged.started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the wedged tool never started")
+	}
+
+	// The user's double escape: Service.Interrupt lands here.
+	interruptDone := make(chan struct{})
+	go func() {
+		execution.Interrupt("ses_1")
+		close(interruptDone)
+	}()
+
+	select {
+	case <-interruptDone:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Interrupt never returned: the wedged tool still owns the turn")
+	}
+	select {
+	case <-runDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the run never returned after the interrupt")
+	}
+
+	// The settled message must mark the turn interrupted, or the interface
+	// keeps showing it as running.
+	assistant := lastAssistantData(t, runner)
+	recorded, _ := assistant["error"].(map[string]any)
+	if recorded == nil || recorded["type"] != ErrorTypeAborted {
+		t.Fatalf("an abandoned turn settles as interrupted, got %v", assistant["error"])
+	}
+	timeMap, _ := assistant["time"].(map[string]any)
+	if timeMap == nil || timeMap["completed"] == nil {
+		t.Fatalf("expected a completion timestamp marking the turn settled, got %v", assistant["time"])
+	}
+}
+
+// fixedLookup answers exists without touching the database; the drain's
+// existence probe is not what these tests exercise.
+type fixedLookup struct{}
+
+func (l *fixedLookup) Exists(ctx context.Context, sessionID string) (bool, error) {
+	return true, nil
+}

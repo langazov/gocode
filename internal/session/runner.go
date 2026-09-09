@@ -531,10 +531,40 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	inflight := 0
 	seq := 0
 	needsContinuation := false
+	// A cancelled run abandons tools that ignore their context. Everything
+	// well-behaved settles as soon as runCtx closes — settleTool's slot wait,
+	// the bash tool's WaitDelay, the spawner's child cancel — but a tool that
+	// blocks on something outside ctx (a wedged MCP server, an orphaned
+	// process an OS kill cannot reach) would hold the loop below open, and
+	// with it the whole turn, forever: the spinner keeps moving and no number
+	// of escapes ends the session. failInterruptedTools settles whatever is
+	// still pending on the *next* drain, so walking away is safe — the
+	// transcript records the interruption either way.
+	var abandoned bool
+	abandon := make(chan struct{})
+	if done := runCtx.Done(); done != nil {
+		stopWatch := make(chan struct{})
+		defer close(stopWatch)
+		go func() {
+			select {
+			case <-done:
+				select {
+				case <-time.After(drainDeadline):
+					close(abandon)
+				case <-stopWatch:
+				}
+			case <-stopWatch:
+			}
+		}()
+	}
 	// The turn is over once the stream has closed AND every dispatched tool
 	// has reported back — the Go analogue of FiberSet.awaitEmpty.
+turnLoop:
 	for events != nil || inflight > 0 {
 		select {
+		case <-abandon:
+			abandoned = true
+			break turnLoop
 		case streamEvent, ok := <-events:
 			if !ok {
 				events = nil
@@ -642,6 +672,25 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 				providerErr = err
 			}
 		}
+	}
+	// Abandoned, not settled: the run was interrupted and at least one tool
+	// never reported back. Do not read streamErr — the stream goroutine may
+	// still be parked inside it, and only the events-closed path above ever
+	// synchronized with it. runCtx.Err() is the interruption itself, and
+	// stepError classifies it as aborted.
+	if abandoned {
+		if err := startAssistant(); err != nil {
+			return turnResult{}, err
+		}
+		if _, err := r.Bus.Publish(ctx, StepFailed, map[string]any{
+			"sessionID":          sessionID,
+			"timestamp":          nowMillis(),
+			"assistantMessageID": assistantMessageID,
+			"error":              stepError(runCtx, runCtx.Err()),
+		}, event.PublishOptions{}); err != nil {
+			return turnResult{}, err
+		}
+		return turnResult{}, runCtx.Err()
 	}
 	if streamErr != nil && providerErr == nil {
 		providerErr = streamErr

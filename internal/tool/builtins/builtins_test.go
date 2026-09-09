@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/db"
 	"github.com/langazov/gocode-go/internal/tool"
@@ -396,5 +397,34 @@ func TestWebFetch(t *testing.T) {
 
 	if _, err := fetch.Execute(context.Background(), map[string]any{"url": "ftp://nope"}); err == nil {
 		t.Fatal("expected scheme rejection")
+	}
+}
+
+// The regression for the uninterruptible turn: a command that backgrounds
+// something and exits leaves the orphan holding a copy of the tool's stdout
+// pipe, and cmd.Run cannot return while any writer holds it — not even after
+// the context is cancelled, which kills only the shell. A user's double-escape
+// cancelled the turn's context and the spinner still spun forever. WaitDelay
+// bounds the pipe wait; the orphan is reported as a timeout rather than
+// wedging the turn.
+func TestBashOrphanDoesNotOutliveCancellation(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("no /bin/sh")
+	}
+	resolver, _ := newRoot(t)
+	bash := NewBashTool(resolver)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err := bash.Execute(ctx, map[string]any{"command": "sleep 30 &"})
+	elapsed := time.Since(start)
+
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("expected a timeout error once the context died, got %v", err)
+	}
+	if elapsed > 5*time.Second {
+		t.Fatalf("an orphaned background child held the turn for %v; it must be abandoned within the grace", elapsed)
 	}
 }
