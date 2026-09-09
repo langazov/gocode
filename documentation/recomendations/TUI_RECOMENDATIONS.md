@@ -671,7 +671,8 @@ session (`state.metadata.sessionID`), mirroring TS `Task()`:
   (TS makes the whole InlineTool clickable); `chatTaskRows` records the rows.
 
 **The "view subagents" hint row** renders under any message containing a task
-call (settled ones included — the subagent's session stays openable):
+call (settled ones included — the task row above stays the way back to a
+settled subagent's session):
 
 ```
    ctrl+x ↓ view subagents  ·  ctrl+b background
@@ -679,6 +680,25 @@ call (settled ones included — the subagent's session stays openable):
 
 The `background` segment appears only while a foreground task runs and the
 server has the feature enabled.
+
+**The children overlay** (`ctrl+x ↓`, `session.child.first`, `/subagents`)
+lists only **running** subagents plus forks, grouped by fan-out batch:
+
+- One assistant message = one batch (`metadata.batchID`, the spawning
+  message's ID); two fan-outs read as "Batch 1" / "Batch 2" headers.
+- A settled subagent is filtered out — its task row is its entry point.
+- A fork has no task row, so it is always listed under "Forks", running or
+  not.
+- "Running" is the aggregated snapshot's `node.Busy` — the same signal the
+  task row's spinner keys on — not a per-open HTTP fetch.
+- Empty state: `(no running subagents)`.
+
+**Batch scoping in the subagent view**: the footer's `(n of N)` and the
+left/right arrows cover the open child's batch only — same parent, same
+launching message. Opening a task from another batch switches the arrow set
+to that batch. Sibling data comes from the parent's children plus the
+parent's timeline (`subagentSiblingsMsg` carries both); without it the
+arrows fall back to the full sibling list.
 
 ### 7.5 Block tools (bash / read / write)
 

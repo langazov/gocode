@@ -74,6 +74,7 @@ func TestRunnerTaskMetadataLink(t *testing.T) {
 		t.Fatal(err)
 	}
 	var taskPart *AssistantContent
+	owningMessage := ""
 	for i := range messages {
 		if messages[i].Type != TypeAssistant {
 			continue
@@ -85,6 +86,7 @@ func TestRunnerTaskMetadataLink(t *testing.T) {
 		for j := range data.Content {
 			if data.Content[j].Type == "tool" && data.Content[j].Name == "task" {
 				taskPart = &data.Content[j]
+				owningMessage = messages[i].ID
 			}
 		}
 	}
@@ -105,6 +107,12 @@ func TestRunnerTaskMetadataLink(t *testing.T) {
 	}
 	if taskPart.State.Metadata["parentSessionID"] != "ses_1" {
 		t.Fatalf("task part metadata.parentSessionID = %v, want the parent session", taskPart.State.Metadata["parentSessionID"])
+	}
+	// The batch link: one assistant message = one fan-out batch, so the
+	// batchID a client groups and arrow-scopes by must be the message the
+	// part lives in.
+	if taskPart.State.Metadata["batchID"] != owningMessage {
+		t.Fatalf("task part metadata.batchID = %v, want the spawning message %q", taskPart.State.Metadata["batchID"], owningMessage)
 	}
 	if background, _ := taskPart.State.Metadata["background"].(bool); background {
 		t.Fatal("a foreground task published background: true")

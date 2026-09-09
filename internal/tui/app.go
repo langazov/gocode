@@ -151,6 +151,14 @@ type App struct {
 	// session with a parent is opened.
 	subagentSiblings []client.Session
 
+	// parentMessages caches the parent's timeline while a subagent view is
+	// open. batchSiblings reads it to resolve which children were launched
+	// together (one assistant message = one fan-out batch, keyed by
+	// metadata.batchID): the arrows and the footer's (n of N) describe that
+	// launch group, not every child the parent ever spawned. Nil on a root
+	// session, where batch scoping never applies.
+	parentMessages []client.Message
+
 	// childMessages caches the message timeline of every child session the
 	// open session's task calls linked to (state.metadata.sessionID — see
 	// taskBlock). It is the port of the TS sync store's per-session
@@ -674,10 +682,13 @@ type pluginsMsg struct {
 type commandsMsg struct{ commands []client.Command }
 
 // subagentSiblingsMsg carries the children of the open session's parent, the
-// list the subagent footer counts for its "(2 of 5)" position.
+// list the subagent footer counts for its "(2 of 5)" position. The parent's
+// own timeline rides along when it loaded: batch scoping (which children
+// were launched together) is derived from the task parts in it.
 type subagentSiblingsMsg struct {
-	parentID string
-	siblings []client.Session
+	parentID       string
+	siblings       []client.Session
+	parentMessages []client.Message
 }
 
 type sessionOpenedMsg struct{ session *client.Session }
@@ -891,6 +902,71 @@ func taskChildIDs(messages []client.Message) []string {
 		}
 	}
 	return ids
+}
+
+// taskBatchOf resolves the fan-out batch a linked child session belongs to:
+// every task call in one assistant message shares that message's ID as its
+// batchID (published by the task tool's SetMeta), so "these were launched
+// together" is exactly "same message". Older parts written before the key
+// existed fall back to the owning message's ID, which is the same value —
+// the batch and the message were always one thing, the metadata key just
+// made it explicit. Empty when the timeline links no such child (a fork,
+// for instance, has no task part).
+func taskBatchOf(messages []client.Message, childID string) string {
+	for _, message := range messages {
+		if message.Type != "assistant" {
+			continue
+		}
+		data, err := client.DecodeAssistant(message.Data)
+		if err != nil {
+			continue
+		}
+		for _, part := range data.Content {
+			if part.Type != "tool" || part.Name != "task" || part.State == nil {
+				continue
+			}
+			linked, _ := part.State.Metadata["sessionID"].(string)
+			if linked != childID {
+				continue
+			}
+			if batch, ok := part.State.Metadata["batchID"].(string); ok && batch != "" {
+				return batch
+			}
+			return message.ID
+		}
+	}
+	return ""
+}
+
+// batchSiblings narrows the sibling list to the open subagent's fan-out
+// batch: the arrows and the footer's (n of N) describe one launch group,
+// not every child the parent ever spawned. Falls back to the full sibling
+// list when the batch cannot be resolved (no timeline loaded, or the
+// session is not one of this timeline's linked children — a fork, say).
+func (a *App) batchSiblings() []client.Session {
+	if a.active == nil || a.active.ParentID == "" || len(a.subagentSiblings) < 2 {
+		return a.subagentSiblings
+	}
+	batch := taskBatchOf(a.parentTimeline(), a.active.ID)
+	if batch == "" {
+		return a.subagentSiblings
+	}
+	var scoped []client.Session
+	for _, sibling := range a.subagentSiblings {
+		if taskBatchOf(a.parentTimeline(), sibling.ID) == batch {
+			scoped = append(scoped, sibling)
+		}
+	}
+	// A resolved batch stands even with one member: it was launched alone,
+	// so the arrows have nobody to move to — that is the correct answer, not
+	// a reason to widen into other batches.
+	return scoped
+}
+
+// parentTimeline is the parent's messages, fetched for batch resolution when
+// a subagent view is open. Nil until parentTimelineMsg lands.
+func (a *App) parentTimeline() []client.Message {
+	return a.parentMessages
 }
 
 // trackChildSessions registers every child session the timeline's task calls
@@ -1320,6 +1396,10 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		a.timeline = nil
 		a.queued = nil
 		a.subagentSiblings = nil
+		// The parent timeline is per open session too: it belongs to the
+		// parent of the session being left, and the next session's parent
+		// (if any) needs its own. Reloaded by loadSubagentSiblings.
+		a.parentMessages = nil
 		// Child tracking is per open session: the task rows that quote them
 		// belong to this session's timeline, and a link belongs to exactly
 		// one parent. Reset, and let messagesMsg re-track from the timeline
@@ -1352,6 +1432,9 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case subagentSiblingsMsg:
 		if a.active != nil && a.active.ParentID == msg.parentID {
 			a.subagentSiblings = msg.siblings
+			if msg.parentMessages != nil {
+				a.parentMessages = msg.parentMessages
+			}
 		}
 		return nil
 	case activeChildrenMsg:

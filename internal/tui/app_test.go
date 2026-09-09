@@ -46,6 +46,7 @@ type mockAPI struct {
 	mcpStatus    string // GET /api/mcp responds with this status for "test-server"; mutate mid-test to verify tickMsg re-fetches it
 	statsCalls   int
 	backgrounded string // the sessionID POSTed to /background, "" when never
+	children     []client.Session
 
 	// mu guards models, the one slice a background goroutine can append to
 	// (the variant pin is posted fire-and-forget) while a test polls it —
@@ -184,6 +185,10 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 		json.NewEncoder(w).Encode(client.Session{ID: "ses_fork", Title: "Fork: Test session", Directory: "/tmp", Version: "1"})
 	})
 	mux.HandleFunc("GET /api/session/{sessionID}/children", func(w http.ResponseWriter, r *http.Request) {
+		if api.children != nil {
+			json.NewEncoder(w).Encode(api.children)
+			return
+		}
 		json.NewEncoder(w).Encode([]client.Session{{ID: "ses_child", Title: "child", Directory: "/tmp", Version: "1"}})
 	})
 	mux.HandleFunc("POST /api/session/{sessionID}/background", func(w http.ResponseWriter, r *http.Request) {
@@ -1187,19 +1192,41 @@ func TestChildrenDialog(t *testing.T) {
 	app := newTestApp(t, server.URL)
 	openSession(t, app)
 
+	// Seed the aggregator the way a live child would: one running subagent,
+	// one settled subagent, one fork (never busy, always listed).
+	running := newSessionNode("ses_child")
+	running.Busy = true
+	app.Update(snapshotMsg{snapshot: Snapshot{
+		Sessions: map[string]*SessionNode{"ses_child": running},
+	}})
+	api.children = []client.Session{
+		{ID: "ses_child", Title: "dig the trench (@general subagent)", Directory: "/tmp", Version: "1"},
+		{ID: "ses_done", Title: "done long ago (@general subagent)", Directory: "/tmp", Version: "1"},
+		{ID: "ses_fork", Title: "Fork: parent", Directory: "/tmp", Version: "1"},
+	}
+
 	driveCmd(t, app, app.childrenOverlay())
 	if app.overlay == nil {
-		t.Fatal("expected forked-sessions dialog")
+		t.Fatal("expected children dialog")
 	}
 	view := app.View()
-	if !strings.Contains(view, "child") {
-		t.Fatalf("children dialog should list forked sessions, got %q", view)
+	if !strings.Contains(view, "running") {
+		t.Fatalf("children dialog should mark the running subagent, got %q", view)
 	}
+	if !strings.Contains(view, "dig the trench") {
+		t.Fatalf("children dialog should list the running subagent, got %q", view)
+	}
+	if strings.Contains(view, "done long ago") {
+		t.Fatalf("a settled subagent should be hidden, got %q", view)
+	}
+	if !strings.Contains(view, "Fork:") {
+		t.Fatalf("a fork should stay listed even when not running, got %q", view)
+	}
+
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	if app.active == nil || app.active.ID != "ses_child" {
-		t.Fatalf("enter should open the child session, got %+v", app.active)
+		t.Fatalf("enter should open the running child, got %+v", app.active)
 	}
-	_ = api
 }
 
 func TestCompactCommand(t *testing.T) {

@@ -161,6 +161,11 @@ func (t *TaskTool) ExecuteWithContext(ctx context.Context, input map[string]any,
 			"parentSessionID": exec.SessionID,
 			"sessionID":       childID,
 			"background":      wantsBackground,
+			// The fan-out batch: every task call in one assistant message
+			// shares its message ID, which is what makes "these three were
+			// launched together" derivable later. See the batchID comment in
+			// the TUI's child-session tracking.
+			"batchID": exec.AssistantMessageID,
 		})
 	}
 

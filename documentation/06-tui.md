@@ -190,6 +190,15 @@ interface surfaces it in four places:
   permission or question takes the parent's banner, attributed with the
   child's title; the reply settles in the child's own session.
 
+The children overlay (`ctrl+x ↓`) lists only **running** subagents plus
+forks, grouped by fan-out batch (`metadata.batchID` — one assistant message
+= one batch, so two fan-outs read as "Batch 1"/"Batch 2"). A settled
+subagent is hidden there — it stays reachable through its parent's task
+row — while a fork has no task row, so it is always listed. In the subagent
+view, the footer's `(n of N)` and the left/right arrows cover the open
+child's batch only; opening a task from another batch switches the arrow
+set to that batch.
+
 Child timelines live in `app.childMessages`, refreshed when the aggregator
 marks a child dirty. The session switcher excludes children
 (`parentID != ""`) — they belong to their parent's task row and the children

@@ -75,7 +75,7 @@ func (s *stubSpawner) notifications() []string {
 	return append([]string(nil), s.notified...)
 }
 
-var taskExec = tool.ExecContext{SessionID: "ses_parent", Agent: "build", CallID: "call_1"}
+var taskExec = tool.ExecContext{SessionID: "ses_parent", Agent: "build", CallID: "call_1", AssistantMessageID: "msg_asst_1"}
 
 func taskInput(extra map[string]any) map[string]any {
 	input := map[string]any{
@@ -363,6 +363,9 @@ func TestTaskToolPublishesChildLink(t *testing.T) {
 	}
 	if gotMeta["parentSessionID"] != "ses_parent" {
 		t.Fatalf("published metadata.parentSessionID = %v, want the parent session", gotMeta["parentSessionID"])
+	}
+	if gotMeta["batchID"] != taskExec.AssistantMessageID {
+		t.Fatalf("published metadata.batchID = %v, want the spawning message %q (the fan-out batch)", gotMeta["batchID"], taskExec.AssistantMessageID)
 	}
 	if background, ok := gotMeta["background"].(bool); ok && background {
 		t.Fatal("a foreground task must not be published as background")
