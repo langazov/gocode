@@ -36,11 +36,17 @@
 # are used; the bare-executable entries are ignored.
 #
 # With no [output] the formula is written to stdout.
+#
+# Archives are downloaded from $DOWNLOAD_BASE_URL/<archive>. It defaults to the
+# GitHub release; the release workflow points it at the public MinIO mirror
+# (https://s3.gocoder.org/releases/gocode/v<version>) when that upload ran.
 set -euo pipefail
 
 version="${1:?usage: brew-formula.sh <version> <sha256sums-file> [output]}"
 sums="${2:?usage: brew-formula.sh <version> <sha256sums-file> [output]}"
 output="${3:-}"
+base_url="${DOWNLOAD_BASE_URL:-https://github.com/langazov/gocode/releases/download/v${version}}"
+base_url="${base_url%/}"
 
 # Pull the checksum for one archive out of the sums file. Fails loudly rather
 # than emitting a formula with a blank sha256, which Homebrew would only
@@ -73,22 +79,22 @@ class Gocode < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-macos-arm64.tar.gz"
+      url "${base_url}/gocode-${version}-macos-arm64.tar.gz"
       sha256 "${macos_arm64}"
     end
     on_intel do
-      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-macos-x64.tar.gz"
+      url "${base_url}/gocode-${version}-macos-x64.tar.gz"
       sha256 "${macos_x64}"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-linux-arm64.tar.gz"
+      url "${base_url}/gocode-${version}-linux-arm64.tar.gz"
       sha256 "${linux_arm64}"
     end
     on_intel do
-      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-linux-x64.tar.gz"
+      url "${base_url}/gocode-${version}-linux-x64.tar.gz"
       sha256 "${linux_x64}"
     end
   end

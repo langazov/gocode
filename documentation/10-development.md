@@ -152,7 +152,8 @@ git push origin v0.1.0
 flowchart TD
   T["push tag v*"] --> B["<b>build</b> · 6 targets<br/><i>cross-compiled on one ubuntu runner</i>"]
   B --> S["<b>smoke</b> · 3 native runners<br/><i>run the real artifact</i>"]
-  S --> R["<b>release</b><br/><i>publish + SHA256SUMS</i>"]
+  S --> R["<b>release</b><br/><i>publish + SHA256SUMS<br/>mirror to MinIO</i>"]
+  R --> H["<b>homebrew</b><br/><i>formula → langazov/homebrew-tap</i>"]
   R --> P["<b>pages</b><br/><i>site picks up new downloads</i>"]
 
   style S fill:#78350f,stroke:#d97706,color:#fef3c7
@@ -168,6 +169,15 @@ runner, checksum-verified, and actually run — both the bare binary and the cop
 from the archive. It fails the release if either reports `local`.
 
 `workflow_dispatch` builds everything without tagging, for a dry run.
+
+The **release** job also mirrors every asset to a public MinIO bucket,
+`https://s3.gocoder.org/releases/gocode/v<version>/`, and the **homebrew** job
+renders the tap formula (`script/brew-formula.sh`) against that mirror. The
+mirror needs the `MINIO_URL` repository variable and the `MINIO_ACCESS_KEY` /
+`MINIO_SECRET_KEY` secrets — credentials of a MinIO user that may only write
+under `releases/gocode/`. Without them the mirror is skipped with a warning and
+the formula keeps the GitHub release URLs, so an unconfigured repository still
+publishes a working formula. The tap push itself needs `HOMEBREW_TAP_DEPLOY_KEY`.
 
 ### Action pinning
 
