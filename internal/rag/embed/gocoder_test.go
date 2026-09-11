@@ -56,14 +56,14 @@ func TestResolveDefaultsToGocoderWhenSignedIn(t *testing.T) {
 	if client.BaseURL != srv.URL+"/api" || client.APIKey != "gk_test" {
 		t.Fatalf("endpoint = %q key = %q", client.BaseURL, client.APIKey)
 	}
-	if client.Provider != "openai" || client.Model != "text-embedding-3-small" || client.BatchSize != gocoderMaxBatch {
+	// OpenRouter is preferred whenever the site has it enabled.
+	if client.Provider != "openrouter" || client.Model != "openai/text-embedding-3-small" || client.BatchSize != gocoderMaxBatch {
 		t.Fatalf("client = %+v", client)
 	}
 }
 
-// The provider set gocoder.org actually runs with: no direct OpenAI key, so
-// OpenAI's model is reached through OpenRouter.
-func TestResolveGocoderFallsBackToOpenRouter(t *testing.T) {
+// The provider set gocoder.org actually runs with.
+func TestResolveGocoderProductionProviders(t *testing.T) {
 	fakeGocoderSite(t, "mistral", "nvidia", "openrouter")
 
 	client, err := Resolve(context.Background(), Config{}, nil)
@@ -71,6 +71,18 @@ func TestResolveGocoderFallsBackToOpenRouter(t *testing.T) {
 		t.Fatal(err)
 	}
 	if client.Provider != "openrouter" || client.Model != "openai/text-embedding-3-small" {
+		t.Fatalf("client = %+v", client)
+	}
+}
+
+func TestResolveGocoderFallsBackToOpenAI(t *testing.T) {
+	fakeGocoderSite(t, "mistral", "openai")
+
+	client, err := Resolve(context.Background(), Config{}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.Provider != "openai" || client.Model != "text-embedding-3-small" {
 		t.Fatalf("client = %+v", client)
 	}
 }

@@ -40,8 +40,8 @@ gocoder.org on gocode's first start, gocode stores an API key in
 `embeddingProvider` nor `embeddingBaseURL` set, rag-plugin embeds through
 gocoder.org's `/api/embeddings` with that key — no provider API key of your
 own needed. Requests use OpenAI's `text-embedding-3-small` (override with
-`embeddingModel`) through gocoder.org's `openai` provider, or its `openrouter`
-provider when the site has no direct OpenAI key — the same model either way,
+`embeddingModel`) through gocoder.org's `openrouter` provider, or its `openai`
+provider when OpenRouter isn't enabled there — the same model either way,
 and the same as the direct-OpenAI default, so an existing index stays usable.
 If the site has neither enabled, indexing fails naming the providers it does
 have, rather than silently switching to a model with vectors of another size.
