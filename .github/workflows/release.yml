@@ -360,10 +360,15 @@ jobs:
           MINIO_ACCESS_KEY: ${{ secrets.MINIO_ACCESS_KEY }}
           MINIO_SECRET_KEY: ${{ secrets.MINIO_SECRET_KEY }}
           MINIO_BUCKET: releases
-          # Pinned like the actions: a fixed client release, verified by
-          # checksum before it ever sees the credentials.
-          MC_RELEASE: RELEASE.2025-08-13T08-35-41Z
-          MC_SHA256: 01f866e9c5f9b87c2b09116fa5d7c06695b106242d829a8bb32990c00312e891
+          # Uploads go through the AWS CLI preinstalled on the runner, not
+          # MinIO's mc: MinIO archived mc and dl.min.io now answers 410 Gone
+          # for every client download. MinIO speaks plain S3, so any S3
+          # client works; this one needs nothing fetched at release time.
+          AWS_DEFAULT_REGION: us-east-1
+          # AWS CLI >= 2.23 adds CRC checksums to every upload by default,
+          # which S3-compatible servers do not all accept.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
         run: |
           set -euo pipefail
           github_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}"
@@ -373,14 +378,13 @@ jobs:
             exit 0
           fi
 
-          mc="$RUNNER_TEMP/mc"
-          curl -fsSL -o "$mc" "https://dl.min.io/client/mc/release/linux-amd64/archive/mc.${MC_RELEASE}"
-          echo "${MC_SHA256}  $mc" | sha256sum -c -
-          chmod +x "$mc"
+          export AWS_ACCESS_KEY_ID="$MINIO_ACCESS_KEY" AWS_SECRET_ACCESS_KEY="$MINIO_SECRET_KEY"
+          # The bucket is a path under the endpoint, not a subdomain of it.
+          aws configure set default.s3.addressing_style path
 
           prefix="${MINIO_BUCKET}/gocode/${GITHUB_REF_NAME}"
-          "$mc" alias set mirror "$MINIO_URL" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY" >/dev/null
-          "$mc" cp ./artifacts/* "mirror/${prefix}/"
+          aws s3 cp ./artifacts/ "s3://${prefix}/" --recursive \
+            --endpoint-url "$MINIO_URL" --only-show-errors
 
           # The bucket is public-read; prove it before the formula relies on
           # it, since a private object would only fail on a user's machine.
