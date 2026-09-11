@@ -115,9 +115,10 @@ func spawnRagPluginWithoutCredentials(t *testing.T, projectRoot string, options 
 		Env: []string{
 			helperEnv + "=1",
 			"GOCODE_DISABLE_MODELS_FETCH=true",
-			// An empty home keeps the resolver away from a real auth.json on
-			// the machine running the tests.
+			// An empty home keeps the resolver away from a real auth.json or
+			// gocoder.org account on the machine running the tests.
 			"HOME=" + t.TempDir(),
+			"XDG_DATA_HOME=" + t.TempDir(),
 			"GOCODE_DATA=" + t.TempDir(),
 		},
 		Stderr: io.Discard,

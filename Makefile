@@ -158,7 +158,7 @@ install-example-plugin: ## Build and install the example plugin as "plugin-echo"
 rag-plugin: ## Build the RAG process plugin into cmd/rag-plugin/
 	$(GO) build -o $(RAG_PLUGIN_OUT) $(RAG_PLUGIN_SRC)
 	@echo 'RAG plugin: $(RAG_PLUGIN_OUT)'
-	@echo 'Enable it with: "plugin": [["$(CURDIR)/$(RAG_PLUGIN_DIR)", {"embeddingProvider": "openai"}]]'
+	@echo 'Enable it with: "plugin": ["$(CURDIR)/$(RAG_PLUGIN_DIR)"]'
 
 # Builds into the install directory rather than copying the source tree, so
 # only the manifest and the binary are installed — not main.go and README.md.

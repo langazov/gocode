@@ -65,6 +65,10 @@ func runRootTui(a *clix.Args) error {
 		return fmt.Errorf("failed to change directory to %s: %w", directory, err)
 	}
 
+	if !maybeOnboard(context.Background()) {
+		return nil
+	}
+
 	stack, err := bootStack(context.Background(), model)
 	if err != nil {
 		return err

@@ -409,7 +409,7 @@ func runCLIIndex(args []string) error {
 	project := fs.String("project", "", "project id; defaults to the resolved absolute root")
 	force := fs.Bool("force", false, "re-embed every chunk, ignoring stored content hashes")
 	dbPath := fs.String("db", "", "sqlite path; defaults to $GOCODE_DATA/rag.db")
-	embProvider := fs.String("embedding-provider", "", "models.dev provider id (default openai)")
+	embProvider := fs.String("embedding-provider", "", "models.dev provider id, or gocoder (default gocoder when signed in to gocoder.org, else openai)")
 	embModel := fs.String("embedding-model", "", "embedding model id (default text-embedding-3-small)")
 	embBaseURL := fs.String("embedding-base-url", "", "override the embeddings endpoint")
 	include := fs.String("include", "", "comma-separated include globs")
@@ -464,7 +464,7 @@ func runCLISearch(args []string) error {
 	k := fs.Int("k", 8, "number of results")
 	pathPrefix := fs.String("path-prefix", "", "restrict results to paths starting with this prefix")
 	dbPath := fs.String("db", "", "sqlite path; defaults to $GOCODE_DATA/rag.db")
-	embProvider := fs.String("embedding-provider", "", "models.dev provider id (default openai)")
+	embProvider := fs.String("embedding-provider", "", "models.dev provider id, or gocoder (default gocoder when signed in to gocoder.org, else openai)")
 	embModel := fs.String("embedding-model", "", "embedding model id (default text-embedding-3-small)")
 	embBaseURL := fs.String("embedding-base-url", "", "override the embeddings endpoint")
 	if err := fs.Parse(args); err != nil {
