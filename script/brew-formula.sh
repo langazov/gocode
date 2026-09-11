@@ -36,11 +36,17 @@
 # are used; the bare-executable entries are ignored.
 #
 # With no [output] the formula is written to stdout.
+#
+# Archives are downloaded from $DOWNLOAD_BASE_URL/<archive>. It defaults to the
+# GitHub release; the release workflow points it at the public MinIO mirror
+# (https://s3.gocoder.org/releases/gocode/v<version>) when that upload ran.
 set -euo pipefail
 
 version="${1:?usage: brew-formula.sh <version> <sha256sums-file> [output]}"
 sums="${2:?usage: brew-formula.sh <version> <sha256sums-file> [output]}"
 output="${3:-}"
+base_url="${DOWNLOAD_BASE_URL:-https://github.com/langazov/gocode/releases/download/v${version}}"
+base_url="${base_url%/}"
 
 # Pull the checksum for one archive out of the sums file. Fails loudly rather
 # than emitting a formula with a blank sha256, which Homebrew would only
@@ -73,22 +79,22 @@ class Gocode < Formula
 
   on_macos do
     on_arm do
-      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-macos-arm64.tar.gz"
+      url "${base_url}/gocode-${version}-macos-arm64.tar.gz"
       sha256 "${macos_arm64}"
     end
     on_intel do
-      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-macos-x64.tar.gz"
+      url "${base_url}/gocode-${version}-macos-x64.tar.gz"
       sha256 "${macos_x64}"
     end
   end
 
   on_linux do
     on_arm do
-      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-linux-arm64.tar.gz"
+      url "${base_url}/gocode-${version}-linux-arm64.tar.gz"
       sha256 "${linux_arm64}"
     end
     on_intel do
-      url "https://github.com/langazov/gocode/releases/download/v${version}/gocode-${version}-linux-x64.tar.gz"
+      url "${base_url}/gocode-${version}-linux-x64.tar.gz"
       sha256 "${linux_x64}"
     end
   end
@@ -111,8 +117,8 @@ class Gocode < Formula
   # The plugin is enabled by bare name. gocode searches <prefix>/libexec for
   # plugins, relative to its own binary (plugin.BundledRoots), so the name is
   # enough and the config stays free of installation-specific paths — it keeps
-  # working across a Homebrew prefix change, and `gocode plugin disable
-  # rag-plugin` is something a user can actually type.
+  # working across a Homebrew prefix change, and \`gocode plugin disable
+  # rag-plugin\` is something a user can actually type.
   #
   # Earlier versions wrote the absolute libexec path instead, because no such
   # search path existed. The disable below removes that stale entry on
@@ -169,8 +175,11 @@ EOF
 }
 
 # Ruby's #{...} interpolations survive this script's heredoc untouched: bash
-# expands $-prefixed forms, and #{ is not one. Only ${...} would need escaping,
-# and the formula uses none.
+# expands $-prefixed forms, and #{ is not one. Two forms do need escaping:
+# ${...}, which the formula never uses, and backticks, which bash runs as a
+# command substitution even inside a Ruby comment. The one backtick pair above
+# is escaped; unescaped, rendering executed `gocode plugin disable` on the
+# rendering machine and dropped the words from the published comment.
 if [ -n "$output" ]; then
   mkdir -p "$(dirname "$output")"
   render > "$output"
