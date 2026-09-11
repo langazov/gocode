@@ -6,6 +6,11 @@
 
 Tools are how the agent touches the world. Permissions are what stop it.
 
+> How permissions **should behave** — precedence, save granularity, the prompt
+> surface, revocation — is specified normatively in the
+> [permissions recommendations](recomendations/PERMISSIONS_RECOMENDATIONS.md).
+> This chapter explains how they are built; that document is the contract.
+
 ## The tool contract
 
 Four methods (`internal/tool/registry.go`):

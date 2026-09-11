@@ -31,16 +31,39 @@ make rag-plugin
 
 ## Embeddings
 
-Vectors come from a remote OpenAI-compatible `/embeddings` endpoint — the
-same credential chain every provider in this Go port uses: the models.dev
-catalog's `env[]` names, then `{PROVIDER}_API_KEY`, then `auth.json`. No local
-embedding model is used.
+Vectors come from a remote embeddings endpoint. No local embedding model is
+used.
+
+**gocoder.org (default once signed in).** When you register or log in to
+gocoder.org on gocode's first start, gocode stores an API key in
+`<data dir>/gocoder.json`. With that account present and neither
+`embeddingProvider` nor `embeddingBaseURL` set, rag-plugin embeds through
+gocoder.org's `/api/embeddings` with that key — no provider API key of your
+own needed. Requests use OpenAI's `text-embedding-3-small` (override with
+`embeddingModel`) through gocoder.org's `openrouter` provider, or its `openai`
+provider when OpenRouter isn't enabled there — the same model either way,
+and the same as the direct-OpenAI default, so an existing index stays usable.
+If the site has neither enabled, indexing fails naming the providers it does
+have, rather than silently switching to a model with vectors of another size.
+Set `embeddingProvider: "gocoder"` to require it (and fail clearly when not
+signed in).
+
+**Any OpenAI-compatible provider.** Otherwise vectors come from a remote
+OpenAI-compatible `/embeddings` endpoint, resolved through the same credential
+chain every provider in this Go port uses: the models.dev catalog's `env[]`
+names, then `{PROVIDER}_API_KEY`, then `auth.json`. Setting
+`embeddingProvider` or `embeddingBaseURL` always takes precedence over a
+stored gocoder.org account.
+
+Switching between models with different vector sizes needs a re-index with
+`force` (or `-force` on the CLI); an index mixing two models cannot be
+searched.
 
 Plugin options (all optional):
 
 | Option | Default | Meaning |
 |---|---|---|
-| `embeddingProvider` | `openai` | models.dev provider id |
+| `embeddingProvider` | `gocoder` when signed in, else `openai` | models.dev provider id, or `gocoder` |
 | `embeddingModel` | `text-embedding-3-small` | embedding model id |
 | `embeddingBaseURL` | (resolved from the catalog) | override the endpoint |
 | `include` | known code/doc extensions only (see below) | glob patterns, e.g. `["**/*.go"]` |

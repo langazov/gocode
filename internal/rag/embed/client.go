@@ -73,6 +73,10 @@ type Client struct {
 	APIKey string
 	// Model is the embedding model id, e.g. "text-embedding-3-small".
 	Model string
+	// Provider, when set, is sent as the request's "provider" field. Only
+	// gocoder.org's /api/embeddings reads it (to pick its upstream); it stays
+	// empty for OpenAI-compatible endpoints, which reject unknown fields.
+	Provider string
 	// HTTP is the client used for requests; defaults to a 60s-timeout client.
 	HTTP *http.Client
 	// BatchSize overrides DefaultBatchSize.
@@ -97,8 +101,9 @@ func New(baseURL, apiKey, model string) *Client {
 }
 
 type request struct {
-	Model string   `json:"model"`
-	Input []string `json:"input"`
+	Provider string   `json:"provider,omitempty"`
+	Model    string   `json:"model"`
+	Input    []string `json:"input"`
 }
 
 type response struct {
@@ -106,7 +111,10 @@ type response struct {
 		Embedding []float32 `json:"embedding"`
 		Index     int       `json:"index"`
 	} `json:"data"`
-	Error *struct {
+	// Vectors is gocoder.org's shape: bare vectors in input order. Its error
+	// envelope ({"error":{"code","message"}}) already fits Error below.
+	Vectors [][]float32 `json:"vectors"`
+	Error   *struct {
 		Message string `json:"message"`
 	} `json:"error"`
 }
@@ -248,7 +256,7 @@ type attemptError struct {
 }
 
 func (c *Client) embedBatchOnce(ctx context.Context, texts []string) ([][]float32, *attemptError) {
-	payload, err := json.Marshal(request{Model: c.Model, Input: texts})
+	payload, err := json.Marshal(request{Provider: c.Provider, Model: c.Model, Input: texts})
 	if err != nil {
 		return nil, &attemptError{err: err}
 	}
@@ -303,6 +311,17 @@ func (c *Client) embedBatchOnce(ctx context.Context, texts []string) ([][]float3
 	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, &attemptError{err: fmt.Errorf("embeddings endpoint returned status %d: %s", resp.StatusCode, string(body))}
+	}
+	if parsed.Data == nil && parsed.Vectors != nil {
+		if len(parsed.Vectors) != len(texts) {
+			return nil, &attemptError{err: fmt.Errorf("embeddings endpoint returned %d vectors for %d inputs", len(parsed.Vectors), len(texts))}
+		}
+		for i, v := range parsed.Vectors {
+			if len(v) == 0 {
+				return nil, &attemptError{err: fmt.Errorf("embeddings endpoint did not return a vector for input %d", i)}
+			}
+		}
+		return parsed.Vectors, nil
 	}
 	if len(parsed.Data) != len(texts) {
 		return nil, &attemptError{err: fmt.Errorf("embeddings endpoint returned %d vectors for %d inputs", len(parsed.Data), len(texts))}
