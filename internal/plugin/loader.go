@@ -11,6 +11,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/global"
 )
@@ -63,6 +64,10 @@ type Resolved struct {
 	Command []string
 	// Env is the environment overlay for a process plugin.
 	Env []string
+	// CallTimeout is the per-call timeout from the plugin's manifest, or
+	// zero if the manifest didn't declare one. A config "callTimeout"
+	// option always takes precedence over this.
+	CallTimeout time.Duration
 }
 
 // Report is the loader's diagnostic seam, porting the `report` callbacks. It
@@ -202,9 +207,10 @@ func Load(ctx context.Context, in LoadInput) (*Host, error) {
 		go func(next *attempt) {
 			defer wg.Done()
 			next.instance, next.err = Spawn(ctx, next.spec.Ref, SpawnConfig{
-				Command: next.resolved.Command,
-				Dir:     in.Input.Directory,
-				Env:     next.resolved.Env,
+				Command:     next.resolved.Command,
+				Dir:         in.Input.Directory,
+				Env:         next.resolved.Env,
+				CallTimeout: next.resolved.CallTimeout,
 			}, in.Input, next.spec.Options, log)
 			if next.err != nil {
 				next.stage = StageLoad
@@ -309,6 +315,12 @@ type descriptor struct {
 	Command []string `json:"command"`
 	// Env are extra environment variables, as a map.
 	Env map[string]string `json:"env,omitempty"`
+	// CallTimeoutSeconds is the per-call timeout the host should apply when
+	// the config options bag doesn't set "callTimeout" explicitly. A plugin
+	// whose first call can be slow — rag-plugin's initial index of a large
+	// repo — uses this to raise the 30s default without forcing every user
+	// to add the option by hand.
+	CallTimeoutSeconds int `json:"callTimeoutSeconds,omitempty"`
 }
 
 // Resolve locates a spec, porting `PluginLoader.resolve`. It looks, in order:
@@ -337,11 +349,11 @@ func Resolve(spec Spec, directory string) (Resolved, Stage, error) {
 	if err != nil {
 		return Resolved{}, StageResolve, err
 	}
-	command, env, err := entrypoint(target)
+	command, env, callTimeout, err := entrypoint(target)
 	if err != nil {
 		return Resolved{}, StageEntry, err
 	}
-	return Resolved{Spec: spec, Source: SourceProcess, Target: target, Command: command, Env: env}, "", nil
+	return Resolved{Spec: spec, Source: SourceProcess, Target: target, Command: command, Env: env, CallTimeout: callTimeout}, "", nil
 }
 
 // InstallRoot is where a plugin referred to by bare name is looked up:
@@ -476,16 +488,16 @@ func locate(ref, directory string) (string, error) {
 // entrypoint decides how to run a resolved target: a manifest names the
 // command, a directory without one must hold an executable named `plugin`, and
 // a file must itself be executable.
-func entrypoint(target string) ([]string, []string, error) {
+func entrypoint(target string) ([]string, []string, time.Duration, error) {
 	info, err := os.Stat(target)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 	if !info.IsDir() {
 		if err := executable(target, info); err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
-		return []string{target}, nil, nil
+		return []string{target}, nil, 0, nil
 	}
 
 	raw, err := os.ReadFile(filepath.Join(target, manifestFile))
@@ -493,10 +505,10 @@ func entrypoint(target string) ([]string, []string, error) {
 	case err == nil:
 		var parsed descriptor
 		if err := json.Unmarshal(raw, &parsed); err != nil {
-			return nil, nil, fmt.Errorf("%s: %w", manifestFile, err)
+			return nil, nil, 0, fmt.Errorf("%s: %w", manifestFile, err)
 		}
 		if len(parsed.Command) == 0 {
-			return nil, nil, fmt.Errorf("%s declares no command", manifestFile)
+			return nil, nil, 0, fmt.Errorf("%s declares no command", manifestFile)
 		}
 		command := append([]string(nil), parsed.Command...)
 		// A relative command names a file inside the plugin, not something on
@@ -509,7 +521,11 @@ func entrypoint(target string) ([]string, []string, error) {
 		for key, value := range parsed.Env {
 			env = append(env, key+"="+value)
 		}
-		return command, env, nil
+		var callTimeout time.Duration
+		if parsed.CallTimeoutSeconds > 0 {
+			callTimeout = time.Duration(parsed.CallTimeoutSeconds) * time.Second
+		}
+		return command, env, callTimeout, nil
 	case errors.Is(err, fs.ErrNotExist):
 		fallback := filepath.Join(target, "plugin")
 		if runtime.GOOS == "windows" {
@@ -517,14 +533,14 @@ func entrypoint(target string) ([]string, []string, error) {
 		}
 		fallbackInfo, statErr := os.Stat(fallback)
 		if statErr != nil {
-			return nil, nil, fmt.Errorf("no %s and no executable at %s", manifestFile, fallback)
+			return nil, nil, 0, fmt.Errorf("no %s and no executable at %s", manifestFile, fallback)
 		}
 		if err := executable(fallback, fallbackInfo); err != nil {
-			return nil, nil, err
+			return nil, nil, 0, err
 		}
-		return []string{fallback}, nil, nil
+		return []string{fallback}, nil, 0, nil
 	default:
-		return nil, nil, err
+		return nil, nil, 0, err
 	}
 }
 

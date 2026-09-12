@@ -25,3 +25,6 @@
 
 # macOS
 .DS_Store
+/blobs/*
+codegraph.*
+codegraph.db

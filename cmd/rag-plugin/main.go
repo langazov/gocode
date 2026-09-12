@@ -9,8 +9,11 @@
 // the shell — `rag-plugin index ...`, which exists because the host bounds a
 // tool call it makes with no deadline of its own to 30s
 // (internal/plugin/process.go's DefaultCallTimeout), too short for a large
-// repo's first index, and `list`/`clean`/`vacuum`, where a person can type
-// the irreversible ones. Both paths share the same runtime construction and
+// repo's first index. The manifest (gocode-plugin.json) declares
+// callTimeoutSeconds: 300 to raise that to 5 minutes for this plugin, but a
+// repo whose first index exceeds even that can use the CLI directly. The CLI
+// also covers `list`/`clean`/`vacuum`, where a person can type the
+// irreversible ones. Both paths share the same runtime construction and
 // the same internal/rag orchestration.
 //
 // The runtime is built in two tiers, and which tier a command or tool needs
@@ -33,6 +36,7 @@ import (
 	"strings"
 	"sync"
 	"text/tabwriter"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/lsp"
 	"github.com/langazov/gocode-go/internal/modelsdev"
@@ -109,6 +113,14 @@ type runtimeOptions struct {
 // defaultExclude keeps the common dependency/output directories out of an
 // index by default; .git is already skipped unconditionally by chunk.Walk.
 var defaultExclude = []string{"**/node_modules/**", "**/vendor/**", "**/dist/**", "**/.venv/**"}
+
+// defaultIndexTimeoutSeconds is the default per-call timeout for rag_index,
+// applied as a context deadline inside the plugin. The host's own
+// CallTimeout (300s from the manifest) bounds how long it waits for the
+// JSON-RPC reply; this bounds the actual indexing work. They match so the
+// plugin gives up just before the host would, rather than the host timing
+// out first and leaving the plugin grinding.
+const defaultIndexTimeoutSeconds = 300
 
 // runtime is the live set of services one plugin process (or one CLI
 // invocation) uses. There is exactly one per process, so it is a package
@@ -1007,8 +1019,9 @@ func handleInitialize(message request) error {
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"path":  map[string]any{"type": "string", "description": "Subdirectory to index, relative to the project root. Default: the whole project."},
-						"force": map[string]any{"type": "boolean", "description": "Re-embed every chunk. Needed after switching embedding models."},
+						"path":    map[string]any{"type": "string", "description": "Subdirectory to index, relative to the project root. Default: the whole project."},
+						"force":   map[string]any{"type": "boolean", "description": "Re-embed every chunk. Needed after switching embedding models."},
+						"timeout": map[string]any{"type": "integer", "description": "Maximum time in seconds for this indexing call. Default 300."},
 					},
 				},
 			},
@@ -1109,7 +1122,10 @@ func handleTool(message request) error {
 	case "rag_index":
 		path := stringOpt(params.Args, "path", "")
 		force := boolOpt(params.Args, "force", false)
-		summary, err := rt.indexer.Index(context.Background(), rt.indexOptions(path, force))
+		timeout := intOpt(params.Args, "timeout", defaultIndexTimeoutSeconds)
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+		defer cancel()
+		summary, err := rt.indexer.Index(ctx, rt.indexOptions(path, force))
 		if err != nil {
 			return reply(message.ID, nil, err)
 		}

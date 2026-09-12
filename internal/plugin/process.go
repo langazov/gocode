@@ -92,6 +92,10 @@ type SpawnConfig struct {
 	Dir string
 	// Env are extra environment variables, as KEY=VALUE.
 	Env []string
+	// CallTimeout is the per-call timeout from the plugin's manifest, used
+	// as a fallback when the config options bag doesn't set "callTimeout".
+	// Zero means fall back to DefaultCallTimeout.
+	CallTimeout time.Duration
 	// Stderr receives the plugin's diagnostic output. When nil it is
 	// discarded — never the process's own stderr, which would land on top of
 	// the TUI's alternate screen and corrupt the frame.
@@ -182,6 +186,31 @@ func Spawn(ctx context.Context, spec string, cfg SpawnConfig, in Input, opts Opt
 		pending: map[int64]chan rpcResponse{},
 		done:    make(chan struct{}),
 		onLog:   onLog,
+	}
+	// A plugin that needs longer than the 30s default for a single tool call
+	// — rag-plugin's first index of a large repo is the motivating case —
+	// can raise it two ways:
+	//   1. "callTimeout" in its config options bag (seconds), which always
+	//      takes precedence;
+	//   2. "callTimeoutSeconds" in its gocode-plugin.json manifest, used as a
+	//      fallback so the plugin ships with a sensible default and the user
+	//      doesn't have to set anything by hand.
+	// If neither is set, Process.CallTimeout stays zero and the call path
+	// falls back to DefaultCallTimeout.
+	if v, ok := opts["callTimeout"]; ok {
+		switch n := v.(type) {
+		case float64: // encoding/json decodes JSON numbers into float64
+			if n > 0 {
+				process.CallTimeout = time.Duration(n) * time.Second
+			}
+		case int:
+			if n > 0 {
+				process.CallTimeout = time.Duration(n) * time.Second
+			}
+		}
+	}
+	if process.CallTimeout == 0 && cfg.CallTimeout > 0 {
+		process.CallTimeout = cfg.CallTimeout
 	}
 	go process.drainStderr(stderr, cfg.Stderr)
 	go process.read(stdout)
