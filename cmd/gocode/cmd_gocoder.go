@@ -9,7 +9,9 @@ import (
 	"os"
 
 	"github.com/langazov/gocode-go/internal/clix"
+	"github.com/langazov/gocode-go/internal/global"
 	"github.com/langazov/gocode-go/internal/gocoder"
+	"github.com/langazov/gocode-go/internal/sync"
 	"github.com/langazov/gocode-go/internal/tui/signin"
 )
 
@@ -92,6 +94,15 @@ func runGocoderLogout(ctx context.Context, out io.Writer) error {
 	}
 	if err := gocoder.RemoveAccount(); err != nil {
 		return err
+	}
+	// The sync state carries a derived settings key; drop it with the
+	// account so a signed-out machine cannot push or pull settings.
+	if state, err := sync.LoadState(global.Resolve().State); err == nil {
+		state.Key = ""
+		state.NeedsRelogin = true
+		if err := sync.SaveState(global.Resolve().State, state); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: could not clear the sync key: %v\n", err)
+		}
 	}
 	fmt.Fprintf(out, "Logged out of %s (%s).\n", displayHost(gocoder.NewClient(account.URL).BaseURL), account.Email)
 	return nil

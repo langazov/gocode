@@ -112,6 +112,10 @@ func runRunCommand(a *clix.Args) error {
 	if err != nil {
 		return err
 	}
+
+	if cancel, ok := startSyncLoops(ctx); ok {
+		defer cancel()
+	}
 	// "run" is one-shot: release the database as soon as this command is
 	// done rather than leaving it for the process exit that follows a
 	// moment later. In-process callers (the tests) never get that process

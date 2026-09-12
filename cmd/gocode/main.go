@@ -26,6 +26,7 @@ import (
 	// Registers the memory plugin with the native tier. Imported for effect:
 	// the plugin registry is populated from init, so the boot wiring's job is
 	// only to make sure the package is linked in. See internal/plugin/native.go.
+	"github.com/langazov/gocode-go/internal/gocoder"
 	_ "github.com/langazov/gocode-go/internal/memoryplugin"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 	"github.com/langazov/gocode-go/internal/modelstate"
@@ -36,6 +37,7 @@ import (
 	"github.com/langazov/gocode-go/internal/server"
 	"github.com/langazov/gocode-go/internal/session"
 	"github.com/langazov/gocode-go/internal/skill"
+	gocodesync "github.com/langazov/gocode-go/internal/sync"
 	"github.com/langazov/gocode-go/internal/tool"
 	"github.com/langazov/gocode-go/internal/tool/builtins"
 )
@@ -203,6 +205,28 @@ func resolveModelFlag(modelFlag string, lastUsed modelstate.Ref, configModel str
 	return "anthropic/claude-sonnet-4-5"
 }
 
+// startSyncLoops starts the settings-sync background loops (watch local
+// files, poll gocoder.org) when there is an account and sync is enabled.
+// Failures are logged, never fatal: sync is a convenience layered over a
+// local-first tool. The returned cancel stops the loops (callers wire it to
+// process exit or the TUI's lifetime).
+func startSyncLoops(ctx context.Context) (context.CancelFunc, bool) {
+	state, err := gocodesync.LoadState(global.Resolve().State)
+	if err != nil || !state.IsEnabled() {
+		return nil, false
+	}
+	account, err := gocoder.LoadAccount()
+	if err != nil || account == nil {
+		return nil, false
+	}
+	manager := gocodesync.NewManager(gocoder.NewClient(account.URL), syncPaths(), global.Resolve().State,
+		func() string { return account.Key })
+	loopCtx, cancel := context.WithCancel(ctx)
+	go manager.WatchLocal(loopCtx)
+	go manager.PollRemote(loopCtx)
+	return cancel, true
+}
+
 // bootStack builds the full runtime (database, event bus, runner, tools,
 // agents, permissions), shared by serve and tui. Precedence for the default
 // model: explicit flag > config "model" > built-in default.
@@ -231,6 +255,18 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	projectID, err := session.EnsureProject(ctx, database, cwd)
 	if err != nil {
 		global.LogBackground("resolving project for %s: %v", cwd, err)
+	}
+
+	// Settings sync's project half: record that this worktree belongs to its
+	// git remote (so received bundles can find it), and apply any config
+	// staged for a project opened here for the first time. Best-effort.
+	if os.Getenv("GOCODE_DISABLE_PROJECT_CONFIG") != "true" {
+		if err := gocodesync.RegisterProject(syncPaths(), cwd); err != nil {
+			global.LogBackground("sync: register project %s: %v", cwd, err)
+		}
+		if err := gocodesync.ApplyStaged(syncPaths(), cwd); err != nil {
+			global.LogBackground("sync: apply staged config for %s: %v", cwd, err)
+		}
 	}
 
 	// Plugins load before anything is built from the config, because the

@@ -70,6 +70,12 @@ func runRootTui(a *clix.Args) error {
 		return nil
 	}
 
+	// Settings sync runs in the background while the TUI is up: local edits
+	// are pushed, website edits are pulled. Best-effort by design.
+	if cancel, ok := startSyncLoops(context.Background()); ok {
+		defer cancel()
+	}
+
 	stack, err := bootStack(context.Background(), model)
 	if err != nil {
 		return err

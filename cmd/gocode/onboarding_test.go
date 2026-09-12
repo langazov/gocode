@@ -48,7 +48,7 @@ func fakeGocoder(t *testing.T) *httptest.Server {
 
 func TestSubmitterRegisterStoresKey(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	submit := submitter(gocoder.NewClient(fakeGocoder(t).URL))
+	submit := submitter(gocoder.NewClient(fakeGocoder(t).URL), nil)
 
 	result, err := submit(context.Background(), true, signin.Credentials{
 		Email: "alice@example.com", DisplayName: "alice", Password: "correct-horse",
@@ -67,7 +67,7 @@ func TestSubmitterRegisterStoresKey(t *testing.T) {
 
 func TestSubmitterRejectedLogin(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	submit := submitter(gocoder.NewClient(fakeGocoder(t).URL))
+	submit := submitter(gocoder.NewClient(fakeGocoder(t).URL), nil)
 
 	_, err := submit(context.Background(), false, signin.Credentials{Email: "alice@example.com", Password: "wrong-password"})
 	if err == nil || err.Error() != "invalid email or password" || unreachable(err) {
@@ -80,7 +80,7 @@ func TestSubmitterRejectedLogin(t *testing.T) {
 
 func TestSubmitterUnreachable(t *testing.T) {
 	t.Setenv("XDG_DATA_HOME", t.TempDir())
-	submit := submitter(gocoder.NewClient("http://127.0.0.1:1"))
+	submit := submitter(gocoder.NewClient("http://127.0.0.1:1"), nil)
 
 	_, err := submit(context.Background(), false, signin.Credentials{Email: "alice@example.com", Password: "correct-horse"})
 	if err == nil || !strings.HasPrefix(err.Error(), "couldn't reach 127.0.0.1:1") || !unreachable(err) {
