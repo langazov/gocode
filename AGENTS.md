@@ -137,7 +137,7 @@ git tag v0.1.0 && git push origin v0.1.0
 
 Cross-compiles 6 targets (macOS/Linux/Windows × arm64/x64), smoke-tests each on its native runner (asserts binary doesn't report `local`), then publishes. `workflow_dispatch` builds everything without tagging for dry runs.
 
-The release job mirrors every asset to the public MinIO bucket `https://s3.gocoder.org/releases/gocode/v<version>/`, and the Homebrew formula (`script/brew-formula.sh`, pushed to `langazov/homebrew-tap`) downloads from there. Needs the `MINIO_URL` variable plus `MINIO_ACCESS_KEY`/`MINIO_SECRET_KEY` secrets; without them the mirror is skipped and the formula falls back to GitHub release URLs.
+The Homebrew formula (`script/brew-formula.sh`, pushed to `langazov/homebrew-tap`) downloads from the GitHub release URLs — Homebrew derives the formula version from that URL shape, so keep it `github.com/.../releases/download/vX.Y.Z/` (a mirror host makes brew sniff "64" out of `...-arm64.tar.gz`). Needs `HOMEBREW_TAP_DEPLOY_KEY`; without it the tap job is skipped.
 
 ## Gotchas
 
