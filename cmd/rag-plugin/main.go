@@ -413,6 +413,36 @@ func (rt *runtime) topK(k int) int {
 	return 8
 }
 
+// currentChunkHashes walks the project's files (no embeddings needed) and
+// returns a map of chunk ID to content hash, the same shape the store's
+// manifest holds. This is what StaleCount compares the stored hashes
+// against to decide how many chunks are outdated.
+//
+// Returns an empty map when the project root is not set or the walk fails —
+// both mean "we cannot tell," which the caller treats as "don't compute a
+// stale count" rather than "zero stale chunks."
+func (rt *runtime) currentChunkHashes(ctx context.Context) map[string]string {
+	root := rt.indexRoot("")
+	if root == "" {
+		return nil
+	}
+	opts := rt.indexOptions("", false)
+	chunks, err := chunk.Walk(ctx, root, chunk.Options{
+		Include:          opts.Include,
+		Exclude:          opts.Exclude,
+		DisableGitignore: opts.DisableGitignore,
+		PathPrefix:       opts.Scope,
+	})
+	if err != nil {
+		return nil
+	}
+	out := make(map[string]string, len(chunks))
+	for _, c := range chunks {
+		out[c.ID] = c.ContentHash
+	}
+	return out
+}
+
 // ---- CLI mode ----
 
 func runCLIIndex(args []string) error {
@@ -807,6 +837,14 @@ func totalBytes(projects []store.ProjectStat) int64 {
 	return total
 }
 
+func totalStale(projects []store.ProjectStat) int {
+	var total int
+	for _, p := range projects {
+		total += p.Stale
+	}
+	return total
+}
+
 // projectStatus names the one thing about a project a reader needs to decide
 // whether to clean it. The states are mutually exclusive by construction:
 // Orphan and Dangling are the two directions the collection and the manifest
@@ -834,18 +872,41 @@ func formatProjects(dbPath string, projects []store.ProjectStat) string {
 	}
 
 	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(w, "PROJECT\tCHUNKS\tFILES\tSIZE\tMODIFIED\tSTATUS")
+	fmt.Fprintln(w, "PROJECT\tCHUNKS\tFILES\tSTALE\tSIZE\tMODIFIED\tSTATUS")
 	var chunks int
 	for _, p := range projects {
 		modified := "-"
 		if !p.ModTime.IsZero() {
 			modified = p.ModTime.Format("2006-01-02")
 		}
-		fmt.Fprintf(w, "%s\t%d\t%d\t%s\t%s\t%s\n",
-			p.ProjectID, p.Chunks, p.Paths, formatBytes(p.Bytes), modified, projectStatus(p))
+		fmt.Fprintf(w, "%s\t%d\t%d\t%d\t%s\t%s\t%s\n",
+			p.ProjectID, p.Chunks, p.Paths, p.Stale, formatBytes(p.Bytes), modified, projectStatus(p))
 		chunks += p.Chunks
 	}
-	fmt.Fprintf(w, "%d project(s)\t%d\t\t%s\t\t\n", len(projects), chunks, formatBytes(totalBytes(projects)))
+	fmt.Fprintf(w, "%d project(s)\t%d\t\t%d\t%s\t\t\n", len(projects), chunks, totalStale(projects), formatBytes(totalBytes(projects)))
+	w.Flush()
+	return b.String()
+}
+
+// formatProjectsList is the lighter counterpart to formatProjects: just the
+// project ID, chunk count, file count, and size — no health status, no stale
+// column, no database path header. It is what rag_projects returns, so a
+// caller asking "which projects are indexed" gets a clean list without the
+// maintenance context rag_status adds.
+func formatProjectsList(projects []store.ProjectStat) string {
+	if len(projects) == 0 {
+		return "no projects indexed"
+	}
+	var b strings.Builder
+	w := tabwriter.NewWriter(&b, 0, 0, 2, ' ', 0)
+	fmt.Fprintln(w, "PROJECT\tCHUNKS\tFILES\tSIZE")
+	var chunks int
+	for _, p := range projects {
+		fmt.Fprintf(w, "%s\t%d\t%d\t%s\n",
+			p.ProjectID, p.Chunks, p.Paths, formatBytes(p.Bytes))
+		chunks += p.Chunks
+	}
+	fmt.Fprintf(w, "%d project(s)\t%d\t\t%s\n", len(projects), chunks, formatBytes(totalBytes(projects)))
 	w.Flush()
 	return b.String()
 }
@@ -1047,7 +1108,15 @@ func handleInitialize(message request) error {
 			},
 			{
 				"name":        "rag_status",
-				"description": "List indexed projects with chunk counts, size on disk, and health. Read-only. Run before rag_clean or rag_vacuum.",
+				"description": "List indexed projects with chunk counts, size on disk, and health. For the current project, also reports whether an index exists, how many documents are stored, and how many are outdated (stale) relative to the files on disk. Read-only. Run before rag_clean or rag_vacuum.",
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{},
+				},
+			},
+			{
+				"name":        "rag_projects",
+				"description": "List the projects that have been indexed in the shared RAG database. Returns each project's ID, chunk count, file count, and size on disk. Read-only; lighter than rag_status (no staleness walk). Use this to discover which projects share the database before indexing or cleaning.",
 				"parameters": map[string]any{
 					"type":       "object",
 					"properties": map[string]any{},
@@ -1105,7 +1174,7 @@ func handleTool(message request) error {
 	// which is precisely the state an index worth cleaning up tends to be
 	// in (provider removed from config, key rotated, project abandoned).
 	switch params.Name {
-	case "rag_status", "rag_clean", "rag_vacuum":
+	case "rag_status", "rag_projects", "rag_clean", "rag_vacuum":
 		r, err := ensureStore()
 		if err != nil {
 			return reply(message.ID, nil, err)
@@ -1178,9 +1247,39 @@ func handleMaintenanceTool(message request, r *runtime, name string, args map[st
 		if err != nil {
 			return reply(message.ID, nil, err)
 		}
+		// For the current project, walk its files and compute how many
+		// stored chunks are outdated relative to the files on disk. This
+		// uses no embeddings provider — chunk.Walk just reads files and
+		// splits them — so it works on the store tier, same as every
+		// other maintenance operation. Only the current project gets a
+		// stale count; other projects' roots may not even be on this
+		// machine.
+		currentHashes := r.currentChunkHashes(ctx)
+		if len(currentHashes) > 0 || r.store.HasProject(ctx, r.opts.ProjectID) {
+			stale, err := r.store.StaleCount(ctx, r.opts.ProjectID, currentHashes)
+			if err != nil {
+				return reply(message.ID, nil, err)
+			}
+			for i, p := range projects {
+				if p.ProjectID == r.opts.ProjectID {
+					projects[i].Stale = stale
+					break
+				}
+			}
+		}
 		return reply(message.ID, map[string]any{
 			"title":  "rag_status",
 			"output": formatProjects(r.opts.DBPath, projects),
+		}, nil)
+
+	case "rag_projects":
+		projects, err := r.store.Projects(ctx)
+		if err != nil {
+			return reply(message.ID, nil, err)
+		}
+		return reply(message.ID, map[string]any{
+			"title":  "rag_projects",
+			"output": formatProjectsList(projects),
 		}, nil)
 
 	case "rag_clean":

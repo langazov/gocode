@@ -360,6 +360,52 @@ func (s *Store) IndexedPaths(ctx context.Context, projectID string) (map[string]
 	return out, nil
 }
 
+// HasProject reports whether the store holds any data for projectID —
+// either manifest rows or a chromem-go collection. It is a cheaper check
+// than Projects for callers that only need to know "does this project have
+// an index at all."
+func (s *Store) HasProject(ctx context.Context, projectID string) bool {
+	s.mu.Lock()
+	prefix := projectID + "\x00"
+	for key := range s.manifest {
+		if strings.HasPrefix(key, prefix) {
+			s.mu.Unlock()
+			return true
+		}
+	}
+	hasCollection := false
+	if col, ok := s.collections[projectID]; ok && col.Count() > 0 {
+		hasCollection = true
+	}
+	s.mu.Unlock()
+	return hasCollection
+}
+
+// StaleCount is how many stored chunks are outdated: their content hash no
+// longer matches what a fresh walk would produce (the file changed, or its
+// line count shifted enough to move window boundaries), or their ID no
+// longer appears in the walk at all (the file was deleted or excluded).
+// Zero means the index is fully up to date.
+//
+// Computed by comparing the stored manifest hashes against a caller-supplied
+// map of current chunk IDs to content hashes, so the store itself never needs
+// to walk the filesystem — that is the plugin layer's job, since only it
+// knows the project root, include/exclude filters, and gitignore settings.
+func (s *Store) StaleCount(ctx context.Context, projectID string, currentHashes map[string]string) (int, error) {
+	stored, err := s.Hashes(ctx, projectID)
+	if err != nil {
+		return 0, err
+	}
+	stale := 0
+	for id, oldHash := range stored {
+		newHash, exists := currentHashes[id]
+		if !exists || newHash != oldHash {
+			stale++
+		}
+	}
+	return stale, nil
+}
+
 // Search returns the k chunks closest to queryVector for a project, most
 // similar first, optionally restricted to paths with the given prefix.
 //
@@ -453,6 +499,18 @@ type ProjectStat struct {
 	Bytes int64 `json:"bytes"`
 	// ModTime is when that directory was last written.
 	ModTime time.Time `json:"modTime"`
+	// Indexed reports whether this project has any indexed chunks at all
+	// (manifest rows or collection documents). It is true when either source
+	// has data, false when both are empty — the latter means the project
+	// has no index yet, or it was cleaned and never re-indexed.
+	Indexed bool `json:"indexed"`
+	// Stale is how many stored chunks are outdated relative to the current
+	// files on disk: their content hash changed, or their chunk ID no longer
+	// appears in a fresh walk (file deleted, excluded, or line boundaries
+	// shifted). Populated only for the current project, where the plugin
+	// can walk the filesystem; left zero for other projects, whose roots
+	// may not even be on this machine.
+	Stale int `json:"stale"`
 	// Orphan means chromem-go holds a collection for this project but the
 	// manifest has no rows for it. Nothing can reach these chunks: the
 	// incremental diff reads the manifest, so an orphan is neither
@@ -513,6 +571,7 @@ func (s *Store) Projects(ctx context.Context) ([]ProjectStat, error) {
 			ProjectID:   id,
 			Chunks:      chunks[id],
 			Paths:       len(paths[id]),
+			Indexed:     chunks[id] > 0 || hasCollection,
 			Orphan:      hasCollection && chunks[id] == 0,
 			Dangling:    !hasCollection && chunks[id] > 0,
 			RootMissing: projectRootMissing(id),

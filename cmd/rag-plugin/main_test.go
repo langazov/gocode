@@ -10,6 +10,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	goruntime "runtime"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -164,8 +165,8 @@ func TestRagPluginIndexAndSearchOverJSONRPC(t *testing.T) {
 	if instance.ID != "rag-plugin" {
 		t.Errorf("ID = %q, want rag-plugin", instance.ID)
 	}
-	if len(instance.Hooks.Tools) != 5 {
-		t.Fatalf("got %d tools, want 5: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
+	if len(instance.Hooks.Tools) != 6 {
+		t.Fatalf("got %d tools, want 6: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
 	}
 
 	indexTool := findTool(t, instance, "rag_index")
@@ -272,8 +273,8 @@ func TestRagPluginHandshakeDefersStoreOpen(t *testing.T) {
 		"dbPath":           dbPath,
 	})
 	// The manifest is static, so the handshake still declares every tool.
-	if len(instance.Hooks.Tools) != 5 {
-		t.Fatalf("got %d tools, want 5: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
+	if len(instance.Hooks.Tools) != 6 {
+		t.Fatalf("got %d tools, want 6: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
 	}
 	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
 		t.Fatalf("the handshake opened the store at %s (stat err = %v)", dbPath, err)
@@ -610,4 +611,194 @@ func TestRagCleanRequiresConfirm(t *testing.T) {
 	if !strings.Contains(status.Output, "no projects indexed") {
 		t.Errorf("expected an empty database, got %q", status.Output)
 	}
+}
+
+// TestRagStatusReportsStaleChunks pins the staleness reporting in rag_status:
+// after indexing a project, modifying a file, and deleting a file, the
+// status output must name how many stored chunks are outdated relative to
+// the files on disk. The count uses no embeddings provider — it walks files
+// and compares content hashes — so it works on the same store-only tier as
+// every other maintenance operation.
+func TestRagStatusReportsStaleChunks(t *testing.T) {
+	server := fakeEmbeddingServer(t)
+	defer server.Close()
+
+	root := t.TempDir()
+	writeFile(t, root, "a.md", "apple\n")
+	writeFile(t, root, "b.md", "banana\n")
+	dbPath := filepath.Join(t.TempDir(), "rag.db")
+
+	instance := spawnRagPlugin(t, root, plugin.Options{
+		"embeddingBaseURL": server.URL,
+		"dbPath":           dbPath,
+	})
+	ctx := context.Background()
+	toolCtx := plugin.ToolContext{SessionID: "s1", Directory: root, Worktree: root}
+
+	if _, err := findTool(t, instance, "rag_index").Execute(ctx, map[string]any{}, toolCtx); err != nil {
+		t.Fatalf("rag_index: %v", err)
+	}
+
+	// Status right after indexing: everything is current, no stale chunks.
+	status, err := findTool(t, instance, "rag_status").Execute(ctx, map[string]any{}, toolCtx)
+	if err != nil {
+		t.Fatalf("rag_status after index: %v", err)
+	}
+	if !strings.Contains(status.Output, "STALE") {
+		t.Errorf("expected a STALE column in the status header, got %q", status.Output)
+	}
+	// The stale count for the current project should be 0 right after
+	// indexing — every stored chunk matches the files on disk.
+	if stale := extractStaleCount(t, status.Output, root); stale != 0 {
+		t.Errorf("expected 0 stale chunks right after indexing, got %d (output %q)", stale, status.Output)
+	}
+
+	// Modify one file: its chunk's content hash changes, so it becomes stale.
+	writeFile(t, root, "a.md", "apple apple apple\n")
+	status, err = findTool(t, instance, "rag_status").Execute(ctx, map[string]any{}, toolCtx)
+	if err != nil {
+		t.Fatalf("rag_status after edit: %v", err)
+	}
+	if stale := extractStaleCount(t, status.Output, root); stale != 1 {
+		t.Errorf("expected 1 stale chunk after modifying a.md, got %d (output %q)", stale, status.Output)
+	}
+
+	// Delete the other file: its chunk ID no longer appears in the walk,
+	// so it is also stale.
+	if err := os.Remove(filepath.Join(root, "b.md")); err != nil {
+		t.Fatal(err)
+	}
+	status, err = findTool(t, instance, "rag_status").Execute(ctx, map[string]any{}, toolCtx)
+	if err != nil {
+		t.Fatalf("rag_status after delete: %v", err)
+	}
+	if stale := extractStaleCount(t, status.Output, root); stale != 2 {
+		t.Errorf("expected 2 stale chunks after modifying a.md and deleting b.md, got %d (output %q)", stale, status.Output)
+	}
+
+	// Re-index: the stale count should drop back to 0.
+	if _, err := findTool(t, instance, "rag_index").Execute(ctx, map[string]any{}, toolCtx); err != nil {
+		t.Fatalf("rag_index re-index: %v", err)
+	}
+	status, err = findTool(t, instance, "rag_status").Execute(ctx, map[string]any{}, toolCtx)
+	if err != nil {
+		t.Fatalf("rag_status after re-index: %v", err)
+	}
+	if stale := extractStaleCount(t, status.Output, root); stale != 0 {
+		t.Errorf("expected 0 stale chunks after re-indexing, got %d (output %q)", stale, status.Output)
+	}
+}
+
+// TestRagStatusReportsNoIndex pins the "index does not exist" path: for a
+// project that has never been indexed, rag_status must still work and report
+// zero stale chunks (there is nothing to be stale).
+func TestRagStatusReportsNoIndex(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root, "a.md", "apple\n")
+	dbPath := filepath.Join(t.TempDir(), "rag.db")
+
+	instance := spawnRagPlugin(t, root, plugin.Options{
+		"dbPath": dbPath,
+	})
+	ctx := context.Background()
+	toolCtx := plugin.ToolContext{SessionID: "s1", Directory: root, Worktree: root}
+
+	status, err := findTool(t, instance, "rag_status").Execute(ctx, map[string]any{}, toolCtx)
+	if err != nil {
+		t.Fatalf("rag_status with no index: %v", err)
+	}
+	// The project should not appear at all — it has no stored chunks.
+	if strings.Contains(status.Output, root) {
+		t.Errorf("an un-indexed project should not appear in the status, got %q", status.Output)
+	}
+}
+
+// TestRagProjectsListsIndexedProjects pins the rag_projects tool: after
+// indexing two projects into a shared database, the tool must list both,
+// with their chunk counts and sizes. It also verifies the tool works without
+// embeddings credentials, since it only reads the store.
+func TestRagProjectsListsIndexedProjects(t *testing.T) {
+	binary := buildRagPlugin(t)
+	dbPath := filepath.Join(t.TempDir(), "rag.db")
+	seedIndex(t, binary, dbPath, "p1", map[string]string{"a.md": "apple\n"})
+	seedIndex(t, binary, dbPath, "p2", map[string]string{"b.md": "banana\n"})
+
+	// Use the JSON-RPC path: spawn the plugin without credentials and call
+	// rag_projects — it should work on the store tier alone.
+	root := t.TempDir()
+	instance := spawnRagPluginWithoutCredentials(t, root, plugin.Options{
+		"dbPath": dbPath,
+	})
+	ctx := context.Background()
+	toolCtx := plugin.ToolContext{SessionID: "s1", Directory: root, Worktree: root}
+
+	out, err := findTool(t, instance, "rag_projects").Execute(ctx, map[string]any{}, toolCtx)
+	if err != nil {
+		t.Fatalf("rag_projects: %v", err)
+	}
+	if !strings.Contains(out.Output, "p1") {
+		t.Errorf("expected p1 in the project list, got %q", out.Output)
+	}
+	if !strings.Contains(out.Output, "p2") {
+		t.Errorf("expected p2 in the project list, got %q", out.Output)
+	}
+	if !strings.Contains(out.Output, "PROJECT") || !strings.Contains(out.Output, "CHUNKS") {
+		t.Errorf("expected a table header with PROJECT and CHUNKS, got %q", out.Output)
+	}
+	// rag_projects must not include the maintenance context that rag_status
+	// adds: no STALE column, no STATUS column, no database path header.
+	if strings.Contains(out.Output, "STALE") {
+		t.Errorf("rag_projects should not include a STALE column, got %q", out.Output)
+	}
+	if strings.Contains(out.Output, "STATUS") {
+		t.Errorf("rag_projects should not include a STATUS column, got %q", out.Output)
+	}
+}
+
+// TestRagProjectsEmpty pins the empty-database path: with no projects
+// indexed, rag_projects must report "no projects indexed" rather than an
+// empty table or an error.
+func TestRagProjectsEmpty(t *testing.T) {
+	root := t.TempDir()
+	dbPath := filepath.Join(t.TempDir(), "rag.db")
+	instance := spawnRagPluginWithoutCredentials(t, root, plugin.Options{
+		"dbPath": dbPath,
+	})
+	ctx := context.Background()
+	toolCtx := plugin.ToolContext{SessionID: "s1", Directory: root, Worktree: root}
+
+	out, err := findTool(t, instance, "rag_projects").Execute(ctx, map[string]any{}, toolCtx)
+	if err != nil {
+		t.Fatalf("rag_projects on empty db: %v", err)
+	}
+	if !strings.Contains(out.Output, "no projects indexed") {
+		t.Errorf("expected 'no projects indexed', got %q", out.Output)
+	}
+}
+
+// extractStaleCount parses the tabwriter-formatted rag_status output and
+// returns the STALE column value for the row whose project ID contains
+// projectID. The tabwriter pads columns with variable-width spaces, so
+// splitting on runs of spaces is the robust way to find the column.
+func extractStaleCount(t *testing.T, output, projectID string) int {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, projectID) {
+			continue
+		}
+		fields := strings.Fields(line)
+		// Columns: PROJECT, CHUNKS, FILES, STALE, SIZE, MODIFIED, STATUS.
+		// strings.Fields collapses the tabwriter's variable-width padding
+		// into clean field boundaries, so the STALE column is at index 3.
+		if len(fields) < 4 {
+			t.Fatalf("could not parse status line: %q", line)
+		}
+		n, err := strconv.Atoi(fields[3])
+		if err != nil {
+			t.Fatalf("could not parse stale count %q from line: %q", fields[3], line)
+		}
+		return n
+	}
+	t.Fatalf("project %q not found in status output:\n%s", projectID, output)
+	return -1
 }
