@@ -37,16 +37,20 @@
 #
 # With no [output] the formula is written to stdout.
 #
-# Archives are downloaded from $DOWNLOAD_BASE_URL/<archive>. It defaults to the
-# GitHub release; the release workflow points it at the public MinIO mirror
-# (https://s3.gocoder.org/releases/gocode/v<version>) when that upload ran.
+# Archives are downloaded from the GitHub release:
+#   https://github.com/langazov/gocode/releases/download/v<version>/<archive>
+# That host is not just where the assets live. Homebrew derives a formula's
+# version from its URL when there is no `version` stanza, and it has a parser
+# dedicated to github.com/<owner>/<repo>/releases/download/vX.Y.Z/ URLs. Pointed
+# anywhere else (a self-hosted mirror, say), it falls back to sniffing the
+# filename and read "64" off ...-macos-arm64.tar.gz, reporting the formula as
+# version "64" instead of 0.1.43.
 set -euo pipefail
 
 version="${1:?usage: brew-formula.sh <version> <sha256sums-file> [output]}"
 sums="${2:?usage: brew-formula.sh <version> <sha256sums-file> [output]}"
 output="${3:-}"
-base_url="${DOWNLOAD_BASE_URL:-https://github.com/langazov/gocode/releases/download/v${version}}"
-base_url="${base_url%/}"
+base_url="https://github.com/langazov/gocode/releases/download/v${version}"
 
 # Pull the checksum for one archive out of the sums file. Fails loudly rather
 # than emitting a formula with a blank sha256, which Homebrew would only
@@ -76,6 +80,11 @@ class Gocode < Formula
   desc "Terminal-based AI coding agent"
   homepage "https://github.com/langazov/gocode"
   license "MIT"
+  # Releases up to 0.1.43 were briefly served from a mirror host, so brew
+  # sniffed the version out of the filename and recorded "64" (from
+  # ...-arm64.tar.gz). Scheme 1 outranks that, letting those installs
+  # upgrade to versions numerically below 64.
+  version_scheme 1
 
   on_macos do
     on_arm do
