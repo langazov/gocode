@@ -339,3 +339,86 @@ func TestMatchAnchorsOnTheSpaceAndEscapesMetacharacters(t *testing.T) {
 		}
 	}
 }
+
+// TestConfiguredDenyBeatsSavedAllow pins the evaluation-order invariant the
+// recommendations call §2.2: a saved grant may resolve an Ask into Allow, but
+// never a configured Deny. A grant that could un-deny something is a grant
+// that widens scope between sessions — exactly what P4 forbids.
+func TestConfiguredDenyBeatsSavedAllow(t *testing.T) {
+	saved := &MemorySaved{}
+	// A stale grant from an earlier session: edit allowed everywhere.
+	saved.Add("edit", []string{"*"})
+	rules := StaticRules{Rules: Ruleset{
+		{Action: "edit", Resource: "*.env", Effect: Deny},
+	}}
+	engine := NewEngine(rules, saved, Hooks{}, nil)
+	err := engine.Assert(context.Background(), AssertInput{
+		SessionID: "s",
+		Action:    "edit",
+		Resources: []string{"prod.env"},
+	})
+	if err == nil {
+		t.Fatal("configured deny must beat a saved allow")
+	}
+	var blocked *BlockedError
+	if !errors.As(err, &blocked) {
+		t.Fatalf("want BlockedError, got %v", err)
+	}
+	// And the same resource without the deny resolves through the grant.
+	err = engine.Assert(context.Background(), AssertInput{
+		SessionID: "s",
+		Action:    "edit",
+		Resources: []string{"src/main.go"},
+	})
+	if err != nil {
+		t.Fatalf("saved allow should win for an unconfigured resource: %v", err)
+	}
+}
+
+// TestEngineEvaluateReturnsAskWithoutParking guards the seam --auto answers
+// asks on: no pending request may be created, and the effect must still
+// reflect the deny gate and the saved-grant merge.
+func TestEngineEvaluateReturnsAskWithoutParking(t *testing.T) {
+	saved := &MemorySaved{}
+	engine := NewEngine(StaticRules{Rules: Ruleset{
+		{Action: "*", Resource: "*", Effect: Ask},
+	}}, saved, Hooks{}, nil)
+	effect, err := engine.Evaluate(AssertInput{
+		SessionID: "s",
+		Action:    "bash",
+		Resources: []string{"ls"},
+	})
+	if err != nil {
+		t.Fatalf("Evaluate: %v", err)
+	}
+	if effect != Ask {
+		t.Fatalf("effect = %q, want ask", effect)
+	}
+	if pending := engine.List(); len(pending) != 0 {
+		t.Fatalf("Evaluate created %d pending request(s), want 0", len(pending))
+	}
+	// The deny gate still resolves to Deny through Evaluate.
+	engine = NewEngine(StaticRules{Rules: Ruleset{
+		{Action: "bash", Resource: "*", Effect: Deny},
+	}}, nil, Hooks{}, nil)
+	if effect, _ := engine.Evaluate(AssertInput{SessionID: "s", Action: "bash", Resources: []string{"ls"}}); effect != Deny {
+		t.Fatalf("deny effect = %q, want deny", effect)
+	}
+}
+
+// TestDefaultsDenyQuestionForEveryoneButBuild pins the question carve-out:
+// the shared baseline denies it (a subagent must not interrupt the user with
+// a dialog), and build re-allows it — mirroring main.go's merge — because
+// build is the agent the user is actually talking to. An agent that never
+// opted in stays denied.
+func TestDefaultsDenyQuestionForEveryoneButBuild(t *testing.T) {
+	rule := Evaluate("question", "*", Defaults())
+	if rule.Effect != Deny {
+		t.Fatalf("question under Defaults = %q, want deny", rule.Effect)
+	}
+	// The build agent re-allows it, exactly as bootStack merges it.
+	build := Merge(Defaults(), Ruleset{{Action: "question", Resource: "*", Effect: Allow}})
+	if rule := Evaluate("question", "*", build); rule.Effect != Allow {
+		t.Fatalf("question under build = %q, want allow", rule.Effect)
+	}
+}

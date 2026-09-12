@@ -98,6 +98,15 @@ type App struct {
 
 	permission       *client.PermissionRequest
 	permissionChoice int // selected option: 0 once, 1 always, 2 reject
+	// permissionStage is where in the answering flow the banner is: the
+	// option bar, the always-confirmation (which shows exactly what a
+	// durable grant would save), or the reject-reason input. esc retreats one
+	// stage and never grants.
+	permissionStage permissionStage
+	// permissionConfirm is the selected choice inside the confirmation stage.
+	permissionConfirm int
+	// permissionReason is the reject-reason input's text.
+	permissionReason string
 	stats            *client.Stats
 
 	// allStats holds per-session stats for the /stats overlay, keyed by
@@ -693,6 +702,18 @@ type subagentSiblingsMsg struct {
 
 type sessionOpenedMsg struct{ session *client.Session }
 type permissionsMsg struct{ pending []client.PermissionRequest }
+
+// permissionStage is one stage of the permission banner's answering flow.
+// The option bar is the entry point; always and reject each open a second
+// stage (a confirmation showing the grant's scope, and a reason input),
+// because they are the two answers with consequences beyond this call.
+type permissionStage int
+
+const (
+	permissionStageOptions permissionStage = iota
+	permissionStageConfirmAlways
+	permissionStageRejectReason
+)
 
 type questionsMsg struct{ pending []client.QuestionRequest }
 type promptSentMsg struct {
@@ -2123,8 +2144,20 @@ func moveCursorToDocumentEnd(m *textarea.Model) {
 // handlePermissionKey mirrors the PermissionPrompt keybinds: left/right (or
 // h/l) move between the options, enter confirms, escape rejects. The y/a/n
 // quick answers from the earlier port are kept as aliases.
+//
+// "always" and "reject" open a second stage before they are sent: always is
+// the only answer with durable consequences, so it confirms against the exact
+// Save patterns; reject may carry a reason, which becomes the model's
+// CorrectedError feedback. esc retreats one stage and never grants — at the
+// option bar it still rejects, matching the upstream keymap.
 func (a *App) handlePermissionKey(msg tea.KeyMsg) tea.Cmd {
 	request := a.permission
+	switch a.permissionStage {
+	case permissionStageConfirmAlways:
+		return a.handlePermissionConfirmAlwaysKey(msg)
+	case permissionStageRejectReason:
+		return a.handlePermissionRejectReasonKey(msg)
+	}
 	answer := ""
 	switch msg.String() {
 	case "left", "h":
@@ -2147,12 +2180,91 @@ func (a *App) handlePermissionKey(msg tea.KeyMsg) tea.Cmd {
 	if answer == "" {
 		return nil
 	}
+	if answer == "always" {
+		// Enter the confirmation stage instead of sending: a durable grant
+		// deserves one deliberate look at what it will save.
+		a.permissionStage = permissionStageConfirmAlways
+		a.permissionConfirm = 0
+		return nil
+	}
+	if answer == "reject" {
+		a.permissionStage = permissionStageRejectReason
+		a.permissionReason = ""
+		return nil
+	}
+	return a.sendPermissionReply(request, answer, "")
+}
+
+// handlePermissionConfirmAlwaysKey drives the always-confirmation stage:
+// enter on Confirm sends the grant, esc returns to the option bar.
+func (a *App) handlePermissionConfirmAlwaysKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "left", "h", "right", "l", "tab":
+		a.permissionConfirm = (a.permissionConfirm + 1) % 2
+		return nil
+	case "esc", "escape":
+		// Retreat to the option bar; nothing is granted by retreating.
+		a.permissionStage = permissionStageOptions
+		return nil
+	case "enter":
+		if a.permissionConfirm != 0 {
+			a.permissionStage = permissionStageOptions
+			return nil
+		}
+		request := a.permission
+		a.clearPermissionStage()
+		return a.sendPermissionReply(request, "always", "")
+	}
+	return nil
+}
+
+// handlePermissionRejectReasonKey drives the reject-reason input: enter
+// submits the reason (or rejects without one when empty), esc rejects
+// immediately without a reason.
+func (a *App) handlePermissionRejectReasonKey(msg tea.KeyMsg) tea.Cmd {
+	switch msg.String() {
+	case "esc", "escape":
+		request := a.permission
+		a.clearPermissionStage()
+		return a.sendPermissionReply(request, "reject", "")
+	case "enter":
+		request := a.permission
+		reason := a.permissionReason
+		a.clearPermissionStage()
+		return a.sendPermissionReply(request, "reject", reason)
+	case "backspace":
+		if runes := []rune(a.permissionReason); len(runes) > 0 {
+			a.permissionReason = string(runes[:len(runes)-1])
+		}
+		return nil
+	default:
+		if text := msg.Key().Text; text != "" {
+			a.permissionReason += text
+		}
+		return nil
+	}
+}
+
+// clearPermissionStage resets the flow state after a reply is sent.
+func (a *App) clearPermissionStage() {
+	a.permissionStage = permissionStageOptions
+	a.permissionConfirm = 0
+	a.permissionReason = ""
+	a.permission = nil
+	a.permissionChoice = 0
+}
+
+// sendPermissionReply posts the reply, with an optional reject reason.
+func (a *App) sendPermissionReply(request *client.PermissionRequest, answer, reason string) tea.Cmd {
+	if request == nil {
+		return nil
+	}
 	a.permission = nil
 	a.permissionChoice = 0
 	c := a.client
 	sessionID, requestID := request.SessionID, request.ID
 	return func() tea.Msg {
-		if err := c.Reply(a.ctx, sessionID, requestID, answer); err != nil {
+		if err := c.ReplyWithMessage(a.ctx, sessionID, requestID, answer, reason); err != nil {
 			return statusMsg{text: "reply failed: " + err.Error()}
 		}
 		return nil
@@ -2297,6 +2409,9 @@ func (a *App) applyQuestions(pending []client.QuestionRequest) {
 
 func (a *App) applyPermissions(pending []client.PermissionRequest) {
 	a.permission = nil
+	a.permissionStage = permissionStageOptions
+	a.permissionConfirm = 0
+	a.permissionReason = ""
 	if a.active == nil {
 		return
 	}
@@ -2311,6 +2426,12 @@ func (a *App) applyPermissions(pending []client.PermissionRequest) {
 		}
 		if a.permission == nil || a.permission.ID != pending[i].ID {
 			a.permissionChoice = 0
+			// A new request starts at the option bar: a stage left over from
+			// the previous ask would apply its keybinds to a different
+			// question.
+			a.permissionStage = permissionStageOptions
+			a.permissionConfirm = 0
+			a.permissionReason = ""
 		}
 		a.permission = &pending[i]
 		return

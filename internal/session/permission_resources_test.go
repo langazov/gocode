@@ -46,6 +46,47 @@ func TestPermissionResourcesMatchTheToolInput(t *testing.T) {
 	}
 }
 
+// TestBashAlwaysSavesArityPrefix pins the §4.4 save contract end to end:
+// approving "always" on `git commit -m a` must let `git commit -m b` through
+// without re-asking (the arity prefix covers the subcommand) while `git push`
+// still asks (the prefix covers nothing else). This is the exact scenario the
+// recommendations describe — saving the literal command made the next commit
+// re-prompt, and users read the prompt as broken.
+func TestBashAlwaysSavesArityPrefix(t *testing.T) {
+	saved := &permission.MemorySaved{}
+	engine := permission.NewEngine(
+		permission.StaticRules{Rules: permission.Ruleset{
+			{Action: "bash", Resource: "*", Effect: permission.Ask},
+		}}, saved, permission.Hooks{}, nil)
+
+	// Approve-always `git commit -m a` through the same derivation the
+	// runner uses.
+	resources := permissionResources("bash", map[string]any{"command": "git commit -m a"})
+	savePatterns := permissionSave("bash", resources)
+	if len(savePatterns) != 1 || savePatterns[0] != "git commit *" {
+		t.Fatalf("save patterns = %v, want [git commit *]", savePatterns)
+	}
+	if err := saved.Add("bash", savePatterns); err != nil {
+		t.Fatal(err)
+	}
+
+	// `git commit -m b` is covered: no ask, no pending request.
+	if _, effect, err := engine.Ask(permission.AssertInput{
+		SessionID: "s", Action: "bash", Resources: []string{"git commit -m b"},
+	}); err != nil || effect != permission.Allow {
+		t.Fatalf("git commit -m b: effect=%v err=%v, want allow (the saved prefix covers it)", effect, err)
+	}
+	if pending := engine.List(); len(pending) != 0 {
+		t.Fatalf("git commit -m b parked on the user: %d pending", len(pending))
+	}
+	// `git push` is not: it must still ask.
+	if _, effect, err := engine.Ask(permission.AssertInput{
+		SessionID: "s", Action: "bash", Resources: []string{"git push"},
+	}); err != nil || effect != permission.Ask {
+		t.Fatalf("git push: effect=%v err=%v, want ask (the prefix covers nothing else)", effect, err)
+	}
+}
+
 // TestPermissionSaveMatchesTypeScript pins what "allow always" persists.
 //
 // Saving too little means the prompt returns on the next call; saving too much
@@ -64,8 +105,11 @@ func TestPermissionSaveMatchesTypeScript(t *testing.T) {
 		{"glob", map[string]any{"pattern": "*.go"}, "*"},
 		{"webfetch", map[string]any{"url": "https://x.example"}, "*"},
 		{"websearch", map[string]any{"query": "q"}, "*"},
-		// These two save exactly what was approved.
-		{"bash", map[string]any{"command": "git status"}, "git status"},
+		// These two save what was approved, in the narrowest durable form:
+		// bash saves the arity prefix (git commit -m a → "git commit *"), so
+		// one approval covers the subcommand without covering every command;
+		// skill saves the skill's name.
+		{"bash", map[string]any{"command": "git status"}, "git status *"},
 		{"skill", map[string]any{"name": "deploy"}, "deploy"},
 	}
 	for _, c := range cases {

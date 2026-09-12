@@ -1,6 +1,13 @@
 package main
 
-import "github.com/langazov/gocode-go/internal/clix"
+import (
+	"fmt"
+	"os"
+
+	"github.com/langazov/gocode-go/internal/clix"
+	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/session"
+)
 
 // networkFlags mirrors withNetworkOptions() in cli/network.ts: shared by
 // serve, web, acp and the root tui thread command.
@@ -52,6 +59,42 @@ func sessionSelectFlags() []clix.Flag {
 // yet. The flags are still fully parsed, matching go-port-gaps.md.
 func notImplemented(path string) error {
 	return &usageError{msg: path + ": not yet implemented in the Go port (see specs/go-port-gaps.md)"}
+}
+
+// applyPermissionBypass implements the bypass tiers from the permissions
+// recommendations (§11). The flags mean different things, and conflating them
+// was a real bug: --auto's help text promised "auto-approve permissions that
+// are not explicitly denied" while the implementation removed the gate
+// entirely — denies included — so a pipeline stating
+// `"edit": {"*.env": "deny"}` had no protection at all under it.
+//
+// The tiers, weakest to strongest:
+//
+//	auto                          asks are answered once automatically;
+//	                              configured denies still enforced
+//	yolo / dangerously-skip-…     gate removed entirely (dangerous!)
+//
+// --auto keeps the engine running behind an AutoAnswerGate, so no pending
+// request is ever created (nothing parks, nothing needs answering) while the
+// deny gate keeps firing. The full-bypass tier sets Permissions = nil, which
+// disables denies too — that is the flag's documented meaning, and it prints a
+// warning, because a silent security downgrade is how flags end up in every
+// Makefile.
+func applyPermissionBypass(runner *session.Runner, engine *permission.Engine, auto, bypass bool) {
+	switch {
+	case bypass:
+		runner.Permissions = nil
+		fmt.Fprintln(os.Stderr, "warning: --dangerously-skip-permissions: permission gate disabled, deny rules will not be enforced")
+	case auto:
+		if engine == nil {
+			// No engine to answer with (a degenerate boot): behave as the
+			// weaker tier rather than leaving the default gate parking on a
+			// user who asked for automation.
+			runner.Permissions = nil
+			return
+		}
+		runner.Permissions = &session.AutoAnswerGate{Engine: engine}
+	}
 }
 
 type usageError struct{ msg string }

@@ -36,9 +36,9 @@ var MissingAgentPermissions = Ruleset{{Action: "*", Resource: "*", Effect: Deny}
 // by default rather than falling through to Evaluate's unmatched-rule
 // "ask", plus the one read carve-out that's meaningful with this port's
 // current tool set (reading a .env file asks; its .example counterpart is
-// still allowed). TS's remaining defaults — doom_loop and question — gate
-// features/tools this port hasn't implemented yet (see specs/go-port-gaps.md);
-// add their rules here alongside whichever of those lands first.
+// still allowed). The question tool is denied here and re-allowed only for
+// build, matching agent.ts: any agent — subagents included — could otherwise
+// interrupt the user with a dialog. doom_loop remains unimplemented.
 func Defaults() Ruleset {
 	return Ruleset{
 		{Action: "*", Resource: "*", Effect: Allow},
@@ -50,6 +50,11 @@ func Defaults() Ruleset {
 		// the user at all.
 		{Action: "plan_enter", Resource: "*", Effect: Deny},
 		{Action: "plan_exit", Resource: "*", Effect: Deny},
+		// Interrupting the user is the primary agent's prerogative. The
+		// question tool is denied in the shared baseline and re-allowed only
+		// for build (cmd/gocode/main.go), so a subagent cannot park the
+		// whole interface on a dialog nobody may be watching.
+		{Action: "question", Resource: "*", Effect: Deny},
 		// Reaching outside the working directory is always asked for, even
 		// though everything else is allowed by default. Matching agent.ts's
 		// `external_directory: {"*": "ask"}`, which sits beside the same
@@ -250,6 +255,17 @@ func (e *Engine) Assert(ctx context.Context, input AssertInput) error {
 		}
 		return nil
 	}
+}
+
+// Evaluate reports the effect the input's rules resolve to, with no pending
+// request created and no hooks fired: Allow and Deny are returned, Ask is
+// returned rather than parked on. It is the seam --auto answers asks on (the
+// AutoAnswerGate) and any other caller that settles requests without a user
+// in the loop: the rules are consulted exactly as Assert consults them —
+// deny gate first, then the merge with saved grants.
+func (e *Engine) Evaluate(input AssertInput) (Effect, error) {
+	effect, _, err := e.evaluate(input)
+	return effect, err
 }
 
 // Denied reports a configured refusal without asking anyone. It is the part of

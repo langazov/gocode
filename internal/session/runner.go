@@ -11,9 +11,11 @@ import (
 
 	"github.com/langazov/gocode-go/internal/agent"
 	"github.com/langazov/gocode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/diff"
 	"github.com/langazov/gocode-go/internal/event"
 	"github.com/langazov/gocode-go/internal/id"
 	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/permission"
 	"github.com/langazov/gocode-go/internal/plugin"
 	"github.com/langazov/gocode-go/internal/tool"
 )
@@ -173,7 +175,12 @@ type ToolPermissionInput struct {
 	// Save is the rule an "allow always" reply persists. Empty means the
 	// approval cannot be remembered, so the same request asks again next
 	// time — which is why every ask here sets it.
-	Save               []string
+	Save []string
+	// Metadata is what the ask is about, in display form: the diff for an
+	// edit, the command for bash, the URL for webfetch. It flows to the wire
+	// so the answering surface can show it — an approval the user cannot
+	// read is a rubber stamp (P6/P7). See permissionMetadata.
+	Metadata           map[string]any
 	AssistantMessageID string
 	CallID             string
 }
@@ -813,6 +820,7 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 					Action:             extra.Action,
 					Resources:          extra.Resources,
 					Save:               extra.Save,
+					Metadata:           extra.Metadata,
 					AssistantMessageID: assistantMessageID,
 					CallID:             call.ID,
 				})
@@ -828,6 +836,7 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 			Action:             permissionAction(call.Name),
 			Resources:          resources,
 			Save:               permissionSave(call.Name, resources),
+			Metadata:           permissionMetadata(call.Name, call.Input),
 			AssistantMessageID: assistantMessageID,
 			CallID:             call.ID,
 		}
@@ -969,12 +978,105 @@ func permissionResources(toolName string, input map[string]any) []string {
 // because for them the reasoning inverts — remembering "may you run any
 // command" or "may you load any skill" from one approval is not what was
 // agreed to.
+//
+// bash saves the arity prefix rather than the exact command: "allow always"
+// on `git commit -m "x"` persists "git commit *", which covers every variant
+// of that subcommand and nothing else. Saving the literal command covered
+// exactly one invocation, so the next commit re-prompted and the prompt read
+// as broken (see internal/permission/arity.go).
 func permissionSave(toolName string, resources []string) []string {
 	switch toolName {
-	case "bash", "skill":
+	case "bash":
+		prefixes := make([]string, 0, len(resources))
+		for _, resource := range resources {
+			if prefix := permission.ArityPrefix(resource); prefix != "" {
+				prefixes = append(prefixes, prefix)
+			}
+		}
+		if len(prefixes) == 0 {
+			return resources
+		}
+		return prefixes
+	case "skill":
 		return resources
 	default:
 		return []string{"*"}
+	}
+}
+
+// permissionMetadata builds what the ask is about, in display form, so the
+// answering surface can show the diff/command/URL/query before it is approved
+// — the ask carries enough to be answered honestly (P7), and an approval the
+// user cannot read is a rubber stamp (P6). Ports the metadata each TypeScript
+// tool attaches to ctx.ask (edit.ts:102-110 and friends).
+//
+// It reads the same input fields the resource mapping already trusts; a nil
+// map means "nothing to show", and callers render their existing
+// resource-based fallback.
+func permissionMetadata(toolName string, input map[string]any) map[string]any {
+	str := func(key string) string {
+		value, _ := input[key].(string)
+		return value
+	}
+	switch toolName {
+	case "edit":
+		if str("path") == "" {
+			return nil
+		}
+		return map[string]any{
+			"filepath": str("path"),
+			"diff":     diff.Unified(str("path"), str("path"), str("oldString"), str("newString")),
+		}
+	case "write":
+		if str("path") == "" {
+			return nil
+		}
+		// The file may not exist yet; the diff is the new content against
+		// empty, which is exactly what lands on disk.
+		return map[string]any{
+			"filepath": str("path"),
+			"diff":     diff.Unified(str("path"), str("path"), "", str("content")),
+		}
+	case "apply_patch":
+		// The patch text is already a unified diff; it carries its own file
+		// headers, so it is shown verbatim and a multi-file patch reads as
+		// the several changes it is.
+		if str("patchText") == "" {
+			return nil
+		}
+		return map[string]any{"diff": str("patchText")}
+	case "bash":
+		if str("command") == "" {
+			return nil
+		}
+		return map[string]any{"command": str("command")}
+	case "webfetch":
+		if str("url") == "" {
+			return nil
+		}
+		return map[string]any{"url": str("url")}
+	case "websearch":
+		if str("query") == "" {
+			return nil
+		}
+		// The provider is resolved per session rather than named in the
+		// input; the banner falls back to the query alone, matching TS when
+		// the ask carries no provider field.
+		return map[string]any{"query": str("query")}
+	case "task":
+		m := map[string]any{}
+		if str("subagent_type") != "" {
+			m["subagent_type"] = str("subagent_type")
+		}
+		if str("description") != "" {
+			m["description"] = str("description")
+		}
+		if len(m) == 0 {
+			return nil
+		}
+		return m
+	default:
+		return nil
 	}
 }
 

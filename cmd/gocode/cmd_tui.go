@@ -24,9 +24,9 @@ func rootTuiFlags() []clix.Flag {
 		clix.Flag{Name: "model", Aliases: []string{"m"}, Kind: clix.KindString, Describe: "model to use in the format of provider/model"},
 		clix.Flag{Name: "prompt", Kind: clix.KindString, Describe: "prompt to use"},
 		clix.Flag{Name: "agent", Kind: clix.KindString, Describe: "agent to use"},
-		clix.Flag{Name: "auto", Kind: clix.KindBool, Default: false, Describe: "auto-approve permissions that are not explicitly denied (dangerous!)"},
+		clix.Flag{Name: "auto", Kind: clix.KindBool, Default: false, Describe: "answer permission asks automatically (configured denies still enforced)"},
 		clix.Flag{Name: "yolo", Kind: clix.KindBool, Default: false, Hidden: true},
-		clix.Flag{Name: "dangerously-skip-permissions", Kind: clix.KindBool, Default: false, Hidden: true},
+		clix.Flag{Name: "dangerously-skip-permissions", Kind: clix.KindBool, Default: false, Hidden: true, Describe: "remove the permission gate entirely, denies included (dangerous!)"},
 		clix.Flag{Name: "mini", Kind: clix.KindBool, Default: false, Describe: "start the minimal interactive interface"},
 		clix.Flag{Name: "demo", Kind: clix.KindBool, Hidden: true},
 	)
@@ -52,7 +52,8 @@ func runRootTui(a *clix.Args) error {
 	if a.Bool("fork") && !a.Bool("continue") && a.String("session") == "" {
 		return &usageError{msg: "--fork requires --continue or --session"}
 	}
-	auto := a.Bool("auto") || a.Bool("yolo") || a.Bool("dangerously-skip-permissions")
+	auto := a.Bool("auto")
+	bypass := a.Bool("yolo") || a.Bool("dangerously-skip-permissions")
 	addr := "127.0.0.1:0"
 	if a.Has("port") {
 		addr = fmt.Sprintf("127.0.0.1:%d", a.IntOr("port", 0))
@@ -74,9 +75,7 @@ func runRootTui(a *clix.Args) error {
 		return err
 	}
 	themeName := tui.ResolveStartupTheme(stack.Config.Theme, tui.ThemeStatePath())
-	if auto {
-		stack.Runner.Permissions = nil
-	}
+	applyPermissionBypass(stack.Runner, stack.PermissionEngine, auto, bypass)
 	if agentID := a.String("agent"); agentID != "" {
 		stack.Runner.Agent = agentID
 	}

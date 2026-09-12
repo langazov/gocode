@@ -35,9 +35,9 @@ func runCommand() *clix.Command {
 		{Name: "thinking", Kind: clix.KindBool, Describe: "show thinking blocks"},
 		{Name: "mini", Kind: clix.KindBool, Default: false, Hidden: true},
 		{Name: "interactive", Aliases: []string{"i"}, Kind: clix.KindBool, Default: false, Describe: "run in direct interactive split-footer mode"},
-		{Name: "auto", Kind: clix.KindBool, Default: false, Describe: "auto-approve permissions that are not explicitly denied (dangerous!)"},
+		{Name: "auto", Kind: clix.KindBool, Default: false, Describe: "answer permission asks automatically (configured denies still enforced)"},
 		{Name: "yolo", Kind: clix.KindBool, Default: false, Hidden: true},
-		{Name: "dangerously-skip-permissions", Kind: clix.KindBool, Default: false, Hidden: true},
+		{Name: "dangerously-skip-permissions", Kind: clix.KindBool, Default: false, Hidden: true, Describe: "remove the permission gate entirely, denies included (dangerous!)"},
 		{Name: "demo", Kind: clix.KindBool, Default: false, Hidden: true, Describe: "enable direct interactive demo slash commands; pass one as the message to run it immediately"},
 	}
 	flags = append(flags, sessionSelectFlags()...)
@@ -54,7 +54,8 @@ func runCommand() *clix.Command {
 }
 
 func runRunCommand(a *clix.Args) error {
-	auto := a.Bool("auto") || a.Bool("yolo") || a.Bool("dangerously-skip-permissions")
+	auto := a.Bool("auto")
+	bypass := a.Bool("yolo") || a.Bool("dangerously-skip-permissions")
 	interactive := a.Bool("mini") || a.Bool("interactive")
 
 	if interactive && a.String("command") != "" {
@@ -117,9 +118,7 @@ func runRunCommand(a *clix.Args) error {
 	// exit, so on Windows the held file handle would otherwise block their
 	// t.TempDir cleanup.
 	defer stack.Close()
-	if auto {
-		stack.Runner.Permissions = nil
-	}
+	applyPermissionBypass(stack.Runner, stack.PermissionEngine, auto, bypass)
 	if agentID := a.String("agent"); agentID != "" {
 		stack.Runner.Agent = agentID
 	}

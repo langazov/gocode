@@ -89,6 +89,28 @@ func LoadTraced() (*Config, []Source, error) {
 		mergeContent(content, "content")
 	}
 
+	// GOCODE_PERMISSION deep-merges a permission config (JSON) into whatever
+	// the files established, porting OPENCODE_PERMISSION. This is how a
+	// pipeline states its denies — `"edit": {"*.env": "deny"}` — on a single
+	// invocation without touching the worktree's config, and it is what makes
+	// --auto safe to run in CI: the auto-answer tier keeps enforcing exactly
+	// these rules. Invalid JSON is skipped with a recorded warning rather
+	// than failing the boot, matching the upstream behavior.
+	if injected := os.Getenv("GOCODE_PERMISSION"); injected != "" {
+		source := Source{Path: "GOCODE_PERMISSION", Kind: "env-permission", Found: true}
+		var parsed map[string]any
+		if err := json.Unmarshal([]byte(injected), &parsed); err != nil {
+			source.Error = "invalid JSON: " + err.Error()
+		} else if permissionValue, ok := parsed["permission"]; ok {
+			// Accept either a bare permission object or one wrapped in a
+			// "permission" key, so both spellings work.
+			deepMerge(merged, map[string]any{"permission": permissionValue})
+		} else {
+			deepMerge(merged, map[string]any{"permission": parsed})
+		}
+		sources = append(sources, source)
+	}
+
 	if errText, ok := merged["_error"].(error); ok {
 		return nil, sources, errText
 	}

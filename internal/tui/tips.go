@@ -83,7 +83,6 @@ var tips = []string{
 	`Set {highlight}"share": "auto"{/highlight} to automatically share all sessions`,
 	`Set {highlight}"share": "disabled"{/highlight} to prevent any session sharing`,
 	"Run {highlight}/unshare{/highlight} to remove a session from public access",
-	"Permission {highlight}doom_loop{/highlight} prevents infinite tool call loops",
 	"Permission {highlight}external_directory{/highlight} protects files outside project",
 	"Run {highlight}gocode debug config{/highlight} to troubleshoot configuration",
 	"Use {highlight}--print-logs{/highlight} flag to see detailed logs in stderr",

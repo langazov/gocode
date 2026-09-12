@@ -182,6 +182,14 @@ func (t *BashTool) ExtraPermissions(input map[string]any) []tool.ExtraPermission
 			Action:    permission.ExternalDirectoryAction,
 			Resources: resources,
 			Save:      resources,
+			// The command and the readable directories, so the prompt says
+			// what is about to run and where it reaches — the resources are
+			// globs, which a person answers about the directory, not the
+			// pattern.
+			Metadata: map[string]any{
+				"command":     command,
+				"directories": directories,
+			},
 		})
 	}
 	if writes := ScanWrites(command, t.resolver.Root); len(writes) > 0 {

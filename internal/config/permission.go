@@ -113,3 +113,52 @@ func parseEffect(value string) (permission.Effect, error) {
 func (a Agent) AgentRuleset() (permission.Ruleset, error) {
 	return a.Permission.Ruleset()
 }
+
+// ToolRuleset converts the "tools" map ({"bash": false, "read": true}) into
+// permission rules, porting the upstream translation
+// (packages/opencode/src/config/config.ts:570-577): a disabled tool becomes a
+// blanket deny on its action, collapsed onto the action it shares with its
+// aliases (write/edit/apply_patch all gate on "edit"). Enabled entries add
+// nothing — the baseline already allows everything the user has not denied.
+//
+// These rules merge UNDER the explicit permission block, so a user's
+// `"permission": {"edit": "ask"}` still wins over `"tools": {"write": false}`
+// exactly as upstream sequences it.
+func (c Config) ToolRuleset() permission.Ruleset {
+	if len(c.Tools) == 0 {
+		return nil
+	}
+	// Sorted for the same reason Ruleset sorts: Evaluate is last-match-wins
+	// and map iteration is randomised, so an unsorted expansion would make
+	// policy nondeterministic per run.
+	names := make([]string, 0, len(c.Tools))
+	for name := range c.Tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var out permission.Ruleset
+	for _, name := range names {
+		if !c.Tools[name] {
+			out = append(out, permission.Rule{
+				Action:   ToolAction(name),
+				Resource: "*",
+				Effect:   permission.Deny,
+			})
+		}
+	}
+	return out
+}
+
+// ToolAction collapses tool names onto the permission action they gate on.
+// edit, write and apply_patch are true aliases — one action, three tools —
+// so disabling any of them denies the shared "edit" action, which is the
+// only way the deny can actually stop the other two spellings of the same
+// write.
+func ToolAction(toolName string) string {
+	switch toolName {
+	case "edit", "write", "apply_patch":
+		return "edit"
+	default:
+		return toolName
+	}
+}
