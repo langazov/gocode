@@ -148,6 +148,74 @@ func (c *Client) RevokeKey(ctx context.Context, bearer, id string) error {
 	return c.do(ctx, http.MethodDelete, "/api/keys/"+url.PathEscape(id), bearer, nil, nil)
 }
 
+// SettingsDoc is the settings-sync document: an opaque client-encrypted
+// envelope plus the server-assigned revision for last-writer-wins.
+type SettingsDoc struct {
+	Envelope  string    `json:"envelope"`
+	Revision  int64     `json:"revision"`
+	Device    string    `json:"device,omitempty"`
+	UpdatedBy string    `json:"updatedBy,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// ErrNoSettings reports that the account has no synced settings yet — the
+// normal first-machine case, not a failure.
+var ErrNoSettings = errors.New("no settings synced for this account")
+
+// GetSettings fetches the account's settings doc. The 404 every fresh
+// account produces becomes ErrNoSettings, so callers branch on "nothing to
+// restore" without string matching.
+func (c *Client) GetSettings(ctx context.Context, bearer string) (*SettingsDoc, error) {
+	var doc SettingsDoc
+	if err := c.do(ctx, http.MethodGet, "/api/settings", bearer, nil, &doc); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return nil, ErrNoSettings
+		}
+		return nil, err
+	}
+	return &doc, nil
+}
+
+// PutSettings uploads an envelope. baseRevision is the revision the caller
+// last saw; a mismatch is HTTP 409 and the caller must Get, reconcile, and
+// retry.
+func (c *Client) PutSettings(ctx context.Context, bearer, envelope string, baseRevision int64, device string) (*SettingsDoc, error) {
+	body := map[string]any{
+		"envelope":     envelope,
+		"baseRevision": baseRevision,
+	}
+	if device != "" {
+		body["device"] = device
+	}
+	var doc SettingsDoc
+	if err := c.do(ctx, http.MethodPut, "/api/settings", bearer, body, &doc); err != nil {
+		return nil, err
+	}
+	return &doc, nil
+}
+
+// SettingsRevision returns the current server revision without moving the
+// envelope — the cheap check the background poller runs every 30 seconds.
+func (c *Client) SettingsRevision(ctx context.Context, bearer string) (int64, error) {
+	var out struct {
+		Revision int64 `json:"revision"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/settings/pending", bearer, nil, &out); err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return out.Revision, nil
+}
+
+// DeleteSettings clears the account's synced settings.
+func (c *Client) DeleteSettings(ctx context.Context, bearer string) error {
+	return c.do(ctx, http.MethodDelete, "/api/settings", bearer, nil, nil)
+}
+
 func (c *Client) do(ctx context.Context, method, path, token string, body, out any) error {
 	var reader io.Reader
 	if body != nil {

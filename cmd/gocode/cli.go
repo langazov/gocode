@@ -114,6 +114,7 @@ func newRootCommand() *clix.Command {
 			loginCommand(),
 			registerCommand(),
 			logoutCommand(),
+			syncCommand(),
 			agentCommand(),
 			upgradeCommand(),
 			uninstallCommand(),

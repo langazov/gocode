@@ -12,7 +12,9 @@ import (
 
 	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/configedit"
+	"github.com/langazov/gocode-go/internal/global"
 	"github.com/langazov/gocode-go/internal/gocoder"
+	"github.com/langazov/gocode-go/internal/sync"
 	"github.com/langazov/gocode-go/internal/tui"
 	"github.com/langazov/gocode-go/internal/tui/signin"
 	"github.com/langazov/gocode-go/internal/tui/theme"
@@ -72,7 +74,8 @@ func runSignIn(ctx context.Context, client *gocoder.Client, start signin.Screen,
 		configured = cfg.Theme
 	}
 	name := tui.ResolveStartupTheme(configured, tui.ThemeStatePath())
-	return signin.Run(ctx, signin.Options{
+	var restore sync.RestoreOutcome
+	outcome, err := signin.Run(ctx, signin.Options{
 		Theme: theme.Resolve(name),
 		// Nothing chosen anywhere: follow the terminal's background.
 		AutoTheme: configured == "" && name == "gocode-dark",
@@ -80,13 +83,19 @@ func runSignIn(ctx context.Context, client *gocoder.Client, start signin.Screen,
 		Start:     start,
 		AllowSkip: start == signin.ScreenMenu,
 		Notice:    notice,
-		Submit:    submitter(client),
+		Submit:    submitter(client, func(o sync.RestoreOutcome) { restore = o }),
 	})
+	if err == nil && outcome.Status == signin.StatusSignedIn {
+		reportRestore(restore)
+	}
+	return outcome, err
 }
 
 // submitter is the sign-in screen's one side effect: register or log in,
-// trade the short-lived session for an API key, and store it.
-func submitter(client *gocoder.Client) func(context.Context, bool, signin.Credentials) (signin.Result, error) {
+// trade the short-lived session for an API key, store it, and — because the
+// password is in hand only here — derive the settings-sync key and restore
+// the account's synced settings onto this machine.
+func submitter(client *gocoder.Client, onRestore func(sync.RestoreOutcome)) func(context.Context, bool, signin.Credentials) (signin.Result, error) {
 	return func(ctx context.Context, register bool, c signin.Credentials) (signin.Result, error) {
 		var session *gocoder.Session
 		var err error
@@ -102,12 +111,38 @@ func submitter(client *gocoder.Client) func(context.Context, bool, signin.Creden
 		if err != nil {
 			return signin.Result{}, err
 		}
+		if onRestore != nil {
+			onRestore(sync.RestoreOnLogin(ctx, client, account, c.Password, syncPaths(), syncStateDir(), os.Stderr))
+		}
 		return signin.Result{
 			Name:      account.DisplayName,
 			Email:     account.Email,
 			KeyPrefix: account.KeyPrefix,
 			Path:      gocoder.AccountPath(),
 		}, nil
+	}
+}
+
+// syncPaths and syncStateDir locate the files sync reads and writes. They
+// are tiny wrappers so tests can spot the seam.
+func syncPaths() sync.Paths {
+	resolved := global.Resolve()
+	return sync.Paths{ConfigDir: resolved.Config, StateDir: resolved.State, DataDir: resolved.Data}
+}
+
+func syncStateDir() string { return global.Resolve().State }
+
+// reportRestore prints what the sign-in restore did, one line, after the
+// sign-in screen has finished (never during — it renders inline).
+func reportRestore(outcome sync.RestoreOutcome) {
+	switch {
+	case outcome.Restored:
+		fmt.Fprintln(os.Stderr, "Settings restored from gocoder.org.")
+	case outcome.LocalWon:
+		fmt.Fprintln(os.Stderr, "Keeping this machine's settings; they will be uploaded to gocoder.org.")
+	}
+	if outcome.Staged > 0 {
+		fmt.Fprintf(os.Stderr, "%d project config(s) from other machines are staged and apply when those projects are opened.\n", outcome.Staged)
 	}
 }
 

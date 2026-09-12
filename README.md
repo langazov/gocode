@@ -287,6 +287,33 @@ Config is JSON, merged from global and project scope:
 See [documentation/07-configuration.md](documentation/07-configuration.md) for
 every key.
 
+### Settings sync
+
+Sign in to gocoder.org and your settings follow you between machines:
+
+```
+gocode login     # signs in and restores your settings onto this machine
+gocode sync      # reconcile now (pull, then push if local is newer)
+gocode sync status
+gocode sync disable
+```
+
+What syncs: the global config, the theme you picked in the TUI, and the
+project `gocode.json` of repos you open (matched by git remote). What never
+syncs: `auth.json` provider credentials, prompt history, and the gocoder.org
+API key itself.
+
+While gocode runs, local edits are pushed automatically and edits made on
+[gocoder.org](https://gocoder.org) (Settings → gocode settings sync) are
+pulled within ~30 seconds. Conflicts are last-writer-wins: the first side
+to save wins, and the other side's unsynced change is replaced. On a
+fresh machine, `gocode login` overwrites nothing — if this machine already
+has different settings, local wins and is uploaded.
+
+Everything is encrypted before it leaves this machine (AES-256-GCM; the key
+is derived from your password and never stored server-side or transmitted).
+Signing out (`gocode logout`) removes the local sync key.
+
 ## Plugins
 
 MCP adds tools. **Plugins change behavior** — what the model is told, what a
