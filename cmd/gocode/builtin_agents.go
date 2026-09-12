@@ -34,6 +34,15 @@ func registerPlanAgent(registry *agent.Registry, defaults, userRules permission.
 			defaults,
 			permission.Ruleset{
 				{Action: "plan_exit", Resource: "*", Effect: permission.Allow},
+				// Planning is a conversation. The plan system reminder tells
+				// the model to ask the user clarifying questions, and this is
+				// the tool that does it — without this rule every question
+				// call came back denied and the model fell back to guessing.
+				// Denied in the shared baseline (permission.Defaults) and
+				// re-allowed here for the same reason build re-allows it:
+				// plan is a primary agent the user is talking to, not a
+				// subagent that could park the interface unattended.
+				{Action: "question", Resource: "*", Effect: permission.Allow},
 			},
 			// User rules sit in the middle: they can still shape plan mode —
 			// tighten bash, deny webfetch, whatever — but they cannot reach

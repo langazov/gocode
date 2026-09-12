@@ -140,14 +140,17 @@ carve-outs. Current:
   secrets live there; `.env.example` is allowed because it is committed and
   contains none.
 
-**`question` is denied by default and re-allowed only for build.** The
+**`question` is denied by default and re-allowed for the primary agents.** The
 `Defaults()` comment once claimed the `question` tool was unimplemented, but
 `builtins/question.go` exists and registers — so *any* agent, subagents
 included, could interrupt the user with a question. The baseline now carries
 `{Action: "question", Resource: "*", Effect: Deny}` and `bootStack` re-allows
-it for build only, matching upstream
+it for build while `registerPlanAgent` re-allows it for plan, matching upstream
 (`packages/opencode/src/agent/agent.ts:126-127,148-150`).
-`TestDefaultsDenyQuestionForEveryoneButBuild` pins the pair.
+`TestDefaultsDenyQuestionForEveryoneButBuild` pins the pair; plan's own allow
+is pinned in `plan_agent_test.go`. The plan agent needs it most: the plan
+system reminder tells the model to ask the user clarifying questions, and a
+denied `question` tool leaves it guessing instead.
 
 **PORT GAP — `doom_loop`.** After a run of identical consecutive tool calls the
 turn should park on a `doom_loop` permission before continuing (upstream

@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/langazov/gocode-go/internal/config"
@@ -219,5 +221,31 @@ func TestConfigOnlyProviderIsListed(t *testing.T) {
 	serveWith(t, cfg, "/api/model", &models)
 	if len(models) != 1 || models[0].ProviderID != "gateway" {
 		t.Fatalf("expected the config provider's model, got %+v", models)
+	}
+}
+
+// gocoder.json presence must make the gocoder provider available (signed-in
+// account file is its credential), independent of auth.json.
+func TestGocoderAvailableWhenSignedIn(t *testing.T) {
+	isolate(t)
+	data := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", data)
+	t.Setenv("GOCODE_TEST_HOME", data)
+
+	// Signed out: unavailable.
+	if newProviderAvailability(nil).available("gocoder", modelsdev.Provider{}) {
+		t.Fatal("gocoder available without account")
+	}
+
+	// Signed in: available, no env vars or auth.json involved.
+	if err := os.MkdirAll(filepath.Join(data, "gocode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	account := `{"url":"https://gocoder.org","userId":"u1","key":"gk_x"}`
+	if err := os.WriteFile(filepath.Join(data, "gocode", "gocoder.json"), []byte(account), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !newProviderAvailability(nil).available("gocoder", modelsdev.Provider{}) {
+		t.Fatal("gocoder unavailable with account file")
 	}
 }

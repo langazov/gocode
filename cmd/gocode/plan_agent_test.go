@@ -22,6 +22,7 @@ func planRegistry(t *testing.T, userRules permission.Ruleset) *agent.Registry {
 		Mode: "primary",
 		Permissions: permission.Merge(defaults, permission.Ruleset{
 			{Action: "plan_enter", Resource: "*", Effect: permission.Allow},
+			{Action: "question", Resource: "*", Effect: permission.Allow},
 		}, userRules),
 	})
 	registerPlanAgent(registry, defaults, userRules, testPlansDir)
@@ -66,7 +67,7 @@ func TestPlanAgentIsReadOnly(t *testing.T) {
 	if got := effectFor(t, registry, session.PlanAgentID, "edit", "main.go"); got != permission.Deny {
 		t.Fatalf("plan must deny edits, got %q", got)
 	}
-	for _, action := range []string{"read", "grep", "glob", "bash", "webfetch"} {
+	for _, action := range []string{"read", "grep", "glob", "bash", "webfetch", "question"} {
 		if got := effectFor(t, registry, session.PlanAgentID, action, "*"); got != permission.Allow {
 			t.Fatalf("plan must allow %s, got %q", action, got)
 		}
@@ -93,6 +94,15 @@ func TestPlanSwitchToolsAreScopedToTheirAgent(t *testing.T) {
 		{"build", "plan_exit", permission.Deny},
 		{session.PlanAgentID, "plan_exit", permission.Allow},
 		{session.PlanAgentID, "plan_enter", permission.Deny},
+		// question is a primary-agent prerogative, denied in the shared
+		// baseline so a subagent cannot interrupt the user. Plan needs it
+		// more than build does: the plan prompt tells the model to ask
+		// clarifying questions, and before this rule every question call
+		// came back permission-denied.
+		{"build", "question", permission.Allow},
+		{session.PlanAgentID, "question", permission.Allow},
+		{"general", "question", permission.Deny},
+		{"explore", "question", permission.Deny},
 		{"general", "plan_enter", permission.Deny},
 		{"general", "plan_exit", permission.Deny},
 		{"explore", "plan_enter", permission.Deny},

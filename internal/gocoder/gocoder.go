@@ -340,3 +340,39 @@ func SaveAccount(account *Account) error {
 	}
 	return os.Rename(name, path)
 }
+
+// FreeModel is one $0.0-price model from the site's OpenRouter catalog view.
+type FreeModel struct {
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	Description   string `json:"description,omitempty"`
+	ContextLength int    `json:"contextLength,omitempty"`
+	Modality      string `json:"modality,omitempty"`
+	Free          bool   `json:"free"`
+}
+
+// FreeModels lists gocoder.org's free ($0.0) inference models. Requires the
+// account's key (the endpoint is authenticated); a 403 means the account has
+// no OpenRouter token issued yet.
+func (c *Client) FreeModels(ctx context.Context, bearer string) ([]FreeModel, error) {
+	var out struct {
+		Models    []FreeModel `json:"models"`
+		Count     int         `json:"count"`
+		FetchedAt string      `json:"fetchedAt"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/inference/models/free", bearer, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Models, nil
+}
+
+// InferenceBaseURL is the OpenAI-compatible root the site's inference
+// proxy serves — including the /v1 segment, because the OpenAI client
+// appends "/chat/completions" to it directly (a base without /v1 produced
+// proxy 404s). GOCODE_INFERENCE_URL overrides it (tests, local stacks).
+func InferenceBaseURL() string {
+	if value := os.Getenv("GOCODE_INFERENCE_URL"); value != "" {
+		return strings.TrimRight(value, "/")
+	}
+	return "https://proxy.gocoder.org/v1"
+}
