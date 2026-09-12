@@ -65,6 +65,24 @@ type PermissionRequest struct {
 	Agent     string   `json:"agent,omitempty"`
 	Action    string   `json:"action"`
 	Resources []string `json:"resources"`
+	// Save is what "allow always" persists — derived from Save, never
+	// inferred from the resources, since they differ by design: edit asks
+	// about a path and saves "*", bash asks about a command and saves its
+	// arity prefix.
+	Save []string `json:"save,omitempty"`
+	// Metadata is what the ask is about in display form: the diff for an
+	// edit, the command for bash, the URL for webfetch.
+	Metadata map[string]any `json:"metadata,omitempty"`
+	// Source correlates the ask with the tool call that raised it.
+	Source *PermissionSource `json:"source,omitempty"`
+}
+
+// PermissionSource mirrors permission.Source, correlating an ask with the
+// running tool call in the timeline.
+type PermissionSource struct {
+	Type      string `json:"type"`
+	MessageID string `json:"messageID,omitempty"`
+	CallID    string `json:"callID,omitempty"`
 }
 
 type CreateInput struct {
@@ -166,6 +184,19 @@ func (c *Client) Reply(ctx context.Context, sessionID, requestID, reply string) 
 	return c.do(ctx, http.MethodPost,
 		"/api/session/"+sessionID+"/permission/"+requestID+"/reply",
 		map[string]string{"reply": reply}, nil)
+}
+
+// ReplyWithMessage posts a reply carrying an optional reject reason. The
+// reason becomes the CorrectedError feedback the model sees verbatim: it is
+// the difference between the model learning "not this way" and merely
+// learning "no".
+func (c *Client) ReplyWithMessage(ctx context.Context, sessionID, requestID, reply, message string) error {
+	return c.do(ctx, http.MethodPost,
+		"/api/session/"+sessionID+"/permission/"+requestID+"/reply",
+		struct {
+			Reply   string `json:"reply"`
+			Message string `json:"message,omitempty"`
+		}{Reply: reply, Message: message}, nil)
 }
 
 // QuestionOption is one selectable choice, mirroring question.Option.

@@ -94,3 +94,57 @@ func TestPermissionListEmpty(t *testing.T) {
 		t.Fatalf("expected empty array, got %+v", requests)
 	}
 }
+
+// TestReplyRouteRejectsForeignSession pins the ownership check the
+// session-scoped reply route implies: a request raised by ses_1 must not be
+// settled through ses_2's path. Without the check the route accepted any
+// request ID under any session, so consent addressed to one session could
+// answer another's ask.
+func TestReplyRouteRejectsForeignSession(t *testing.T) {
+	server, engine := newPermissionServer(t)
+	if _, _, err := engine.Ask(permission.AssertInput{
+		SessionID: "ses_owner",
+		Action:    "bash",
+		Resources: []string{"ls"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pending := engine.List()
+	if len(pending) != 1 {
+		t.Fatalf("expected 1 pending request, got %d", len(pending))
+	}
+	requestID := pending[0].ID
+
+	// The foreign session's path must 404, not settle the request.
+	rec := doJSON(t, server, "POST", "/api/session/ses_other/permission/"+requestID+"/reply",
+		map[string]string{"reply": "once"})
+	if rec.Code != 404 {
+		t.Fatalf("foreign session reply: expected 404, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if still := engine.List(); len(still) != 1 {
+		t.Fatalf("foreign reply settled the request: %d pending", len(still))
+	}
+	// The owning session's path still works.
+	rec = doJSON(t, server, "POST", "/api/session/ses_owner/permission/"+requestID+"/reply",
+		map[string]string{"reply": "once"})
+	if rec.Code != 200 {
+		t.Fatalf("owner reply: expected 200, got %d (%s)", rec.Code, rec.Body.String())
+	}
+	if still := engine.List(); len(still) != 0 {
+		t.Fatalf("owner reply left %d pending", len(still))
+	}
+	// The unscoped route is unchanged: request ID alone identifies it.
+	if _, _, err := engine.Ask(permission.AssertInput{
+		SessionID: "ses_owner",
+		Action:    "bash",
+		Resources: []string{"ls"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	pending = engine.List()
+	rec = doJSON(t, server, "POST", "/api/permission/"+pending[0].ID+"/reply",
+		map[string]string{"reply": "once"})
+	if rec.Code != 200 {
+		t.Fatalf("unscoped reply: expected 200, got %d", rec.Code)
+	}
+}

@@ -99,6 +99,11 @@ type ExtraPermission struct {
 	// asked about: external_directory asks about one directory and saves a
 	// glob covering it and everything beneath.
 	Save []string
+	// Metadata carries what the ask is about in display form, flowing to the
+	// wire like ToolPermissionInput.Metadata so the answering surface can
+	// show it. Optional: the resources alone render a usable prompt when it
+	// is empty.
+	Metadata map[string]any
 }
 
 // PermissionResourced is implemented by a tool whose permission resources

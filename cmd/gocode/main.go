@@ -104,6 +104,10 @@ type stack struct {
 	// flags like --auto/--yolo/--dangerously-skip-permissions can bypass the
 	// permission gate for a single invocation.
 	Runner *session.Runner
+	// PermissionEngine is the engine behind the runner's gate. Exposed so
+	// --auto can swap in the AutoAnswerGate (which answers asks while the
+	// engine keeps enforcing denies) instead of removing the gate outright.
+	PermissionEngine *permission.Engine
 	// MCP holds the connected MCP servers backing this stack's tool
 	// registry; exposed so CLI commands (mcp list/auth/logout) and the TUI
 	// status dialog can query live status.
@@ -386,10 +390,17 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	// "*": allow baseline, exactly like TS's Permission.merge(defaults, user).
 	defaultPermissions := permission.Defaults()
 	var userRules permission.Ruleset
+	// The "tools" map translates to denies merged under the explicit
+	// permission block (Config.ToolRuleset), so `tools: {"bash": false}`
+	// works while `permission: {bash: ask}` still wins. Before this the
+	// setting was parsed and advertised in the tips but read by nothing.
+	toolRules := cfg.ToolRuleset()
 	if cfg.Permission.Raw != nil || cfg.Permission.IsFlat {
 		if configured, err := cfg.Permission.Ruleset(); err == nil && len(configured) > 0 {
-			userRules = configured
+			userRules = permission.Merge(toolRules, configured)
 		}
+	} else {
+		userRules = toolRules
 	}
 	agents.Update(agent.Info{
 		ID:   "build",
@@ -398,8 +409,11 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		// only here, so the suggestion to plan comes from the implementation
 		// agent and nowhere else — a subagent, or the plan agent itself,
 		// proposing the switch is noise at best and a loop at worst.
+		// question is denied by default for the same reason: only the agent
+		// the user is talking to may interrupt them with a dialog.
 		Permissions: permission.Merge(defaultPermissions, permission.Ruleset{
 			{Action: "plan_enter", Resource: "*", Effect: permission.Allow},
+			{Action: "question", Resource: "*", Effect: permission.Allow},
 		}, userRules),
 	})
 	registerPlanAgent(agents, defaultPermissions, userRules, plansDir)
@@ -525,26 +539,27 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		}
 	}
 	return &stack{
-		Service:     service,
-		Bus:         bus,
-		Permissions: permissionEngine,
-		Models:      catalog,
-		Agents:      agents,
-		Config:      cfg,
-		ProviderID:  providerID,
-		ModelID:     modelID,
-		Runner:      runner,
-		MCP:         mcpService,
-		Jobs:        jobs,
-		Skills:      skills,
-		Questions:   questions,
-		LSP:         lspService,
-		Commands:    commands,
-		Database:    database,
-		Plugins:     plugins,
-		Memory:      memory.New(database),
-		ProjectID:   projectID,
-		workdir:     workdir,
+		Service:          service,
+		Bus:              bus,
+		Permissions:      permissionEngine,
+		PermissionEngine: permissionEngine,
+		Models:           catalog,
+		Agents:           agents,
+		Config:           cfg,
+		ProviderID:       providerID,
+		ModelID:          modelID,
+		Runner:           runner,
+		MCP:              mcpService,
+		Jobs:             jobs,
+		Skills:           skills,
+		Questions:        questions,
+		LSP:              lspService,
+		Commands:         commands,
+		Database:         database,
+		Plugins:          plugins,
+		Memory:           memory.New(database),
+		ProjectID:        projectID,
+		workdir:          workdir,
 	}, nil
 }
 

@@ -140,25 +140,21 @@ carve-outs. Current:
   secrets live there; `.env.example` is allowed because it is committed and
   contains none.
 
-**PORT GAP — `question` should be denied by default and re-allowed only for
-build.** The `Defaults()` comment claims the `question` tool is unimplemented,
-but `builtins/question.go` exists and registers — so today *any* agent,
-subagents included, can interrupt the user with a question. Upstream denies it
-in the baseline (`packages/opencode/src/agent/agent.ts:126-127`) and build
-re-allows it (`agent.ts:148-150`). Add:
-
-```go
-{Action: "question", Resource: "*", Effect: Deny},
-```
-
-and `{Action: "question", Resource: "*", Effect: Allow}` to build only. The
-stale comment goes in the same commit.
+**`question` is denied by default and re-allowed only for build.** The
+`Defaults()` comment once claimed the `question` tool was unimplemented, but
+`builtins/question.go` exists and registers — so *any* agent, subagents
+included, could interrupt the user with a question. The baseline now carries
+`{Action: "question", Resource: "*", Effect: Deny}` and `bootStack` re-allows
+it for build only, matching upstream
+(`packages/opencode/src/agent/agent.ts:126-127,148-150`).
+`TestDefaultsDenyQuestionForEveryoneButBuild` pins the pair.
 
 **PORT GAP — `doom_loop`.** After a run of identical consecutive tool calls the
 turn should park on a `doom_loop` permission before continuing (upstream
 threshold 3, `packages/opencode/src/session/processor.ts:29,356-380`). Default
-`Ask`; "always" saves the tool name. The TUI tips file already advertises this
-(`tips.go:86`) — today it advertises something that does not exist.
+`Ask`; "always" saves the tool name. The TUI tips file once advertised this
+(`tips.go:86`) — a tip for something that did not exist, now removed; restore
+it together with the feature.
 
 ### 3.2 User config
 
@@ -179,28 +175,28 @@ the **sorted key expansion**: Go map iteration is randomised, and an unsorted
 `"*": deny` key could randomly clobber a specific allow. `"*"` sorts first, so
 specific rules correctly override it.
 
-### 3.3 The `tools` map must actually work — PORT GAP (bug level)
+### 3.3 The `tools` map must actually work
 
 `config.go:29` parses `"tools": {"bash": false}` and `tips.go:80` tells users
-to set it — but nothing translates it into rules, so the tip advertises a
-nonfunctional setting. Upstream converts it to permission rules merged *under*
-the explicit `permission` block (so `permission` wins), collapsing
-`write`/`edit`/`patch` onto `edit`
-(`packages/opencode/src/config/config.ts:570-577`):
+to set it. `Config.ToolRuleset` translates it into rules merged *under* the
+explicit `permission` block (so `permission` wins), collapsing
+`write`/`edit`/`patch` onto `edit` — the port of
+`packages/opencode/src/config/config.ts:570-577`:
 
 ```
 tools: { "write": false }  →  { Action: "edit", Resource: "*", Effect: Deny }
 ```
 
-Port that translation into `bootStack` next to `userRules`, merge it *before*
-`cfg.Permission` rules. Either the tip becomes true or the tip goes.
+`bootStack` merges `ToolRuleset` before `cfg.Permission` rules, so the tip is
+true.
 
-### 3.4 `GOCODE_PERMISSION` — PORT GAP
+### 3.4 `GOCODE_PERMISSION`
 
-Upstream deep-merges `OPENCODE_PERMISSION` (JSON) into the permission config
-for CI and one-shot runs (`config.ts:559-565`), skipping invalid JSON with a
-warning. Port as `GOCODE_PERMISSION`. This is the prerequisite that makes
-`--auto` (§11) safe to use, because it is how a pipeline states its denies.
+`LoadTraced` deep-merges `GOCODE_PERMISSION` (JSON) into the permission
+config for CI and one-shot runs, skipping invalid JSON with a recorded
+warning — the port of `OPENCODE_PERMISSION` (`config.ts:559-565`). This is
+the prerequisite that makes `--auto` (§11) safe to use, because it is how a
+pipeline states its denies.
 
 ### 3.5 Agent definitions
 
@@ -269,11 +265,12 @@ identical change went through as a patch.
   registration with a named error instead of escaping every scoped rule.
 - A move reports both paths; the destination is as much a write as the source.
 
-### 4.3 Metadata: every ask says what it is about — PORT GAP
+### 4.3 Metadata: every ask says what it is about
 
-`ToolPermissionInput` has no `Metadata`, so the engine's `Request.Metadata` is
-always empty and the TUI renders `"No diff provided"` for edits
-(`views.go:830`). Upstream tools attach display metadata to the ask
+`ToolPermissionInput.Metadata` flows from `permissionMetadata` (`runner.go`)
+through the gate to the wire, so the engine's `Request.Metadata` is populated
+and the TUI renders the diff instead of `"No diff provided"`. Ports the
+display metadata each TypeScript tool attaches to its ask
 (`ctx.ask({... metadata: { filepath, diff }})` — `packages/opencode/src/tool/edit.ts:102-110`):
 
 | Action | Metadata should carry |
@@ -283,12 +280,11 @@ always empty and the TUI renders `"No diff provided"` for edits
 | `webfetch` | `url` |
 | `websearch` | `query`, `provider` |
 | `task` | `subagent_type`, `description` |
-| `external_directory` | `directories` (the readable form of the globs) |
+| `external_directory` | `command`, `directories` (set by `bash.ExtraPermissions`) |
 
-Add `Metadata map[string]any` to `ToolPermissionInput`, populate it in the
-runner's input assembly (tools already know their inputs), and let it flow
-through `Engine` to the wire (§8.3). This is what makes an edit prompt
-answerable: a diff the user can read before approving.
+The metadata is derived without touching disk — old/new content for edit and
+write, the patch text for apply_patch — so an unparseable input costs
+nothing. `TestPermissionMetadataDescribesTheAsk` pins the table.
 
 ### 4.4 Save granularity: what "always" means per action
 
@@ -314,18 +310,15 @@ The asymmetry is the point: for file tools the question a person answers is
 "may you edit files", not "may you edit this path"; for `bash` and `skill` one
 approval must not become "run anything" or "load any skill".
 
-**PORT GAP — bash saves the exact command today.** `permissionResources`
-returns `input["command"]` and `permissionSave("bash", …)` returns it verbatim,
-so "allow always" on `git commit -m "x"` covers *only that literal command* and
-the next commit re-prompts. Upstream truncates the command to its arity prefix
-from a generated dictionary and appends `" *"`:
+**bash saves the arity prefix.** The *asked* resource stays the full command
+(so the prompt stays honest); `permissionSave` truncates it to the arity
+prefix from a dictionary and appends `" *"`:
 `BashArity.prefix(["git","commit","-m","x"])` → `"git commit"` → saved as
 `"git commit *"`, which the wildcard suffix rule (§2.2) matches against every
 variant of that subcommand (`packages/opencode/src/permission/arity.ts`,
-`packages/opencode/src/tool/shell.ts:409`). Port the dictionary (and its
-generator prompt, in the file header) as `internal/permission/arity.go`; keep
-the *asked* resource as the full command so the prompt stays honest, and change
-only `Save`.
+`packages/opencode/src/tool/shell.ts:409`). The port lives in
+`internal/permission/arity.go`; `TestBashAlwaysSavesArityPrefix` pins the
+end-to-end contract (a covered variant does not re-ask, a sibling does).
 
 ### 4.5 Replies and cascades
 
@@ -458,9 +451,11 @@ explicit denies for SubagentDeniedTools (task, todowrite) unless the subagent op
 - A subagent opts into `task`/`todowrite` by naming the action explicitly; a
   `"*": allow` baseline does not count as an opt-in (`mentions`,
   `subagent_permissions.go:68-70`).
-- Add new subagent-denied actions (upstream adds `memory_write`,
-  `memory_delete` — gocode already has) to `SubagentDeniedTools`, never to the
-  shared `Defaults()`, so only subagents are narrowed.
+- Add new subagent-denied actions to `SubagentDeniedTools`, never to the
+  shared `Defaults()`, so only subagents are narrowed. (Upstream carries
+  `memory_write`/`memory_delete` there; this port reaches memory through a
+  plugin whose tools are gated by the normal rules, so nothing needs adding
+  until a builtin memory tool exists.)
 
 ---
 
@@ -487,18 +482,17 @@ so the oldest ask is always answered first.
 | Allow always | every call matching the **Save** patterns (§4.4), this project | durable (`permission` table) |
 | Reject | this call, plus every other pending ask in the session | none |
 
-The current banner text for `external_directory` ("Allow always grants these
+The banner text for `external_directory` ("Allow always grants these
 directories and everything under them, for this project") is the standard every
-action must meet. **"Allow always" on an edit currently grants `edit: *` —
-every file, forever, in the project — and the banner does not say so.** That
-violates P6 and is the single most important surface fix.
+action must meet. "Allow always" on an edit grants `edit: *` — every file,
+forever, in the project — and the confirmation stage (§8.4) now says exactly
+that before the grant is written, closing the P6 violation.
 
 ### 8.3 What the banner must show
 
-**PORT GAP** — the wire type must carry it first: `tui/client.PermissionRequest`
-decodes only `id/sessionID/agent/action/resources`. The server already
-serialises the full `permission.Request` (including `Metadata`, `Save`,
-`Source`); the client struct is the gap. Decode all three, then:
+The wire type carries it: `tui/client.PermissionRequest` decodes
+`save/metadata/source` alongside `id/sessionID/agent/action/resources`, the
+full shape the server already serialises. Then:
 
 - **The Save patterns, verbatim**, under the always option —
   `Allow always → git commit *`, `→ edit *`, `→ /srv/data/*`. Derived from
@@ -515,27 +509,24 @@ serialises the full `permission.Request` (including `Metadata`, `Save`,
 - **Source correlation**: `Source.CallID` lets the banner attach the ask to the
   running tool call in the timeline. Optional to render, mandatory to carry.
 
-### 8.4 "Allow always" requires a confirmation step — PORT GAP
+### 8.4 "Allow always" requires a confirmation step
 
-Today `enter` on *Allow always* grants immediately. Upstream's TUI inserts a
-confirmation stage whenever the reply is `always`
-(`packages/opencode/src/cli/cmd/run/permission.shared.ts:174-224`), and for good
-reason: `always` is the only answer with durable consequences. Add a stage
-after selecting *Allow always* that shows exactly what will be saved (the
-patterns from §8.3) with **Confirm / Cancel**, `esc`/`cancel` returning to the
-option bar. Do not gate `once` or `reject` behind confirmation — friction
-belongs where the commitment is.
+Selecting *Allow always* opens a confirmation stage before anything is sent,
+porting `permission.shared.ts:174-224`: it shows exactly what will be saved
+(the patterns from §8.3) with **Confirm / Cancel**, `esc` returning to the
+option bar. `once` and `reject-without-reason` are not gated — friction
+belongs where the commitment is. `TestAlwaysRequiresConfirmation` pins that
+enter on *always* posts nothing until the stage confirms.
 
-### 8.5 Reject should accept a reason — PORT GAP
+### 8.5 Reject should accept a reason
 
-The engine and HTTP body already carry `message`
-(`permission.go:290`, `server.go:184-187`); only the TUI never sends one. Port
-the upstream reject stage: choosing *Reject* opens a small text input ("Tell
-the agent what to do differently"), submit sends
-`{"reply":"reject","message":…}`, `esc` rejects without a reason
+The engine and HTTP body carry `message`; the TUI now sends it too. Choosing
+*Reject* opens a small text input ("Tell the agent what to do differently"),
+submit sends `{"reply":"reject","message":…}`, `esc` rejects without a reason
 (`permission.shared.ts:226-232`). The text becomes `CorrectedError.Feedback`
 and is shown to the model verbatim — it is steering, and it is the difference
 between the model learning "not this way" and merely learning "no".
+`TestRejectReasonFlow` pins the wire contract.
 
 ### 8.6 Keyboard
 
@@ -569,10 +560,10 @@ POST /api/session/{sessionID}/permission/{requestID}/reply
 
 **Rules and gaps:**
 
-- **The session-scoped reply route must verify ownership.** Today
-  `replyPermission` reads only `requestID` and ignores the `sessionID` path
-  value — the route implies a scoping it does not enforce. Resolve the request,
-  404 when its `SessionID` differs from the path.
+- **The session-scoped reply route verifies ownership.** `replyPermission`
+  resolves the request and 404s when its `SessionID` differs from the path
+  value — consent addressed to one session must not settle another's ask
+  (`TestReplyRouteRejectsForeignSession`).
 - **Add the saved-grant surface — PORT GAP.** `SavedPermissions.Forget` exists
   but nothing calls it, and there is no way to see or revoke a single grant.
   Upstream exposes both
@@ -625,25 +616,26 @@ The design rules, before the feature:
 
 ## 11. Bypass tiers
 
-One knob today: `--auto`/`--yolo`/`--dangerously-skip-permissions` sets
-`Runner.Permissions = nil` — no gate, **and no deny enforcement**. That is a
-correct reading of the flag's name and the wrong default for the future. The
-tiers, weakest to strongest:
+Two tiers today (`applyPermissionBypass`, shared by run/tui). The history is
+instructive: all three flags once collapsed into one — `Permissions = nil`,
+no gate, **no deny enforcement** — while `--auto`'s help text promised
+"auto-approve permissions that are not explicitly denied". The tiers now
+match the promise:
 
 | Tier | Flag | Semantics |
 |---|---|---|
 | Default | — | ask/allow/deny per rules |
 | Config injection | `GOCODE_PERMISSION='{"edit":"deny"}'` (§3.4) | still default flow; rules deep-merged under file config |
-| Auto-answer asks | `--auto` | **asks are answered `once` automatically; configured denies still enforced** |
+| Auto-answer asks | `--auto` | **asks are answered `once` automatically; configured denies still enforced** (`AutoAnswerGate`) |
 | Full bypass | `--dangerously-skip-permissions` alone | gate removed entirely, current behaviour |
 
 Rules:
 
-- Moving `--auto` to auto-answer semantics requires the deny gate to keep
-  running: implement as a `PermissionGate` whose `Assert` resolves to nil on
-  `Ask` after the deny check — not as `Permissions = nil`. A CI pipeline that
-  states `"edit": {"*.env": "deny"}` via `GOCODE_PERMISSION` must be able to
-  trust it under `--auto`; that combination is the entire point of the tier.
+- `--auto` keeps the deny gate running: `AutoAnswerGate` resolves asks to nil
+  after the deny check, and never writes a grant (P4 — auto-accept answers
+  `once`). A CI pipeline that states `"edit": {"*.env": "deny"}` via
+  `GOCODE_PERMISSION` can trust it under `--auto`;
+  `TestAutoAnswerGateAnswersAsksAndKeepsDenies` pins the combination.
 - `--yolo` remains an alias of full bypass and keeps its reputation. Do not
   soften it; do not document it without the word *dangerous*.
 - Full bypass should print one line saying the gate is off. Silent security
@@ -683,8 +675,8 @@ base. Required additions, each named for the invariant it guards:
 
 | Test | Guards |
 |---|---|
-| `TestConfiguredDenyBeatsSavedAllow` | §2.2 ordering: saved grants resolve asks, never denies (upstream equivalent: `core/test/permission.test.ts:232-251`) |
-| `TestBashAlwaysSavesArityPrefix` | §4.4: `git commit -m a` approved-always, `git commit -m b` does not re-ask, `git push` does |
+| `TestConfiguredDenyBeatsSavedAllow` ✅ | §2.2 ordering: saved grants resolve asks, never denies (upstream equivalent: `core/test/permission.test.ts:232-251`) |
+| `TestBashAlwaysSavesArityPrefix` ✅ | §4.4: `git commit -m a` approved-always, `git commit -m b` does not re-ask, `git push` does |
 | `TestRejectCascadesSameSession` | §4.5: one rejection settles every sibling ask of that session, none of other sessions |
 | `TestAlwaysCascadesCoveredSiblings` | §4.5: approving covers pending requests now fully allowed; skips ones whose configured rules deny |
 | `TestUnmappedResourceFailsRegistration` | §4.2: a tool with no extractor cannot register (once the fallback is removed) |
@@ -692,7 +684,7 @@ base. Required additions, each named for the invariant it guards:
 | `TestExternalPathCanonicalised` | §5.2: `/var` vs `/private/var` (regression for the real bug) |
 | `TestBlanketDenyHidesAdvertisement` | §6: `{"*", deny}` removes the tool; path-scoped deny keeps it |
 | `TestSubagentFloorRestrictsPlanChild` | §7: plan-mode parent's denies reach the child; child's `"*": allow` does not lift them |
-| `TestReplyRouteRejectsForeignSession` | §9: session-scoped reply 404s on mismatch |
+| `TestReplyRouteRejectsForeignSession` ✅ | §9: session-scoped reply 404s on mismatch |
 | `TestSavedRemoveInvalidatesCache` | §12: a revoked grant stops applying on the next evaluation |
 | `TestListIsCreationOrdered` | §8.1: concurrent asks present oldest-first |
 | `TestDeniedErrorListsRules` | §4.5: the model-facing error names action/resource/effect |
@@ -710,7 +702,7 @@ Each of these happened. Cite them.
 |---|---|
 | **Asking inside `Execute` instead of `ExtraPermissions`** | A refusal read as a tool failure; the model retried instead of steering. Extras are asked before the action for exactly this reason (`runner.go:796-821`). |
 | **Reading a resource field the tool does not have** | `webfetch`/`websearch`/`skill`/`apply_patch` all fell through to `"*"`, silently escaping every scoped rule; for `apply_patch` it was a working bypass of `"edit": {"*.env": "deny"}`. |
-| **Saving the exact bash command as the grant** | "Allow always" covered one literal command; the next commit re-prompted. Users read it as the prompt being broken. (§4.4) |
+| **Saving the exact bash command as the grant** | "Allow always" covered one literal command; the next commit re-prompted. Users read it as the prompt being broken. Fixed by the arity prefix (§4.4). |
 | **Runner never setting `Save` / `nil` SavedStore** | Two independent defects, either sufficient: "allow always" did nothing at all. `TestExternalDirectoryAlwaysIsAskedOnce` fails if either is reverted. |
 | **Prefix-checking paths without canonicalising** | On macOS `/var` is a symlink to `/private/var`; bash wrote outside the working directory without prompting. (§5.2) |
 | **Unsorted map iteration building a ruleset** | Go randomises map order; `"*": deny` randomly landed before or after specific allows, making policy nondeterministic per run. (§3.2) |
@@ -718,7 +710,7 @@ Each of these happened. Cite them.
 | **Plugin `permission.ask` allowed to answer a configured deny** | Any plugin returning "allow" switched off every deny in the ruleset — plan mode's read-only constraint included — with nothing in the transcript. Hence the deny gate runs first. (P3) |
 | **Advertise every tool, deny at call time** | Plan mode offered `edit`; the model called it and burned a round-trip. Hide blanket-denied tools instead. (§6) |
 | **`OnReplied` unwired** | Cascade rejections invisible until the next poll; clients show a parked session that has already moved on. (§8.7) |
-| **A tip advertising a setting that does nothing** | `tips.go:80` tells users to set `"tools": {"bash": false}`; nothing reads it. (§3.3) |
+| **A tip advertising a setting that does nothing** | `tips.go:80` told users to set `"tools": {"bash": false}` while nothing read it (§3.3), and `tips.go:86` advertised a `doom_loop` permission that did not exist. Both settings now work or the tip is gone. |
 | **Writing a durable grant from a toggle** | Not yet done here — upstream keeps auto-accept as `once`-only answers for this reason. Do not be the first. (§10.1) |
 
 ## 15. Checklists
@@ -753,7 +745,7 @@ Each of these happened. Cite them.
 | Engine: evaluate, ask/assert/reply, cascades | `internal/permission/permission.go` |
 | Wildcard matcher (incl. the `" *"` suffix rule) | `internal/permission/wildcard.go` |
 | In-memory store/rules fakes for tests | `internal/permission/memory.go` |
-| **Arity dictionary (PORT GAP, §4.4)** | `internal/permission/arity.go` — port of `packages/opencode/src/permission/arity.ts` |
+| Arity dictionary (§4.4) | `internal/permission/arity.go` — port of `packages/opencode/src/permission/arity.ts` |
 | Saved-grant store (SQLite, project-scoped, cached) | `internal/session/permission_saved.go` |
 | Gate adapter + rules provider | `internal/session/runner_permission.go` |
 | Ask lifecycle in the runner (extras → deny gate → hook → assert) | `internal/session/runner.go` (`executeTool`, `permissionResources`, `permissionSave`) |
@@ -765,6 +757,8 @@ Each of these happened. Cite them.
 | HTTP routes | `internal/server/server.go` |
 | Ask events (live-only) | `internal/session/ask_events.go`, `cmd/gocode/ask_events.go` |
 | TUI banner, title/body, keybinds | `internal/tui/views.go`, `internal/tui/app.go`, `internal/tui/components.go` |
-| TUI client wire type (**PORT GAP, §8.3**) | `internal/tui/client/client.go` |
+| TUI client wire type (§8.3) | `internal/tui/client/client.go` |
+| Bypass tiers (`--auto` auto-answer, full bypass) | `cmd/gocode/shared_flags.go` (`applyPermissionBypass`), `internal/session/runner_permission.go` (`AutoAnswerGate`) |
+| `tools` map → rules translation | `internal/config/permission.go` (`ToolRuleset`, `ToolAction`) |
 | Plugin hook | `internal/plugin/hooks.go` (`permission.ask`), `internal/session/runner_plugins.go` |
 | Upstream reference | `specs/permissions.md` (opencode workspace root) |

@@ -610,6 +610,12 @@ func (a *App) permissionBanner() string {
 	if a.permission == nil {
 		return ""
 	}
+	switch a.permissionStage {
+	case permissionStageConfirmAlways:
+		return a.permissionConfirmAlwaysBanner()
+	case permissionStageRejectReason:
+		return a.permissionRejectReasonBanner()
+	}
 	request := a.permission
 	once := "Allow once"
 	always := "Allow always"
@@ -672,6 +678,92 @@ func (a *App) permissionBanner() string {
 
 	style := a.splitBorderPanelCustom(withLeftBorder(a.contentWidth()-2), a.theme.Warning, 1, 3)
 	return style.Render(strings.Join(content, "\n")) + "\n" + barStyle.Render(bar)
+}
+
+// permissionConfirmAlwaysBanner renders the always-confirmation stage: what
+// "allow always" actually saves, verbatim from the request's Save patterns,
+// with Confirm/Cancel. Derived from Save rather than the resources because
+// they differ by design — edit asks about a path and saves "*", bash asks
+// about a command and saves its arity prefix. This is the P6 fix: a durable
+// grant whose scope the user can see before committing to it.
+func (a *App) permissionConfirmAlwaysBanner() string {
+	request := a.permission
+	patterns := request.Save
+	if len(patterns) == 0 {
+		// No Save means "always" behaves as "once" (nothing persists); show
+		// that honestly rather than an empty pattern list.
+		patterns = []string{"(nothing is saved for this action)"}
+	}
+
+	lines := []string{
+		"  " + a.styles().Warning.Render("△") + " " + a.styles().Text.Render("Grant permanent permission?"),
+	}
+	lines = append(lines, "")
+	lines = append(lines, "  "+a.styles().Muted.Render("Allow always will save, for this project:"))
+	for _, pattern := range patterns {
+		lines = append(lines, "  "+a.styles().Text.Render("- "+pattern))
+	}
+	lines = append(lines, "")
+	lines = append(lines, "  "+a.styles().Muted.Render(
+		"Every later request matching these patterns is approved without asking."))
+
+	button := func(label string, selected bool) string {
+		return a.permissionButton(label, selected, a.theme.Warning)
+	}
+	buttons := []string{
+		button("Confirm", a.permissionConfirm == 0),
+		button("Cancel", a.permissionConfirm == 1),
+	}
+	hints := a.hintPair("⇆", "select") + "  " + a.hintPair("enter", "confirm") + "  " + a.hintPair("esc", "back")
+	inner := a.contentWidth() - 5
+	gap := inner - lipgloss.Width(strings.Join(buttons, " ")) - lipgloss.Width(hints)
+	bar := strings.Join(buttons, " ")
+	if gap >= 1 {
+		bar += strings.Repeat(" ", gap) + hints
+	} else {
+		bar += "\n" + hints
+	}
+	barStyle := lipgloss.NewStyle().
+		Background(a.theme.BackgroundElement).
+		PaddingTop(1).PaddingBottom(1).PaddingLeft(2).PaddingRight(3).
+		Width(a.contentWidth() - 1)
+	style := a.splitBorderPanelCustom(withLeftBorder(a.contentWidth()-2), a.theme.Warning, 1, 3)
+	return style.Render(clampPermissionBody(strings.Join(lines, "\n"), a.permissionBudget()-4)) +
+		"\n" + barStyle.Render(bar)
+}
+
+// permissionRejectReasonBanner renders the reject-reason input: a short text
+// field whose content becomes the CorrectedError feedback the model reads.
+// esc rejects without a reason; enter submits what was typed (or rejects
+// plainly when empty).
+func (a *App) permissionRejectReasonBanner() string {
+	lines := []string{
+		"  " + a.styles().Warning.Render("△") + " " + a.styles().Text.Render("Reject — tell the agent what to do differently"),
+		"",
+		"  " + a.styles().Muted.Render("Reason (optional):"),
+	}
+	value := a.permissionReason
+	if value == "" {
+		value = " "
+	}
+	lines = append(lines, "  "+a.styles().Text.Render("> "+value+"▌"))
+	lines = append(lines, "", "  "+a.styles().Muted.Render(
+		"The reason is shown to the model verbatim; esc rejects without one."))
+
+	hints := a.hintPair("enter", "reject") + "  " + a.hintPair("esc", "reject without reason")
+	inner := a.contentWidth() - 5
+	gap := inner - lipgloss.Width(hints)
+	bar := hints
+	if gap >= 1 {
+		bar = strings.Repeat(" ", gap) + hints
+	}
+	barStyle := lipgloss.NewStyle().
+		Background(a.theme.BackgroundElement).
+		PaddingTop(1).PaddingBottom(1).PaddingLeft(2).PaddingRight(3).
+		Width(a.contentWidth() - 1)
+	style := a.splitBorderPanelCustom(withLeftBorder(a.contentWidth()-2), a.theme.Warning, 1, 3)
+	return style.Render(clampPermissionBody(strings.Join(lines, "\n"), a.permissionBudget()-4)) +
+		"\n" + barStyle.Render(bar)
 }
 
 // clampPermissionBody truncates a body to budget rows, replacing the last one
@@ -812,6 +904,16 @@ func (a *App) permissionBody(request *client.PermissionRequest) string {
 	if len(request.Resources) > 0 {
 		path = request.Resources[0]
 	}
+	// metadataString reads a string field off the ask's metadata, used before
+	// the resource fallback so the banner prefers what the tool declared the
+	// ask is about.
+	metadataString := func(key string) string {
+		if request.Metadata == nil {
+			return ""
+		}
+		value, _ := request.Metadata[key].(string)
+		return value
+	}
 	switch request.Action {
 	case "external_directory":
 		// Listing every pattern, not just the first: one command can reach
@@ -819,7 +921,28 @@ func (a *App) permissionBody(request *client.PermissionRequest) string {
 		if len(request.Resources) == 0 {
 			return ""
 		}
-		lines := []string{pad + a.styles().Muted.Render("Patterns")}
+		lines := []string{}
+		// The command (from metadata) is what a person actually approves;
+		// the directory globs are the grant's shape.
+		if command := metadataString("command"); command != "" {
+			lines = append(lines, pad+a.styles().Text.Render("$ "+command))
+			lines = append(lines, "")
+		} else if dirs, ok := request.Metadata["directories"].([]any); ok && len(dirs) > 0 {
+			readable := make([]string, 0, len(dirs))
+			for _, dir := range dirs {
+				if s, ok := dir.(string); ok {
+					readable = append(readable, s)
+				}
+			}
+			if len(readable) > 0 {
+				lines = append(lines, pad+a.styles().Muted.Render("Directories"))
+				for _, dir := range readable {
+					lines = append(lines, pad+a.styles().Text.Render("- "+dir))
+				}
+				lines = append(lines, "")
+			}
+		}
+		lines = append(lines, pad+a.styles().Muted.Render("Patterns"))
 		for _, resource := range request.Resources {
 			lines = append(lines, pad+a.styles().Text.Render("- "+resource))
 		}
@@ -827,11 +950,23 @@ func (a *App) permissionBody(request *client.PermissionRequest) string {
 			"Allow always grants these directories and everything under them, for this project."))
 		return strings.Join(lines, "\n")
 	case "bash":
+		command := metadataString("command")
+		if command == "" {
+			command = path
+		}
+		if command == "" {
+			return ""
+		}
+		return pad + a.styles().Text.Render("$ "+command)
+	case "edit":
+		// The diff from metadata, budgeted like any body: a file change the
+		// user cannot read is a rubber stamp (P6).
+		if diffText := metadataString("diff"); diffText != "" {
+			return pad + a.styles().Text.Render(diffText)
+		}
 		if path == "" {
 			return ""
 		}
-		return pad + a.styles().Text.Render("$ "+path)
-	case "edit":
 		return pad + a.styles().Muted.Render("No diff provided")
 	case "read":
 		if path == "" {

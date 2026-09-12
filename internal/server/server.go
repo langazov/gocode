@@ -203,6 +203,21 @@ func (s *Server) listSessionPermissionRequests(w http.ResponseWriter, r *http.Re
 }
 
 func (s *Server) replyPermission(w http.ResponseWriter, r *http.Request) {
+	// The session-scoped route implies an ownership check it must enforce:
+	// a reply is a consent, and consent addressed to one session must not
+	// settle a request another session raised. The engine resolves the
+	// request by ID alone, so the mismatch is checked here.
+	if sessionID := r.PathValue("sessionID"); sessionID != "" {
+		request := s.Permissions.Get(r.PathValue("requestID"))
+		if request == nil {
+			writeError(w, http.StatusNotFound, "permission: request not found")
+			return
+		}
+		if request.SessionID != sessionID {
+			writeError(w, http.StatusNotFound, "permission: request belongs to another session")
+			return
+		}
+	}
 	var body permissionReplyRequest
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")

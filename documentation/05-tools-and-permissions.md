@@ -230,7 +230,7 @@ TypeScript tool passes to `permission.assert`:
 |---|---|---|
 | `read` · `edit` · `write` | the path | `*` |
 | `apply_patch` | **every file the patch touches** | `*` |
-| `bash` | the command | that command |
+| `bash` | the command | **command prefix + `" *"` (arity)** |
 | `external_directory` | `dir/*` | `dir/*` |
 | `glob` · `grep` | the pattern | `*` |
 | `webfetch` | the URL | `*` |
@@ -293,8 +293,11 @@ Because it round-trips through the store, **any** client can answer — the TUI,
 a script hitting the API, a web UI. And the request survives a client
 disconnect: reconnect and the dialog is still there.
 
-`--auto` (aliases `--yolo`, `--dangerously-skip-permissions`) drops the gate
-entirely by setting `stack.Runner.Permissions = nil`. It is exactly as
+`--auto` answers asks automatically — no one is interrupted — while
+configured denies keep being enforced (the `AutoAnswerGate` wrapping the same
+engine; it never writes a grant). `--yolo` / `--dangerously-skip-permissions`
+drop the gate entirely by setting `stack.Runner.Permissions = nil`, denies
+included, and print a warning saying so. The second tier is exactly as
 dangerous as it sounds and is meant for throwaway containers.
 
 ## Writing a tool
