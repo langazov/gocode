@@ -73,6 +73,7 @@ Plugin options (all optional):
 | `chunkOverlap` | `10` | overlap between adjacent chunks |
 | `topK` | `8` | default result count for `rag_search` |
 | `dbPath` | `<data dir>/rag.db` | chromem-go persistence directory |
+| `callTimeout` | `300` (from the manifest) | per-call timeout in seconds, overriding the host's 30s default |
 
 With no `include` set, only recognized code, documentation, and small
 structured-config file extensions are indexed (`.go`, `.ts`, `.py`, `.md`,
@@ -103,9 +104,28 @@ excluded it — an explicit request to index a directory wins. Set
 
 ## One-shot indexing outside the host
 
-`internal/plugin`'s host bounds a tool call with no deadline of its own to
-30 seconds. A large repo's first index can take longer than that, so
-rag-plugin also runs as a plain CLI, independent of the JSON-RPC protocol:
+The host bounds a tool call with no deadline of its own to 30 seconds
+(`DefaultCallTimeout` in `internal/plugin/process.go`). rag-plugin's
+`gocode-plugin.json` manifest declares `callTimeoutSeconds: 300`, which raises
+that bound to 5 minutes for this plugin's calls — enough for most first
+indexes. The option can also be set explicitly in the config, and takes
+precedence over the manifest:
+
+```json
+{ "plugin": [["rag-plugin", { "callTimeout": 600 }]] }
+```
+
+The `rag_index` tool also accepts an optional `timeout` argument (seconds,
+default 300) that sets a deadline on the indexing work itself. A larger
+value gives a long first index more room; a smaller one fails fast on a
+repo that's too large to index within the call:
+
+```json
+{"path": "src", "timeout": 600}
+```
+
+For a repo whose first index still exceeds the timeout, rag-plugin also runs
+as a plain CLI, independent of the JSON-RPC protocol:
 
 ```sh
 ./rag-plugin index -root . -embedding-provider openai

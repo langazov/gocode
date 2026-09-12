@@ -582,3 +582,94 @@ func TestVacuumPruneMissingOnlyJudgesAbsolutePaths(t *testing.T) {
 		}
 	}
 }
+
+// ---- Staleness ----
+
+func TestStaleCount(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	putProject(t, s, "p1", "a.go", "b.go", "c.go")
+
+	// All three chunks have hash "h" in the store. A walk that returns the
+	// same hashes for all three IDs should report zero stale.
+	current := map[string]string{
+		"a.go#0": "h",
+		"b.go#1": "h",
+		"c.go#2": "h",
+	}
+	stale, err := s.StaleCount(ctx, "p1", current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale != 0 {
+		t.Errorf("all hashes match: got %d stale, want 0", stale)
+	}
+
+	// Change one chunk's content hash: it should count as stale.
+	current["a.go#0"] = "changed"
+	stale, err = s.StaleCount(ctx, "p1", current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale != 1 {
+		t.Errorf("one changed hash: got %d stale, want 1", stale)
+	}
+
+	// Drop one chunk from the current walk entirely (file deleted): it
+	// should also count as stale.
+	delete(current, "b.go#1")
+	stale, err = s.StaleCount(ctx, "p1", current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale != 2 {
+		t.Errorf("one changed + one missing: got %d stale, want 2", stale)
+	}
+
+	// An empty current map means "everything is stale" (or nothing is
+	// stored). With three stored chunks, all three are stale.
+	stale, err = s.StaleCount(ctx, "p1", map[string]string{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale != 3 {
+		t.Errorf("empty current map: got %d stale, want 3", stale)
+	}
+
+	// A project with no stored chunks has zero stale regardless of the
+	// current map.
+	stale, err = s.StaleCount(ctx, "no-such-project", current)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale != 0 {
+		t.Errorf("unknown project: got %d stale, want 0", stale)
+	}
+}
+
+func TestHasProject(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+
+	if s.HasProject(ctx, "p1") {
+		t.Error("before any Put, HasProject should be false")
+	}
+
+	putProject(t, s, "p1", "a.go")
+
+	if !s.HasProject(ctx, "p1") {
+		t.Error("after Put, HasProject should be true")
+	}
+
+	if s.HasProject(ctx, "p2") {
+		t.Error("HasProject for a non-existent project should be false")
+	}
+
+	if _, err := s.DeleteProject(ctx, "p1"); err != nil {
+		t.Fatal(err)
+	}
+
+	if s.HasProject(ctx, "p1") {
+		t.Error("after DeleteProject, HasProject should be false")
+	}
+}

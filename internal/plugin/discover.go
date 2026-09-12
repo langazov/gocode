@@ -112,7 +112,7 @@ func discoverIn(folder string, bareRef, bundled bool) []Available {
 		}
 		// The loader's own runnability test, symlinks followed — a plugin
 		// directory symlinked into place is how you develop one.
-		if _, _, err := entrypoint(path); err != nil {
+		if _, _, _, err := entrypoint(path); err != nil {
 			continue
 		}
 		ref := path

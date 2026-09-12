@@ -1,3 +1,4 @@
 {
-  "command": ["./rag-plugin"]
+  "command": ["./rag-plugin"],
+  "callTimeoutSeconds": 300
 }
