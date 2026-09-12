@@ -6,6 +6,7 @@ import (
 
 	"github.com/langazov/gocode-go/internal/auth"
 	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/gocoder"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
@@ -38,8 +39,9 @@ import (
 // configuration" for one request, resolving auth.json once rather than per
 // provider — the catalog has hundreds of entries.
 type providerAvailability struct {
-	auths  map[string]auth.Info
-	config *config.Config
+	auths           map[string]auth.Info
+	config          *config.Config
+	gocoderSignedIn bool
 }
 
 func newProviderAvailability(cfg *config.Config) providerAvailability {
@@ -48,7 +50,15 @@ func newProviderAvailability(cfg *config.Config) providerAvailability {
 	if err != nil {
 		auths = nil
 	}
-	return providerAvailability{auths: auths, config: cfg}
+	// gocoder.org's credential lives in gocoder.json (not auth.json — the
+	// account file is written by sign-in and enumerated by the gocoder
+	// provider's transform, not by the catalog), so its presence is an
+	// availability source of its own.
+	gocoderSignedIn := false
+	if account, err := gocoder.LoadAccount(); err == nil && account != nil {
+		gocoderSignedIn = true
+	}
+	return providerAvailability{auths: auths, config: cfg, gocoderSignedIn: gocoderSignedIn}
 }
 
 // allowed applies the two config gates that run regardless of credentials:
@@ -90,6 +100,10 @@ func (p providerAvailability) available(providerID string, entry modelsdev.Provi
 	// source: "api" — anything stored by `gocode auth login`, including the
 	// oauth entries the console flow writes.
 	if _, ok := p.auths[providerID]; ok {
+		return true
+	}
+	// gocoder.org: signed-in account file (gocoder.json) is the credential.
+	if providerID == "gocoder" && p.gocoderSignedIn {
 		return true
 	}
 	return false

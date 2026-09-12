@@ -26,6 +26,11 @@ func planRuleset() permission.Ruleset { return planRulesetFor("") }
 func planRulesetFor(plansDir string) permission.Ruleset {
 	rules := permission.Ruleset{
 		{Action: "plan_exit", Resource: "*", Effect: permission.Allow},
+		// Mirrors the question re-allow cmd/gocode/builtin_agents.go adds so
+		// the plan agent can ask the user the clarifying questions its prompt
+		// tells it to ask. Without it the shared baseline's deny answers every
+		// question call.
+		{Action: "question", Resource: "*", Effect: permission.Allow},
 		{Action: "edit", Resource: "*", Effect: permission.Deny},
 		{Action: "task", Resource: "general", Effect: permission.Deny},
 	}
@@ -148,6 +153,57 @@ func TestPlanModeRunsUnderThePlanAgent(t *testing.T) {
 		if assistant.Agent != PlanAgentID {
 			t.Fatalf("assistant message ran as %q, want plan", assistant.Agent)
 		}
+	}
+}
+
+// TestPlanModeAsksQuestions is the end-to-end shape of the question-tool bug:
+// the plan prompt tells the model to ask the user clarifying questions, but
+// `question` is denied in permission.Defaults and only build re-allowed it —
+// so in plan mode every question call came back permission-denied and the
+// model fell back to guessing instead. The asker has to actually hear the
+// question, and the answer has to come back to the model.
+func TestPlanModeAsksQuestions(t *testing.T) {
+	workdir := t.TempDir()
+	asker := &recordingAsker{replies: []string{"Postgres"}}
+
+	provider := &fakeProvider{turns: [][]llm.StreamEvent{
+		{
+			{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{
+				ID:   "call_ask",
+				Name: "question",
+				Input: map[string]any{
+					"questions": []any{map[string]any{
+						"question": "Which database?",
+						"header":   "Database",
+						"options": []any{
+							map[string]any{"label": "Postgres", "description": "Relational"},
+							map[string]any{"label": "SQLite", "description": "Embedded"},
+						},
+					}},
+				},
+			}},
+			{Type: llm.EventFinish, Finish: "tool_use"},
+		},
+		{
+			{Type: llm.EventTextDelta, Text: "Using Postgres"},
+			{Type: llm.EventFinish, Finish: "end_turn"},
+		},
+	}}
+	registry := tool.NewRegistry()
+	builtins.RegisterWith(registry, workdir, builtins.Options{Asker: asker})
+	runner := planRunnerFixture(t, provider, registry, true)
+	admitPrompt(t, runner.Bus, runner, "plan a database migration")
+
+	pinAgent(t, runner, PlanAgentID)
+	if err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(asker.asked) != 1 {
+		t.Fatalf("the asker should have heard the question, got %d", len(asker.asked))
+	}
+	if result := toolResultFor(provider.requests[1], "call_ask"); !strings.Contains(result, "Postgres") {
+		t.Fatalf("the answer should reach the model, got %q", result)
 	}
 }
 
