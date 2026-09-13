@@ -28,30 +28,55 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
   final _scroll = ScrollController();
   final _input = TextEditingController();
   final _inputFocus = FocusNode();
-  bool _autoScroll = true;
+
+  /// False while the route's enter transition runs. The timeline (markdown,
+  /// tool cards) and the glass composer are the expensive part of this
+  /// screen, so they join the tree only once the page has stopped moving,
+  /// instead of being laid out and rasterized mid-transition.
+  bool _routeSettled = false;
+  Animation<double>? _routeAnimation;
 
   SessionController? get _controller =>
       sessionControllerRegistry[widget.sessionID];
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final animation = ModalRoute.of(context)?.animation;
+    if (identical(animation, _routeAnimation)) return;
+    _routeAnimation?.removeStatusListener(_onRouteStatus);
+    _routeAnimation = animation;
+    if (animation == null || animation.isCompleted) {
+      _routeSettled = true;
+    } else {
+      animation.addStatusListener(_onRouteStatus);
+    }
+  }
+
+  void _onRouteStatus(AnimationStatus status) {
+    if (status == AnimationStatus.completed && !_routeSettled && mounted) {
+      setState(() => _routeSettled = true);
+    }
+  }
+
+  @override
   void dispose() {
+    _routeAnimation?.removeStatusListener(_onRouteStatus);
     _scroll.dispose();
     _input.dispose();
     _inputFocus.dispose();
     super.dispose();
   }
 
-  void _scrollToBottom() {
-    if (!_autoScroll || !_scroll.hasClients) return;
+  /// The timeline is reversed, so offset 0 is the newest message.
+  void _showLatest() {
+    if (!_scroll.hasClients || _scroll.offset == 0) return;
     unawaited(
-      Future<void>.delayed(const Duration(milliseconds: 50)).then((_) {
-        if (!_scroll.hasClients) return;
-        _scroll.animateTo(
-          _scroll.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 200),
-          curve: Curves.easeOut,
-        );
-      }),
+      _scroll.animateTo(
+        0,
+        duration: const Duration(milliseconds: 250),
+        curve: GC.ease,
+      ),
     );
   }
 
@@ -60,7 +85,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     final controller = _controller;
     if (text.isEmpty || controller == null) return;
     _input.clear();
-    _autoScroll = true;
+    _showLatest();
     await _run(() => controller.prompt(text));
   }
 
@@ -125,41 +150,59 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
             ),
         ],
       ),
-      bottomNavigationBar: state == null
+      bottomNavigationBar: state == null || !_routeSettled
           ? null
-          : _Composer(
-              controller: _input,
-              focusNode: _inputFocus,
-              state: state,
-              agents: agents,
-              modelLabel: _modelName(state.session.model, models),
-              onSend: () => unawaited(_send()),
-              onInterrupt: () => unawaited(_interrupt()),
-              onPickModel: () => unawaited(_chooseModel(models, state.session)),
-              onPickAgent: (agent) => unawaited(_setAgent(agent)),
-            ),
-      body: asyncState.when(
-        loading: () =>
-            const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-        error: (e, _) => Center(
-          child: Padding(
-            padding: const EdgeInsets.all(24),
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 560),
-              child: ErrorPanel(
-                message: '$e',
-                onRetry: () =>
-                    ref.invalidate(sessionStateProvider(widget.sessionID)),
+          : _FadeIn(
+              child: _Composer(
+                controller: _input,
+                focusNode: _inputFocus,
+                state: state,
+                agents: agents,
+                modelLabel: _modelName(state.session.model, models),
+                onSend: () => unawaited(_send()),
+                onInterrupt: () => unawaited(_interrupt()),
+                onPickModel: () =>
+                    unawaited(_chooseModel(models, state.session)),
+                onPickAgent: (agent) => unawaited(_setAgent(agent)),
               ),
             ),
-          ),
-        ),
-        data: (state) {
-          _scrollToBottom();
-          // Built inside the Scaffold, so the insets include the header
-          // and the composer the timeline scrolls under.
-          return Builder(builder: (context) => _timeline(context, state));
-        },
+      // Empty until the enter transition ends (see _routeSettled), then the
+      // content fades in once. Later data updates keep the same key, so
+      // streaming doesn't re-trigger the fade.
+      body: AnimatedSwitcher(
+        duration: _fadeInDuration,
+        switchInCurve: GC.ease,
+        child: !_routeSettled
+            ? const SizedBox.shrink(key: ValueKey('settling'))
+            : asyncState.when(
+                loading: () => const Center(
+                  key: ValueKey('loading'),
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+                error: (e, _) => Center(
+                  key: const ValueKey('error'),
+                  child: Padding(
+                    padding: const EdgeInsets.all(24),
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 560),
+                      child: ErrorPanel(
+                        message: '$e',
+                        onRetry: () => ref.invalidate(
+                          sessionStateProvider(widget.sessionID),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                data: (state) => KeyedSubtree(
+                  key: const ValueKey('timeline'),
+                  // Built inside the Scaffold, so the insets include the
+                  // header and the composer the timeline scrolls under.
+                  child: Builder(
+                    builder: (context) => _timeline(context, state),
+                  ),
+                ),
+              ),
       ),
     );
   }
@@ -167,37 +210,37 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
   Widget _timeline(BuildContext context, SessionState state) {
     // Scaffold folds the header and composer heights into this padding.
     final pad = MediaQuery.paddingOf(context);
-    return NotificationListener<ScrollNotification>(
-      onNotification: (n) {
-        if (!_scroll.hasClients) return false;
-        final nearEnd =
-            _scroll.position.maxScrollExtent - _scroll.position.pixels < 80;
-        if (n is ScrollUpdateNotification && nearEnd) {
-          _autoScroll = true;
-        } else if (n is ScrollEndNotification) {
-          _autoScroll = nearEnd;
-        }
-        return false;
-      },
-      child: ListView.builder(
-        controller: _scroll,
-        padding: EdgeInsets.fromLTRB(16, pad.top + 12, 16, pad.bottom + 24),
-        itemCount: state.items.isEmpty ? 1 : state.items.length,
-        itemBuilder: (context, i) => Align(
-          alignment: Alignment.topCenter,
-          child: ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 860),
-            child: SizedBox(
-              width: double.infinity,
-              child: state.items.isEmpty
-                  ? _EmptyTimeline(session: state.session)
-                  : _item(context, state, state.items[i]),
-            ),
-          ),
-        ),
-      ),
+    final padding = EdgeInsets.fromLTRB(16, pad.top + 12, 16, pad.bottom + 24);
+    if (state.items.isEmpty) {
+      return SingleChildScrollView(
+        padding: padding,
+        child: _column(_EmptyTimeline(session: state.session)),
+      );
+    }
+    final items = state.items;
+    // Reversed, so offset 0 is the newest message: a session opens at its end
+    // with nothing to scroll, only the messages on screen are built, and
+    // streamed text stays pinned to the bottom while the reader is there.
+    // (Scrolling to the end of a forward list instead lays out and paints
+    // every message on the way down.)
+    return ListView.builder(
+      controller: _scroll,
+      reverse: true,
+      padding: padding,
+      itemCount: items.length,
+      itemBuilder: (context, i) =>
+          _column(_item(context, state, items[items.length - 1 - i])),
     );
   }
+
+  /// Centers content in an 860px reading column.
+  Widget _column(Widget child) => Align(
+    alignment: Alignment.topCenter,
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 860),
+      child: SizedBox(width: double.infinity, child: child),
+    ),
+  );
 
   Widget _item(BuildContext context, SessionState state, TimelineItem item) {
     final theme = Theme.of(context);
@@ -274,6 +317,25 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
         );
     }
   }
+}
+
+const _fadeInDuration = Duration(milliseconds: 220);
+
+/// Fades its child in once, on first build; later rebuilds don't repeat it.
+class _FadeIn extends StatelessWidget {
+  const _FadeIn({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => TweenAnimationBuilder<double>(
+    tween: Tween(begin: 0, end: 1),
+    duration: _fadeInDuration,
+    curve: GC.ease,
+    builder: (context, opacity, child) =>
+        Opacity(opacity: opacity, child: child),
+    child: child,
+  );
 }
 
 String _modelName(ModelRef? ref, List<ModelEntry> models) {
