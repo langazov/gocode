@@ -1,7 +1,7 @@
 name: build gocode_gui
 description: >
   Builds the gocode_gui Flutter desktop app in release mode for the runner's
-  OS and packages it into dist/ as gocode-gui-<version>-<platform>.<ext> with
+  OS and packages it into dist/ as gocode-desktop-<version>-<platform>.<ext> with
   a matching .sha256. Shared by gui-ci.yml and release.yml so CI builds
   exactly what a release ships.
 
@@ -92,27 +92,27 @@ runs:
 
         case "${{ runner.os }}" in
           macOS)
-            name="gocode-gui-${version}-macos-universal"
+            name="gocode-desktop-${version}-macos-universal"
             archive="$name.zip"
             # ditto keeps the bundle's symlinks and extended attributes, which
             # a plain `zip -r` would flatten and break the app.
             ditto -c -k --sequesterRsrc --keepParent \
               build/macos/Build/Products/Release/gocode_gui.app "$dist/$archive" ;;
           Linux)
-            name="gocode-gui-${version}-linux-x64"
+            name="gocode-desktop-${version}-linux-x64"
             archive="$name.tar.gz"
             # The bundle directory is the whole app (binary, lib/, data/);
             # ship it under a stable top-level name.
             tar --sort=name --owner=0 --group=0 --numeric-owner \
-              --transform 's,^bundle,gocode-gui,' \
+              --transform 's,^bundle,gocode-desktop,' \
               -czf "$dist/$archive" -C build/linux/x64/release bundle ;;
           Windows)
-            name="gocode-gui-${version}-windows-x64"
+            name="gocode-desktop-${version}-windows-x64"
             archive="$name.zip"
-            staging="$RUNNER_TEMP/gocode-gui-staging"
+            staging="$RUNNER_TEMP/gocode-desktop-staging"
             rm -rf "$staging" && mkdir -p "$staging"
-            cp -r build/windows/x64/runner/Release "$staging/gocode-gui"
-            (cd "$staging" && 7z a -tzip -mx=9 "$dist/$archive" gocode-gui > /dev/null) ;;
+            cp -r build/windows/x64/runner/Release "$staging/gocode-desktop"
+            (cd "$staging" && 7z a -tzip -mx=9 "$dist/$archive" gocode-desktop > /dev/null) ;;
         esac
 
         cd "$dist"

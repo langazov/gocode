@@ -137,7 +137,7 @@ jobs:
       # Downloadable from the run page for trying a change before release.
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gocode-gui-${{ runner.os }}
-          path: dist/gocode-gui-*
+          name: gocode-desktop-${{ runner.os }}
+          path: dist/gocode-desktop-*
           if-no-files-found: error
           retention-days: 7

@@ -289,8 +289,8 @@ jobs:
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: gocode-gui-${{ matrix.name }}
-          path: dist/gocode-gui-*
+          name: gocode-desktop-${{ matrix.name }}
+          path: dist/gocode-desktop-*
           if-no-files-found: error
           retention-days: 7
 
@@ -351,17 +351,23 @@ jobs:
 
             ## Desktop app
 
-            `gocode-gui-*` is the desktop client. It starts a local
+            `gocode-desktop-*` is the desktop client. It starts a local
             `gocode serve` in the project folder you pick — so install
             `gocode` too — or attaches to a server that is already running.
 
             | Platform | Archive | Run |
             |---|---|---|
-            | macOS (Apple silicon + Intel) | `gocode-gui-*-macos-universal.zip` | move `gocode_gui.app` to Applications |
-            | Linux x86_64 | `gocode-gui-*-linux-x64.tar.gz` | `gocode-gui/gocode_gui` (needs GTK 3) |
-            | Windows x64 | `gocode-gui-*-windows-x64.zip` | `gocode-gui\gocode_gui.exe` |
+            | macOS (Apple silicon + Intel) | `gocode-desktop-*-macos-universal.zip` | move `gocode_gui.app` to Applications |
+            | Linux x86_64 | `gocode-desktop-*-linux-x64.tar.gz` | `gocode-desktop/gocode_gui` (needs GTK 3) |
+            | Windows x64 | `gocode-desktop-*-windows-x64.zip` | `gocode-desktop\gocode_gui.exe` |
 
-            The app is unsigned as well; on macOS clear the quarantine flag once:
+            **Homebrew** (macOS) installs the app together with gocode:
+            ```sh
+            brew install --cask langazov/tap/gocode-desktop
+            ```
+
+            Installed by hand, the app is unsigned as well; on macOS clear the
+            quarantine flag once:
             ```sh
             xattr -dr com.apple.quarantine gocode_gui.app
             ```
@@ -455,14 +461,18 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS --dir .
 
           script/brew-formula.sh "$version" SHA256SUMS tap/Formula/gocode.rb
+          # The desktop app: a cask, since it is a macOS .app bundle.
+          script/brew-cask.sh "$version" SHA256SUMS tap/Casks/gocode-desktop.rb
 
           cd tap
-          if git diff --quiet -- Formula/gocode.rb; then
-            echo "formula already up to date"
+          # Stage first: a plain diff can't see the cask on the release that
+          # first creates it, since it is untracked until added.
+          git add Formula/gocode.rb Casks/gocode-desktop.rb
+          if git diff --cached --quiet; then
+            echo "formula and cask already up to date"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add Formula/gocode.rb
           git commit -m "gocode ${version}"
           git push
