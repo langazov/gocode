@@ -72,21 +72,36 @@ func (s *Server) getAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	view := accountViewOf(account)
-	user, err := gocoder.NewClient(account.URL).Me(r.Context(), account.Key)
-	var apiErr *gocoder.APIError
+	client := gocoder.NewClient(account.URL)
+	user, err := client.Me(r.Context(), account.Key)
+	if unauthorized(err) {
+		// Some deployments answer /api/auth/me for session tokens only, so
+		// its 401 may just mean "not with an API key". The key has only
+		// really expired when a route that does take keys refuses it too.
+		user, err = nil, client.CheckKey(r.Context(), account.Key)
+	}
 	switch {
-	case err == nil:
+	case err == nil && user != nil:
 		refreshStoredProfile(account, user)
 		view.Email, view.DisplayName = user.Email, user.DisplayName
 		if !user.CreatedAt.IsZero() {
 			view.MemberSince = &user.CreatedAt
 		}
-	case errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized:
+	case err == nil:
+		// The key is live but the profile isn't reachable with it: show the
+		// stored one.
+	case unauthorized(err):
 		view.Expired = true
 	default:
 		view.Offline = true
 	}
 	writeJSON(w, http.StatusOK, view)
+}
+
+// unauthorized reports whether err is the site refusing the credential.
+func unauthorized(err error) bool {
+	var apiErr *gocoder.APIError
+	return errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized
 }
 
 // refreshStoredProfile keeps gocoder.json's copy of the name and email

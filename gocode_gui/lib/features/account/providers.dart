@@ -1,14 +1,54 @@
+import 'dart:async';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../core/api/account.dart';
 import '../../core/api/client.dart';
 import '../../core/connection/controller.dart';
 
+/// The event the server publishes when this machine's sign-in changes —
+/// through it, from the TUI, or with `gocode login`.
+const accountUpdatedEvent = 'account.updated';
+
+/// Fires whenever who is signed in may have changed: the server announced
+/// it, or the event stream reconnected and may have dropped the
+/// announcement.
+final accountChangesProvider = Provider<Stream<void>>((ref) {
+  // The client appears once connected, which is when the controller's event
+  // stream exists; watching it re-subscribes on every new connection.
+  if (ref.watch(apiClientProvider) == null) return const Stream.empty();
+  final controller = ref.read(connectionControllerProvider);
+  if (controller == null) return const Stream.empty();
+  final changes = StreamController<void>.broadcast();
+  final subs = [
+    controller.events
+        .where((e) => e.type == accountUpdatedEvent)
+        .listen((_) => changes.add(null)),
+    ?controller.reconnectSignal?.listen(changes.add),
+  ];
+  ref.onDispose(() {
+    for (final sub in subs) {
+      unawaited(sub.cancel());
+    }
+    unawaited(changes.close());
+  });
+  return changes.stream;
+});
+
+/// Refetches the calling provider whenever [accountChangesProvider] fires.
+void _refetchOnAccountChange(Ref ref) {
+  final sub = ref
+      .watch(accountChangesProvider)
+      .listen((_) => ref.invalidateSelf());
+  ref.onDispose(() => unawaited(sub.cancel()));
+}
+
 /// Who the server is signed in to gocoder.org as; null while disconnected.
 /// Kept alive: the sidebar's account button always shows it.
 final accountProvider = FutureProvider<AccountInfo?>((ref) async {
   final client = ref.watch(apiClientProvider);
   if (client == null) return null;
+  _refetchOnAccountChange(ref);
   return client.account();
 });
 
@@ -19,6 +59,7 @@ final usageProvider = FutureProvider.autoDispose.family<UsageSummary, int>((
 ) async {
   final client = ref.watch(apiClientProvider);
   if (client == null) throw StateError('not connected to a gocode server');
+  _refetchOnAccountChange(ref);
   return client.accountUsage(days: days);
 });
 
@@ -26,6 +67,7 @@ final usageProvider = FutureProvider.autoDispose.family<UsageSummary, int>((
 final inviteProvider = FutureProvider.autoDispose<InviteInfo>((ref) async {
   final client = ref.watch(apiClientProvider);
   if (client == null) throw StateError('not connected to a gocode server');
+  _refetchOnAccountChange(ref);
   return client.accountInvite();
 });
 

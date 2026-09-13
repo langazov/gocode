@@ -55,6 +55,16 @@ func (c *Client) Me(ctx context.Context, bearer string) (*User, error) {
 	return &user, nil
 }
 
+// CheckKey reports whether the site still accepts bearer as an API key: nil
+// when it does, an *APIError with status 401 when the key is revoked. It
+// asks the settings-sync revision route, which takes keys wherever the site
+// is deployed — unlike /api/auth/me, whose 401 can't tell a revoked key from
+// a deployment that wants a session token there.
+func (c *Client) CheckKey(ctx context.Context, bearer string) error {
+	_, err := c.SettingsRevision(ctx, bearer)
+	return err
+}
+
 // UpdateDisplayName renames the account. Password changes are not offered:
 // the website refuses them with an API key and wants a signed-in session.
 func (c *Client) UpdateDisplayName(ctx context.Context, bearer, displayName string) (*User, error) {
