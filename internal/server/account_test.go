@@ -24,6 +24,9 @@ type fakeSite struct {
 	revoked     []string
 	nextKey     int
 	summaryDays string
+	// meRejectsKeys makes /api/auth/me want a session token, as some
+	// deployments do, while the other routes still take keys.
+	meRejectsKeys bool
 }
 
 func newFakeSite(t *testing.T) *fakeSite {
@@ -79,6 +82,10 @@ func (f *fakeSite) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	case !liveKey:
 		fail(http.StatusUnauthorized, "invalid or expired token")
+	case r.URL.Path == "/api/auth/me" && f.meRejectsKeys:
+		fail(http.StatusUnauthorized, "invalid or expired token")
+	case r.URL.Path == "/api/settings/pending":
+		_ = json.NewEncoder(w).Encode(map[string]int64{"revision": 0})
 	case r.URL.Path == "/api/auth/me":
 		if r.Method == http.MethodPatch {
 			var body map[string]string
@@ -234,6 +241,22 @@ func TestAccountSignInAgainRevokesThePreviousKey(t *testing.T) {
 	}
 	if revoked := site.revokedKeys(); len(revoked) != 1 || revoked[0] != "k1" {
 		t.Fatalf("revoked keys = %v, want the replaced k1", revoked)
+	}
+}
+
+func TestAccountSignedInWhenTheProfileRouteRefusesKeys(t *testing.T) {
+	site := newFakeSite(t)
+	site.meRejectsKeys = true
+	accountEnv(t, site.URL)
+	server := &Server{}
+
+	doJSON(t, server, http.MethodPost, "/api/account/login", map[string]string{"email": "a@b.c", "password": "correct-horse"})
+	view := decodeBody[accountView](t, doJSON(t, server, http.MethodGet, "/api/account", nil))
+	if !view.SignedIn || view.Expired || view.Offline || view.Email != "a@b.c" || view.DisplayName != "Alice" {
+		t.Fatalf("live key the profile route refuses = %+v, want signed in from the stored profile", view)
+	}
+	if view.MemberSince != nil {
+		t.Fatalf("memberSince = %v, want none without the profile", view.MemberSince)
 	}
 }
 

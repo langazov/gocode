@@ -157,7 +157,7 @@ type stack struct {
 // sites yields a feature that works under `gocode tui` and 404s under
 // `gocode serve`, with nothing failing to compile to say so.
 func (s *stack) newServer() *server.Server {
-	return &server.Server{
+	srv := &server.Server{
 		Session:     s.Service,
 		Bus:         s.Bus,
 		Permissions: s.Permissions,
@@ -175,6 +175,10 @@ func (s *stack) newServer() *server.Server {
 		ProjectID:   s.ProjectID,
 		VCSWorkdir:  s.workdir,
 	}
+	// Lets connected interfaces notice sign-ins made in other processes. It
+	// runs for the life of the process, as the server does.
+	srv.WatchAccount(context.Background())
+	return srv
 }
 
 // Close releases the resources bootStack opened. Only tests need this: a

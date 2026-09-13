@@ -187,7 +187,14 @@ stored API key, so a client never holds a gocoder.org credential itself.
 
 `GET /api/account` sets `expired` when the site rejects the stored key (sign
 in again) and `offline` when the site can't be reached (the fields then come
-from the stored sign-in). Failed calls pass the site's status and message
+from the stored sign-in). A deployment that answers `/api/auth/me` for
+session tokens only still reads as signed in: the key is checked against a
+route that takes keys, and the stored name and email are shown.
+
+Whenever `gocoder.json` changes — a sign-in or sign-out through these routes,
+from the TUI, or with `gocode login` — the server publishes `account.updated`
+(no data) on `/api/event`. Clients refetch `GET /api/account` on it, and on
+reconnect, since the stream may have dropped it. Failed calls pass the site's status and message
 through, and answer 502 when it can't be reached. Password changes aren't
 offered: gocoder.org requires a signed-in browser session for them.
 
