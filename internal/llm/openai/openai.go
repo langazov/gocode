@@ -38,7 +38,16 @@ func New(apiKey string) *Client {
 // Stream implements llm.StreamClient for the Chat Completions API.
 func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.StreamEvent)) error {
 	request.ModelID = c.Options.Model(request.ModelID)
-	body, err := convertRequest(request)
+	// An endpoint that honours Anthropic-style cache_control markers on Chat
+	// Completions blocks — OpenRouter, which translates them per route — gets
+	// the same breakpoint placement the anthropic adapter applies. Every other
+	// openai-compatible endpoint rejects unknown content-block fields, so the
+	// markers stay off the wire unless the provider opts in (see
+	// llm.Options.CacheControlBlocks).
+	if c.Options.CacheControlBlocks {
+		request = llm.ApplyCachePolicy(request)
+	}
+	body, err := convertRequest(request, c.Options.CacheControlBlocks)
 	if err != nil {
 		return err
 	}
@@ -106,13 +115,24 @@ type chatMessage struct {
 
 // contentPart is one element of the array form.
 type contentPart struct {
-	Type     string        `json:"type"`
-	Text     string        `json:"text,omitempty"`
-	ImageURL *contentImage `json:"image_url,omitempty"`
+	Type         string        `json:"type"`
+	Text         string        `json:"text,omitempty"`
+	ImageURL     *contentImage `json:"image_url,omitempty"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
 }
 
 type contentImage struct {
 	URL string `json:"url"`
+}
+
+// cacheControl is the Anthropic-style prompt-cache directive, carried on a
+// content block or tool definition. Chat Completions has no native form, but
+// OpenRouter accepts the Anthropic shape and translates it to whatever the
+// routed provider understands — so it is emitted only when the endpoint opted
+// in via llm.Options.CacheControlBlocks.
+type cacheControl struct {
+	Type string `json:"type"`
+	TTL  string `json:"ttl,omitempty"`
 }
 
 type toolCall struct {
@@ -127,8 +147,9 @@ type functionCall struct {
 }
 
 type toolDef struct {
-	Type     string       `json:"type"`
-	Function functionSpec `json:"function"`
+	Type         string        `json:"type"`
+	Function     functionSpec  `json:"function"`
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
 }
 
 type functionSpec struct {
@@ -154,7 +175,7 @@ type streamOpts struct {
 	IncludeUsage bool `json:"include_usage"`
 }
 
-func convertRequest(request llm.Request) (chatRequest, error) {
+func convertRequest(request llm.Request, cacheControlBlocks bool) (chatRequest, error) {
 	out := chatRequest{
 		Model:       request.ModelID,
 		Stream:      true,
@@ -166,13 +187,27 @@ func convertRequest(request llm.Request) (chatRequest, error) {
 	if effort, ok := request.Reasoning["reasoning_effort"].(string); ok {
 		out.ReasoningEffort = effort
 	}
+	// The system prompt lowers to one message per non-empty entry. The
+	// breakpoint covers the system prompt as a whole, so — matching the
+	// anthropic adapter — it rides only the final entry rather than each one:
+	// a marker per entry would burn the breakpoint budget OpenRouter enforces
+	// (four, Anthropic's cap) on a prefix a single trailing marker names just
+	// as well.
+	systemEntries := make([]string, 0, len(request.System))
 	for _, system := range request.System {
 		if system != "" {
-			out.Messages = append(out.Messages, chatMessage{Role: "system", Content: system})
+			systemEntries = append(systemEntries, system)
 		}
 	}
+	for i, system := range systemEntries {
+		var hint *llm.CacheHint
+		if i == len(systemEntries)-1 {
+			hint = request.SystemCache
+		}
+		out.Messages = append(out.Messages, chatMessage{Role: "system", Content: systemContent(system, hint, cacheControlBlocks)})
+	}
 	for _, message := range request.Messages {
-		converted, err := convertMessage(message)
+		converted, err := convertMessage(message, cacheControlBlocks)
 		if err != nil {
 			return chatRequest{}, err
 		}
@@ -183,14 +218,18 @@ func convertRequest(request llm.Request) (chatRequest, error) {
 		if schema == nil {
 			schema = map[string]any{"type": "object", "properties": map[string]any{}}
 		}
-		out.Tools = append(out.Tools, toolDef{
+		td := toolDef{
 			Type: "function",
 			Function: functionSpec{
 				Name:        tool.Name,
 				Description: tool.Description,
 				Parameters:  schema,
 			},
-		})
+		}
+		if cacheControlBlocks {
+			td.CacheControl = cacheControlDirective(tool.Cache)
+		}
+		out.Tools = append(out.Tools, td)
 	}
 	switch request.ToolChoice {
 	case "none":
@@ -203,12 +242,12 @@ func convertRequest(request llm.Request) (chatRequest, error) {
 	return out, nil
 }
 
-func convertMessage(message llm.Message) ([]chatMessage, error) {
+func convertMessage(message llm.Message, cacheControlBlocks bool) ([]chatMessage, error) {
 	switch message.Role {
 	case llm.RoleSystem:
-		return []chatMessage{{Role: "system", Content: joinText(message)}}, nil
+		return []chatMessage{{Role: "system", Content: systemContent(joinText(message), nil, cacheControlBlocks)}}, nil
 	case llm.RoleUser:
-		return []chatMessage{{Role: "user", Content: userContent(message)}}, nil
+		return []chatMessage{{Role: "user", Content: userContent(message, cacheControlBlocks)}}, nil
 	case llm.RoleAssistant:
 		msg := chatMessage{Role: "assistant"}
 		var text []string
@@ -251,17 +290,21 @@ func convertMessage(message llm.Message) ([]chatMessage, error) {
 	return nil, nil
 }
 
-// userContent returns a plain string when the message is text only, and the
-// typed-parts array when it carries an image.
-func userContent(message llm.Message) any {
+// userContent returns a plain string when the message is text only and carries
+// no cache marker, and the typed-parts array when it carries an image or a
+// cache breakpoint. The array form is the only shape that can carry either.
+func userContent(message llm.Message, cacheControlBlocks bool) any {
 	hasImage := false
+	hasCache := false
 	for _, part := range message.Content {
 		if part.Type == llm.PartImage {
 			hasImage = true
-			break
+		}
+		if cacheControlBlocks && part.Cache != nil {
+			hasCache = true
 		}
 	}
-	if !hasImage {
+	if !hasImage && !hasCache {
 		return joinText(message)
 	}
 	parts := make([]contentPart, 0, len(message.Content))
@@ -277,8 +320,34 @@ func userContent(message llm.Message) any {
 				ImageURL: &contentImage{URL: "data:" + part.Mime + ";base64," + part.Data},
 			})
 		}
+		if cacheControlBlocks && part.Cache != nil {
+			parts[len(parts)-1].CacheControl = cacheControlDirective(part.Cache)
+		}
 	}
 	return parts
+}
+
+// systemContent lowers one system-prompt entry. The marker rides the array
+// form only when one is placed; a plain string stays a plain string so a
+// request without breakpoints is byte-identical to what it always was.
+func systemContent(text string, hint *llm.CacheHint, cacheControlBlocks bool) any {
+	if !cacheControlBlocks || hint == nil {
+		return text
+	}
+	return []contentPart{{Type: "text", Text: text, CacheControl: cacheControlDirective(hint)}}
+}
+
+// cacheControlDirective renders a cache hint as the Anthropic-style directive
+// OpenRouter accepts on Chat Completions blocks. TTLs below the hour bucket as
+// the provider default (5 minutes); nothing is emitted for a nil hint.
+func cacheControlDirective(hint *llm.CacheHint) *cacheControl {
+	if hint == nil {
+		return nil
+	}
+	if hint.Extended() {
+		return &cacheControl{Type: "ephemeral", TTL: "1h"}
+	}
+	return &cacheControl{Type: "ephemeral"}
 }
 
 func joinText(message llm.Message) string {
