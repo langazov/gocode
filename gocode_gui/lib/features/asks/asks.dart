@@ -60,8 +60,11 @@ class AsksNotifier extends Notifier<List<Ask>> {
     }
   }
 
-  Future<void> replyPermission(PermissionRequest request, String reply,
-      {String? message}) async {
+  Future<void> replyPermission(
+    PermissionRequest request,
+    String reply, {
+    String? message,
+  }) async {
     final client = ref.read(apiClientProvider);
     if (client == null) return;
     try {
@@ -77,7 +80,9 @@ class AsksNotifier extends Notifier<List<Ask>> {
   }
 
   Future<void> replyQuestion(
-      QuestionRequest request, List<List<String>> answers) async {
+    QuestionRequest request,
+    List<List<String>> answers,
+  ) async {
     final client = ref.read(apiClientProvider);
     if (client == null) return;
     try {
@@ -178,12 +183,14 @@ class _AsksOverlayState extends ConsumerState<AsksOverlay> {
     );
     _shown = next;
     _route = route;
-    unawaited(navigator.push(route).whenComplete(() {
-      if (identical(_route, route)) {
-        _route = null;
-        _shown = null;
-      }
-    }));
+    unawaited(
+      navigator.push(route).whenComplete(() {
+        if (identical(_route, route)) {
+          _route = null;
+          _shown = null;
+        }
+      }),
+    );
   }
 
   @override
@@ -212,8 +219,9 @@ class _AskSheet extends ConsumerWidget {
             tint: const Color(0xCC201A15),
             padding: const EdgeInsets.all(22),
             child: switch (ask) {
-              PermissionAsk(:final request) =>
-                _PermissionSheet(request: request),
+              PermissionAsk(:final request) => _PermissionSheet(
+                request: request,
+              ),
               QuestionAsk(:final request) => _QuestionSheet(request: request),
             },
           ),
@@ -256,8 +264,11 @@ class _PermissionSheet extends ConsumerWidget {
                 borderRadius: BorderRadius.circular(GC.rInput),
                 border: Border.all(color: GC.borderAccent),
               ),
-              child: const Icon(Icons.shield_outlined,
-                  size: 18, color: GC.accentText),
+              child: const Icon(
+                Icons.shield_outlined,
+                size: 18,
+                color: GC.accentText,
+              ),
             ),
             const SizedBox(width: 12),
             Expanded(
@@ -354,8 +365,10 @@ class _QuestionSheet extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final notifier = ref.read(asksProvider.notifier);
-    final selections =
-        List<Set<String>>.generate(request.questions.length, (_) => {});
+    final selections = List<Set<String>>.generate(
+      request.questions.length,
+      (_) => {},
+    );
 
     return StatefulBuilder(
       builder: (context, setState) => SingleChildScrollView(
@@ -366,13 +379,17 @@ class _QuestionSheet extends ConsumerWidget {
             const Caption('Question'),
             const SizedBox(height: 6),
             for (var qi = 0; qi < request.questions.length; qi++) ...[
-              Text(request.questions[qi].question,
-                  style: theme.textTheme.titleMedium),
+              Text(
+                request.questions[qi].question,
+                style: theme.textTheme.titleMedium,
+              ),
               if (request.questions[qi].header.isNotEmpty)
                 Padding(
                   padding: const EdgeInsets.only(top: 2),
-                  child: Text(request.questions[qi].header,
-                      style: theme.textTheme.bodySmall),
+                  child: Text(
+                    request.questions[qi].header,
+                    style: theme.textTheme.bodySmall,
+                  ),
                 ),
               const SizedBox(height: 8),
               for (final option in request.questions[qi].options)
@@ -384,8 +401,10 @@ class _QuestionSheet extends ConsumerWidget {
                   title: Text(option.label, style: theme.textTheme.titleSmall),
                   subtitle: option.description == null
                       ? null
-                      : Text(option.description!,
-                          style: theme.textTheme.bodySmall),
+                      : Text(
+                          option.description!,
+                          style: theme.textTheme.bodySmall,
+                        ),
                   onChanged: (checked) => setState(() {
                     final set = selections[qi];
                     if (request.questions[qi].multiple) {

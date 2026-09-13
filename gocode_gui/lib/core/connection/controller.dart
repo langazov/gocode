@@ -42,15 +42,14 @@ class ConnectionSettings {
     String? remoteUrl,
     String? remoteUsername,
     String? remotePassword,
-  }) =>
-      ConnectionSettings(
-        mode: mode ?? this.mode,
-        binaryPath: binaryPath ?? this.binaryPath,
-        workingDirectory: workingDirectory ?? this.workingDirectory,
-        remoteUrl: remoteUrl ?? this.remoteUrl,
-        remoteUsername: remoteUsername ?? this.remoteUsername,
-        remotePassword: remotePassword ?? this.remotePassword,
-      );
+  }) => ConnectionSettings(
+    mode: mode ?? this.mode,
+    binaryPath: binaryPath ?? this.binaryPath,
+    workingDirectory: workingDirectory ?? this.workingDirectory,
+    remoteUrl: remoteUrl ?? this.remoteUrl,
+    remoteUsername: remoteUsername ?? this.remoteUsername,
+    remotePassword: remotePassword ?? this.remotePassword,
+  );
 
   static Future<ConnectionSettings> load() async {
     final prefs = await SharedPreferences.getInstance();
@@ -135,10 +134,9 @@ class ConnectionController {
 
   Future<void> connect() async {
     if (_client != null) return;
-    _emit(ConnectionState(
-      phase: ConnectionPhase.connecting,
-      stderr: List.of(_log),
-    ));
+    _emit(
+      ConnectionState(phase: ConnectionPhase.connecting, stderr: List.of(_log)),
+    );
 
     try {
       String url;
@@ -195,17 +193,21 @@ class ConnectionController {
       sse.events.listen(_eventBus.add);
       await sse.start();
 
-      _emit(ConnectionState(
-        phase: ConnectionPhase.connected,
-        baseUrl: url,
-        stderr: List.of(_log),
-      ));
+      _emit(
+        ConnectionState(
+          phase: ConnectionPhase.connected,
+          baseUrl: url,
+          stderr: List.of(_log),
+        ),
+      );
     } catch (e) {
-      _emit(ConnectionState(
-        phase: ConnectionPhase.error,
-        error: e.toString(),
-        stderr: List.of(_log),
-      ));
+      _emit(
+        ConnectionState(
+          phase: ConnectionPhase.error,
+          error: e.toString(),
+          stderr: List.of(_log),
+        ),
+      );
       rethrow;
     }
   }
@@ -251,8 +253,7 @@ class SettingsNotifier extends Notifier<ConnectionSettings> {
   }
 }
 
-final settingsProvider =
-    NotifierProvider<SettingsNotifier, ConnectionSettings>(
+final settingsProvider = NotifierProvider<SettingsNotifier, ConnectionSettings>(
   SettingsNotifier.new,
 );
 
@@ -312,8 +313,9 @@ class AppConnection extends Notifier<ConnectionState> {
   }
 }
 
-final connectionProvider =
-    NotifierProvider<AppConnection, ConnectionState>(AppConnection.new);
+final connectionProvider = NotifierProvider<AppConnection, ConnectionState>(
+  AppConnection.new,
+);
 
 /// The live controller, or null. Watch this to rebuild when the connection
 /// comes up or drops.

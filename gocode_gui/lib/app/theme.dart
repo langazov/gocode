@@ -175,20 +175,19 @@ class AppTheme {
     Color? hovered,
     Color? pressed,
     Color? disabled,
-  }) =>
-      WidgetStateProperty.resolveWith((states) {
-        if (states.contains(WidgetState.disabled)) return disabled ?? base;
-        if (states.contains(WidgetState.pressed)) {
-          return pressed ?? hovered ?? base;
-        }
-        if (states.contains(WidgetState.hovered)) return hovered ?? base;
-        return base;
-      });
+  }) => WidgetStateProperty.resolveWith((states) {
+    if (states.contains(WidgetState.disabled)) return disabled ?? base;
+    if (states.contains(WidgetState.pressed)) {
+      return pressed ?? hovered ?? base;
+    }
+    if (states.contains(WidgetState.hovered)) return hovered ?? base;
+    return base;
+  });
 
   static OutlineInputBorder _inputBorder(Color color) => OutlineInputBorder(
-        borderRadius: BorderRadius.circular(GC.rInput),
-        borderSide: BorderSide(color: color),
-      );
+    borderRadius: BorderRadius.circular(GC.rInput),
+    borderSide: BorderSide(color: color),
+  );
 
   static ThemeData dark() {
     const scheme = ColorScheme(
@@ -259,8 +258,10 @@ class AppTheme {
             pressed: GC.accentPress,
             disabled: const Color(0x8CE8862D),
           ),
-          foregroundColor:
-              _resolve(GC.accentInk, disabled: const Color(0xCC26160A)),
+          foregroundColor: _resolve(
+            GC.accentInk,
+            disabled: const Color(0xCC26160A),
+          ),
           iconColor: _resolve(GC.accentInk, disabled: const Color(0xCC26160A)),
           overlayColor: const WidgetStatePropertyAll(Colors.transparent),
         ),
@@ -356,8 +357,10 @@ class AppTheme {
         filled: true,
         fillColor: const Color(0x0AFFFFFF),
         isDense: true,
-        contentPadding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 13),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 14,
+          vertical: 13,
+        ),
         hintStyle: const TextStyle(
           fontFamily: GC.sans,
           fontSize: 14,

@@ -17,16 +17,15 @@ Future<ModelChoice?> showModelPicker(
   required List<ModelEntry> models,
   String? selectedKey,
   bool allowDefault = false,
-}) =>
-    showDialog<ModelChoice>(
-      context: context,
-      barrierColor: const Color(0x99000000),
-      builder: (_) => _ModelPickerDialog(
-        models: models,
-        selectedKey: selectedKey,
-        allowDefault: allowDefault,
-      ),
-    );
+}) => showDialog<ModelChoice>(
+  context: context,
+  barrierColor: const Color(0x99000000),
+  builder: (_) => _ModelPickerDialog(
+    models: models,
+    selectedKey: selectedKey,
+    allowDefault: allowDefault,
+  ),
+);
 
 class _ModelPickerDialog extends StatefulWidget {
   const _ModelPickerDialog({
@@ -50,19 +49,22 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final q = _query.toLowerCase();
-    final filtered = widget.models
-        .where((m) =>
-            q.isEmpty ||
-            m.name.toLowerCase().contains(q) ||
-            m.id.toLowerCase().contains(q) ||
-            m.providerID.toLowerCase().contains(q))
-        .toList()
-      ..sort((a, b) {
-        final byProvider = a.providerID.compareTo(b.providerID);
-        return byProvider != 0
-            ? byProvider
-            : a.name.toLowerCase().compareTo(b.name.toLowerCase());
-      });
+    final filtered =
+        widget.models
+            .where(
+              (m) =>
+                  q.isEmpty ||
+                  m.name.toLowerCase().contains(q) ||
+                  m.id.toLowerCase().contains(q) ||
+                  m.providerID.toLowerCase().contains(q),
+            )
+            .toList()
+          ..sort((a, b) {
+            final byProvider = a.providerID.compareTo(b.providerID);
+            return byProvider != 0
+                ? byProvider
+                : a.name.toLowerCase().compareTo(b.name.toLowerCase());
+          });
 
     final rows = <Widget>[
       if (widget.allowDefault && q.isEmpty)
@@ -77,18 +79,22 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
     for (final m in filtered) {
       if (m.providerID != provider) {
         provider = m.providerID;
-        rows.add(Padding(
-          padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
-          child: Caption(provider),
-        ));
+        rows.add(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
+            child: Caption(provider),
+          ),
+        );
       }
-      rows.add(_ModelRow(
-        title: m.name,
-        subtitle: m.id,
-        trailing: _contextLabel(m.contextLimit),
-        selected: m.key == widget.selectedKey,
-        onTap: () => Navigator.pop(context, ModelChoice(m)),
-      ));
+      rows.add(
+        _ModelRow(
+          title: m.name,
+          subtitle: m.id,
+          trailing: _contextLabel(m.contextLimit),
+          selected: m.key == widget.selectedKey,
+          onTap: () => Navigator.pop(context, ModelChoice(m)),
+        ),
+      );
     }
 
     return Dialog(
@@ -196,8 +202,10 @@ class _ModelRow extends StatelessWidget {
                       subtitle,
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
-                      style: GC.code
-                          .copyWith(fontSize: 11.5, color: GC.textFaint),
+                      style: GC.code.copyWith(
+                        fontSize: 11.5,
+                        color: GC.textFaint,
+                      ),
                     ),
                   ],
                 ),

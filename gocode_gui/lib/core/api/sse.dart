@@ -20,7 +20,7 @@ class SseClient {
     this.sessionID,
     Duration initialBackoff = const Duration(seconds: 1),
     Duration maxBackoff = const Duration(seconds: 30),
-  })  : _http = httpClient ?? http.Client() {
+  }) : _http = httpClient ?? http.Client() {
     _initialBackoff = initialBackoff;
     _maxBackoff = maxBackoff;
   }
@@ -63,12 +63,12 @@ class SseClient {
   }
 
   Map<String, String> get _headers => {
-        'Accept': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        if (username != null && password != null)
-          'Authorization':
-              'Basic ${base64Encode(utf8.encode('$username:$password'))}',
-      };
+    'Accept': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    if (username != null && password != null)
+      'Authorization':
+          'Basic ${base64Encode(utf8.encode('$username:$password'))}',
+  };
 
   /// Starts the stream. Returns once the connection is established (or the
   /// first attempt fails); reconnection continues in the background.
@@ -102,9 +102,9 @@ class SseClient {
     while (!_closed) {
       try {
         final request = http.Request('GET', _uri)..headers.addAll(_headers);
-        final response = await _http.send(request).timeout(
-              const Duration(seconds: 20),
-            );
+        final response = await _http
+            .send(request)
+            .timeout(const Duration(seconds: 20));
 
         if (response.statusCode != 200) {
           await response.stream.drain().catchError((_) {});

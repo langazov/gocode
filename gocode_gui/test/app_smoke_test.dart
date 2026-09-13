@@ -6,9 +6,7 @@ import 'package:gocode_gui/shared/widgets/glass.dart';
 
 void main() {
   testWidgets('first run shows the setup gate', (tester) async {
-    await tester.pumpWidget(
-      const ProviderScope(child: GoCodeApp()),
-    );
+    await tester.pumpWidget(const ProviderScope(child: GoCodeApp()));
     await tester.pumpAndSettle(const Duration(milliseconds: 100));
 
     expect(find.byType(GocodeLogo), findsOneWidget);
@@ -18,9 +16,7 @@ void main() {
   });
 
   testWidgets('remote option expands the URL form', (tester) async {
-    await tester.pumpWidget(
-      const ProviderScope(child: GoCodeApp()),
-    );
+    await tester.pumpWidget(const ProviderScope(child: GoCodeApp()));
     await tester.pumpAndSettle(const Duration(milliseconds: 100));
 
     await tester.tap(find.text('Connect to a server'));

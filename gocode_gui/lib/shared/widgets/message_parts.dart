@@ -30,9 +30,7 @@ class StreamedMarkdown extends StatelessWidget {
     }
     return GptMarkdown(
       text,
-      style: Theme.of(context)
-          .textTheme
-          .bodyLarge
+      style: Theme.of(context).textTheme.bodyLarge
           ?.copyWith(color: const Color(0xE6F4EFE9)),
       isStreaming: isStreaming,
       onLinkTap: (url, title) => onLinkTap?.call(Uri.parse(url)),
@@ -174,8 +172,11 @@ class ToolCallCard extends StatelessWidget {
               StatusPill(label: label, color: color),
               if (state?.subagentSessionID != null) ...[
                 const SizedBox(width: 8),
-                const Icon(Icons.subdirectory_arrow_right,
-                    size: 12, color: GC.textDim),
+                const Icon(
+                  Icons.subdirectory_arrow_right,
+                  size: 12,
+                  color: GC.textDim,
+                ),
               ],
             ],
           ),

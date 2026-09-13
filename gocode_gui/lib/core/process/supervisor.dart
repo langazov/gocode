@@ -20,8 +20,8 @@ class ServerSupervisor {
     this.maxRestarts = 3,
     void Function(String line)? onStdout,
     void Function(String line)? onStderr,
-  })  : _onStdout = onStdout,
-        _onStderr = onStderr;
+  }) : _onStdout = onStdout,
+       _onStderr = onStderr;
 
   /// Absolute path to the gocode binary.
   final String binaryPath;
@@ -52,8 +52,7 @@ class ServerSupervisor {
 
   /// The startup line gocode prints, e.g.
   /// `gocode server listening on http://127.0.0.1:54321`.
-  static final RegExp listeningRe =
-      RegExp(r'listening on (https?://[^\s]+)');
+  static final RegExp listeningRe = RegExp(r'listening on (https?://[^\s]+)');
 
   /// The port the first start bound; restarts reuse it so the client's base
   /// URL stays valid.
@@ -102,16 +101,16 @@ class ServerSupervisor {
     // `kill -0` is the cheap liveness probe; the trap keeps the watcher from
     // firing on its own termination.
     final appPid = pid;
-    final script = '''
+    final script =
+        '''
 while kill -0 $appPid 2>/dev/null; do sleep 1; done
 kill $childPid 2>/dev/null
 ''';
     try {
-      await Process.start(
-        '/bin/sh',
-        ['-c', script],
-        mode: ProcessStartMode.detached,
-      );
+      await Process.start('/bin/sh', [
+        '-c',
+        script,
+      ], mode: ProcessStartMode.detached);
     } catch (_) {
       // Best-effort; orderly shutdown still works without it.
     }
@@ -144,22 +143,23 @@ kill $childPid 2>/dev/null
     });
     _watchStream(process.stderr, (line) {
       _onStderr?.call(line);
-      if (!urlCompleter.isCompleted &&
-          line.toLowerCase().contains('error')) {
+      if (!urlCompleter.isCompleted && line.toLowerCase().contains('error')) {
         // Startup failures land on stderr; surface them for diagnostics.
         _onStderr?.call('[startup] $line');
       }
     });
 
-    unawaited(process.exitCode.then((code) {
-      _process = null;
-      _baseUrl = null;
-      if (!urlCompleter.isCompleted) {
-        urlCompleter.completeError(
-          StateError('gocode exited before listening (code $code)'),
-        );
-      }
-    }));
+    unawaited(
+      process.exitCode.then((code) {
+        _process = null;
+        _baseUrl = null;
+        if (!urlCompleter.isCompleted) {
+          urlCompleter.completeError(
+            StateError('gocode exited before listening (code $code)'),
+          );
+        }
+      }),
+    );
 
     final String url;
     try {
@@ -184,9 +184,12 @@ kill $childPid 2>/dev/null
     stream
         .transform(utf8.decoder)
         .transform(const LineSplitter())
-        .listen(onLine, onError: (Object e) {
-      _onStderr?.call('stream error: $e');
-    });
+        .listen(
+          onLine,
+          onError: (Object e) {
+            _onStderr?.call('stream error: $e');
+          },
+        );
   }
 
   Future<void> _waitForHealthy(String url) async {
@@ -199,8 +202,8 @@ kill $childPid 2>/dev/null
               .getUrl(Uri.parse('$url/api/health'))
               .timeout(const Duration(seconds: 5));
           final response = await request.close().timeout(
-                const Duration(seconds: 5),
-              );
+            const Duration(seconds: 5),
+          );
           await response.drain<void>().catchError((_) {});
           if (response.statusCode == 200) return;
         } catch (_) {}
@@ -265,7 +268,9 @@ kill $childPid 2>/dev/null
     _process = null;
     _baseUrl = null;
     if (process == null) return;
-    process.kill(Platform.isWindows ? ProcessSignal.sigterm : ProcessSignal.sigkill);
+    process.kill(
+      Platform.isWindows ? ProcessSignal.sigterm : ProcessSignal.sigkill,
+    );
     await process.exitCode.catchError((_) => -1);
   }
 }
@@ -292,7 +297,8 @@ class BinaryLocator {
   static Future<String?> find() async {
     final separator = Platform.isWindows ? ';' : ':';
     final name = Platform.isWindows ? '$executableName.exe' : executableName;
-    final home = Platform.environment['HOME'] ??
+    final home =
+        Platform.environment['HOME'] ??
         Platform.environment['USERPROFILE'] ??
         '';
     final dirs = [
@@ -338,7 +344,8 @@ abstract final class ShellEnvironment {
 
   static Future<String?> _resolve() async {
     if (Platform.isWindows) return null;
-    final shell = Platform.environment['SHELL'] ??
+    final shell =
+        Platform.environment['SHELL'] ??
         (Platform.isMacOS ? '/bin/zsh' : '/bin/sh');
     // Markers fence the value off from anything rc files print.
     const marker = '__GOCODE_PATH__';

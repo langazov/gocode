@@ -3,17 +3,13 @@
 library;
 
 class ModelRef {
-  const ModelRef({
-    required this.providerID,
-    required this.id,
-    this.variant,
-  });
+  const ModelRef({required this.providerID, required this.id, this.variant});
 
   factory ModelRef.fromJson(Map<String, dynamic> json) => ModelRef(
-        providerID: json['providerID'] as String? ?? '',
-        id: json['id'] as String? ?? '',
-        variant: json['variant'] as String?,
-      );
+    providerID: json['providerID'] as String? ?? '',
+    id: json['id'] as String? ?? '',
+    variant: json['variant'] as String?,
+  );
 
   final String providerID;
   final String id;
@@ -23,10 +19,10 @@ class ModelRef {
   String get key => '$providerID/$id';
 
   Map<String, dynamic> toJson() => {
-        'providerID': providerID,
-        'id': id,
-        if (variant != null && variant!.isNotEmpty) 'variant': variant,
-      };
+    'providerID': providerID,
+    'id': id,
+    if (variant != null && variant!.isNotEmpty) 'variant': variant,
+  };
 
   @override
   String toString() => key;
@@ -47,19 +43,19 @@ class Session {
   });
 
   factory Session.fromJson(Map<String, dynamic> json) => Session(
-        id: json['id'] as String? ?? '',
-        projectID: json['projectID'] as String? ?? '',
-        parentID: json['parentID'] as String?,
-        agent: json['agent'] as String?,
-        title: json['title'] as String? ?? '',
-        directory: json['directory'] as String? ?? '',
-        version: json['version'] as String? ?? '',
-        model: json['model'] == null
-            ? null
-            : ModelRef.fromJson(json['model'] as Map<String, dynamic>),
-        timeCreated: (json['timeCreated'] as num?)?.toInt() ?? 0,
-        timeUpdated: (json['timeUpdated'] as num?)?.toInt() ?? 0,
-      );
+    id: json['id'] as String? ?? '',
+    projectID: json['projectID'] as String? ?? '',
+    parentID: json['parentID'] as String?,
+    agent: json['agent'] as String?,
+    title: json['title'] as String? ?? '',
+    directory: json['directory'] as String? ?? '',
+    version: json['version'] as String? ?? '',
+    model: json['model'] == null
+        ? null
+        : ModelRef.fromJson(json['model'] as Map<String, dynamic>),
+    timeCreated: (json['timeCreated'] as num?)?.toInt() ?? 0,
+    timeUpdated: (json['timeUpdated'] as num?)?.toInt() ?? 0,
+  );
 
   final String id;
   final String projectID;
@@ -77,17 +73,17 @@ class Session {
   bool get isSubagent => parentID != null && parentID!.isNotEmpty;
 
   Map<String, dynamic> toJson() => {
-        'id': id,
-        'projectID': projectID,
-        if (parentID != null) 'parentID': parentID,
-        if (agent != null) 'agent': agent,
-        'title': title,
-        'directory': directory,
-        'version': version,
-        if (model != null) 'model': model!.toJson(),
-        'timeCreated': timeCreated,
-        'timeUpdated': timeUpdated,
-      };
+    'id': id,
+    'projectID': projectID,
+    if (parentID != null) 'parentID': parentID,
+    if (agent != null) 'agent': agent,
+    'title': title,
+    'directory': directory,
+    'version': version,
+    if (model != null) 'model': model!.toJson(),
+    'timeCreated': timeCreated,
+    'timeUpdated': timeUpdated,
+  };
 }
 
 class FileAttachment {
@@ -99,11 +95,11 @@ class FileAttachment {
   });
 
   factory FileAttachment.fromJson(Map<String, dynamic> json) => FileAttachment(
-        uri: json['uri'] as String?,
-        mime: json['mime'] as String? ?? '',
-        name: json['name'] as String?,
-        description: json['description'] as String?,
-      );
+    uri: json['uri'] as String?,
+    mime: json['mime'] as String? ?? '',
+    name: json['name'] as String?,
+    description: json['description'] as String?,
+  );
 
   final String? uri;
   final String mime;
@@ -111,11 +107,11 @@ class FileAttachment {
   final String? description;
 
   Map<String, dynamic> toJson() => {
-        if (uri != null) 'uri': uri,
-        'mime': mime,
-        if (name != null) 'name': name,
-        if (description != null) 'description': description,
-      };
+    if (uri != null) 'uri': uri,
+    'mime': mime,
+    if (name != null) 'name': name,
+    if (description != null) 'description': description,
+  };
 }
 
 /// A message in a session timeline. [data] is a tagged union keyed by [type];
@@ -131,13 +127,13 @@ class Message {
   });
 
   factory Message.fromJson(Map<String, dynamic> json) => Message(
-        id: json['id'] as String? ?? '',
-        sessionID: json['sessionID'] as String? ?? '',
-        type: json['type'] as String? ?? '',
-        seq: (json['seq'] as num?)?.toInt() ?? 0,
-        timeCreated: (json['timeCreated'] as num?)?.toInt() ?? 0,
-        data: (json['data'] as Map<String, dynamic>?) ?? const {},
-      );
+    id: json['id'] as String? ?? '',
+    sessionID: json['sessionID'] as String? ?? '',
+    type: json['type'] as String? ?? '',
+    seq: (json['seq'] as num?)?.toInt() ?? 0,
+    timeCreated: (json['timeCreated'] as num?)?.toInt() ?? 0,
+    data: (json['data'] as Map<String, dynamic>?) ?? const {},
+  );
 
   static const user = 'user';
   static const assistant = 'assistant';
@@ -163,13 +159,14 @@ class UserData {
   const UserData({required this.text, this.files = const []});
 
   factory UserData.fromJson(Map<String, dynamic> json) => UserData(
-        text: json['text'] as String? ?? '',
-        files: ((json['files'] as List<dynamic>?)
-                ?.whereType<Map<String, dynamic>>()
-                .map(FileAttachment.fromJson)
-                .toList()) ??
-            const [],
-      );
+    text: json['text'] as String? ?? '',
+    files:
+        ((json['files'] as List<dynamic>?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(FileAttachment.fromJson)
+            .toList()) ??
+        const [],
+  );
 
   final String text;
   final List<FileAttachment> files;
@@ -179,9 +176,9 @@ class AssistantError {
   const AssistantError({required this.type, this.message});
 
   factory AssistantError.fromJson(Map<String, dynamic> json) => AssistantError(
-        type: json['type'] as String? ?? 'unknown',
-        message: json['message'] as String?,
-      );
+    type: json['type'] as String? ?? 'unknown',
+    message: json['message'] as String?,
+  );
 
   /// "aborted" marks a user-ordered interruption; anything else is a failure.
   static const aborted = 'aborted';
@@ -233,17 +230,17 @@ class AssistantPart {
   });
 
   factory AssistantPart.fromJson(Map<String, dynamic> json) => AssistantPart(
-        type: json['type'] as String? ?? '',
-        id: json['id'] as String? ?? '',
-        text: json['text'] as String?,
-        name: json['name'] as String?,
-        state: json['state'] == null
-            ? null
-            : ToolState.fromJson(json['state'] as Map<String, dynamic>),
-        time: json['time'] == null
-            ? null
-            : PartTime.fromJson(json['time'] as Map<String, dynamic>),
-      );
+    type: json['type'] as String? ?? '',
+    id: json['id'] as String? ?? '',
+    text: json['text'] as String?,
+    name: json['name'] as String?,
+    state: json['state'] == null
+        ? null
+        : ToolState.fromJson(json['state'] as Map<String, dynamic>),
+    time: json['time'] == null
+        ? null
+        : PartTime.fromJson(json['time'] as Map<String, dynamic>),
+  );
 
   static const textType = 'text';
   static const reasoningType = 'reasoning';
@@ -269,9 +266,9 @@ class PartTime {
   const PartTime({required this.created, this.completed});
 
   factory PartTime.fromJson(Map<String, dynamic> json) => PartTime(
-        created: (json['created'] as num?)?.toInt() ?? 0,
-        completed: (json['completed'] as num?)?.toInt(),
-      );
+    created: (json['created'] as num?)?.toInt() ?? 0,
+    completed: (json['completed'] as num?)?.toInt(),
+  );
 
   final int created;
   final int? completed;
@@ -296,14 +293,14 @@ class ToolState {
   });
 
   factory ToolState.fromJson(Map<String, dynamic> json) => ToolState(
-        status: json['status'] as String? ?? '',
-        input: (json['input'] as Map<String, dynamic>?),
-        error: json['error'] as String?,
-        output: json['output'] as String?,
-        title: json['title'] as String?,
-        metadata: json['metadata'] as Map<String, dynamic>?,
-        completed: (json['completed'] as num?)?.toInt(),
-      );
+    status: json['status'] as String? ?? '',
+    input: (json['input'] as Map<String, dynamic>?),
+    error: json['error'] as String?,
+    output: json['output'] as String?,
+    title: json['title'] as String?,
+    metadata: json['metadata'] as Map<String, dynamic>?,
+    completed: (json['completed'] as num?)?.toInt(),
+  );
 
   static const pending = 'pending';
   static const running = 'running';
@@ -339,26 +336,27 @@ class AssistantData {
     this.error,
   });
   factory AssistantData.fromJson(Map<String, dynamic> json) => AssistantData(
-        agent: json['agent'] as String? ?? '',
-        model: ModelRef.fromJson(
-          (json['model'] as Map<String, dynamic>?) ?? const {},
-        ),
-        created: _intOrNull(json['time']?['created']) ?? 0,
-        completed: _intOrNull(json['time']?['completed']),
-        parts: ((json['content'] as List<dynamic>?)
-                ?.whereType<Map<String, dynamic>>()
-                .map(AssistantPart.fromJson)
-                .toList()) ??
-            const [],
-        finish: json['finish'] as String?,
-        tokens: json['tokens'] == null
-            ? null
-            : AssistantTokens.fromJson(json['tokens'] as Map<String, dynamic>),
-        cost: (json['cost'] as num?)?.toDouble(),
-        error: json['error'] == null
-            ? null
-            : AssistantError.fromJson(json['error'] as Map<String, dynamic>),
-      );
+    agent: json['agent'] as String? ?? '',
+    model: ModelRef.fromJson(
+      (json['model'] as Map<String, dynamic>?) ?? const {},
+    ),
+    created: _intOrNull(json['time']?['created']) ?? 0,
+    completed: _intOrNull(json['time']?['completed']),
+    parts:
+        ((json['content'] as List<dynamic>?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(AssistantPart.fromJson)
+            .toList()) ??
+        const [],
+    finish: json['finish'] as String?,
+    tokens: json['tokens'] == null
+        ? null
+        : AssistantTokens.fromJson(json['tokens'] as Map<String, dynamic>),
+    cost: (json['cost'] as num?)?.toDouble(),
+    error: json['error'] == null
+        ? null
+        : AssistantError.fromJson(json['error'] as Map<String, dynamic>),
+  );
 
   final String agent;
   final ModelRef model;
@@ -381,16 +379,17 @@ class QueuedPrompt {
   });
 
   factory QueuedPrompt.fromJson(Map<String, dynamic> json) => QueuedPrompt(
-        id: json['id'] as String? ?? '',
-        text: json['text'] as String? ?? '',
-        delivery: json['delivery'] as String? ?? 'queue',
-        timeCreated: (json['timeCreated'] as num?)?.toInt() ?? 0,
-        files: ((json['files'] as List<dynamic>?)
-                ?.whereType<Map<String, dynamic>>()
-                .map(FileAttachment.fromJson)
-                .toList()) ??
-            const [],
-      );
+    id: json['id'] as String? ?? '',
+    text: json['text'] as String? ?? '',
+    delivery: json['delivery'] as String? ?? 'queue',
+    timeCreated: (json['timeCreated'] as num?)?.toInt() ?? 0,
+    files:
+        ((json['files'] as List<dynamic>?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(FileAttachment.fromJson)
+            .toList()) ??
+        const [],
+  );
 
   final String id;
   final String text;
@@ -410,11 +409,11 @@ class Todo {
   });
 
   factory Todo.fromJson(Map<String, dynamic> json) => Todo(
-        content: json['content'] as String? ?? '',
-        status: json['status'] as String? ?? 'pending',
-        priority: json['priority'] as String? ?? 'medium',
-        position: (json['position'] as num?)?.toInt() ?? 0,
-      );
+    content: json['content'] as String? ?? '',
+    status: json['status'] as String? ?? 'pending',
+    priority: json['priority'] as String? ?? 'medium',
+    position: (json['position'] as num?)?.toInt() ?? 0,
+  );
 
   final String content;
   final String status;
@@ -437,14 +436,14 @@ class SessionStats {
   });
 
   factory SessionStats.fromJson(Map<String, dynamic> json) => SessionStats(
-        cost: (json['cost'] as num?)?.toDouble() ?? 0,
-        tokensInput: (json['tokensInput'] as num?)?.toInt() ?? 0,
-        tokensOutput: (json['tokensOutput'] as num?)?.toInt() ?? 0,
-        tokensReasoning: (json['tokensReasoning'] as num?)?.toInt() ?? 0,
-        tokensCacheRead: (json['tokensCacheRead'] as num?)?.toInt() ?? 0,
-        tokensCacheWrite: (json['tokensCacheWrite'] as num?)?.toInt() ?? 0,
-        messages: (json['messages'] as num?)?.toInt() ?? 0,
-      );
+    cost: (json['cost'] as num?)?.toDouble() ?? 0,
+    tokensInput: (json['tokensInput'] as num?)?.toInt() ?? 0,
+    tokensOutput: (json['tokensOutput'] as num?)?.toInt() ?? 0,
+    tokensReasoning: (json['tokensReasoning'] as num?)?.toInt() ?? 0,
+    tokensCacheRead: (json['tokensCacheRead'] as num?)?.toInt() ?? 0,
+    tokensCacheWrite: (json['tokensCacheWrite'] as num?)?.toInt() ?? 0,
+    messages: (json['messages'] as num?)?.toInt() ?? 0,
+  );
 
   final double cost;
   final int tokensInput;
@@ -480,13 +479,13 @@ class PermissionRequest {
         sessionID: json['sessionID'] as String? ?? '',
         agent: json['agent'] as String?,
         action: json['action'] as String? ?? '',
-        resources: (json['resources'] as List<dynamic>?)
+        resources:
+            (json['resources'] as List<dynamic>?)
                 ?.whereType<String>()
                 .toList() ??
             const [],
-        save: (json['save'] as List<dynamic>?)
-                ?.whereType<String>()
-                .toList() ??
+        save:
+            (json['save'] as List<dynamic>?)?.whereType<String>().toList() ??
             const [],
         metadata: (json['metadata'] as Map<String, dynamic>?) ?? const {},
         source: json['source'] == null
@@ -516,17 +515,13 @@ class PermissionRequest {
 }
 
 class AskSource {
-  const AskSource({
-    required this.type,
-    this.messageID,
-    this.callID,
-  });
+  const AskSource({required this.type, this.messageID, this.callID});
 
   factory AskSource.fromJson(Map<String, dynamic> json) => AskSource(
-        type: json['type'] as String? ?? '',
-        messageID: json['messageID'] as String?,
-        callID: json['callID'] as String?,
-      );
+    type: json['type'] as String? ?? '',
+    messageID: json['messageID'] as String?,
+    callID: json['callID'] as String?,
+  );
 
   final String type;
   final String? messageID;
@@ -536,11 +531,10 @@ class AskSource {
 class QuestionOption {
   const QuestionOption({required this.label, this.description});
 
-  factory QuestionOption.fromJson(Map<String, dynamic> json) =>
-      QuestionOption(
-        label: json['label'] as String? ?? '',
-        description: json['description'] as String?,
-      );
+  factory QuestionOption.fromJson(Map<String, dynamic> json) => QuestionOption(
+    label: json['label'] as String? ?? '',
+    description: json['description'] as String?,
+  );
 
   final String label;
   final String? description;
@@ -554,17 +548,17 @@ class QuestionPrompt {
     this.multiple = false,
   });
 
-  factory QuestionPrompt.fromJson(Map<String, dynamic> json) =>
-      QuestionPrompt(
-        question: json['question'] as String? ?? '',
-        header: json['header'] as String? ?? '',
-        options: ((json['options'] as List<dynamic>?)
-                ?.whereType<Map<String, dynamic>>()
-                .map(QuestionOption.fromJson)
-                .toList()) ??
-            const [],
-        multiple: json['multiple'] as bool? ?? false,
-      );
+  factory QuestionPrompt.fromJson(Map<String, dynamic> json) => QuestionPrompt(
+    question: json['question'] as String? ?? '',
+    header: json['header'] as String? ?? '',
+    options:
+        ((json['options'] as List<dynamic>?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(QuestionOption.fromJson)
+            .toList()) ??
+        const [],
+    multiple: json['multiple'] as bool? ?? false,
+  );
 
   final String question;
   final String header;
@@ -584,7 +578,8 @@ class QuestionRequest {
       QuestionRequest(
         id: json['id'] as String? ?? '',
         sessionID: json['sessionID'] as String? ?? '',
-        questions: ((json['questions'] as List<dynamic>?)
+        questions:
+            ((json['questions'] as List<dynamic>?)
                 ?.whereType<Map<String, dynamic>>()
                 .map(QuestionPrompt.fromJson)
                 .toList()) ??
@@ -611,16 +606,15 @@ class ModelEntry {
   });
 
   factory ModelEntry.fromJson(Map<String, dynamic> json) => ModelEntry(
-        providerID: json['providerID'] as String? ?? '',
-        id: json['id'] as String? ?? '',
-        name: json['name'] as String? ?? '',
-        contextLimit: (json['contextLimit'] as num?)?.toInt() ?? 0,
-        costInput: (json['costInput'] as num?)?.toDouble() ?? 0,
-        variants: (json['variants'] as List<dynamic>?)
-                ?.whereType<String>()
-                .toList() ??
-            const [],
-      );
+    providerID: json['providerID'] as String? ?? '',
+    id: json['id'] as String? ?? '',
+    name: json['name'] as String? ?? '',
+    contextLimit: (json['contextLimit'] as num?)?.toInt() ?? 0,
+    costInput: (json['costInput'] as num?)?.toDouble() ?? 0,
+    variants:
+        (json['variants'] as List<dynamic>?)?.whereType<String>().toList() ??
+        const [],
+  );
 
   final String providerID;
   final String id;
@@ -645,11 +639,11 @@ class Provider {
   });
 
   factory Provider.fromJson(Map<String, dynamic> json) => Provider(
-        id: json['id'] as String? ?? '',
-        name: json['name'] as String? ?? '',
-        connected: json['connected'] as bool? ?? false,
-        available: json['available'] as bool? ?? false,
-      );
+    id: json['id'] as String? ?? '',
+    name: json['name'] as String? ?? '',
+    connected: json['connected'] as bool? ?? false,
+    available: json['available'] as bool? ?? false,
+  );
 
   final String id;
   final String name;
@@ -667,17 +661,19 @@ class AuthMethod {
   });
 
   factory AuthMethod.fromJson(Map<String, dynamic> json) => AuthMethod(
-        type: json['type'] as String? ?? '',
-        label: json['label'] as String? ?? '',
-        env: (json['env'] as List<dynamic>?)?.whereType<String>().toList() ??
-            const [],
-        satisfied: json['satisfied'] as bool? ?? false,
-        prompts: ((json['prompts'] as List<dynamic>?)
-                ?.whereType<Map<String, dynamic>>()
-                .map(AuthPrompt.fromJson)
-                .toList()) ??
-            const [],
-      );
+    type: json['type'] as String? ?? '',
+    label: json['label'] as String? ?? '',
+    env:
+        (json['env'] as List<dynamic>?)?.whereType<String>().toList() ??
+        const [],
+    satisfied: json['satisfied'] as bool? ?? false,
+    prompts:
+        ((json['prompts'] as List<dynamic>?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(AuthPrompt.fromJson)
+            .toList()) ??
+        const [],
+  );
 
   final String type;
   final String label;
@@ -694,13 +690,12 @@ class AuthPrompt {
   });
 
   factory AuthPrompt.fromJson(Map<String, dynamic> json) => AuthPrompt(
-        key: json['key'] as String? ?? '',
-        label: json['label'] as String? ?? '',
-        options: (json['options'] as List<dynamic>?)
-                ?.whereType<String>()
-                .toList() ??
-            const [],
-      );
+    key: json['key'] as String? ?? '',
+    label: json['label'] as String? ?? '',
+    options:
+        (json['options'] as List<dynamic>?)?.whereType<String>().toList() ??
+        const [],
+  );
 
   final String key;
   final String label;
@@ -717,12 +712,12 @@ class OAuthAttempt {
   });
 
   factory OAuthAttempt.fromJson(Map<String, dynamic> json) => OAuthAttempt(
-        id: json['id'] as String? ?? '',
-        url: json['url'] as String? ?? '',
-        code: json['code'] as String? ?? '',
-        status: json['status'] as String? ?? '',
-        error: json['error'] as String?,
-      );
+    id: json['id'] as String? ?? '',
+    url: json['url'] as String? ?? '',
+    code: json['code'] as String? ?? '',
+    status: json['status'] as String? ?? '',
+    error: json['error'] as String?,
+  );
 
   final String id;
   final String url;
@@ -743,11 +738,11 @@ class Agent {
   });
 
   factory Agent.fromJson(Map<String, dynamic> json) => Agent(
-        id: json['id'] as String? ?? '',
-        mode: json['mode'] as String? ?? '',
-        description: json['description'] as String?,
-        hidden: json['hidden'] as bool? ?? false,
-      );
+    id: json['id'] as String? ?? '',
+    mode: json['mode'] as String? ?? '',
+    description: json['description'] as String?,
+    hidden: json['hidden'] as bool? ?? false,
+  );
 
   final String id;
   final String mode;
@@ -768,18 +763,17 @@ class Command {
   });
 
   factory Command.fromJson(Map<String, dynamic> json) => Command(
-        name: json['name'] as String? ?? '',
-        description: json['description'] as String?,
-        agent: json['agent'] as String?,
-        model: json['model'] as String?,
-        subtask: json['subtask'] as bool? ?? false,
-        template: json['template'] as String? ?? '',
-        source: json['source'] as String?,
-        hints: (json['hints'] as List<dynamic>?)
-                ?.whereType<String>()
-                .toList() ??
-            const [],
-      );
+    name: json['name'] as String? ?? '',
+    description: json['description'] as String?,
+    agent: json['agent'] as String?,
+    model: json['model'] as String?,
+    subtask: json['subtask'] as bool? ?? false,
+    template: json['template'] as String? ?? '',
+    source: json['source'] as String?,
+    hints:
+        (json['hints'] as List<dynamic>?)?.whereType<String>().toList() ??
+        const [],
+  );
 
   final String name;
   final String? description;
@@ -800,11 +794,11 @@ class Skill {
   });
 
   factory Skill.fromJson(Map<String, dynamic> json) => Skill(
-        name: json['name'] as String? ?? '',
-        description: json['description'] as String?,
-        slash: json['slash'] as bool? ?? false,
-        location: json['location'] as String? ?? '',
-      );
+    name: json['name'] as String? ?? '',
+    description: json['description'] as String?,
+    slash: json['slash'] as bool? ?? false,
+    location: json['location'] as String? ?? '',
+  );
 
   final String name;
   final String? description;
@@ -816,9 +810,9 @@ class VcsInfo {
   const VcsInfo({this.branch, this.defaultBranch});
 
   factory VcsInfo.fromJson(Map<String, dynamic> json) => VcsInfo(
-        branch: json['branch'] as String?,
-        defaultBranch: json['defaultBranch'] as String?,
-      );
+    branch: json['branch'] as String?,
+    defaultBranch: json['defaultBranch'] as String?,
+  );
 
   final String? branch;
   final String? defaultBranch;
@@ -836,12 +830,12 @@ class FileDiff {
   });
 
   factory FileDiff.fromJson(Map<String, dynamic> json) => FileDiff(
-        file: json['file'] as String? ?? '',
-        patch: json['patch'] as String? ?? '',
-        additions: (json['additions'] as num?)?.toInt() ?? 0,
-        deletions: (json['deletions'] as num?)?.toInt() ?? 0,
-        status: json['status'] as String? ?? '',
-      );
+    file: json['file'] as String? ?? '',
+    patch: json['patch'] as String? ?? '',
+    additions: (json['additions'] as num?)?.toInt() ?? 0,
+    deletions: (json['deletions'] as num?)?.toInt() ?? 0,
+    status: json['status'] as String? ?? '',
+  );
 
   final String file;
   final String patch;
@@ -851,17 +845,13 @@ class FileDiff {
 }
 
 class McpServer {
-  const McpServer({
-    required this.name,
-    required this.status,
-    this.error,
-  });
+  const McpServer({required this.name, required this.status, this.error});
 
   factory McpServer.fromJson(Map<String, dynamic> json) => McpServer(
-        name: json['name'] as String? ?? '',
-        status: json['status'] as String? ?? '',
-        error: json['error'] as String?,
-      );
+    name: json['name'] as String? ?? '',
+    status: json['status'] as String? ?? '',
+    error: json['error'] as String?,
+  );
 
   final String name;
   final String status;
@@ -879,11 +869,11 @@ class LspServer {
   });
 
   factory LspServer.fromJson(Map<String, dynamic> json) => LspServer(
-        id: json['id'] as String? ?? '',
-        name: json['name'] as String? ?? '',
-        root: json['root'] as String? ?? '',
-        status: json['status'] as String? ?? '',
-      );
+    id: json['id'] as String? ?? '',
+    name: json['name'] as String? ?? '',
+    root: json['root'] as String? ?? '',
+    status: json['status'] as String? ?? '',
+  );
 
   final String id;
   final String name;
@@ -899,17 +889,17 @@ class LspState {
   });
 
   factory LspState.fromJson(Map<String, dynamic> json) => LspState(
-        enabled: json['enabled'] as bool? ?? false,
-        servers: ((json['servers'] as List<dynamic>?)
-                ?.whereType<Map<String, dynamic>>()
-                .map(LspServer.fromJson)
-                .toList()) ??
-            const [],
-        available: (json['available'] as List<dynamic>?)
-                ?.whereType<String>()
-                .toList() ??
-            const [],
-      );
+    enabled: json['enabled'] as bool? ?? false,
+    servers:
+        ((json['servers'] as List<dynamic>?)
+            ?.whereType<Map<String, dynamic>>()
+            .map(LspServer.fromJson)
+            .toList()) ??
+        const [],
+    available:
+        (json['available'] as List<dynamic>?)?.whereType<String>().toList() ??
+        const [],
+  );
 
   final bool enabled;
   final List<LspServer> servers;
@@ -928,14 +918,14 @@ class Memory {
   });
 
   factory Memory.fromJson(Map<String, dynamic> json) => Memory(
-        id: json['id'] as String? ?? '',
-        scope: json['scope'] as String? ?? '',
-        content: json['content'] as String? ?? '',
-        category: json['category'] as String?,
-        origin: json['origin'] as String? ?? '',
-        pinned: json['pinned'] as bool? ?? false,
-        disabled: json['disabled'] as bool? ?? false,
-      );
+    id: json['id'] as String? ?? '',
+    scope: json['scope'] as String? ?? '',
+    content: json['content'] as String? ?? '',
+    category: json['category'] as String?,
+    origin: json['origin'] as String? ?? '',
+    pinned: json['pinned'] as bool? ?? false,
+    disabled: json['disabled'] as bool? ?? false,
+  );
 
   final String id;
   final String scope;
@@ -957,12 +947,12 @@ class ApiEvent {
   });
 
   factory ApiEvent.fromJson(Map<String, dynamic> json) => ApiEvent(
-        id: json['id'] as String? ?? '',
-        type: json['type'] as String? ?? '',
-        data: (json['data'] as Map<String, dynamic>?) ?? const {},
-        seq: (json['seq'] as num?)?.toInt(),
-        sessionID: json['sessionID'] as String?,
-      );
+    id: json['id'] as String? ?? '',
+    type: json['type'] as String? ?? '',
+    data: (json['data'] as Map<String, dynamic>?) ?? const {},
+    seq: (json['seq'] as num?)?.toInt(),
+    sessionID: json['sessionID'] as String?,
+  );
 
   final String id;
   final String type;

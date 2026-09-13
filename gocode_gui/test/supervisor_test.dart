@@ -24,7 +24,8 @@ void main() {
     });
 
     test('extracts from a line with surrounding text', () {
-      const line = 'boot: pid 1 … gocode server listening on http://127.0.0.1:1 ok';
+      const line =
+          'boot: pid 1 … gocode server listening on http://127.0.0.1:1 ok';
       expect(
         ServerSupervisor.listeningRe.firstMatch(line)!.group(1),
         'http://127.0.0.1:1',

@@ -19,8 +19,9 @@ const _shotDir = String.fromEnvironment('SHOT_DIR');
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  testWidgets('starts the server, loads models, and starts a session',
-      (tester) async {
+  testWidgets('starts the server, loads models, and starts a session', (
+    tester,
+  ) async {
     final project = await Directory.systemTemp.createTemp('gocode_gui_flow_');
     final container = ProviderContainer();
     final shotKey = GlobalKey();
@@ -55,8 +56,8 @@ void main() {
     Future<void> shot(String name) async {
       if (_shotDir.isEmpty) return;
       await tester.pump(const Duration(milliseconds: 400));
-      final boundary = shotKey.currentContext!.findRenderObject()!
-          as RenderRepaintBoundary;
+      final boundary =
+          shotKey.currentContext!.findRenderObject()! as RenderRepaintBoundary;
       final image = await boundary.toImage(pixelRatio: 2);
       final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
       await File('$_shotDir/$name.png')

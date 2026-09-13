@@ -17,7 +17,9 @@ index 111..222 100644
 ''';
       final lines = parseUnifiedDiff(patch);
 
-      final hunk = lines.indexWhere((l) => l.type == 'meta' && l.text.contains('@@'));
+      final hunk = lines.indexWhere(
+        (l) => l.type == 'meta' && l.text.contains('@@'),
+      );
       expect(hunk, greaterThanOrEqualTo(0));
 
       final adds = lines.where((l) => l.isAdd).toList();
@@ -62,8 +64,10 @@ index 111..222 100644
 \\ No newline at end of file
 ''';
       final lines = parseUnifiedDiff(patch);
-      expect(lines.where((l) => l.isMeta && l.text.contains('No newline')),
-          hasLength(1));
+      expect(
+        lines.where((l) => l.isMeta && l.text.contains('No newline')),
+        hasLength(1),
+      );
     });
   });
 }

@@ -41,7 +41,11 @@ class _AmbientPainter extends CustomPainter {
           ..shader = ui.Gradient.radial(
             center,
             radius,
-            [color, color.withValues(alpha: color.a * 0.35), color.withValues(alpha: 0)],
+            [
+              color,
+              color.withValues(alpha: color.a * 0.35),
+              color.withValues(alpha: 0),
+            ],
             const [0, 0.45, 1],
           ),
       );
@@ -125,8 +129,8 @@ class _GlassSurfaceState extends State<GlassSurface> {
       painter: _GlassFillPainter(tint: widget.tint),
       foregroundPainter: _GlassRimPainter(
         radius: widget.radius,
-        border: widget.borderColor ??
-            (_hovered ? GC.borderStrong : GC.glassBorder),
+        border:
+            widget.borderColor ?? (_hovered ? GC.borderStrong : GC.glassBorder),
       ),
       child: Padding(padding: widget.padding, child: widget.child),
     );
@@ -136,8 +140,10 @@ class _GlassSurfaceState extends State<GlassSurface> {
     surface = ClipRRect(borderRadius: radius, child: surface);
     if (widget.shadow) {
       surface = DecoratedBox(
-        decoration:
-            BoxDecoration(borderRadius: radius, boxShadow: GC.cardShadow),
+        decoration: BoxDecoration(
+          borderRadius: radius,
+          boxShadow: GC.cardShadow,
+        ),
         child: surface,
       );
     }
@@ -290,7 +296,10 @@ class GocodeLogo extends StatelessWidget {
       TextSpan(
         text: 'gocode',
         children: const [
-          TextSpan(text: '_', style: TextStyle(color: GC.accent)),
+          TextSpan(
+            text: '_',
+            style: TextStyle(color: GC.accent),
+          ),
         ],
       ),
       maxLines: 1,
@@ -339,12 +348,18 @@ class PillHeader extends StatelessWidget implements PreferredSizeWidget {
             constraints: const BoxConstraints(maxWidth: 1240),
             child: GlassSurface(
               radius: _height / 2,
-              padding: EdgeInsets.only(left: leading == null ? 22 : 8, right: 8),
+              padding: EdgeInsets.only(
+                left: leading == null ? 22 : 8,
+                right: 8,
+              ),
               child: SizedBox(
                 height: _height,
                 child: Row(
                   children: [
-                    if (leading != null) ...[leading!, const SizedBox(width: 6)],
+                    if (leading != null) ...[
+                      leading!,
+                      const SizedBox(width: 6),
+                    ],
                     Expanded(
                       child: Align(
                         alignment: Alignment.centerLeft,
@@ -515,8 +530,9 @@ class ErrorPanel extends StatelessWidget {
               Expanded(
                 child: SelectableText(
                   message,
-                  style: theme.textTheme.bodyMedium
-                      ?.copyWith(color: GC.downText),
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: GC.downText,
+                  ),
                 ),
               ),
             ],

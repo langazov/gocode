@@ -66,7 +66,10 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
                       else if (!_expanded && !errored) ...[
                         FilledButton.icon(
                           onPressed: _pickDirectoryAndConnect,
-                          icon: const Icon(Icons.folder_open_outlined, size: 18),
+                          icon: const Icon(
+                            Icons.folder_open_outlined,
+                            size: 18,
+                          ),
                           label: const Text('Choose project folder'),
                         ),
                         const SizedBox(height: 12),
@@ -117,10 +120,9 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
   Future<void> _pickDirectoryAndConnect() async {
     final directory = await FilePicker.getDirectoryPath();
     if (directory == null) return;
-    final settings = ref.read(settingsProvider).copyWith(
-          mode: ConnectionMode.local,
-          workingDirectory: directory,
-        );
+    final settings = ref
+        .read(settingsProvider)
+        .copyWith(mode: ConnectionMode.local, workingDirectory: directory);
     ref.read(settingsProvider.notifier).update(settings);
     await ref.read(connectionProvider.notifier).apply(settings);
   }
@@ -153,10 +155,7 @@ class _Starting extends StatelessWidget {
             ),
           ],
         ),
-        if (tail.isNotEmpty) ...[
-          const SizedBox(height: 16),
-          CodeBlock(tail),
-        ],
+        if (tail.isNotEmpty) ...[const SizedBox(height: 16), CodeBlock(tail)],
       ],
     );
   }
@@ -239,8 +238,9 @@ class _SetupFormState extends ConsumerState<_SetupForm> {
                 child: TextField(
                   controller: _directory,
                   style: GC.code.copyWith(fontSize: 13.5, color: GC.textHi),
-                  decoration:
-                      const InputDecoration(labelText: 'Project directory'),
+                  decoration: const InputDecoration(
+                    labelText: 'Project directory',
+                  ),
                 ),
               ),
               const SizedBox(width: 8),

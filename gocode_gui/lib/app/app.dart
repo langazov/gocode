@@ -24,9 +24,9 @@ final routerProvider = Provider<GoRouter>((ref) {
 
   // Each page paints its own ground, so route transitions stay opaque.
   Page<void> page(GoRouterState state, Widget child) => MaterialPage<void>(
-        key: state.pageKey,
-        child: AmbientBackground(child: child),
-      );
+    key: state.pageKey,
+    child: AmbientBackground(child: child),
+  );
 
   final router = GoRouter(
     refreshListenable: phase,
@@ -58,10 +58,8 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/session/:id',
-        pageBuilder: (context, state) => page(
-          state,
-          SessionScreen(sessionID: state.pathParameters['id']!),
-        ),
+        pageBuilder: (context, state) =>
+            page(state, SessionScreen(sessionID: state.pathParameters['id']!)),
       ),
     ],
   );

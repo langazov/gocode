@@ -32,13 +32,13 @@ void main() {
         .transform(utf8.decoder)
         .transform(const LineSplitter())
         .listen((line) {
-      stdoutLines.add(line);
-      final match =
-          RegExp(r'listening on (https?://[^\s]+)').firstMatch(line);
-      if (match != null && !completer.isCompleted) {
-        completer.complete(match.group(1)!.trim());
-      }
-    });
+          stdoutLines.add(line);
+          final match = RegExp(r'listening on (https?://[^\s]+)')
+              .firstMatch(line);
+          if (match != null && !completer.isCompleted) {
+            completer.complete(match.group(1)!.trim());
+          }
+        });
     server.stderr
         .transform(utf8.decoder)
         .transform(const LineSplitter())

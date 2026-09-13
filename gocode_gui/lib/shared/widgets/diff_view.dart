@@ -38,8 +38,8 @@ List<DiffLine> parseUnifiedDiff(String patch) {
   for (final raw in patch.split('\n')) {
     if (raw.startsWith('@@')) {
       // "@@ -oldStart[,count] +newStart[,count] @@ …"
-      final match =
-          RegExp(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@').firstMatch(raw);
+      final match = RegExp(r'@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@')
+          .firstMatch(raw);
       if (match != null) {
         oldLine = int.parse(match.group(1)!);
         newLine = int.parse(match.group(2)!);
@@ -54,26 +54,42 @@ List<DiffLine> parseUnifiedDiff(String patch) {
       continue;
     }
     if (raw.startsWith('+')) {
-      out.add(DiffLine(
-          type: 'add', text: raw.substring(1), oldLine: 0, newLine: newLine));
+      out.add(
+        DiffLine(
+          type: 'add',
+          text: raw.substring(1),
+          oldLine: 0,
+          newLine: newLine,
+        ),
+      );
       newLine++;
     } else if (raw.startsWith('-')) {
-      out.add(DiffLine(
-          type: 'remove', text: raw.substring(1), oldLine: oldLine, newLine: 0));
+      out.add(
+        DiffLine(
+          type: 'remove',
+          text: raw.substring(1),
+          oldLine: oldLine,
+          newLine: 0,
+        ),
+      );
       oldLine++;
     } else if (raw.startsWith(' ')) {
-      out.add(DiffLine(
+      out.add(
+        DiffLine(
           type: 'context',
           text: raw.substring(1),
           oldLine: oldLine,
-          newLine: newLine));
+          newLine: newLine,
+        ),
+      );
       oldLine++;
       newLine++;
     } else if (raw.startsWith('\\')) {
       out.add(DiffLine(type: 'meta', text: raw, oldLine: 0, newLine: 0));
     } else if (raw.trim().isEmpty) {
-      out.add(DiffLine(
-          type: 'context', text: '', oldLine: oldLine, newLine: newLine));
+      out.add(
+        DiffLine(type: 'context', text: '', oldLine: oldLine, newLine: newLine),
+      );
       oldLine++;
       newLine++;
     } else {
@@ -127,10 +143,7 @@ class DiffView extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  Text(
-                    '+$additions',
-                    style: GC.code.copyWith(color: GC.ok),
-                  ),
+                  Text('+$additions', style: GC.code.copyWith(color: GC.ok)),
                   const SizedBox(width: 6),
                   Text(
                     '−$removals',
@@ -170,8 +183,8 @@ class DiffView extends StatelessWidget {
     final (background, foreground, sign) = line.isAdd
         ? (GC.ok.withValues(alpha: 0.10), GC.textHi, '+')
         : line.isRemove
-            ? (GC.down.withValues(alpha: 0.10), GC.textHi, '-')
-            : (Colors.transparent, GC.textBody, ' ');
+        ? (GC.down.withValues(alpha: 0.10), GC.textHi, '-')
+        : (Colors.transparent, GC.textBody, ' ');
     final number = line.isRemove ? line.oldLine : line.newLine;
     return Container(
       color: background,
@@ -196,8 +209,8 @@ class DiffView extends StatelessWidget {
                 color: line.isAdd
                     ? GC.ok
                     : line.isRemove
-                        ? GC.downText
-                        : GC.textFaint,
+                    ? GC.downText
+                    : GC.textFaint,
               ),
             ),
           ),

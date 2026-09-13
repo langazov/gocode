@@ -37,11 +37,11 @@ class GocodeClient {
   final String? password;
 
   Map<String, String> get _headers => {
-        'Accept': 'application/json',
-        if (username != null && password != null)
-          'Authorization':
-              'Basic ${base64Encode(utf8.encode('$username:$password'))}',
-      };
+    'Accept': 'application/json',
+    if (username != null && password != null)
+      'Authorization':
+          'Basic ${base64Encode(utf8.encode('$username:$password'))}',
+  };
 
   String _url(String path) => baseUrl + path;
 
@@ -74,7 +74,9 @@ class GocodeClient {
   }
 
   Future<Map<String, dynamic>> _decodeObject(
-      http.Response res, String path) async {
+    http.Response res,
+    String path,
+  ) async {
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw ApiException(res.statusCode, _errorMessage(res.body, path));
     }
@@ -83,8 +85,7 @@ class GocodeClient {
     throw ApiException(res.statusCode, 'unexpected response for $path');
   }
 
-  Future<List<dynamic>> _decodeList(
-      http.Response res, String path) async {
+  Future<List<dynamic>> _decodeList(http.Response res, String path) async {
     if (res.statusCode < 200 || res.statusCode >= 300) {
       throw ApiException(res.statusCode, _errorMessage(res.body, path));
     }
@@ -108,8 +109,10 @@ class GocodeClient {
 
   Future<bool> health() async {
     try {
-      final res =
-          await _http.get(Uri.parse(_url('/api/health')), headers: _headers);
+      final res = await _http.get(
+        Uri.parse(_url('/api/health')),
+        headers: _headers,
+      );
       return res.statusCode == 200;
     } catch (_) {
       return false;
@@ -130,11 +133,12 @@ class GocodeClient {
   Future<Session> createSession({
     required String directory,
     String? title,
-  }) async =>
-      Session.fromJson(await _send('POST', '/api/session', {
-        'directory': directory,
-        if (title != null && title.isNotEmpty) 'title': title,
-      }));
+  }) async => Session.fromJson(
+    await _send('POST', '/api/session', {
+      'directory': directory,
+      if (title != null && title.isNotEmpty) 'title': title,
+    }),
+  );
 
   Future<void> deleteSession(String id) async =>
       _send('DELETE', '/api/session/$id');
@@ -170,8 +174,7 @@ class GocodeClient {
     final out = await _send('POST', '/api/session/$id/prompt', {
       'text': text,
       'delivery': delivery,
-      if (files.isNotEmpty)
-        'files': files.map((f) => f.toJson()).toList(),
+      if (files.isNotEmpty) 'files': files.map((f) => f.toJson()).toList(),
     });
     return out['messageID'] as String? ?? '';
   }
@@ -184,12 +187,11 @@ class GocodeClient {
     String providerID,
     String modelID, {
     String? variant,
-  }) async =>
-      _send('POST', '/api/session/$id/model', {
-        'providerID': providerID,
-        'id': modelID,
-        if (variant != null && variant.isNotEmpty) 'variant': variant,
-      });
+  }) async => _send('POST', '/api/session/$id/model', {
+    'providerID': providerID,
+    'id': modelID,
+    if (variant != null && variant.isNotEmpty) 'variant': variant,
+  });
 
   Future<void> setAgent(String id, String agent) async =>
       _send('POST', '/api/session/$id/agent', {'agent': agent});
@@ -235,8 +237,7 @@ class GocodeClient {
     String reply, {
     String? message,
   }) async =>
-      _send(
-          'POST', '/api/session/$sessionID/permission/$requestID/reply', {
+      _send('POST', '/api/session/$sessionID/permission/$requestID/reply', {
         'reply': reply,
         if (message != null && message.isNotEmpty) 'message': message,
       });
@@ -257,7 +258,9 @@ class GocodeClient {
 
   /// One entry per question in the request, each holding chosen labels.
   Future<void> replyQuestion(
-          String requestID, List<List<String>> answers) async =>
+    String requestID,
+    List<List<String>> answers,
+  ) async =>
       _send('POST', '/api/question/$requestID/reply', {'answers': answers});
 
   Future<void> rejectQuestion(String requestID) async =>
@@ -293,16 +296,17 @@ class GocodeClient {
     String providerID,
     String method, [
     Map<String, String> answers = const {},
-  ]) async =>
-      OAuthAttempt.fromJson(await _send(
-        'POST',
-        '/api/provider/$providerID/auth/oauth',
-        {'method': method, 'answers': answers},
-      ));
+  ]) async => OAuthAttempt.fromJson(
+    await _send('POST', '/api/provider/$providerID/auth/oauth', {
+      'method': method,
+      'answers': answers,
+    }),
+  );
 
   Future<OAuthAttempt> oauthStatus(String attemptID) async =>
       OAuthAttempt.fromJson(
-          await _getJson('/api/provider/auth/oauth/$attemptID'));
+        await _getJson('/api/provider/auth/oauth/$attemptID'),
+      );
 
   // --------------------------------------------------------------- catalog
 
@@ -336,13 +340,11 @@ class GocodeClient {
           .map(McpServer.fromJson)
           .toList();
 
-  Future<LspState> lsp() async =>
-      LspState.fromJson(await _getJson('/api/lsp'));
+  Future<LspState> lsp() async => LspState.fromJson(await _getJson('/api/lsp'));
 
   // --------------------------------------------------------------------- vcs
 
-  Future<VcsInfo> vcs() async =>
-      VcsInfo.fromJson(await _getJson('/api/vcs'));
+  Future<VcsInfo> vcs() async => VcsInfo.fromJson(await _getJson('/api/vcs'));
 
   Future<List<FileDiff>> vcsDiff({String mode = 'git', int context = 0}) async {
     var path = '/api/vcs/diff?mode=${Uri.encodeQueryComponent(mode)}';

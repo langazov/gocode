@@ -35,9 +35,6 @@ Future<void> main() async {
   }
 
   runApp(
-    UncontrolledProviderScope(
-      container: container,
-      child: const GoCodeApp(),
-    ),
+    UncontrolledProviderScope(container: container, child: const GoCodeApp()),
   );
 }

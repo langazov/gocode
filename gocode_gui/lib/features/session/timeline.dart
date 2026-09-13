@@ -127,15 +127,14 @@ class SessionState {
     List<QueuedPrompt>? queued,
     List<Todo>? todos,
     SessionStats? stats,
-  }) =>
-      SessionState(
-        session: session ?? this.session,
-        items: items ?? this.items,
-        busy: busy ?? this.busy,
-        queued: queued ?? this.queued,
-        todos: todos ?? this.todos,
-        stats: stats ?? this.stats,
-      );
+  }) => SessionState(
+    session: session ?? this.session,
+    items: items ?? this.items,
+    busy: busy ?? this.busy,
+    queued: queued ?? this.queued,
+    todos: todos ?? this.todos,
+    stats: stats ?? this.stats,
+  );
 }
 
 /// Projects durable messages into timeline items. Pure; unit-testable.
@@ -145,12 +144,14 @@ List<TimelineItem> projectMessages(List<Message> messages) {
     switch (m.type) {
       case Message.user:
         final data = UserData.fromJson(m.data);
-        out.add(UserBubble(
-          messageID: m.id,
-          text: data.text,
-          files: data.files,
-          timeCreated: m.timeCreated,
-        ));
+        out.add(
+          UserBubble(
+            messageID: m.id,
+            text: data.text,
+            files: data.files,
+            timeCreated: m.timeCreated,
+          ),
+        );
       case Message.assistant:
         final data = AssistantData.fromJson(m.data);
         final turn = AssistantTurn(
@@ -200,9 +201,9 @@ class SessionController {
     required this.sessionID,
     required Stream<ApiEvent> events,
     Stream<void>? reconnectSignal,
-  })  : _client = client,
-        _events = events,
-        _reconnectSignal = reconnectSignal;
+  }) : _client = client,
+       _events = events,
+       _reconnectSignal = reconnectSignal;
 
   final GocodeClient _client;
   final String sessionID;
@@ -308,8 +309,7 @@ class SessionController {
     final turn = AssistantTurn(
       messageID: messageID,
       agent: current.session.agent ?? '',
-      model: current.session.model ??
-          const ModelRef(providerID: '', id: ''),
+      model: current.session.model ?? const ModelRef(providerID: '', id: ''),
       timeCreated: DateTime.now().millisecondsSinceEpoch,
     );
     current.items.add(turn);
@@ -317,18 +317,22 @@ class SessionController {
   }
 
   /// Sends a prompt; the server admits it durably and events drive the rest.
-  Future<void> prompt(String text,
-      {String delivery = 'queue',
-      List<FileAttachment> files = const []}) async {
-    await _client.prompt(sessionID, text,
-        delivery: delivery, files: files);
+  Future<void> prompt(
+    String text, {
+    String delivery = 'queue',
+    List<FileAttachment> files = const [],
+  }) async {
+    await _client.prompt(sessionID, text, delivery: delivery, files: files);
     unawaited(reconcile());
   }
 
   Future<void> interrupt() => _client.interrupt(sessionID);
 
-  Future<void> setModel(String providerID, String modelID,
-      {String? variant}) async {
+  Future<void> setModel(
+    String providerID,
+    String modelID, {
+    String? variant,
+  }) async {
     await _client.setModel(sessionID, providerID, modelID, variant: variant);
     unawaited(reconcile());
   }
@@ -353,36 +357,36 @@ class SessionController {
 
 /// Live state for one session. Auto-dispose: leaving the screen tears the
 /// controller down; re-entering reconciles from scratch.
-final sessionStateProvider =
-    StreamProvider.autoDispose.family<SessionState, String>((ref, sessionID) {
-  final client = ref.watch(apiClientProvider);
-  if (client == null) {
-    return const Stream<SessionState>.empty();
-  }
-  final connection = ref.watch(connectionControllerProvider);
-  final controller = SessionController(
-    client: client,
-    sessionID: sessionID,
-    events: connection?.events ?? const Stream<ApiEvent>.empty(),
-    reconnectSignal: connection?.reconnectSignal,
-  );
-  ref.onDispose(() {
-    controller.dispose();
-    if (identical(sessionControllerRegistry[sessionID], controller)) {
-      sessionControllerRegistry.remove(sessionID);
-    }
-  });
-  sessionControllerRegistry[sessionID] = controller;
-  unawaited(controller.start());
-  return controller.stream;
-});
+final sessionStateProvider = StreamProvider.autoDispose
+    .family<SessionState, String>((ref, sessionID) {
+      final client = ref.watch(apiClientProvider);
+      if (client == null) {
+        return const Stream<SessionState>.empty();
+      }
+      final connection = ref.watch(connectionControllerProvider);
+      final controller = SessionController(
+        client: client,
+        sessionID: sessionID,
+        events: connection?.events ?? const Stream<ApiEvent>.empty(),
+        reconnectSignal: connection?.reconnectSignal,
+      );
+      ref.onDispose(() {
+        controller.dispose();
+        if (identical(sessionControllerRegistry[sessionID], controller)) {
+          sessionControllerRegistry.remove(sessionID);
+        }
+      });
+      sessionControllerRegistry[sessionID] = controller;
+      unawaited(controller.start());
+      return controller.stream;
+    });
 
 /// The controller behind [sessionStateProvider], for actions (prompt,
 /// interrupt, model/agent switch). Read, not watch — actions are imperative.
 SessionController? sessionControllerOf(Ref ref, String sessionID) =>
     ref.read(sessionStateProvider(sessionID)) is AsyncError
-        ? null
-        : sessionControllerRegistry[sessionID];
+    ? null
+    : sessionControllerRegistry[sessionID];
 
 /// Registry of live controllers, so imperative actions (send, interrupt)
 /// can find the controller for a session without watching providers.

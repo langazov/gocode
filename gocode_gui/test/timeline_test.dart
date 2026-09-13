@@ -68,19 +68,21 @@ void main() {
     test('notice items for agent/model switches and compaction', () {
       final items = projectMessages([
         Message(
-            id: 'a',
-            sessionID: 's',
-            type: Message.agentSwitched,
-            seq: 1,
-            timeCreated: 1,
-            data: {'agent': 'plan'}),
+          id: 'a',
+          sessionID: 's',
+          type: Message.agentSwitched,
+          seq: 1,
+          timeCreated: 1,
+          data: {'agent': 'plan'},
+        ),
         Message(
-            id: 'b',
-            sessionID: 's',
-            type: Message.compaction,
-            seq: 2,
-            timeCreated: 2,
-            data: {}),
+          id: 'b',
+          sessionID: 's',
+          type: Message.compaction,
+          seq: 2,
+          timeCreated: 2,
+          data: {},
+        ),
       ]);
       expect((items[0] as NoticeItem).text, 'agent → plan');
       expect((items[1] as NoticeItem).text, 'context compacted');

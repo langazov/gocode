@@ -32,36 +32,43 @@ Future<HttpServer> _fakeServer() async {
 }
 
 void main() {
-  test('apiClientProvider follows the connection after an early read',
-      () async {
-    final server = await _fakeServer();
-    final container = ProviderContainer();
-    addTearDown(() async {
-      container.dispose();
-      await server.close(force: true);
-    });
+  test(
+    'apiClientProvider follows the connection after an early read',
+    () async {
+      final server = await _fakeServer();
+      final container = ProviderContainer();
+      addTearDown(() async {
+        container.dispose();
+        await server.close(force: true);
+      });
 
-    // Read before any connection exists — what AsksOverlay does at launch.
-    // This used to pin null forever, leaving models/agents/sessions empty.
-    final client = container.listen(apiClientProvider, (_, _) {});
-    final controller = container.listen(connectionControllerProvider, (_, _) {});
-    expect(client.read(), isNull);
+      // Read before any connection exists — what AsksOverlay does at launch.
+      // This used to pin null forever, leaving models/agents/sessions empty.
+      final client = container.listen(apiClientProvider, (_, _) {});
+      final controller = container.listen(
+        connectionControllerProvider,
+        (_, _) {},
+      );
+      expect(client.read(), isNull);
 
-    await container.read(connectionProvider.notifier).apply(
-          ConnectionSettings(
-            mode: ConnectionMode.remote,
-            remoteUrl: 'http://127.0.0.1:${server.port}',
-          ),
-        );
+      await container
+          .read(connectionProvider.notifier)
+          .apply(
+            ConnectionSettings(
+              mode: ConnectionMode.remote,
+              remoteUrl: 'http://127.0.0.1:${server.port}',
+            ),
+          );
 
-    expect(container.read(connectionProvider).error, isNull);
-    expect(container.read(connectionProvider).isConnected, isTrue);
-    expect(client.read(), isNotNull);
-    expect(client.read()!.baseUrl, 'http://127.0.0.1:${server.port}');
-    expect(controller.read(), isNotNull);
+      expect(container.read(connectionProvider).error, isNull);
+      expect(container.read(connectionProvider).isConnected, isTrue);
+      expect(client.read(), isNotNull);
+      expect(client.read()!.baseUrl, 'http://127.0.0.1:${server.port}');
+      expect(controller.read(), isNotNull);
 
-    await container.read(connectionProvider.notifier).disconnect();
-    expect(client.read(), isNull);
-    expect(controller.read(), isNull);
-  });
+      await container.read(connectionProvider.notifier).disconnect();
+      expect(client.read(), isNull);
+      expect(controller.read(), isNull);
+    },
+  );
 }
