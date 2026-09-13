@@ -71,7 +71,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		data, _ := io.ReadAll(res.Body)
-		err := parseError(res.StatusCode, data)
+		err := parseError(res, data)
 		emit(llm.StreamEvent{Type: llm.EventProviderError, Error: err})
 		return err
 	}
@@ -464,13 +464,39 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("openai: %d %s", e.StatusCode, e.Message)
 }
 
-func parseError(status int, data []byte) error {
+// parseError lowers a failed HTTP exchange to an error, carrying the
+// provider's own retry hint on the one status where waiting is the fix: a 429
+// becomes llm.RateLimitError with the wait the response stated — its
+// Retry-After header, or the "Please try again in 1.728s" prose its message
+// body carries when the header is absent — so the session runner can hold
+// the turn and re-run it once the window reopens.
+func parseError(res *http.Response, data []byte) error {
+	status := res.StatusCode
 	var envelope struct {
 		Error APIError `json:"error"`
 	}
 	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Error.Message != "" {
+		if status == http.StatusTooManyRequests {
+			return rateLimited("openai", res, envelope.Error.Message)
+		}
 		envelope.Error.StatusCode = status
 		return &envelope.Error
 	}
+	if status == http.StatusTooManyRequests {
+		return rateLimited("openai", res, strings.TrimSpace(string(data)))
+	}
 	return &APIError{StatusCode: status, Message: string(data)}
+}
+
+// rateLimited builds the error for a 429 from everything the response said
+// about the wait: the standard header, then the prose some providers write
+// into the message body. Shared detection order with every other client.
+func rateLimited(provider string, res *http.Response, message string) error {
+	delay, known := llm.RetryAfter(res.Header.Get("Retry-After"), message)
+	return &llm.RateLimitError{
+		Provider:        provider,
+		Message:         message,
+		RetryAfter:      delay,
+		RetryAfterKnown: known,
+	}
 }

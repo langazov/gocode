@@ -35,10 +35,10 @@ var (
 		Type:    "session.next.step.discarded",
 		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
 	}
-	// StepWaiting announces a turn held back by an unreachable network, and
-	// repeats before every retry. Live-only, like the ask events: a past
-	// outage replayed into a reopened session would describe a wait that
-	// finished long ago.
+	// StepWaiting announces a turn held back by an unreachable network or a
+	// provider-stated rate limit, and repeats before every retry. Live-only,
+	// like the ask events: a past hold replayed into a reopened session would
+	// describe a wait that finished long ago.
 	StepWaiting = event.Definition{
 		Type: "session.next.step.waiting",
 	}

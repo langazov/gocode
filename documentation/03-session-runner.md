@@ -124,6 +124,34 @@ carries every write. Interruption is a clean stop, not an abort.
 leaves `tool.called` with no outcome, and the next run closes those out as
 failures before doing anything else.
 
+### Holds: outages and rate limits
+
+Two failure classes are *held* rather than settled (`netretry.go`). The step
+is re-attempted, not failed, because re-issuing it costs nothing and succeeds
+a minute later:
+
+| Hold | Cause | Wait |
+|---|---|---|
+| network outage | the request never reached the provider (`isTransportFailure`: DNS, refused, reset, mid-body EOF, stall) | backoff, doubling 2s→30s, cut short when the link comes back |
+| rate limit | a 429 that *states* a retry time (`llm.RateLimitError` with a known hint) | **exactly** the provider's number — no doubling, no jitter, no early exit |
+
+Both share one budget per turn (`transportRetryBudget`, 5 minutes). When it
+runs out the user is asked whether to keep waiting; declining settles the
+turn with the real error. A headless runner (subagent, no asker) never asks.
+
+The rate-limit wait is served verbatim for a reason: the provider scheduled
+the retry, so backing off against its number both risks another 429 (too
+early) and wastes an open window (too late). A hint that outlasts the budget
+asks *before* waiting — its length is known, so the user decides up front.
+A 429 with no stated time settles as the failure it always was; a hint past
+`rateLimitRetryCap` (10 minutes) reads as a quota, not a window, and settles
+too.
+
+The guard on both is *dispatch, not silence*: a step that already called a
+tool may have written a file or run a command, and is never re-run whatever
+stopped it. A partial message from the held attempt is retracted
+(`step.discarded`) so the re-issue starts from the history the first one saw.
+
 ## Continuation and MaxSteps
 
 A turn "needs continuation" when the model called tools: it hasn't finished, it

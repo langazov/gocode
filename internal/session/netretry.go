@@ -12,10 +12,11 @@ import (
 	"time"
 
 	"github.com/langazov/gocode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/llm"
 	"github.com/langazov/gocode-go/internal/question"
 )
 
-// Waiting out a network outage.
+// Waiting out a network outage, and waiting out a rate limit.
 //
 // A turn that dies because the machine lost its uplink is not a failure of the
 // conversation: nothing was said, nothing was decided, and the same request
@@ -30,6 +31,14 @@ import (
 // while everything else responds). Re-issuing the request tests the one path
 // that has to work, and a dial to a host that is not there fails in
 // milliseconds, so the retries cost close to nothing.
+//
+// A 429 that says when to retry gets the same treatment for a different
+// reason: the provider has scheduled the retry itself, and the delay it
+// states is the whole answer. The runner waits exactly that long — no
+// backoff doubling against it, no jitter across it, no cutting it short when
+// the link flaps, since the link being up is what produced the 429 — and
+// re-issues the request unchanged. A 429 with no stated time stays the
+// settled failure it always was: there is no "then" to wait for.
 // Variables rather than constants only so a test can run the loop without
 // spending real minutes in it; nothing outside this package changes them.
 var (
@@ -58,9 +67,46 @@ func (e *transportDownError) Error() string {
 }
 func (e *transportDownError) Unwrap() error { return e.cause }
 
+// rateLimitedError marks a step the provider answered with a 429 *and* a
+// stated time to retry. The provider scheduled the retry; the wait is not a
+// guess to be backed off, so it carries the delay verbatim. It settles with
+// the provider's own error when the budget runs out or the run is interrupted,
+// exactly like an outage does.
+type rateLimitedError struct {
+	cause              *llm.RateLimitError
+	assistantMessageID string
+}
+
+func (e *rateLimitedError) Error() string {
+	return "session: rate limited, retry scheduled: " + e.cause.Error()
+}
+func (e *rateLimitedError) Unwrap() error { return e.cause }
+
+// rateLimitRetryCap bounds the single wait a provider's Retry-After can buy.
+// Real hints are seconds to minutes; hours mean a quota that waiting will not
+// fix (daily limits, a billing cap), where handing the wait to the user is
+// the honest answer rather than parking the session on a timer.
+const rateLimitRetryCap = 10 * time.Minute
+
+// asRateLimited reads the retry hint off an error, if it is a 429 that
+// carries one. A hint past the cap is treated as none: a provider naming
+// hours is describing a quota, not a window.
+func asRateLimited(err error) (*llm.RateLimitError, bool) {
+	var limited *llm.RateLimitError
+	if !errors.As(err, &limited) {
+		return nil, false
+	}
+	if !limited.RetryAfterKnown || limited.RetryAfter <= 0 || limited.RetryAfter > rateLimitRetryCap {
+		return nil, false
+	}
+	return limited, true
+}
+
 // isTransportFailure reports whether an error is the network being unusable
-// rather than the provider saying no. Only the former is worth waiting out: a
-// 401, a 429 or a malformed response will still be there in five minutes.
+// rather than the provider saying no. Only the former is worth backing off
+// over: a 401 or a malformed response will still be there in five minutes.
+// A 429 is the provider saying "later" — handled by asRateLimited, which
+// waits the stated time rather than an escalating guess.
 //
 // The test is deliberately structural (net/syscall types) with one textual
 // fallback, rather than string matching alone: a provider's own error text is
@@ -135,8 +181,10 @@ const (
 	stopWaitingLabel = "Cancel the turn"
 )
 
-// networkHold carries one turn's retry budget across its attempts. Its zero
-// value is a turn that has not yet hit an outage.
+// networkHold carries one turn's retry budget across its attempts, shared by
+// both waits: an outage's backoff round and a rate limit's stated delay draw
+// on the same willingness to keep waiting. Its zero value is a turn that has
+// not yet hit either.
 type networkHold struct {
 	deadline time.Time
 	delay    time.Duration
@@ -167,7 +215,11 @@ func (r *Runner) awaitNetwork(runCtx, ctx context.Context, sessionID string, dow
 	// calls either side of a zero-length budget can return the same instant,
 	// which read as "budget remaining" and skipped the question entirely.
 	if !time.Now().Before(hold.deadline) {
-		keep, err := r.askKeepWaiting(runCtx, ctx, sessionID, down)
+		keep, err := r.askKeepWaiting(runCtx, ctx, sessionID,
+			"Network",
+			fmt.Sprintf("Still cannot reach the provider after %s (%s). Keep waiting?", transportRetryBudget, down.cause),
+			down.cause,
+		)
 		if err != nil {
 			return false, err
 		}
@@ -185,6 +237,70 @@ func (r *Runner) awaitNetwork(runCtx, ctx context.Context, sessionID string, dow
 		hold.delay = transportRetryMaxDelay
 	}
 	return true, nil
+}
+
+// awaitRateLimit holds a turn the provider refused with a 429 and a stated
+// time to retry, and reports whether to re-attempt it.
+//
+// The wait is the provider's own answer, so it is served verbatim — no
+// doubling, no jitter — and it draws on the same unattended budget an outage
+// does, spent by the waits themselves rather than by failed attempts: a hint
+// that fits inside the remaining budget is served without asking, one that
+// outlasts it asks first. Asking *before* the wait is the point — unlike an
+// outage, the length of the next wait is already known, so a 429 asking for
+// eight minutes against a five-minute budget deserves the user's call up
+// front, not a surprise question after the timer burned most of it.
+//
+// The second return value mirrors awaitNetwork's: what the step settles with
+// once waiting is over.
+func (r *Runner) awaitRateLimit(runCtx, ctx context.Context, sessionID string, limited *rateLimitedError, hold *networkHold) (retry bool, settleWith error) {
+	if hold.deadline.IsZero() {
+		hold.deadline = time.Now().Add(transportRetryBudget)
+	}
+	if limited.cause.RetryAfter > time.Until(hold.deadline) {
+		keep, err := r.askKeepWaiting(runCtx, ctx, sessionID,
+			"Rate limit",
+			fmt.Sprintf("Provider rate limited (%s) and asks to retry in %s. Keep waiting?", limited.cause, limited.cause.RetryAfter.Round(time.Second)),
+			limited.cause,
+		)
+		if err != nil {
+			return false, err
+		}
+		if !keep {
+			return false, limited.cause
+		}
+		// The answer buys the full hint, so the budget restarts rather than
+		// accrues: a deadline that survived the question would pre-spend the
+		// wait it just authorized.
+		hold.deadline = time.Now().Add(transportRetryBudget)
+	}
+	r.publishWaiting(ctx, sessionID, limited.cause, limited.cause.RetryAfter)
+	if err := waitExactly(runCtx, limited.cause.RetryAfter); err != nil {
+		return false, err
+	}
+	// The hint bought exactly one re-issue. The next 429 needs its own hint
+	// before anything waits again, so the hold must not read as "mid-round"
+	// with a delay left over from the outage backoff.
+	hold.delay = 0
+	return true, nil
+}
+
+// waitExactly sleeps out a provider-stated delay. Deliberately unlike
+// waitBeforeRetry: no jitter (the provider already spread the load when it
+// set the time), no early exit on a link transition (the link being up is
+// what earned the 429), nothing but the run's own cancellation.
+func waitExactly(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // waitBeforeRetry sleeps out the backoff, and cuts it short the instant the
@@ -237,25 +353,22 @@ func waitBeforeRetry(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// askKeepWaiting puts the outage to the user. Declining the question at all
+// askKeepWaiting puts a hold to the user. Declining the question at all
 // (escape, or a client that rejects it) reads as "stop waiting": the user
 // dismissed a prompt about a turn that is going nowhere.
-func (r *Runner) askKeepWaiting(runCtx, ctx context.Context, sessionID string, down *transportDownError) (bool, error) {
+func (r *Runner) askKeepWaiting(runCtx, ctx context.Context, sessionID, header, questionText string, cause error) (bool, error) {
 	if r.Asker == nil {
 		return false, nil
 	}
-	r.publishWaiting(ctx, sessionID, down.cause, 0)
+	r.publishWaiting(ctx, sessionID, cause, 0)
 	answers, err := r.Asker.Ask(runCtx, question.AskInput{
 		SessionID: sessionID,
 		Questions: []question.Prompt{{
-			Header: "Network",
-			Question: fmt.Sprintf(
-				"Still cannot reach the provider after %s (%s). Keep waiting?",
-				transportRetryBudget, down.cause,
-			),
+			Header:   header,
+			Question: questionText,
 			Options: []question.Option{
 				{Label: keepWaitingLabel, Description: fmt.Sprintf("Retry for another %s", transportRetryBudget)},
-				{Label: stopWaitingLabel, Description: "Stop and report the connection error"},
+				{Label: stopWaitingLabel, Description: "Stop and report the error"},
 			},
 		}},
 	})

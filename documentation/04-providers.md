@@ -174,6 +174,18 @@ behind it. This is why the runner has no provider branches.
 `StreamEvent` carries text deltas, reasoning deltas, tool calls, usage, cost
 and errors through a single channel, in the order the provider produced them.
 
+### Rate limits
+
+A 429 from any wire format is lowered to `llm.RateLimitError`
+(`rate_limit.go`), carrying the provider's own answer to "how long?" wherever
+it stated one — the standard `Retry-After` header, Gemini's typed
+`retryDelay` in its error details, or the "Please try again in 1.728s" prose
+OpenAI writes into the body. The session runner waits out exactly that time
+and re-runs the step; see [the session runner's
+holds](03-session-runner.md#holds-outages-and-rate-limits).
+A 429 that states no time carries no hint and settles as a failure, as it
+always did.
+
 ### Provider-executed tools
 
 Some providers run tools server-side (web search, most commonly). Those arrive
