@@ -4,6 +4,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/sidebar_scope.dart';
 import '../../app/theme.dart';
 
 /// The page ground: near-black with soft gray light pooled at the
@@ -338,6 +339,15 @@ class PillHeader extends StatelessWidget implements PreferredSizeWidget {
 
   @override
   Widget build(BuildContext context) {
+    // Under the app shell with the sidebar hidden: a way to bring it back.
+    final scope = SidebarScope.maybeOf(context);
+    final Widget? menu = scope == null || scope.visible
+        ? null
+        : IconButton(
+            tooltip: 'Show sidebar',
+            icon: const Icon(Icons.menu_rounded),
+            onPressed: scope.onOpen,
+          );
     return SafeArea(
       bottom: false,
       child: Padding(
@@ -349,13 +359,14 @@ class PillHeader extends StatelessWidget implements PreferredSizeWidget {
             child: GlassSurface(
               radius: _height / 2,
               padding: EdgeInsets.only(
-                left: leading == null ? 22 : 8,
+                left: leading == null && menu == null ? 22 : 8,
                 right: 8,
               ),
               child: SizedBox(
                 height: _height,
                 child: Row(
                   children: [
+                    if (menu != null) ...[menu, const SizedBox(width: 2)],
                     if (leading != null) ...[
                       leading!,
                       const SizedBox(width: 6),

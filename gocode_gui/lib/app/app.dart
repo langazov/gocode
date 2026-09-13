@@ -3,6 +3,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../core/connection/controller.dart';
+import '../features/account/invite_screen.dart';
+import '../features/account/profile_screen.dart';
+import '../features/account/usage_screen.dart';
+import '../features/account/user_settings_screen.dart';
 import '../features/asks/asks.dart';
 import '../features/home/home_screen.dart';
 import '../features/home/new_session_screen.dart';
@@ -10,6 +14,7 @@ import '../features/session/session_screen.dart';
 import '../features/settings/settings_screen.dart';
 import '../shared/widgets/glass.dart';
 import 'connect_screen.dart';
+import 'shell.dart';
 import 'theme.dart';
 
 /// The app router. Its redirect re-runs whenever the connection phase
@@ -28,6 +33,12 @@ final routerProvider = Provider<GoRouter>((ref) {
     child: AmbientBackground(child: child),
   );
 
+  GoRoute route(String path, Widget Function(GoRouterState state) build) =>
+      GoRoute(
+        path: path,
+        pageBuilder: (context, state) => page(state, build(state)),
+      );
+
   final router = GoRouter(
     refreshListenable: phase,
     redirect: (context, state) {
@@ -40,26 +51,24 @@ final routerProvider = Provider<GoRouter>((ref) {
       return null;
     },
     routes: [
-      GoRoute(
-        path: '/connect',
-        pageBuilder: (context, state) => page(state, const ConnectScreen()),
-      ),
-      GoRoute(
-        path: '/',
-        pageBuilder: (context, state) => page(state, const HomeScreen()),
-      ),
-      GoRoute(
-        path: '/new',
-        pageBuilder: (context, state) => page(state, const NewSessionScreen()),
-      ),
-      GoRoute(
-        path: '/settings',
-        pageBuilder: (context, state) => page(state, const SettingsScreen()),
-      ),
-      GoRoute(
-        path: '/session/:id',
-        pageBuilder: (context, state) =>
-            page(state, SessionScreen(sessionID: state.pathParameters['id']!)),
+      route('/connect', (_) => const ConnectScreen()),
+      // Everything past the gate shares the shell: sidebar beside the page.
+      ShellRoute(
+        builder: (context, state, child) =>
+            AppShell(location: state.uri.path, child: child),
+        routes: [
+          route('/', (_) => const HomeScreen()),
+          route('/new', (_) => const NewSessionScreen()),
+          route('/settings', (_) => const SettingsScreen()),
+          route(
+            '/session/:id',
+            (state) => SessionScreen(sessionID: state.pathParameters['id']!),
+          ),
+          route('/account/profile', (_) => const ProfileScreen()),
+          route('/account/settings', (_) => const UserSettingsScreen()),
+          route('/account/usage', (_) => const UsageScreen()),
+          route('/account/invite', (_) => const InviteScreen()),
+        ],
       ),
     ],
   );

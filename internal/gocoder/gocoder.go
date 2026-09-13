@@ -44,9 +44,11 @@ func BaseURL() string {
 
 // User is the public account shape returned by the website.
 type User struct {
-	ID          string `json:"id"`
-	Email       string `json:"email"`
-	DisplayName string `json:"displayName"`
+	ID          string    `json:"id"`
+	Email       string    `json:"email"`
+	DisplayName string    `json:"displayName"`
+	InviteCode  string    `json:"inviteCode,omitempty"`
+	CreatedAt   time.Time `json:"createdAt"`
 }
 
 // Session is a successful register/login: a short-lived bearer token.

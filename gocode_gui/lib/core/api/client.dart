@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:http/http.dart' as http;
 
+import 'account.dart';
 import 'models.dart';
 
 /// Error shape returned by the gocode server: `{"error": "message"}`.
@@ -307,6 +308,34 @@ class GocodeClient {
       OAuthAttempt.fromJson(
         await _getJson('/api/provider/auth/oauth/$attemptID'),
       );
+
+  // ---------------------------------------------------------------- account
+
+  /// The gocoder.org account behind the server's sign-in.
+  Future<AccountInfo> account() async =>
+      AccountInfo.fromJson(await _getJson('/api/account'));
+
+  Future<AccountInfo> signIn(String email, String password) async =>
+      AccountInfo.fromJson(
+        await _send('POST', '/api/account/login', {
+          'email': email,
+          'password': password,
+        }),
+      );
+
+  Future<AccountInfo> signOut() async =>
+      AccountInfo.fromJson(await _send('POST', '/api/account/logout'));
+
+  Future<AccountInfo> renameAccount(String displayName) async =>
+      AccountInfo.fromJson(
+        await _send('PATCH', '/api/account', {'displayName': displayName}),
+      );
+
+  Future<UsageSummary> accountUsage({int days = 30}) async =>
+      UsageSummary.fromJson(await _getJson('/api/account/usage?days=$days'));
+
+  Future<InviteInfo> accountInvite() async =>
+      InviteInfo.fromJson(await _getJson('/api/account/invite'));
 
   // --------------------------------------------------------------- catalog
 

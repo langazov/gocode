@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:gocode_gui/app/app.dart';
 import 'package:gocode_gui/core/connection/controller.dart';
+import 'package:gocode_gui/features/sidebar/sidebar.dart';
 import 'package:integration_test/integration_test.dart';
 
 /// Optional: `--dart-define=SHOT_DIR=/some/dir` saves a PNG per step.
@@ -72,11 +73,12 @@ void main() {
         .read(connectionProvider.notifier)
         .apply(ConnectionSettings(workingDirectory: project.path));
     expect(container.read(connectionProvider).error, isNull);
-    await untilFound(find.text('Sessions'));
+    // The sidebar (session history, New session) appears once connected.
+    await untilFound(find.byKey(SidebarKeys.newSession));
     expect(container.read(apiClientProvider), isNotNull);
     await shot('2-home');
 
-    await tester.tap(find.text('New session'));
+    await tester.tap(find.byKey(SidebarKeys.newSession));
     // "Server default" renders once the model list has loaded.
     await untilFound(find.text('Server default'));
     // Settings weren't persisted here (that would touch the real app's
