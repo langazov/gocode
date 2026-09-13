@@ -1,14 +1,14 @@
 import 'package:flutter/material.dart';
 
-/// Design tokens from gocoder.org: a warm near-black ground, one orange
+/// Design tokens after gocoder.org: a neutral near-black ground, one orange
 /// accent, and translucent "liquid glass" surfaces. The site is dark-only,
 /// and so is the app.
 abstract final class GC {
   // Ground and solid surfaces.
   static const bgPage = Color(0xFF171717);
-  static const surface1 = Color(0xFF201A15);
-  static const surface2 = Color(0xFF251E17);
-  static const surface3 = Color(0xFF2C241C);
+  static const surface1 = Color(0xFF1F1F1F);
+  static const surface2 = Color(0xFF262626);
+  static const surface3 = Color(0xFF2E2E2E);
 
   // Accent.
   static const accent = Color(0xFFE8862D);
@@ -207,7 +207,7 @@ class AppTheme {
       surface: GC.bgPage,
       onSurface: GC.textHi,
       onSurfaceVariant: GC.textBody,
-      surfaceContainerLowest: Color(0xFF1A1613),
+      surfaceContainerLowest: Color(0xFF1A1A1A),
       surfaceContainerLow: GC.surface1,
       surfaceContainer: GC.surface1,
       surfaceContainerHigh: GC.surface2,
@@ -399,7 +399,7 @@ class AppTheme {
         showCheckmark: false,
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: const Color(0xF2201A15),
+        backgroundColor: const Color(0xF21F1F1F),
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(GC.rPanel),

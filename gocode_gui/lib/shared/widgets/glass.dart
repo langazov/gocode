@@ -6,7 +6,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/theme.dart';
 
-/// The page ground: the site's near-black with warm light pooled at the
+/// The page ground: near-black with soft gray light pooled at the
 /// edges — something for the glass surfaces above it to refract.
 class AmbientBackground extends StatelessWidget {
   const AmbientBackground({super.key, required this.child});
@@ -54,17 +54,17 @@ class _AmbientPainter extends CustomPainter {
     glow(
       Offset(size.width * 0.12, -size.height * 0.08),
       extent * 0.62,
-      GC.accent.withValues(alpha: 0.20),
+      const Color(0xFFFFFFFF).withValues(alpha: 0.07),
     );
     glow(
       Offset(size.width * 1.02, size.height * 0.42),
       extent * 0.48,
-      const Color(0xFFC0561F).withValues(alpha: 0.13),
+      const Color(0xFFFFFFFF).withValues(alpha: 0.045),
     );
     glow(
       Offset(size.width * 0.38, size.height * 1.08),
       extent * 0.55,
-      const Color(0xFF9A6A35).withValues(alpha: 0.12),
+      const Color(0xFFFFFFFF).withValues(alpha: 0.04),
     );
   }
 

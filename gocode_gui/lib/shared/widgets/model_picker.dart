@@ -105,7 +105,7 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
         constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
         child: GlassSurface(
           radius: GC.rPanel,
-          tint: const Color(0xB3201A15),
+          tint: const Color(0xB31F1F1F),
           padding: const EdgeInsets.fromLTRB(20, 22, 20, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
