@@ -1,0 +1,127 @@
+name: build gocode_gui
+description: >
+  Builds the gocode_gui Flutter desktop app in release mode for the runner's
+  OS and packages it into dist/ as gocode-desktop-<version>-<platform>.<ext> with
+  a matching .sha256. Shared by gui-ci.yml and release.yml so CI builds
+  exactly what a release ships.
+
+inputs:
+  version:
+    description: Version stamped into the app and its asset names, e.g. 0.1.46
+    required: true
+  flutter-version:
+    description: Flutter SDK version (stable channel)
+    required: false
+    default: "3.47.4"
+
+outputs:
+  archive:
+    description: Path of the packaged archive, relative to the workspace
+    value: ${{ steps.package.outputs.archive }}
+
+runs:
+  using: composite
+  steps:
+    - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+      with:
+        channel: stable
+        flutter-version: ${{ inputs.flutter-version }}
+        cache: true
+
+    - name: Install Linux build dependencies
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          ninja-build libgtk-3-dev clang cmake pkg-config liblzma-dev
+
+    - name: Build
+      shell: bash
+      working-directory: gocode_gui
+      run: |
+        set -euo pipefail
+        version="${{ inputs.version }}"
+        # Flutter wants a plain x.y.z build name (Windows' version resource
+        # rejects anything else); a pre-release suffix such as 0.0.0-dev only
+        # belongs in the asset name.
+        build_name="${version%%-*}"
+        case "${{ runner.os }}" in
+          macOS)   target=macos ;;
+          Linux)   target=linux ;;
+          Windows) target=windows ;;
+          *) echo "::error::unsupported runner OS ${{ runner.os }}"; exit 1 ;;
+        esac
+        flutter pub get
+        flutter build "$target" --release \
+          --build-name="$build_name" \
+          --build-number="${{ github.run_number }}"
+
+    - name: Verify the build
+      shell: bash
+      working-directory: gocode_gui
+      run: |
+        set -euo pipefail
+        case "${{ runner.os }}" in
+          macOS)
+            binary="build/macos/Build/Products/Release/Gocode Desktop.app/Contents/MacOS/Gocode Desktop"
+            archs="$(lipo -archs "$binary")"
+            echo "macOS architectures: $archs"
+            # One download for both Apple silicon and Intel Macs.
+            for arch in arm64 x86_64; do
+              case " $archs " in
+                *" $arch "*) ;;
+                *) echo "::error::$binary is missing $arch"; exit 1 ;;
+              esac
+            done ;;
+          Linux)
+            test -x build/linux/x64/release/bundle/gocode-desktop ;;
+          Windows)
+            test -f build/windows/x64/runner/Release/gocode-desktop.exe ;;
+        esac
+
+    - name: Package
+      id: package
+      shell: bash
+      working-directory: gocode_gui
+      run: |
+        set -euo pipefail
+        version="${{ inputs.version }}"
+        mkdir -p ../dist
+        dist="$(cd ../dist && pwd)"
+
+        case "${{ runner.os }}" in
+          macOS)
+            name="gocode-desktop-${version}-macos-universal"
+            archive="$name.zip"
+            # ditto keeps the bundle's symlinks and extended attributes, which
+            # a plain `zip -r` would flatten and break the app.
+            ditto -c -k --sequesterRsrc --keepParent \
+              "build/macos/Build/Products/Release/Gocode Desktop.app" "$dist/$archive" ;;
+          Linux)
+            name="gocode-desktop-${version}-linux-x64"
+            archive="$name.tar.gz"
+            # The bundle directory is the whole app (binary, lib/, data/);
+            # ship it under a stable top-level name.
+            tar --sort=name --owner=0 --group=0 --numeric-owner \
+              --transform 's,^bundle,gocode-desktop,' \
+              -czf "$dist/$archive" -C build/linux/x64/release bundle ;;
+          Windows)
+            name="gocode-desktop-${version}-windows-x64"
+            archive="$name.zip"
+            staging="$RUNNER_TEMP/gocode-desktop-staging"
+            rm -rf "$staging" && mkdir -p "$staging"
+            cp -r build/windows/x64/runner/Release "$staging/gocode-desktop"
+            (cd "$staging" && 7z a -tzip -mx=9 "$dist/$archive" gocode-desktop > /dev/null) ;;
+        esac
+
+        cd "$dist"
+        # macOS runners have shasum but not GNU sha256sum; the output format
+        # is the same either way.
+        if command -v sha256sum > /dev/null 2>&1; then
+          sha256sum "$archive" > "$name.sha256"
+        else
+          shasum -a 256 "$archive" > "$name.sha256"
+        fi
+        ls -lh "$archive"
+        echo "archive=dist/$archive" >> "$GITHUB_OUTPUT"

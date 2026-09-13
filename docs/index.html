@@ -493,7 +493,10 @@ gocode run "fix the failing test"   <span style="color:#6e6e7c"># one-shot, no i
       grid.innerHTML = "";
       PLATFORMS.forEach(function (platform) {
         var mine = (release.assets || []).filter(function (a) {
-          return platform.match.test(a.name) && !/\.sha256$/.test(a.name);
+          // gocode-desktop-* assets reuse the platform names but are the desktop
+          // app, not the CLI these cards offer.
+          return platform.match.test(a.name) && !/\.sha256$/.test(a.name) &&
+            !/^gocode-desktop-/.test(a.name);
         });
         // Each platform ships an archive and a bare executable, so match on
         // the extension rather than taking whichever the API listed first.

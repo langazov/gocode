@@ -1,0 +1,18 @@
+# This file configures the analyzer, which statically analyzes Dart code to
+# check for errors, warnings, and lints.
+
+include: package:flutter_lints/flutter.yaml
+
+linter:
+  rules:
+    # Constructor-initializer style for private callbacks is noise here.
+    prefer_initializing_formals: false
+
+analyzer:
+  exclude:
+    - build/**
+    - android/**
+    - ios/**
+    - windows/**
+    - macos/**
+    - linux/**

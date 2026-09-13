@@ -1,0 +1,58 @@
+# ── Flutter / Dart ──────────────────────────────────────────────────────────
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+# Machine-local path overrides for dependencies.
+pubspec_overrides.yaml
+# `flutter widget-preview` scratch space.
+.widget_preview/
+# Generated API docs (`dart doc`).
+**/doc/api/
+# FVM: commit .fvmrc, not the symlinked SDK.
+.fvm/flutter_sdk
+
+# ── Tests ───────────────────────────────────────────────────────────────────
+/coverage/
+*.lcov
+# Diff images written by failing golden tests.
+**/failures/*.png
+
+# ── Release artifacts ───────────────────────────────────────────────────────
+# Maps from --split-debug-info / --obfuscate; keep them, but not in git.
+app.*.symbols
+app.*.map.json
+# Android Studio places build output here.
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# ── Secrets ─────────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── Native tooling ──────────────────────────────────────────────────────────
+# Platform-specific rules live in android/, ios/, macos/, linux/, windows/.
+**/ios/Flutter/.last_build_id
+.build/
+.swiftpm/
+migrate_working_dir/
+
+# ── Editors ─────────────────────────────────────────────────────────────────
+.idea/
+*.iml
+*.ipr
+*.iws
+# Share launch configs and recommended extensions; keep personal settings out.
+.vscode/*
+!.vscode/launch.json
+!.vscode/extensions.json
+
+# ── OS / misc ───────────────────────────────────────────────────────────────
+.DS_Store
+*.log
+*.swp

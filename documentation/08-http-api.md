@@ -170,6 +170,27 @@ see [Tools & permissions](05-tools-and-permissions.md).
 OAuth is two-step because device flow is inherently asynchronous: start an
 attempt, get a URL and code to show the user, then poll until they finish.
 
+## Account
+
+The gocoder.org account this machine is signed in to (`gocoder.json`, the
+same sign-in `gocode login` writes). The server calls gocoder.org with the
+stored API key, so a client never holds a gocoder.org credential itself.
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/api/account` | who is signed in (`signedIn: false` when nobody is) |
+| `PATCH` | `/api/account` | rename: `{"displayName": "…"}` |
+| `POST` | `/api/account/login` | sign in: `{"email", "password"}`; replaces and revokes a previous sign-in |
+| `POST` | `/api/account/logout` | sign out: revokes the key, removes the sign-in and the settings-sync key |
+| `GET` | `/api/account/usage?days=30` | usage summary over 1-90 days |
+| `GET` | `/api/account/invite` | invite code, sign-up link and how many have joined through it |
+
+`GET /api/account` sets `expired` when the site rejects the stored key (sign
+in again) and `offline` when the site can't be reached (the fields then come
+from the stored sign-in). Failed calls pass the site's status and message
+through, and answer 502 when it can't be reached. Password changes aren't
+offered: gocoder.org requires a signed-in browser session for them.
+
 ## Everything else
 
 | Method | Path | Does |

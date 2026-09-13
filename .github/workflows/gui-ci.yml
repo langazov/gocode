@@ -1,0 +1,155 @@
+name: gui-ci
+
+# Format, analyze, test and build gocode_gui (the Flutter desktop client)
+# whenever it changes. Releases are not cut here: release.yml builds the GUI
+# alongside gocode on every v* tag.
+on:
+  push:
+    branches:
+      - main
+      - dev
+    paths:
+      - "gocode_gui/**"
+      - ".github/workflows/gui-ci.yml"
+      - ".github/actions/build-gui/**"
+  pull_request:
+    paths:
+      - "gocode_gui/**"
+      - ".github/workflows/gui-ci.yml"
+      - ".github/actions/build-gui/**"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: "3.47.4"
+
+defaults:
+  run:
+    working-directory: gocode_gui
+
+jobs:
+  analyze:
+    name: format & analyze
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: pub get
+        run: flutter pub get
+
+      - name: format
+        run: dart format --output=none --set-exit-if-changed lib test integration_test
+
+      - name: analyze
+        run: flutter analyze
+
+  test:
+    name: unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: pub get
+        run: flutter pub get
+
+      - name: test
+        run: flutter test test/
+
+  integration:
+    # Drives the real app against a real `gocode serve` built from this
+    # commit: server spawn, model loading, session creation.
+    name: integration tests (linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+
+      - name: Build gocode
+        working-directory: .
+        env:
+          CGO_ENABLED: "0"
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          go build -o "$RUNNER_TEMP/bin/gocode" ./cmd/gocode
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.23.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            ninja-build libgtk-3-dev clang cmake pkg-config liblzma-dev xvfb
+
+      - name: pub get
+        run: flutter pub get
+
+      - name: integration tests
+        # The desktop app needs a display; xvfb provides a virtual one.
+        #
+        # One `flutter test` run per file: on desktop, the second file in a
+        # single run fails to launch its app ("Unable to start the app on the
+        # device"), whichever file that is. Every file still runs after a
+        # failure, so one bad file doesn't hide the others.
+        run: |
+          status=0
+          for test in integration_test/*_test.dart; do
+            echo "::group::$test"
+            xvfb-run -a flutter test "$test" -d linux || status=1
+            echo "::endgroup::"
+          done
+          exit "$status"
+
+  build:
+    name: build (${{ matrix.os }})
+    needs: [analyze, test]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - uses: ./.github/actions/build-gui
+        with:
+          version: 0.0.0-ci.${{ github.run_number }}
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      # Downloadable from the run page for trying a change before release.
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: gocode-desktop-${{ runner.os }}
+          path: dist/gocode-desktop-*
+          if-no-files-found: error
+          retention-days: 7

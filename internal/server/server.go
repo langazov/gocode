@@ -127,6 +127,14 @@ func (s *Server) Mux() *http.ServeMux {
 	}
 	mux.HandleFunc("GET /api/lsp", s.listLSP)
 	mux.HandleFunc("GET /api/command", s.listCommands)
+	// The gocoder.org account behind this machine's sign-in (account.go).
+	// Unconditional like /api/vcs: signed out is an answer, not a 404.
+	mux.HandleFunc("GET /api/account", s.getAccount)
+	mux.HandleFunc("PATCH /api/account", s.updateAccount)
+	mux.HandleFunc("POST /api/account/login", s.loginAccount)
+	mux.HandleFunc("POST /api/account/logout", s.logoutAccount)
+	mux.HandleFunc("GET /api/account/usage", s.accountUsage)
+	mux.HandleFunc("GET /api/account/invite", s.accountInvite)
 	if s.Session != nil {
 		mux.HandleFunc("POST /api/session", s.createSession)
 		mux.HandleFunc("GET /api/session", s.listSessions)
