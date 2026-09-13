@@ -3,11 +3,13 @@ package openairesponses
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/llm"
 )
@@ -314,5 +316,27 @@ data: {"type":"response.completed","response":{"id":"resp_1","usage":{"input_tok
 	want := llm.Usage{Input: 100, Output: 100, Reasoning: 200, CacheRead: 900}
 	if finish.Usage != want {
 		t.Fatalf("usage: want %+v, got %+v", want, finish.Usage)
+	}
+}
+
+// A 429 with a stated wait becomes a RateLimitError carrying that wait, so
+// the session runner can hold the turn for exactly as long as the provider
+// asked rather than settling the step as failed.
+func Test429CarriesRetryHint(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "20")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}`))
+	})
+	err := client.Stream(context.Background(), llm.Request{ModelID: "gpt-5"}, func(event llm.StreamEvent) {})
+	var limited *llm.RateLimitError
+	if !errors.As(err, &limited) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if limited.RetryAfter != 20*time.Second || !limited.RetryAfterKnown {
+		t.Fatalf("RetryAfter = (%v, known=%v), want 20s", limited.RetryAfter, limited.RetryAfterKnown)
+	}
+	if limited.Provider != "openai-responses" {
+		t.Fatalf("provider = %q, want openai-responses", limited.Provider)
 	}
 }

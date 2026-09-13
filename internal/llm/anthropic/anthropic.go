@@ -157,6 +157,41 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("anthropic: %d %s: %s", e.StatusCode, e.Type, e.Message)
 }
 
+// parseError lowers a failed HTTP exchange to an error, carrying the
+// provider's own retry hint on the one status where waiting is the fix: a 429
+// becomes llm.RateLimitError with the Retry-After the response stated, so the
+// session runner can hold the turn and re-run it once the window reopens.
+func parseError(res *http.Response, data []byte) error {
+	status := res.StatusCode
+	var envelope struct {
+		Error APIError `json:"error"`
+	}
+	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Error.Message != "" {
+		envelope.Error.StatusCode = status
+		if status == http.StatusTooManyRequests {
+			return rateLimited("anthropic", res, envelope.Error.Message)
+		}
+		return &envelope.Error
+	}
+	if status == http.StatusTooManyRequests {
+		return rateLimited("anthropic", res, strings.TrimSpace(string(data)))
+	}
+	return &APIError{StatusCode: status, Type: "unknown", Message: string(data)}
+}
+
+// rateLimited builds the error for a 429 from everything the response said
+// about the wait: the standard header, then the prose some providers write
+// into the message body. Shared detection order with every other client.
+func rateLimited(provider string, res *http.Response, message string) error {
+	delay, known := llm.RetryAfter(res.Header.Get("Retry-After"), message)
+	return &llm.RateLimitError{
+		Provider:        provider,
+		Message:         message,
+		RetryAfter:      delay,
+		RetryAfterKnown: known,
+	}
+}
+
 // StreamHandler receives callbacks as SSE events arrive.
 type StreamHandler struct {
 	OnText     func(text string)
@@ -262,7 +297,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Response, error) {
 		return nil, err
 	}
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
-		return nil, parseError(res.StatusCode, data)
+		return nil, parseError(res, data)
 	}
 	var response Response
 	if err := json.Unmarshal(data, &response); err != nil {
@@ -286,22 +321,11 @@ func (c *Client) streamHandler(ctx context.Context, req Request, handler StreamH
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		data, _ := io.ReadAll(res.Body)
-		return nil, parseError(res.StatusCode, data)
+		return nil, parseError(res, data)
 	}
 	stream := llm.NewIdleReader(res.Body, llm.StreamIdleTimeout)
 	defer stream.Close()
 	return readSSE(stream, handler)
-}
-
-func parseError(status int, data []byte) error {
-	var envelope struct {
-		Error APIError `json:"error"`
-	}
-	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Error.Message != "" {
-		envelope.Error.StatusCode = status
-		return &envelope.Error
-	}
-	return &APIError{StatusCode: status, Type: "unknown", Message: string(data)}
 }
 
 // readSSE parses the Anthropic event stream. Events are newline-separated

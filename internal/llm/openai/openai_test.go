@@ -3,11 +3,13 @@ package openai
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/llm"
 )
@@ -272,5 +274,65 @@ data: [DONE]
 	want := llm.Usage{Input: 1000, Output: 50}
 	if finish.Usage != want {
 		t.Fatalf("usage: want %+v, got %+v", want, finish.Usage)
+	}
+}
+
+// A 429 with a stated wait becomes a RateLimitError carrying that wait, so
+// the session runner can hold the turn for exactly as long as the provider
+// asked rather than settling the step as failed.
+func Test429CarriesRetryHint(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "12")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"Rate limit reached","type":"rate_limit_error"}}`))
+	})
+	var seen *llm.RateLimitError
+	err := client.Stream(context.Background(), llm.Request{ModelID: "gpt-5"}, func(event llm.StreamEvent) {
+		if event.Type == llm.EventProviderError {
+			_ = event.Error
+		}
+	})
+	if !errors.As(err, &seen) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if seen.RetryAfter != 12*time.Second || !seen.RetryAfterKnown {
+		t.Fatalf("RetryAfter = (%v, known=%v), want 12s", seen.RetryAfter, seen.RetryAfterKnown)
+	}
+	if seen.Provider != "openai" || seen.Message != "Rate limit reached" {
+		t.Fatalf("error text lost the provider's own message: %+v", seen)
+	}
+}
+
+// The prose fallback: no header, but the message says when to retry.
+func Test429WithoutHeaderParsesTheProse(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"Rate limit reached. Please try again in 1.728s."}}`))
+	})
+	err := client.Stream(context.Background(), llm.Request{ModelID: "gpt-5"}, func(event llm.StreamEvent) {})
+	var seen *llm.RateLimitError
+	if !errors.As(err, &seen) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if seen.RetryAfter != 1728*time.Millisecond || !seen.RetryAfterKnown {
+		t.Fatalf("RetryAfter = (%v, known=%v), want 1.728s", seen.RetryAfter, seen.RetryAfterKnown)
+	}
+}
+
+// A 429 that says nothing about timing is still classified as a rate limit,
+// but carries no known wait — which is what the session gates its hold on,
+// so the turn settles as it always did.
+func Test429WithoutHintCarriesNoKnownWait(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"message":"Too many requests"}}`))
+	})
+	err := client.Stream(context.Background(), llm.Request{ModelID: "gpt-5"}, func(event llm.StreamEvent) {})
+	var limited *llm.RateLimitError
+	if !errors.As(err, &limited) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if limited.RetryAfterKnown {
+		t.Fatalf("a hint-less 429 must not carry a known retry time: %+v", limited)
 	}
 }

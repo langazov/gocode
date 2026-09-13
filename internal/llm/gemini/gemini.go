@@ -69,7 +69,7 @@ func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.
 	defer res.Body.Close()
 	if res.StatusCode < 200 || res.StatusCode >= 300 {
 		data, _ := io.ReadAll(res.Body)
-		err := parseError(res.StatusCode, data)
+		err := parseError(res, data)
 		emit(llm.StreamEvent{Type: llm.EventProviderError, Error: err})
 		return err
 	}
@@ -317,14 +317,51 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("gemini: %d %s", e.StatusCode, e.Message)
 }
 
-func parseError(status int, data []byte) error {
+func parseError(res *http.Response, data []byte) error {
+	status := res.StatusCode
 	var envelope struct {
 		Error struct {
 			Message string `json:"message"`
+			// Details is where Gemini's google.rpc.RetryInfo actually lives:
+			// a 429 body carries {"error":{"code":429,"message":...,
+			// "status":"RESOURCE_EXHAUSTED","details":[{...,
+			// "retryDelay":"32s"}]}}, and the typed field is the most
+			// reliable hint it ever gives — preferred over the prose.
+			Details []struct {
+				Reason     string `json:"reason"`
+				RetryDelay string `json:"retryDelay"`
+			} `json:"details"`
 		} `json:"error"`
 	}
 	if err := json.Unmarshal(data, &envelope); err == nil && envelope.Error.Message != "" {
+		if status == http.StatusTooManyRequests {
+			delays := make([]string, 0, len(envelope.Error.Details))
+			for _, detail := range envelope.Error.Details {
+				if detail.RetryDelay != "" {
+					delays = append(delays, detail.RetryDelay)
+				}
+			}
+			return rateLimited("gemini", res, envelope.Error.Message, delays...)
+		}
 		return &APIError{StatusCode: status, Message: envelope.Error.Message}
 	}
+	if status == http.StatusTooManyRequests {
+		return rateLimited("gemini", res, strings.TrimSpace(string(data)))
+	}
 	return &APIError{StatusCode: status, Message: string(data)}
+}
+
+// rateLimited builds the error for a 429 from everything the response said
+// about the wait: any typed retryDelay details first (Gemini's shape), then
+// the standard header, then the prose some providers write into the message
+// body. The order is shared with every other client modulo the details,
+// which only this wire format carries.
+func rateLimited(provider string, res *http.Response, message string, delays ...string) error {
+	delay, known := llm.RetryAfter(res.Header.Get("Retry-After"), message, delays...)
+	return &llm.RateLimitError{
+		Provider:        provider,
+		Message:         message,
+		RetryAfter:      delay,
+		RetryAfterKnown: known,
+	}
 }

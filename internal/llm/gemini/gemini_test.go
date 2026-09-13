@@ -3,11 +3,13 @@ package gemini
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/llm"
 )
@@ -142,5 +144,45 @@ func TestAPIError(t *testing.T) {
 	apiErr, ok := err.(*APIError)
 	if !ok || apiErr.StatusCode != 400 {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// A 429 with a stated wait becomes a RateLimitError carrying that wait.
+// Gemini's most reliable hint is the typed retryDelay inside its error
+// details — preferred over the header and the prose alike.
+func Test429CarriesRetryHint(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "5")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"code":429,"message":"Resource has been exhausted","status":"RESOURCE_EXHAUSTED",
+			"details":[{"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"32s"}]}}`))
+	})
+	err := client.Stream(context.Background(), llm.Request{ModelID: "gemini-2.5-pro"}, func(event llm.StreamEvent) {})
+	var limited *llm.RateLimitError
+	if !errors.As(err, &limited) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if limited.RetryAfter != 32*time.Second || !limited.RetryAfterKnown {
+		t.Fatalf("RetryAfter = (%v, known=%v), want the typed 32s, not the header's 5s", limited.RetryAfter, limited.RetryAfterKnown)
+	}
+	if limited.Provider != "gemini" || !strings.Contains(limited.Message, "exhausted") {
+		t.Fatalf("error text lost the provider's own message: %+v", limited)
+	}
+}
+
+// With no typed delay, the standard header serves.
+func Test429FallsBackToHeader(t *testing.T) {
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After", "9")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":{"code":429,"message":"Resource has been exhausted"}}`))
+	})
+	err := client.Stream(context.Background(), llm.Request{ModelID: "gemini-2.5-pro"}, func(event llm.StreamEvent) {})
+	var limited *llm.RateLimitError
+	if !errors.As(err, &limited) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if limited.RetryAfter != 9*time.Second || !limited.RetryAfterKnown {
+		t.Fatalf("RetryAfter = (%v, known=%v), want 9s from the header", limited.RetryAfter, limited.RetryAfterKnown)
 	}
 }

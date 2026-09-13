@@ -248,10 +248,12 @@ func (r *Runner) Run(ctx context.Context, input RunInput) error {
 	return nil
 }
 
-// runTurn runs one provider turn, holding it through a network outage: a step
-// that never reached the provider is re-attempted rather than settled, for as
-// long as the user is willing to wait (see netretry.go). Every other outcome,
-// including a provider that answered with an error, passes straight through.
+// runTurn runs one provider turn, holding it through a network outage or a
+// rate limit with a stated retry time: a step that never reached the
+// provider, or that the provider scheduled a retry for, is re-attempted
+// rather than settled, for as long as the user is willing to wait (see
+// netretry.go). Every other outcome, including a provider that answered with
+// an error, passes straight through.
 func (r *Runner) runTurn(runCtx context.Context, sessionID string, promotion Delivery, step int) (turnResult, error) {
 	// Publishes must outlive an interrupt, exactly as in runTurnAttempt.
 	ctx := context.WithoutCancel(runCtx)
@@ -259,27 +261,42 @@ func (r *Runner) runTurn(runCtx context.Context, sessionID string, promotion Del
 	for {
 		result, err := r.runTurnCompacting(runCtx, sessionID, promotion, step)
 		var down *transportDownError
-		if !errors.As(err, &down) {
-			return result, err
-		}
-		retry, settleWith := r.awaitNetwork(runCtx, ctx, sessionID, down, &hold)
-		if retry {
-			// Retract whatever the cut-off attempt managed to say, so the
-			// re-attempt starts from the history the first one saw.
-			if err := r.discardStep(ctx, sessionID, down.assistantMessageID); err != nil {
+		if errors.As(err, &down) {
+			retry, settleWith := r.awaitNetwork(runCtx, ctx, sessionID, down, &hold)
+			if retry {
+				// Retract whatever the cut-off attempt managed to say, so the
+				// re-attempt starts from the history the first one saw.
+				if err := r.discardStep(ctx, sessionID, down.assistantMessageID); err != nil {
+					return turnResult{}, err
+				}
+				continue
+			}
+			// Waiting is over and the step was never settled — it returned
+			// before publishing its failure — so settle it here with what
+			// actually stopped it: the transport error, or the interrupt that
+			// ended the wait. The partial attempt keeps its own message and
+			// takes the error, rather than being thrown away in favour of an
+			// empty one.
+			if err := r.failTurn(ctx, runCtx, sessionID, down.assistantMessageID, settleWith); err != nil {
 				return turnResult{}, err
 			}
-			continue
+			return turnResult{}, settleWith
 		}
-		// Waiting is over and the step was never settled — it returned before
-		// publishing its failure — so settle it here with what actually
-		// stopped it: the transport error, or the interrupt that ended the
-		// wait. The partial attempt keeps its own message and takes the error,
-		// rather than being thrown away in favour of an empty one.
-		if err := r.failTurn(ctx, runCtx, sessionID, down.assistantMessageID, settleWith); err != nil {
-			return turnResult{}, err
+		var limited *rateLimitedError
+		if errors.As(err, &limited) {
+			retry, settleWith := r.awaitRateLimit(runCtx, ctx, sessionID, limited, &hold)
+			if retry {
+				if err := r.discardStep(ctx, sessionID, limited.assistantMessageID); err != nil {
+					return turnResult{}, err
+				}
+				continue
+			}
+			if err := r.failTurn(ctx, runCtx, sessionID, limited.assistantMessageID, settleWith); err != nil {
+				return turnResult{}, err
+			}
+			return turnResult{}, settleWith
 		}
-		return turnResult{}, settleWith
+		return result, err
 	}
 }
 
@@ -728,6 +745,17 @@ turnLoop:
 		// The partial message rides along: the wrapper discards it before a
 		// retry, or settles the failure onto it if the user stops waiting.
 		return turnResult{}, &transportDownError{cause: providerErr, assistantMessageID: assistantMessageID}
+	}
+
+	// And so is a 429 that stated when to retry. The same no-dispatch guard
+	// applies — a step that ran a tool may have changed the world and is
+	// never re-run, whatever stopped it. A 429 without a stated time falls
+	// through to the settled failure below, as it always has; waiting on it
+	// would be waiting for nothing in particular.
+	if providerErr != nil && seq == 0 {
+		if limited, ok := asRateLimited(providerErr); ok {
+			return turnResult{}, &rateLimitedError{cause: limited, assistantMessageID: assistantMessageID}
+		}
 	}
 
 	if providerErr != nil {

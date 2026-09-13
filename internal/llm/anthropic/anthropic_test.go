@@ -3,11 +3,13 @@ package anthropic
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/llm"
 )
@@ -271,5 +273,45 @@ func TestMessagesURLConventions(t *testing.T) {
 		if got := client.messagesURL("m"); got != c.want {
 			t.Errorf("messagesURL(base=%q) = %q, want %q", c.base, got, c.want)
 		}
+	}
+}
+
+// A 429 with a stated wait becomes a RateLimitError carrying that wait, so
+// the session runner can hold the turn for exactly as long as the provider
+// asked rather than settling the step as failed.
+func Test429CarriesRetryHint(t *testing.T) {
+	client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		assertHeaders(t, r)
+		w.Header().Set("Retry-After", "7")
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"type":"error","error":{"type":"rate_limit_error","message":"Number of requests too high"}}`))
+	})
+	var limited *llm.RateLimitError
+	err := client.Stream(context.Background(), llm.Request{ModelID: "claude-sonnet-4-5"}, func(event llm.StreamEvent) {})
+	if !errors.As(err, &limited) {
+		t.Fatalf("expected *llm.RateLimitError, got %T: %v", err, err)
+	}
+	if limited.RetryAfter != 7*time.Second || !limited.RetryAfterKnown {
+		t.Fatalf("RetryAfter = (%v, known=%v), want 7s", limited.RetryAfter, limited.RetryAfterKnown)
+	}
+	if limited.Provider != "anthropic" || !strings.Contains(limited.Message, "Number of requests too high") {
+		t.Fatalf("error text lost the provider's own message: %+v", limited)
+	}
+}
+
+// A non-429 error keeps its APIError shape; nothing about it is waited on.
+func Test401StaysAPIError(t *testing.T) {
+	client := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		w.Write([]byte(`{"type":"error","error":{"type":"authentication_error","message":"invalid x-api-key"}}`))
+	})
+	err := client.Stream(context.Background(), llm.Request{ModelID: "claude-sonnet-4-5"}, func(event llm.StreamEvent) {})
+	var limited *llm.RateLimitError
+	if errors.As(err, &limited) {
+		t.Fatalf("a 401 must not be a rate limit: %+v", limited)
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != 401 {
+		t.Fatalf("expected *APIError 401, got %T: %v", err, err)
 	}
 }
