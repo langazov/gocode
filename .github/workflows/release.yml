@@ -357,9 +357,9 @@ jobs:
 
             | Platform | Archive | Run |
             |---|---|---|
-            | macOS (Apple silicon + Intel) | `gocode-desktop-*-macos-universal.zip` | move `gocode_gui.app` to Applications |
-            | Linux x86_64 | `gocode-desktop-*-linux-x64.tar.gz` | `gocode-desktop/gocode_gui` (needs GTK 3) |
-            | Windows x64 | `gocode-desktop-*-windows-x64.zip` | `gocode-desktop\gocode_gui.exe` |
+            | macOS (Apple silicon + Intel) | `gocode-desktop-*-macos-universal.zip` | move `Gocode Desktop.app` to Applications |
+            | Linux x86_64 | `gocode-desktop-*-linux-x64.tar.gz` | `gocode-desktop/gocode-desktop` (needs GTK 3) |
+            | Windows x64 | `gocode-desktop-*-windows-x64.zip` | `gocode-desktop\gocode-desktop.exe` |
 
             **Homebrew** (macOS) installs the app together with gocode:
             ```sh
@@ -369,7 +369,7 @@ jobs:
             Installed by hand, the app is unsigned as well; on macOS clear the
             quarantine flag once:
             ```sh
-            xattr -dr com.apple.quarantine gocode_gui.app
+            xattr -dr com.apple.quarantine "/Applications/Gocode Desktop.app"
             ```
 
             ## Install

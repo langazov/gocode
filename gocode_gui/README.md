@@ -1,6 +1,6 @@
-# gocode_gui
+# Gocode Desktop
 
-GoCode GUI — a Flutter client for the gocode coding agent
+Gocode Desktop — a Flutter client for the gocode coding agent
 
 ## Getting Started
 

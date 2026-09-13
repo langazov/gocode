@@ -57,7 +57,7 @@ cask "gocode-desktop" do
   depends_on formula: "langazov/tap/gocode"
   depends_on macos: :monterey
 
-  app "gocode_gui.app"
+  app "Gocode Desktop.app"
 
   # The app is not signed or notarized, and casks quarantine what they
   # download, so Gatekeeper would refuse to open it. Clearing the flag is what
@@ -68,7 +68,7 @@ cask "gocode-desktop" do
   # Homebrew at install time, and the step sandbox may write to the app dir.
   postflight_steps do
     run "/usr/bin/xattr",
-        args: ["-dr", "com.apple.quarantine", "{{appdir}}/gocode_gui.app"]
+        args: ["-dr", "com.apple.quarantine", "{{appdir}}/Gocode Desktop.app"]
   end
 
   zap trash: [

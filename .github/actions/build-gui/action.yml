@@ -64,7 +64,7 @@ runs:
         set -euo pipefail
         case "${{ runner.os }}" in
           macOS)
-            binary=build/macos/Build/Products/Release/gocode_gui.app/Contents/MacOS/gocode_gui
+            binary="build/macos/Build/Products/Release/Gocode Desktop.app/Contents/MacOS/Gocode Desktop"
             archs="$(lipo -archs "$binary")"
             echo "macOS architectures: $archs"
             # One download for both Apple silicon and Intel Macs.
@@ -75,9 +75,9 @@ runs:
               esac
             done ;;
           Linux)
-            test -x build/linux/x64/release/bundle/gocode_gui ;;
+            test -x build/linux/x64/release/bundle/gocode-desktop ;;
           Windows)
-            test -f build/windows/x64/runner/Release/gocode_gui.exe ;;
+            test -f build/windows/x64/runner/Release/gocode-desktop.exe ;;
         esac
 
     - name: Package
@@ -97,7 +97,7 @@ runs:
             # ditto keeps the bundle's symlinks and extended attributes, which
             # a plain `zip -r` would flatten and break the app.
             ditto -c -k --sequesterRsrc --keepParent \
-              build/macos/Build/Products/Release/gocode_gui.app "$dist/$archive" ;;
+              "build/macos/Build/Products/Release/Gocode Desktop.app" "$dist/$archive" ;;
           Linux)
             name="gocode-desktop-${version}-linux-x64"
             archive="$name.tar.gz"
