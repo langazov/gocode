@@ -115,7 +115,19 @@ jobs:
 
       - name: integration tests
         # The desktop app needs a display; xvfb provides a virtual one.
-        run: xvfb-run -a flutter test integration_test -d linux
+        #
+        # One `flutter test` run per file: on desktop, the second file in a
+        # single run fails to launch its app ("Unable to start the app on the
+        # device"), whichever file that is. Every file still runs after a
+        # failure, so one bad file doesn't hide the others.
+        run: |
+          status=0
+          for test in integration_test/*_test.dart; do
+            echo "::group::$test"
+            xvfb-run -a flutter test "$test" -d linux || status=1
+            echo "::endgroup::"
+          done
+          exit "$status"
 
   build:
     name: build (${{ matrix.os }})
