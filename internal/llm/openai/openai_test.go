@@ -63,6 +63,153 @@ func TestRequestShape(t *testing.T) {
 	}
 }
 
+// cacheBody captures the JSON body a request produced, decoded generically.
+func cacheBody(t *testing.T, options llm.Options) map[string]any {
+	t.Helper()
+	var body map[string]any
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(raw, &body); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	client.Options = options
+	err := client.Stream(context.Background(), llm.Request{
+		ProviderID: "gocoder",
+		ModelID:    "anthropic/claude-sonnet-4.5",
+		System:     []string{"You are gocode."},
+		Messages:   []llm.Message{llm.UserText("m1", "run ls")},
+		Tools: []llm.ToolDefinition{{
+			Name:        "bash",
+			Description: "run a command",
+			InputSchema: map[string]any{"type": "object"},
+		}},
+	}, func(event llm.StreamEvent) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+// With the endpoint opted in, the auto policy's three breakpoints — the last
+// tool, the system prompt, and the newest user message — must reach the wire
+// as Anthropic-style cache_control, because OpenRouter translates that shape
+// into whatever the routed provider understands.
+func TestCacheControlBlocksEmittedWhenOptedIn(t *testing.T) {
+	body := cacheBody(t, llm.Options{CacheControlBlocks: true})
+
+	tools := body["tools"].([]any)
+	last := tools[len(tools)-1].(map[string]any)
+	if last["cache_control"] == nil {
+		t.Errorf("last tool carries no cache_control: %v", last)
+	}
+
+	messages := body["messages"].([]any)
+	system := messages[0].(map[string]any)
+	// The system block is the array form only because the marker rides it.
+	blocks, ok := system["content"].([]any)
+	if !ok || len(blocks) == 0 {
+		t.Fatalf("system content = %v, want typed blocks", system["content"])
+	}
+	if blocks[len(blocks)-1].(map[string]any)["cache_control"] == nil {
+		t.Errorf("system block carries no cache_control: %v", blocks)
+	}
+
+	user := messages[1].(map[string]any)
+	userBlocks, ok := user["content"].([]any)
+	if !ok || len(userBlocks) == 0 {
+		t.Fatalf("user content = %v, want typed blocks", user["content"])
+	}
+	if userBlocks[len(userBlocks)-1].(map[string]any)["cache_control"] == nil {
+		t.Errorf("user block carries no cache_control: %v", userBlocks)
+	}
+}
+
+// Without the opt-in nothing changes on the wire: the system and user
+// messages stay plain strings and no tool carries a marker, because a vanilla
+// openai-compatible endpoint rejects unknown content-block fields.
+func TestCacheControlAbsentWithoutOptIn(t *testing.T) {
+	body := cacheBody(t, llm.Options{})
+
+	tools := body["tools"].([]any)
+	for i, tool := range tools {
+		if tool.(map[string]any)["cache_control"] != nil {
+			t.Errorf("tool %d carries cache_control without opt-in", i)
+		}
+	}
+	messages := body["messages"].([]any)
+	for i, message := range messages {
+		content := message.(map[string]any)["content"]
+		if _, isBlocks := content.([]any); isBlocks {
+			t.Errorf("message %d content is a block array without opt-in: %v", i, content)
+		}
+	}
+}
+
+// An extended-TTL hint renders as the hour-long window; anything below the
+// bucket takes the provider's 5-minute default.
+func TestCacheControlTTLBuckets(t *testing.T) {
+	hour := cacheControlDirective(&llm.CacheHint{TTLSeconds: 3600})
+	if hour == nil || hour.TTL != "1h" {
+		t.Errorf("hour hint = %+v", hour)
+	}
+	five := cacheControlDirective(&llm.CacheHint{TTLSeconds: 300})
+	if five == nil || five.TTL != "" {
+		t.Errorf("sub-hour hint = %+v", five)
+	}
+	if cacheControlDirective(nil) != nil {
+		t.Error("nil hint must render nothing")
+	}
+}
+
+// The system prompt lowers to one message per entry, but the breakpoint
+// covers the whole prompt — so only the final entry carries it. A marker on
+// every entry would burn OpenRouter's four-breakpoint budget on a prefix one
+// trailing marker already names.
+func TestSystemBreakpointOnlyOnFinalEntry(t *testing.T) {
+	request := llm.Request{
+		ProviderID: "gocoder",
+		ModelID:    "x/y:free",
+		System:     []string{"first", "", "second"},
+		Messages:   []llm.Message{llm.UserText("m1", "hi")},
+	}
+	request = llm.ApplyCachePolicy(request)
+	body, err := convertRequest(request, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	marked := 0
+	systemSeen := 0
+	for _, message := range body.Messages {
+		if message.Role != "system" {
+			continue
+		}
+		systemSeen++
+		isFinal := systemSeen == 2 // two non-empty entries were passed
+		blocks, isBlocks := message.Content.([]contentPart)
+		if isFinal {
+			// The breakpoint covers the whole system prompt, so it rides the
+			// final entry — as the block array, the only shape that can.
+			if !isBlocks || len(blocks) == 0 {
+				t.Fatalf("final system content = %#v, want typed blocks", message.Content)
+			}
+			if blocks[len(blocks)-1].CacheControl == nil {
+				t.Errorf("final system block carries no cache_control: %v", blocks)
+			}
+			marked++
+		} else if isBlocks {
+			t.Errorf("earlier system entry is a block array: %#v", message.Content)
+		}
+	}
+	if systemSeen != 2 {
+		t.Fatalf("system entries = %d, want 2 (empty ones skipped)", systemSeen)
+	}
+	if marked != 1 {
+		t.Errorf("marked system entries = %d, want 1 (the final one)", marked)
+	}
+}
+
 const openAIStream = `data: {"choices":[{"delta":{"content":"Hel"}}]}
 
 data: {"choices":[{"delta":{"content":"lo"}}]}
@@ -150,7 +297,7 @@ func TestAPIError(t *testing.T) {
 }
 
 func TestToolMessageConversion(t *testing.T) {
-	converted, err := convertMessage(llm.ToolResultMessage("", "call_1", "bash", "output text", false))
+	converted, err := convertMessage(llm.ToolResultMessage("", "call_1", "bash", "output text", false), false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +314,7 @@ func TestAssistantToolCallConversion(t *testing.T) {
 			{Type: llm.PartToolCall, ToolCallID: "call_1", ToolName: "bash", Input: map[string]any{"command": "ls"}},
 		},
 	}
-	converted, err := convertMessage(message)
+	converted, err := convertMessage(message, false)
 	if err != nil {
 		t.Fatal(err)
 	}

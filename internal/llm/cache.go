@@ -20,11 +20,14 @@ package llm
 // breakpoint, so every step after the first reads the cache instead of
 // re-paying for the conversation.
 //
-// Only the Anthropic adapter consults these hints, and it applies the policy
-// itself (see convertRequest) — upstream gates the same pass on a
-// RESPECTS_INLINE_HINTS set naming anthropic-messages and bedrock-converse.
-// The OpenAI-shaped and Gemini APIs cache implicitly, with nothing on the wire
-// to mark; hints reaching them would be inert, so they never see them.
+// The Anthropic adapter consults these hints always — its wire format is where
+// a breakpoint is native. The OpenAI adapter consults them only when the
+// endpoint opted in via llm.Options.CacheControlBlocks: OpenRouter accepts the
+// same Anthropic-style markers on Chat Completions blocks and translates them
+// per route (upstream gates the same pass on a RESPECTS_INLINE_HINTS set
+// naming anthropic-messages and bedrock-converse). The remaining
+// OpenAI-shaped and Gemini APIs cache implicitly with nothing on the wire to
+// mark; hints reaching them would be inert, so they never see them.
 
 // CacheHint marks one request element as a breakpoint. A zero TTLSeconds takes
 // the provider's default window (5 minutes on Anthropic).

@@ -106,6 +106,12 @@ func TestGocoderApplySetsKeyAndBaseURL(t *testing.T) {
 	if !strings.HasPrefix(r.BaseURL, srv.URL+"/v1") {
 		t.Errorf("BaseURL = %q (want local site /v1)", r.BaseURL)
 	}
+	// The proxy fronts OpenRouter, so the OpenAI adapter may place
+	// Anthropic-style cache_control breakpoints on its blocks; the transform
+	// is what opts this provider into that.
+	if !r.Options.CacheControlBlocks {
+		t.Error("CacheControlBlocks not set")
+	}
 }
 
 // The base URL must carry the /v1 segment: the OpenAI client appends

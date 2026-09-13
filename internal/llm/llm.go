@@ -38,7 +38,9 @@ type ContentPart struct {
 	// Cache marks this part as a prompt-cache breakpoint: everything up to
 	// and including it is a stable prefix the provider may cache. Usually
 	// placed by ApplyCachePolicy rather than by hand. Adapters for APIs with
-	// no wire representation for a breakpoint ignore it. See cache.go.
+	// no wire representation for a breakpoint ignore it — the OpenAI adapter
+	// honours it only when the endpoint opted in via Options.CacheControlBlocks.
+	// See cache.go.
 	Cache *CacheHint
 }
 

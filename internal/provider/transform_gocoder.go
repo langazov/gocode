@@ -43,6 +43,15 @@ func (gocoderTransform) Apply(_ context.Context, r *Resolved) error {
 	if r.BaseURL == "" {
 		r.BaseURL = gocoderInferenceBase(account)
 	}
+	// The proxy fronts OpenRouter, which accepts Anthropic-style cache_control
+	// on Chat Completions content blocks and translates it to the routed
+	// provider's native form (a native breakpoint toward Anthropic/Google, a
+	// prompt_cache_breakpoint toward OpenAI models). Opting in here turns the
+	// OpenAI adapter's breakpoint placement on for this provider only: agent
+	// turns re-send the same tool definitions and system prompt every step, so
+	// the first step writes the cache and the rest read it at a fraction of the
+	// input price.
+	r.Options.CacheControlBlocks = true
 	return nil
 }
 

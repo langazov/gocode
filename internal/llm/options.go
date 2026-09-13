@@ -43,6 +43,20 @@ type Options struct {
 	// deployment, Vertex per project/location/publisher.
 	Endpoint func(base, model string) string
 
+	// CacheControlBlocks reports whether the endpoint honours Anthropic-style
+	// `cache_control` markers carried on Chat Completions content blocks.
+	// OpenRouter accepts them and translates per route — a block-level
+	// `cache_control` becomes a native breakpoint toward Anthropic/Google and
+	// a `prompt_cache_breakpoint` toward OpenAI models — so a proxy fronting
+	// OpenRouter is the motivating case (see internal/provider's gocoder
+	// transform). Vanilla OpenAI rejects unknown content-block fields, so the
+	// default is off and a provider opts in by setting it.
+	//
+	// It is a field rather than a method so a transform can set it from the
+	// provider table the way it sets Headers and Body, without the llm
+	// package knowing anything about provider ids.
+	CacheControlBlocks bool
+
 	// Transport wraps the HTTP round tripper, and is this port's equivalent of
 	// the per-provider `fetch` override the TypeScript plugins install (see
 	// cortexFetch in plugin/provider/snowflake-cortex.ts). It is the hook for
