@@ -62,6 +62,25 @@ func (p *capturingProvider) system(t *testing.T) []string {
 	return nil
 }
 
+// settleExecution waits for the background drain that Prompt's Wake
+// detached (context.WithoutCancel) to finish. Without this, the test can
+// return while the turn is still mid-write: on Windows t.TempDir's cleanup
+// then cannot unlink test.db, because the process still holds it open
+// ("The process cannot access the file because it is being used by another
+// process") — Linux happily unlinks an open file, which is why this only
+// ever failed there.
+func settleExecution(t *testing.T, service *session.Service) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(service.Execution.Active()) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("the execution goroutine never settled; the turn is still running")
+}
+
 func TestMemoryReachesTheSystemPrompt(t *testing.T) {
 	ctx := context.Background()
 	workdir := t.TempDir()
@@ -140,6 +159,7 @@ func TestMemoryReachesTheSystemPrompt(t *testing.T) {
 	}
 
 	system := provider.system(t)
+	settleExecution(t, service)
 	joined := strings.Join(system, "\n")
 
 	if !strings.Contains(joined, "Always run make check before pushing") {
@@ -218,6 +238,7 @@ func TestNoMemoriesLeavesPromptUnchanged(t *testing.T) {
 	}
 
 	system := provider.system(t)
+	settleExecution(t, service)
 	if len(system) != 1 || system[0] != "You are gocode." {
 		t.Errorf("system = %v, want just the agent prompt", system)
 	}
