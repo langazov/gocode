@@ -147,6 +147,9 @@ A 429 with no stated time settles as the failure it always was; a hint past
 `rateLimitRetryCap` (10 minutes) reads as a quota, not a window, and settles
 too.
 
+Inbox promotion happens once per turn, before the first attempt, so a held
+step re-attempts the same request rather than pulling the next queued one in.
+
 The guard on both is *dispatch, not silence*: a step that already called a
 tool may have written a file or run a command, and is never re-run whatever
 stopped it. A partial message from the held attempt is retracted
@@ -158,8 +161,13 @@ A turn "needs continuation" when the model called tools: it hasn't finished, it
 just wants results. `MaxSteps` bounds this so a confused model can't loop
 forever.
 
-Hitting the cap doesn't error out. The runner injects `MaxStepsPrompt` —
-a directive that disables tools and demands a text summary:
+Hitting the cap doesn't error out. The runner sets `tool_choice: none` and
+appends `MaxStepsPrompt` as a user message — a directive that demands a text
+summary. Tools stay declared on that request, because history already holds
+tool calls and providers reject those in a request with no tools; and the
+directive is a user turn, because a trailing assistant message is a prefill.
+A provider that ignores `tool_choice` anyway has its call recorded as refused:
+nothing runs, and the turn does not continue.
 
 ```
 CRITICAL - MAXIMUM STEPS REACHED
@@ -187,7 +195,7 @@ flowchart TD
   B -->|yes| C["resolve agent + model"]
   C --> D["Compactor.Compact(history)"]
   D --> E{"compacted?"}
-  E -->|no| F["return the original error"]
+  E -->|no| F["settle step.failed<br/>with the provider's error"]
   E -->|yes| G["runTurnAttempt — retry once"]
 
   style G fill:#065f46,stroke:#047857,color:#ecfdf5
@@ -214,10 +222,14 @@ declares `session_context_epoch`, carried over from the TypeScript port — the
 Go compaction path does not currently write it.)
 
 Failure is soft. If the summarisation stream errors or returns empty, `Compact`
-returns `false` and the original overflow error surfaces unchanged.
+returns `false` and the step is settled as failed with the provider's own
+overflow error, so the transcript says why the turn stopped.
 
-The retry happens **once**. If the compacted history still overflows, the
-original error surfaces — the alternative is an infinite compaction loop.
+The retry happens **once**. If the compacted history still overflows, that
+error is settled the same way — the alternative is an infinite compaction loop.
+
+The summary stream observes the run context, so an interrupt stops a
+compaction in progress; the compaction events around it still commit.
 
 ## The coordinator
 
