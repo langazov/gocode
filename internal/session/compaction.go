@@ -16,6 +16,15 @@ import (
 // exceeded the model window before producing any assistant content.
 var errContextOverflow = errors.New("session: context overflow")
 
+// contextOverflowError carries the provider's own overflow error up to the
+// compaction wrapper, which either recovers or settles the step with it. It
+// matches errContextOverflow under errors.Is.
+type contextOverflowError struct{ cause error }
+
+func (e *contextOverflowError) Error() string        { return e.cause.Error() }
+func (e *contextOverflowError) Unwrap() error        { return e.cause }
+func (e *contextOverflowError) Is(target error) bool { return target == errContextOverflow }
+
 // overflowMarkers are substrings that indicate a provider rejected a request
 // for exceeding its context window.
 var overflowMarkers = []string{
@@ -132,12 +141,15 @@ func (c *Compactor) Compact(ctx context.Context, sessionID string, history []Sto
 		return false, nil
 	}
 	prompt := buildCompactionPrompt(previousSummary, head)
+	// Only the summary stream observes cancellation, so an interrupt stops a
+	// long summary; the events around it commit either way.
+	publishCtx := context.WithoutCancel(ctx)
 
 	messageID, err := id.Ascending(id.KindMessage)
 	if err != nil {
 		return false, err
 	}
-	if _, err := c.Bus.Publish(ctx, CompactionStarted, map[string]any{
+	if _, err := c.Bus.Publish(publishCtx, CompactionStarted, map[string]any{
 		"sessionID": sessionID,
 		"timestamp": nowMillis(),
 		"messageID": messageID,
@@ -169,7 +181,7 @@ func (c *Compactor) Compact(ctx context.Context, sessionID string, history []Sto
 		return false, nil
 	}
 
-	if _, err := c.Bus.Publish(ctx, CompactionEnded, map[string]any{
+	if _, err := c.Bus.Publish(publishCtx, CompactionEnded, map[string]any{
 		"sessionID": sessionID,
 		"timestamp": nowMillis(),
 		"messageID": messageID,

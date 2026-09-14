@@ -45,28 +45,37 @@ func (r *Runner) toolConcurrency() int {
 
 // settleTool runs exactly one tool call on its own goroutine and reports the
 // outcome over out. It always sends exactly one settlement, including on
-// cancellation, so the turn loop's inflight count always drains.
-func (r *Runner) settleTool(ctx context.Context, sem chan struct{}, req toolRequest, out chan<- settlement) {
+// cancellation, so the turn loop's inflight count always drains — unless the
+// turn has already stopped reading (done closed, after an abandoned turn), in
+// which case the settlement is dropped rather than blocking forever;
+// failInterruptedTools records it on the next drain.
+func (r *Runner) settleTool(ctx context.Context, sem chan struct{}, done <-chan struct{}, req toolRequest, out chan<- settlement) {
 	started := nowMillis()
+	send := func(s settlement) {
+		select {
+		case out <- s:
+		case <-done:
+		}
+	}
 	// Wait for a slot. A cancelled turn settles immediately rather than
 	// queueing behind tools that will themselves be cancelled.
 	select {
 	case sem <- struct{}{}:
 	case <-ctx.Done():
-		out <- settlement{call: req.call, seq: req.seq, err: ctx.Err(), started: started, ended: nowMillis()}
+		send(settlement{call: req.call, seq: req.seq, err: ctx.Err(), started: started, ended: nowMillis()})
 		return
 	}
 	defer func() { <-sem }()
 
 	output, err := r.executeTool(ctx, req.sessionID, req.assistantMessageID, req.agentID, req.call)
-	out <- settlement{
+	send(settlement{
 		call:    req.call,
 		seq:     req.seq,
 		output:  output,
 		err:     err,
 		started: started,
 		ended:   nowMillis(),
-	}
+	})
 }
 
 // publishSettlement writes one settled tool call to the bus. Called only from

@@ -219,15 +219,19 @@ func TestRunnerMaxStepsDisablesTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	request := provider.requests[0]
-	if len(request.Tools) != 0 {
-		t.Fatalf("tools must be disabled on the last step, got %d", len(request.Tools))
+	// Tools stay declared — history holds tool calls, and providers reject
+	// those (and a tool_choice) in a request with no tools — and tool_choice
+	// "none" is what disables them.
+	if len(request.Tools) != 1 {
+		t.Fatalf("tools must stay declared on the last step, got %d", len(request.Tools))
 	}
 	if request.ToolChoice != "none" {
 		t.Fatalf("expected tool_choice none, got %q", request.ToolChoice)
 	}
+	// A user turn: a trailing assistant message would be a prefill.
 	last := request.Messages[len(request.Messages)-1]
-	if last.Role != llm.RoleAssistant || !strings.Contains(last.Content[0].Text, "MAXIMUM STEPS REACHED") {
-		t.Fatalf("expected max-steps assistant prompt, got %+v", last)
+	if last.Role != llm.RoleUser || !strings.Contains(last.Content[0].Text, "MAXIMUM STEPS REACHED") {
+		t.Fatalf("expected max-steps user prompt, got %+v", last)
 	}
 }
 

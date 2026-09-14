@@ -257,9 +257,20 @@ func (r *Runner) Run(ctx context.Context, input RunInput) error {
 func (r *Runner) runTurn(runCtx context.Context, sessionID string, promotion Delivery, step int) (turnResult, error) {
 	// Publishes must outlive an interrupt, exactly as in runTurnAttempt.
 	ctx := context.WithoutCancel(runCtx)
+	// Promotion happens once per turn, not once per attempt. Every retry below
+	// — a network hold, a rate limit, the compaction retry — re-runs the same
+	// logical step, and promoting again inside it pulled the *next* queued
+	// request into a turn that was only meant to answer the first.
+	promoted, err := r.promote(ctx, sessionID, promotion)
+	if err != nil {
+		return turnResult{}, err
+	}
+	if promoted > 0 {
+		step = 1
+	}
 	var hold networkHold
 	for {
-		result, err := r.runTurnCompacting(runCtx, sessionID, promotion, step)
+		result, err := r.runTurnCompacting(runCtx, sessionID, step)
 		var down *transportDownError
 		if errors.As(err, &down) {
 			retry, settleWith := r.awaitNetwork(runCtx, ctx, sessionID, down, &hold)
@@ -358,70 +369,105 @@ func (r *Runner) startAssistantMessage(ctx context.Context, sessionID string, re
 	return assistantMessageID, nil
 }
 
+// promote moves pending inbox rows into the transcript for the given delivery
+// mode and reports how many landed. Steer promotes every steer admitted so
+// far; queue promotes the oldest queued request plus any steers alongside it.
+func (r *Runner) promote(ctx context.Context, sessionID string, promotion Delivery) (int, error) {
+	if promotion == "" {
+		return 0, nil
+	}
+	cutoff, err := r.Bus.LatestSequence(ctx, sessionID)
+	if err != nil {
+		return 0, err
+	}
+	promoted := 0
+	if promotion == DeliveryQueue {
+		queued, err := PromoteNextQueued(ctx, r.Bus, r.DB, sessionID)
+		if err != nil {
+			return 0, err
+		}
+		if queued {
+			promoted++
+		}
+	}
+	steers, err := PromoteSteers(ctx, r.Bus, r.DB, sessionID, cutoff)
+	if err != nil {
+		return 0, err
+	}
+	return promoted + steers, nil
+}
+
 // runTurnCompacting runs one provider turn, recovering from a context-overflow
-// failure by compacting and retrying once.
-func (r *Runner) runTurnCompacting(runCtx context.Context, sessionID string, promotion Delivery, step int) (turnResult, error) {
-	result, err := r.runTurnAttempt(runCtx, sessionID, promotion, step)
-	if !errors.Is(err, errContextOverflow) || r.Compactor == nil {
+// failure by compacting and retrying once. An overflow that cannot be recovered
+// — no compactor, a summary that failed, or a retry that still overflows — is
+// settled onto the transcript with the provider's own error, so the turn does
+// not end silently.
+func (r *Runner) runTurnCompacting(runCtx context.Context, sessionID string, step int) (turnResult, error) {
+	result, err := r.runTurnAttempt(runCtx, sessionID, step)
+	var overflow *contextOverflowError
+	if !errors.As(err, &overflow) {
 		return result, err
 	}
 	ctx := context.WithoutCancel(runCtx)
-	resolved, resolveErr := r.resolveAgent(ctx, sessionID)
-	if resolveErr != nil {
-		return turnResult{}, resolveErr
+	var compactErr error
+	if r.Compactor != nil {
+		resolved, err := r.resolveAgent(ctx, sessionID)
+		if err != nil {
+			return turnResult{}, err
+		}
+		history, err := r.Messages.ListForRunner(ctx, sessionID)
+		if err != nil {
+			return turnResult{}, err
+		}
+		// The summary stream observes runCtx, so an interrupt stops it.
+		var compacted bool
+		compacted, compactErr = r.Compactor.Compact(runCtx, sessionID, history, resolved.Model)
+		if compactErr == nil && compacted && runCtx.Err() == nil {
+			result, err = r.runTurnAttempt(runCtx, sessionID, step)
+			if !errors.As(err, &overflow) {
+				return result, err
+			}
+		}
 	}
-	history, historyErr := r.Messages.ListForRunner(ctx, sessionID)
-	if historyErr != nil {
-		return turnResult{}, historyErr
+	cause := overflow.cause
+	if runCtx.Err() != nil {
+		// Interrupted while compacting: that is what stopped the turn.
+		cause = runCtx.Err()
 	}
-	compacted, compactErr := r.Compactor.Compact(ctx, sessionID, history, resolved.Model)
-	if compactErr != nil || !compacted {
+	if err := r.failTurn(ctx, runCtx, sessionID, "", cause); err != nil {
 		return turnResult{}, err
 	}
-	return r.runTurnAttempt(runCtx, sessionID, promotion, step)
+	return turnResult{}, errors.Join(cause, compactErr)
 }
 
-func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promotion Delivery, step int) (turnResult, error) {
+func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, step int) (turnResult, error) {
 	// Publishes and DB writes settle durably and must survive interruption of
 	// the provider stream; only the stream itself observes cancellation.
 	ctx := context.WithoutCancel(runCtx)
 	currentStep := step
-	if promotion != "" {
-		cutoff, err := r.Bus.LatestSequence(ctx, sessionID)
-		if err != nil {
-			return turnResult{}, err
-		}
-		promoted := 0
-		if promotion == DeliverySteer {
-			promoted, err = PromoteSteers(ctx, r.Bus, r.DB, sessionID, cutoff)
-			if err != nil {
-				return turnResult{}, err
-			}
-		}
-		if promotion == DeliveryQueue {
-			queued, err := PromoteNextQueued(ctx, r.Bus, r.DB, sessionID)
-			if err != nil {
-				return turnResult{}, err
-			}
-			if queued {
-				promoted++
-			}
-			steers, err := PromoteSteers(ctx, r.Bus, r.DB, sessionID, cutoff)
-			if err != nil {
-				return turnResult{}, err
-			}
-			promoted += steers
-		}
-		if promoted > 0 {
-			currentStep = 1
-		}
-	}
 
 	resolved, err := r.resolveAgent(ctx, sessionID)
 	if err != nil {
 		return turnResult{}, err
 	}
-	if err := r.compactIfNeeded(ctx, sessionID, resolved.Model); err != nil {
+	isLastStep := resolved.MaxSteps > 0 && currentStep >= resolved.MaxSteps
+	// Tools stay advertised on the last step; tool_choice "none" is what
+	// disables them. History already holds tool calls and results, and
+	// providers reject those — or a tool_choice — in a request that declares
+	// no tools, which would fail the one turn meant to summarize.
+	var tools []llm.ToolDefinition
+	if r.Tools != nil {
+		for _, name := range r.Tools.Names() {
+			registered, _ := r.Tools.Get(name)
+			tools = append(tools, llm.ToolDefinition{
+				Name:        registered.Name(),
+				Description: registered.Description(),
+				InputSchema: registered.InputSchema(),
+			})
+		}
+	}
+	r.applyToolDefinitions(ctx, tools)
+	if err := r.compactIfNeeded(ctx, runCtx, sessionID, resolved, tools); err != nil {
 		return turnResult{}, err
 	}
 	messages, err := r.Messages.ListForRunner(ctx, sessionID)
@@ -435,21 +481,11 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	// Plan mode's read-only charter (and its release on the way back to build)
 	// rides on the newest user message. See reminders.go.
 	llmMessages = applyReminders(llmMessages, messages, resolved.ID)
-	isLastStep := resolved.MaxSteps > 0 && currentStep >= resolved.MaxSteps
-	var tools []llm.ToolDefinition
-	if r.Tools != nil && !isLastStep {
-		for _, name := range r.Tools.Names() {
-			registered, _ := r.Tools.Get(name)
-			tools = append(tools, llm.ToolDefinition{
-				Name:        registered.Name(),
-				Description: registered.Description(),
-				InputSchema: registered.InputSchema(),
-			})
-		}
-	}
-	r.applyToolDefinitions(ctx, tools)
 	if isLastStep {
-		llmMessages = append(llmMessages, llm.AssistantText("", MaxStepsPrompt))
+		// A user turn, not an assistant one: a trailing assistant message is
+		// a prefill, which thinking models reject outright and every other
+		// model reads as words it has already said.
+		llmMessages = append(llmMessages, llm.UserText("", MaxStepsPrompt))
 	}
 	system := []string{}
 	if resolved.System != "" {
@@ -530,6 +566,11 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	// See MULTI_AGENTS.md phase 1.
 	events := make(chan llm.StreamEvent, 64)
 	settlements := make(chan settlement, 16)
+	// Closed when this turn stops reading settlements, so a tool that reports
+	// back after an abandoned turn gives up its send instead of blocking on a
+	// channel nobody drains.
+	turnDone := make(chan struct{})
+	defer close(turnDone)
 	sem := make(chan struct{}, r.toolConcurrency())
 	var streamErr error
 	// The stream gets its own cancellable context, derived from the run's.
@@ -555,6 +596,11 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, promot
 	inflight := 0
 	seq := 0
 	needsContinuation := false
+	// A permission the user declined ends the request: the model does not get
+	// another turn to route around the refusal, matching the TypeScript
+	// processor's blocked stop. Feedback given with the refusal (a
+	// CorrectedError) is not a decline and continues.
+	declined := false
 	// A cancelled run abandons tools that ignore their context. Everything
 	// well-behaved settles as soon as runCtx closes — settleTool's slot wait,
 	// the bash tool's WaitDelay, the spawner's child cancel — but a tool that
@@ -659,7 +705,24 @@ turnLoop:
 					providerErr = err
 					continue
 				}
-				needsContinuation = true
+				if isLastStep && !call.ProviderExecuted {
+					// Tools are disabled on the last step. A provider that
+					// ignored tool_choice gets its call recorded as refused,
+					// but nothing runs and the turn does not continue —
+					// continuing would re-enter the last step indefinitely.
+					if err := r.publishSettlement(ctx, sessionID, assistantMessageID, settlement{
+						call: call,
+						seq:  seq,
+						err:  errToolsDisabled,
+					}); err != nil {
+						providerErr = err
+					}
+					seq++
+					continue
+				}
+				if !isLastStep {
+					needsContinuation = true
+				}
 				if call.ProviderExecuted {
 					// The provider already ran it; settle from its output
 					// rather than dispatching locally.
@@ -676,7 +739,7 @@ turnLoop:
 				// Dispatch mid-stream: the tool starts now, while the rest of
 				// the response is still arriving.
 				inflight++
-				go r.settleTool(runCtx, sem, toolRequest{
+				go r.settleTool(runCtx, sem, turnDone, toolRequest{
 					call:               call,
 					seq:                seq,
 					sessionID:          sessionID,
@@ -692,6 +755,9 @@ turnLoop:
 			}
 		case settled := <-settlements:
 			inflight--
+			if errors.Is(settled.err, permission.ErrDeclined) {
+				declined = true
+			}
 			if err := r.publishSettlement(ctx, sessionID, assistantMessageID, settled); err != nil && providerErr == nil {
 				providerErr = err
 			}
@@ -731,7 +797,7 @@ turnLoop:
 	// An overflow before any assistant content is recoverable: signal the
 	// wrapper to compact and retry instead of settling a failed step.
 	if providerErr != nil && assistantMessageID == "" && isContextOverflow(providerErr) {
-		return turnResult{}, errContextOverflow
+		return turnResult{}, &contextOverflowError{cause: providerErr}
 	}
 
 	// So is an outage that cut the step off before it did anything
@@ -820,8 +886,12 @@ turnLoop:
 		return turnResult{}, err
 	}
 
-	return turnResult{needsContinuation: needsContinuation, step: currentStep}, nil
+	return turnResult{needsContinuation: needsContinuation && !declined, step: currentStep}, nil
 }
+
+// errToolsDisabled settles a tool call made on the last step, where tools are
+// disabled and nothing is dispatched.
+var errToolsDisabled = errors.New("tools are disabled: the maximum number of steps has been reached")
 
 func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID, agentID string, call llm.ToolCall) (string, error) {
 	if r.Tools == nil {
@@ -837,12 +907,13 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 		// file tool refuses, so it declares those paths and they are asked for
 		// first. Asking before the tool's own action means a denial stops the
 		// command without the model seeing a partial approval.
+		var asks []ToolPermissionInput
 		if scoped, ok := r.tool(call.Name).(tool.PermissionScoped); ok {
 			for _, extra := range scoped.ExtraPermissions(call.Input) {
 				if len(extra.Resources) == 0 {
 					continue
 				}
-				err := r.Permissions.Assert(ctx, ToolPermissionInput{
+				asks = append(asks, ToolPermissionInput{
 					SessionID:          sessionID,
 					Agent:              agentID,
 					Action:             extra.Action,
@@ -852,13 +923,10 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 					AssistantMessageID: assistantMessageID,
 					CallID:             call.ID,
 				})
-				if err != nil {
-					return "", err
-				}
 			}
 		}
 		resources := r.permissionResourcesFor(call)
-		request := ToolPermissionInput{
+		asks = append(asks, ToolPermissionInput{
 			SessionID:          sessionID,
 			Agent:              agentID,
 			Action:             permissionAction(call.Name),
@@ -867,28 +935,22 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 			Metadata:           permissionMetadata(call.Name, call.Input),
 			AssistantMessageID: assistantMessageID,
 			CallID:             call.ID,
-		}
-		// A configured deny is checked before the plugin hook and is not
-		// negotiable. The hook exists to settle a question the user would
-		// otherwise be interrupted with; a rule that already says no is not a
-		// question. Without this, any plugin answering "allow" switched off
-		// every deny in the ruleset — plan mode's read-only constraint
-		// included — with nothing in the transcript to say it had.
+		})
+		// Configured denies are checked before anything can ask or be settled
+		// by a plugin, and are not negotiable. A rule that already says no is
+		// not a question: without this, any plugin answering "allow" switched
+		// off every deny in the ruleset — plan mode's read-only constraint
+		// included — and a deny on the tool's own action only surfaced after
+		// the user had already approved its extra permissions.
 		if denier, ok := r.Permissions.(PermissionRuled); ok {
-			if err := denier.Denied(request); err != nil {
-				return "", err
+			for _, ask := range asks {
+				if err := denier.Denied(ask); err != nil {
+					return "", err
+				}
 			}
 		}
-		// A plugin can settle the remaining request before the user is
-		// interrupted, porting the permission.ask hook. Only an explicit
-		// decision counts: the default status leaves the engine's own
-		// evaluation in charge.
-		switch r.askPlugins(ctx, request) {
-		case plugin.PermissionDeny:
-			return "", fmt.Errorf("session: %s denied by plugin", request.Action)
-		case plugin.PermissionAllow:
-		default:
-			if err := r.Permissions.Assert(ctx, request); err != nil {
+		for _, ask := range asks {
+			if err := r.authorize(ctx, ask); err != nil {
 				return "", err
 			}
 		}
@@ -918,6 +980,21 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 		return "", err
 	}
 	return r.applyToolOutput(ctx, sessionID, call.ID, call.Name, call.Input, output), nil
+}
+
+// authorize settles one permission request. A plugin can settle it before the
+// user is interrupted, porting the permission.ask hook; only an explicit
+// decision counts, and the default status leaves the engine's own evaluation
+// in charge.
+func (r *Runner) authorize(ctx context.Context, request ToolPermissionInput) error {
+	switch r.askPlugins(ctx, request) {
+	case plugin.PermissionDeny:
+		return fmt.Errorf("session: %s denied by plugin", request.Action)
+	case plugin.PermissionAllow:
+		return nil
+	default:
+		return r.Permissions.Assert(ctx, request)
+	}
 }
 
 // tool looks a tool up by name, returning nil when the registry has none.
@@ -1204,14 +1281,18 @@ func (r *Runner) effectiveContextLimit(model ModelRef) int {
 	return r.ContextLimit
 }
 
-// compactIfNeeded estimates the history size and runs the compactor when the
-// context limit is approaching. Best-effort: compaction failures do not block
-// the turn.
-func (r *Runner) compactIfNeeded(ctx context.Context, sessionID string, model ModelRef) error {
+// compactIfNeeded estimates the request size and runs the compactor when the
+// context limit is approaching. A summary that fails leaves history as it was
+// and the turn proceeds; only storage errors fail the turn.
+//
+// ctx carries the durable reads and writes; runCtx is handed to the summary
+// stream, so an interrupt stops a compaction that could otherwise run for
+// minutes.
+func (r *Runner) compactIfNeeded(ctx, runCtx context.Context, sessionID string, resolved resolvedAgent, tools []llm.ToolDefinition) error {
 	if r.Compactor == nil {
 		return nil
 	}
-	contextLimit := r.effectiveContextLimit(model)
+	contextLimit := r.effectiveContextLimit(resolved.Model)
 	if contextLimit <= 0 {
 		return nil
 	}
@@ -1223,11 +1304,18 @@ func (r *Runner) compactIfNeeded(ctx context.Context, sessionID string, model Mo
 	for _, message := range history {
 		requestTokens += estimateTokens(string(message.Data))
 	}
-	requestTokens += estimateTokens(r.System)
+	// The turn's own system prompt, not the runner default: an agent's
+	// prompt replaces it. Tool schemas ride on every request too.
+	requestTokens += estimateTokens(resolved.System)
+	if len(tools) > 0 {
+		if encoded, err := json.Marshal(tools); err == nil {
+			requestTokens += estimateTokens(string(encoded))
+		}
+	}
 	if !r.Compactor.NeedsCompaction(history, contextLimit, requestTokens) {
 		return nil
 	}
-	if _, err := r.Compactor.Compact(ctx, sessionID, history, model); err != nil {
+	if _, err := r.Compactor.Compact(runCtx, sessionID, history, resolved.Model); err != nil {
 		return err
 	}
 	return nil
