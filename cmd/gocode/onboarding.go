@@ -112,7 +112,8 @@ func submitter(client *gocoder.Client, onRestore func(sync.RestoreOutcome)) func
 			return signin.Result{}, err
 		}
 		if onRestore != nil {
-			onRestore(sync.RestoreOnLogin(ctx, client, account, c.Password, syncPaths(), syncStateDir(), os.Stderr))
+			paths := syncPaths()
+			onRestore(sync.RestoreOnLogin(ctx, client, account, c.Password, paths, syncStateDir(), deviceIDFunc(paths, account.Email)(), os.Stderr))
 		}
 		return signin.Result{
 			Name:      account.DisplayName,

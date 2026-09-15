@@ -153,9 +153,20 @@ func (c *Client) RevokeKey(ctx context.Context, bearer, id string) error {
 // SettingsDoc is the settings-sync document: an opaque client-encrypted
 // envelope plus the server-assigned revision for last-writer-wins.
 type SettingsDoc struct {
+	DeviceID  string    `json:"deviceId"`
 	Envelope  string    `json:"envelope"`
 	Revision  int64     `json:"revision"`
 	Device    string    `json:"device,omitempty"`
+	UpdatedBy string    `json:"updatedBy,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// SettingsDeviceSummary describes one stored doc without its envelope — the
+// shape /api/settings/devices lists, mirroring the website's device picker.
+type SettingsDeviceSummary struct {
+	DeviceID  string    `json:"deviceId"`
+	Device    string    `json:"device,omitempty"`
+	Revision  int64     `json:"revision"`
 	UpdatedBy string    `json:"updatedBy,omitempty"`
 	UpdatedAt time.Time `json:"updatedAt"`
 }
@@ -164,12 +175,23 @@ type SettingsDoc struct {
 // normal first-machine case, not a failure.
 var ErrNoSettings = errors.New("no settings synced for this account")
 
-// GetSettings fetches the account's settings doc. The 404 every fresh
-// account produces becomes ErrNoSettings, so callers branch on "nothing to
-// restore" without string matching.
-func (c *Client) GetSettings(ctx context.Context, bearer string) (*SettingsDoc, error) {
+// settingsPath appends the ?device= scoping query param the website's
+// per-device settings routes read. deviceID "" addresses the legacy
+// pre-device doc and is sent as no query param at all, matching what a
+// pre-device CLI build always did.
+func settingsPath(base, deviceID string) string {
+	if deviceID == "" {
+		return base
+	}
+	return base + "?device=" + url.QueryEscape(deviceID)
+}
+
+// GetSettings fetches deviceID's settings doc. The 404 every fresh device
+// produces becomes ErrNoSettings, so callers branch on "nothing to restore"
+// without string matching.
+func (c *Client) GetSettings(ctx context.Context, bearer, deviceID string) (*SettingsDoc, error) {
 	var doc SettingsDoc
-	if err := c.do(ctx, http.MethodGet, "/api/settings", bearer, nil, &doc); err != nil {
+	if err := c.do(ctx, http.MethodGet, settingsPath("/api/settings", deviceID), bearer, nil, &doc); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
 			return nil, ErrNoSettings
@@ -179,16 +201,19 @@ func (c *Client) GetSettings(ctx context.Context, bearer string) (*SettingsDoc, 
 	return &doc, nil
 }
 
-// PutSettings uploads an envelope. baseRevision is the revision the caller
-// last saw; a mismatch is HTTP 409 and the caller must Get, reconcile, and
-// retry.
-func (c *Client) PutSettings(ctx context.Context, bearer, envelope string, baseRevision int64, device string) (*SettingsDoc, error) {
+// PutSettings uploads an envelope for deviceID (its own doc; "" is the
+// legacy shared one). baseRevision is the revision the caller last saw; a
+// mismatch is HTTP 409 and the caller must Get, reconcile, and retry.
+func (c *Client) PutSettings(ctx context.Context, bearer, deviceID, envelope string, baseRevision int64, device string) (*SettingsDoc, error) {
 	body := map[string]any{
 		"envelope":     envelope,
 		"baseRevision": baseRevision,
 	}
 	if device != "" {
 		body["device"] = device
+	}
+	if deviceID != "" {
+		body["deviceId"] = deviceID
 	}
 	var doc SettingsDoc
 	if err := c.do(ctx, http.MethodPut, "/api/settings", bearer, body, &doc); err != nil {
@@ -197,13 +222,14 @@ func (c *Client) PutSettings(ctx context.Context, bearer, envelope string, baseR
 	return &doc, nil
 }
 
-// SettingsRevision returns the current server revision without moving the
-// envelope — the cheap check the background poller runs every 30 seconds.
-func (c *Client) SettingsRevision(ctx context.Context, bearer string) (int64, error) {
+// SettingsRevision returns deviceID's current server revision without
+// moving the envelope — the cheap check the background poller runs every 30
+// seconds.
+func (c *Client) SettingsRevision(ctx context.Context, bearer, deviceID string) (int64, error) {
 	var out struct {
 		Revision int64 `json:"revision"`
 	}
-	if err := c.do(ctx, http.MethodGet, "/api/settings/pending", bearer, nil, &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, settingsPath("/api/settings/pending", deviceID), bearer, nil, &out); err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
 			return 0, nil
@@ -213,9 +239,22 @@ func (c *Client) SettingsRevision(ctx context.Context, bearer string) (int64, er
 	return out.Revision, nil
 }
 
-// DeleteSettings clears the account's synced settings.
-func (c *Client) DeleteSettings(ctx context.Context, bearer string) error {
-	return c.do(ctx, http.MethodDelete, "/api/settings", bearer, nil, nil)
+// DeleteSettings clears deviceID's synced settings ("" is the legacy shared
+// doc).
+func (c *Client) DeleteSettings(ctx context.Context, bearer, deviceID string) error {
+	return c.do(ctx, http.MethodDelete, settingsPath("/api/settings", deviceID), bearer, nil, nil)
+}
+
+// ListSettingsDevices summarizes every settings doc the account has,
+// newest first — the same listing the website's device picker shows.
+func (c *Client) ListSettingsDevices(ctx context.Context, bearer string) ([]SettingsDeviceSummary, error) {
+	var out struct {
+		Devices []SettingsDeviceSummary `json:"devices"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/settings/devices", bearer, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Devices, nil
 }
 
 func (c *Client) do(ctx context.Context, method, path, token string, body, out any) error {

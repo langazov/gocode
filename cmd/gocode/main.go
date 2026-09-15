@@ -223,8 +223,9 @@ func startSyncLoops(ctx context.Context) (context.CancelFunc, bool) {
 	if err != nil || account == nil {
 		return nil, false
 	}
-	manager := gocodesync.NewManager(gocoder.NewClient(account.URL), syncPaths(), global.Resolve().State,
-		func() string { return account.Key })
+	paths := syncPaths()
+	manager := gocodesync.NewManager(gocoder.NewClient(account.URL), paths, global.Resolve().State,
+		func() string { return account.Key }, deviceIDFunc(paths, account.Email))
 	loopCtx, cancel := context.WithCancel(ctx)
 	go manager.WatchLocal(loopCtx)
 	go manager.PollRemote(loopCtx)

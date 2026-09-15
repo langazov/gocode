@@ -52,12 +52,27 @@ func syncManager() (*gocodesync.Manager, *gocoder.Account, error) {
 		return nil, nil, errors.New("not signed in to gocoder.org — run gocode login")
 	}
 	state := globalState()
-	manager := gocodesync.NewManager(gocoder.NewClient(account.URL), syncPaths(), state,
-		func() string { return account.Key })
+	paths := syncPaths()
+	manager := gocodesync.NewManager(gocoder.NewClient(account.URL), paths, state,
+		func() string { return account.Key }, deviceIDFunc(paths, account.Email))
 	return manager, account, nil
 }
 
 func globalState() string { return global.Resolve().State }
+
+// deviceIDFunc derives this machine's settings-sync deviceID once and hands
+// back a func reporting it, the shape Manager.DeviceID wants. Deriving it
+// touches disk (see gocodesync.DeviceID), so callers that build a manager
+// per operation would otherwise redo that work on every Push and Pull; a
+// failure falls back to "" — the legacy shared doc — rather than breaking
+// sync.
+func deviceIDFunc(paths gocodesync.Paths, email string) func() string {
+	id, err := gocodesync.DeviceID(paths, email)
+	if err != nil {
+		id = ""
+	}
+	return func() string { return id }
+}
 
 func runSyncOnce(out, errOut *os.File) error {
 	manager, _, err := syncManager()

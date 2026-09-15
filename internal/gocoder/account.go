@@ -61,7 +61,7 @@ func (c *Client) Me(ctx context.Context, bearer string) (*User, error) {
 // is deployed — unlike /api/auth/me, whose 401 can't tell a revoked key from
 // a deployment that wants a session token there.
 func (c *Client) CheckKey(ctx context.Context, bearer string) error {
-	_, err := c.SettingsRevision(ctx, bearer)
+	_, err := c.SettingsRevision(ctx, bearer, "")
 	return err
 }
 

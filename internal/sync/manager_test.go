@@ -16,55 +16,80 @@ import (
 )
 
 // fakeServer is a minimal gocoder.org settings backend: enough state for
-// the manager's optimistic lock and revision semantics.
+// the manager's optimistic lock and revision semantics, one doc per
+// deviceID (the query param on GET/pending, the "deviceId" body field on
+// PUT — "" is the legacy shared doc), mirroring
+// gocode-infra/website/backend/internal/settings.
 type fakeServer struct {
-	mu        sync.Mutex
-	doc       *string // envelope JSON
+	mu   sync.Mutex
+	docs map[string]*fakeDoc // keyed by deviceID
+	puts int
+	gets int
+}
+
+type fakeDoc struct {
+	envelope  string
 	revision  int64
-	puts      int
-	gets      int
 	conflicts int
 }
 
 func (f *fakeServer) handler(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.docs == nil {
+		f.docs = map[string]*fakeDoc{}
+	}
+	deviceID := r.URL.Query().Get("device")
 	switch {
 	case r.URL.Path == "/api/settings" && r.Method == http.MethodGet:
 		f.gets++
-		if f.doc == nil {
+		doc := f.docs[deviceID]
+		if doc == nil {
 			writeErr(w, http.StatusNotFound, "not_found", "no settings saved")
 			return
 		}
 		writeJSON(w, map[string]any{
-			"envelope": *f.doc, "revision": f.revision, "updatedAt": time.Now().Format(time.RFC3339),
+			"deviceId": deviceID, "envelope": doc.envelope, "revision": doc.revision, "updatedAt": time.Now().Format(time.RFC3339),
 		})
 	case r.URL.Path == "/api/settings" && r.Method == http.MethodPut:
 		f.puts++
 		var body struct {
 			Envelope     string `json:"envelope"`
 			BaseRevision int64  `json:"baseRevision"`
+			DeviceID     string `json:"deviceId"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body)
-		if f.doc != nil && body.BaseRevision != f.revision {
-			f.conflicts++
+		doc := f.docs[body.DeviceID]
+		if doc != nil && body.BaseRevision != doc.revision {
+			doc.conflicts++
 			writeErr(w, http.StatusConflict, "conflict", "stale revision")
 			return
 		}
-		f.doc = &body.Envelope
-		f.revision++
+		if doc == nil {
+			doc = &fakeDoc{}
+			f.docs[body.DeviceID] = doc
+		}
+		doc.envelope = body.Envelope
+		doc.revision++
 		writeJSON(w, map[string]any{
-			"envelope": *f.doc, "revision": f.revision, "updatedAt": time.Now().Format(time.RFC3339),
+			"deviceId": body.DeviceID, "envelope": doc.envelope, "revision": doc.revision, "updatedAt": time.Now().Format(time.RFC3339),
 		})
 	case r.URL.Path == "/api/settings/pending":
 		revision := int64(0)
-		if f.doc != nil {
-			revision = f.revision
+		if doc := f.docs[deviceID]; doc != nil {
+			revision = doc.revision
 		}
 		writeJSON(w, map[string]any{"revision": revision})
 	default:
 		writeErr(w, http.StatusNotFound, "not_found", "unknown")
 	}
+}
+
+// doc returns deviceID's stored doc, or nil.
+func (f *fakeServer) doc(deviceID string) *fakeDoc {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.docs[deviceID]
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -78,7 +103,9 @@ func writeErr(w http.ResponseWriter, status int, code, message string) {
 	_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": message}})
 }
 
-// env is a scratch home + manager + server per test.
+// env is a scratch home + manager + server per test. deviceID is fixed
+// ("test-device") rather than "" so these tests exercise the same
+// per-device codepath production does, not just the legacy shared doc.
 type env struct {
 	server    *fakeServer
 	client    *gocoder.Client
@@ -86,6 +113,7 @@ type env struct {
 	configDir string
 	stateDir  string
 	dataDir   string
+	deviceID  string
 }
 
 func newEnv(t *testing.T) *env {
@@ -96,12 +124,25 @@ func newEnv(t *testing.T) *env {
 		configDir: filepath.Join(root, "config"),
 		stateDir:  filepath.Join(root, "state"),
 		dataDir:   filepath.Join(root, "data"),
+		deviceID:  "test-device",
 	}
 	srv := httptest.NewServer(http.HandlerFunc(e.server.handler))
 	t.Cleanup(srv.Close)
 	e.client = gocoder.NewClient(srv.URL)
-	e.manager = NewManager(e.client, Paths{ConfigDir: e.configDir, StateDir: e.stateDir, DataDir: e.dataDir}, e.stateDir, func() string { return "gk_test" })
+	e.manager = NewManager(e.client, Paths{ConfigDir: e.configDir, StateDir: e.stateDir, DataDir: e.dataDir}, e.stateDir,
+		func() string { return "gk_test" }, func() string { return e.deviceID })
 	return e
+}
+
+// setDoc seeds deviceID's doc directly, simulating a bundle already sitting
+// on the server (from another sync, or the website).
+func (e *env) setDoc(deviceID, envelope string, revision int64) {
+	e.server.mu.Lock()
+	defer e.server.mu.Unlock()
+	if e.server.docs == nil {
+		e.server.docs = map[string]*fakeDoc{}
+	}
+	e.server.docs[deviceID] = &fakeDoc{envelope: envelope, revision: revision}
 }
 
 // prime writes a state with a known key, simulating a completed login.
@@ -147,8 +188,8 @@ func TestPushThenPullRoundTrip(t *testing.T) {
 	if err := e.manager.Push(context.Background()); err != nil {
 		t.Fatalf("push: %v", err)
 	}
-	if e.server.revision != 1 {
-		t.Fatalf("server revision after push: %d, want 1", e.server.revision)
+	if got := e.server.doc(e.deviceID).revision; got != 1 {
+		t.Fatalf("server revision after push: %d, want 1", got)
 	}
 
 	// A second push with no change is a no-op (no new revision).
@@ -205,9 +246,7 @@ func TestPushConflictThenRetry(t *testing.T) {
 		t.Fatal(err)
 	}
 	encoded, _ := json.Marshal(envl)
-	fake := string(encoded)
-	e.server.doc = &fake
-	e.server.revision = 7
+	e.setDoc(e.deviceID, string(encoded), 7)
 
 	// Local push must hit the conflict, then the caller pulls (server wins:
 	// it wrote after our base), and a subsequent push is consistent.
@@ -219,8 +258,8 @@ func TestPushConflictThenRetry(t *testing.T) {
 	if !errorsAs(err, &apiErr) || apiErr.Status != http.StatusConflict {
 		t.Fatalf("expected 409, got %v", err)
 	}
-	if e.server.conflicts != 1 {
-		t.Errorf("conflicts counted: %d", e.server.conflicts)
+	if got := e.server.doc(e.deviceID).conflicts; got != 1 {
+		t.Errorf("conflicts counted: %d", got)
 	}
 	// Reconcile: pull applies the web edit locally.
 	if _, err := e.manager.Pull(context.Background()); err != nil {
@@ -242,9 +281,7 @@ func TestPullNewerAppliesAndStamps(t *testing.T) {
 	plaintext, _ := bundle.Marshal()
 	envl, _ := Seal(plaintext, key, vectorSalt, vectorIter)
 	encoded, _ := json.Marshal(envl)
-	fake := string(encoded)
-	e.server.doc = &fake
-	e.server.revision = 3
+	e.setDoc(e.deviceID, string(encoded), 3)
 
 	applied, err := e.manager.Pull(context.Background())
 	if err != nil || !applied {
@@ -283,9 +320,7 @@ func TestDecryptFailurePausesNotClobbers(t *testing.T) {
 	plaintext, _ := bundle.Marshal()
 	envl, _ := Seal(plaintext, otherKey, vectorSalt, vectorIter)
 	encoded, _ := json.Marshal(envl)
-	fake := string(encoded)
-	e.server.doc = &fake
-	e.server.revision = 9
+	e.setDoc(e.deviceID, string(encoded), 9)
 
 	e.writeGlobal(t, `{"local":"precious"}`)
 	applied, err := e.manager.Pull(context.Background())
@@ -321,7 +356,7 @@ func TestDisabledSkipsServer(t *testing.T) {
 
 func TestRestoreOnLoginFreshAccount(t *testing.T) {
 	e := newEnv(t)
-	outcome := RestoreOnLogin(context.Background(), e.client, &gocoder.Account{Key: "gk_test"}, vectorPassword, e.manager.Paths, e.stateDir, os.Stderr)
+	outcome := RestoreOnLogin(context.Background(), e.client, &gocoder.Account{Key: "gk_test"}, vectorPassword, e.manager.Paths, e.stateDir, e.deviceID, os.Stderr)
 	if outcome.Restored || outcome.LocalWon {
 		t.Errorf("fresh account should restore nothing: %+v", outcome)
 	}
@@ -343,11 +378,9 @@ func TestRestoreOnLoginAppliesServerBundle(t *testing.T) {
 	plaintext, _ := bundle.Marshal()
 	envl, _ := Seal(plaintext, key, vectorSalt, vectorIter)
 	encoded, _ := json.Marshal(envl)
-	fake := string(encoded)
-	e.server.doc = &fake
-	e.server.revision = 5
+	e.setDoc(e.deviceID, string(encoded), 5)
 
-	outcome := RestoreOnLogin(context.Background(), e.client, &gocoder.Account{Key: "gk_test"}, vectorPassword, e.manager.Paths, e.stateDir, os.Stderr)
+	outcome := RestoreOnLogin(context.Background(), e.client, &gocoder.Account{Key: "gk_test"}, vectorPassword, e.manager.Paths, e.stateDir, e.deviceID, os.Stderr)
 	if !outcome.Restored {
 		t.Fatalf("expected restore: %+v", outcome)
 	}
@@ -368,13 +401,11 @@ func TestRestoreOnLoginLocalWins(t *testing.T) {
 	plaintext, _ := bundle.Marshal()
 	envl, _ := Seal(plaintext, key, vectorSalt, vectorIter)
 	encoded, _ := json.Marshal(envl)
-	fake := string(encoded)
-	e.server.doc = &fake
-	e.server.revision = 2
+	e.setDoc(e.deviceID, string(encoded), 2)
 
 	// This machine already has its own settings: they must survive.
 	e.writeGlobal(t, `{"theme":"local-choice"}`)
-	outcome := RestoreOnLogin(context.Background(), e.client, &gocoder.Account{Key: "gk_test"}, vectorPassword, e.manager.Paths, e.stateDir, os.Stderr)
+	outcome := RestoreOnLogin(context.Background(), e.client, &gocoder.Account{Key: "gk_test"}, vectorPassword, e.manager.Paths, e.stateDir, e.deviceID, os.Stderr)
 	if !outcome.LocalWon {
 		t.Fatalf("expected local-wins: %+v", outcome)
 	}
@@ -398,17 +429,48 @@ func TestRestoreUndecryptableKeepsLocalAndStoresKey(t *testing.T) {
 	plaintext, _ := bundle.Marshal()
 	envl, _ := Seal(plaintext, otherKey, vectorSalt, vectorIter)
 	encoded, _ := json.Marshal(envl)
-	fake := string(encoded)
-	e.server.doc = &fake
-	e.server.revision = 1
+	e.setDoc(e.deviceID, string(encoded), 1)
 
 	e.writeGlobal(t, `{"local":true}`)
-	outcome := RestoreOnLogin(context.Background(), e.client, &gocoder.Account{Key: "gk_test"}, vectorPassword, e.manager.Paths, e.stateDir, os.Stderr)
+	outcome := RestoreOnLogin(context.Background(), e.client, &gocoder.Account{Key: "gk_test"}, vectorPassword, e.manager.Paths, e.stateDir, e.deviceID, os.Stderr)
 	if !outcome.LocalWon || outcome.Restored {
 		t.Fatalf("expected local-wins on decrypt failure: %+v", outcome)
 	}
 	if got := e.readGlobal(t); got != `{"local":true}` {
 		t.Errorf("local config clobbered: %q", got)
+	}
+}
+
+func TestPerDeviceDocsDoNotClobber(t *testing.T) {
+	e := newEnv(t)
+	e.prime(t, vectorPassword)
+	e.writeGlobal(t, `{"machine":"a"}`)
+	if err := e.manager.Push(context.Background()); err != nil {
+		t.Fatalf("device A push: %v", err)
+	}
+
+	// A second manager on the same fake server, same account, different
+	// deviceID — a different real machine.
+	other := &env{server: e.server, client: e.client, configDir: filepath.Join(t.TempDir(), "config"),
+		stateDir: filepath.Join(t.TempDir(), "state"), dataDir: filepath.Join(t.TempDir(), "data"), deviceID: "other-device"}
+	other.manager = NewManager(other.client, Paths{ConfigDir: other.configDir, StateDir: other.stateDir, DataDir: other.dataDir}, other.stateDir,
+		func() string { return "gk_test" }, func() string { return other.deviceID })
+	other.prime(t, vectorPassword)
+	other.writeGlobal(t, `{"machine":"b"}`)
+	if err := other.manager.Push(context.Background()); err != nil {
+		t.Fatalf("device B push: %v", err)
+	}
+
+	// Each device's own doc is unaffected by the other's push.
+	if got := e.server.doc(e.deviceID).envelope; got == e.server.doc(other.deviceID).envelope {
+		t.Fatal("device A and device B share one doc; per-device isolation broken")
+	}
+	applied, err := e.manager.Pull(context.Background())
+	if err != nil || applied {
+		t.Fatalf("device A must not see device B's push: applied=%v err=%v", applied, err)
+	}
+	if got := e.readGlobal(t); got != `{"machine":"a"}` {
+		t.Errorf("device A config changed by device B's push: %q", got)
 	}
 }
 
@@ -437,9 +499,7 @@ func TestApplyStagesUnknownProjects(t *testing.T) {
 	plaintext, _ := bundle.Marshal()
 	envl, _ := Seal(plaintext, key, vectorSalt, vectorIter)
 	encoded, _ := json.Marshal(envl)
-	fake := string(encoded)
-	e.server.doc = &fake
-	e.server.revision = 2
+	e.setDoc(e.deviceID, string(encoded), 2)
 
 	applied, err := e.manager.Pull(context.Background())
 	if err != nil || !applied {
