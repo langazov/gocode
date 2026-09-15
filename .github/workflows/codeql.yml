@@ -109,10 +109,21 @@ jobs:
         set -euo pipefail
         cd gocode_gui
         flutter pub get
+        # `flutter build macos` has no --no-codesign flag (iOS-only); xcodebuild
+        # disables signing the same way CodeQL's own autobuilder does.
         flutter build macos --release \
           --build-name="0.0.0" \
           --build-number="${{ github.run_number }}" \
-          --no-codesign
+          --config-only
+        xcodebuild build \
+          -workspace macos/Runner.xcworkspace \
+          -scheme Runner \
+          -configuration Release \
+          -derivedDataPath macos/build/derived \
+          CODE_SIGNING_ALLOWED=NO \
+          COMPILATION_CACHE_ENABLE_CACHING=NO \
+          SWIFT_ENABLE_COMPILE_CACHE=NO \
+          SWIFT_USE_INTEGRATED_DRIVER=NO
 
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
