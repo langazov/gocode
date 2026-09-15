@@ -10,7 +10,9 @@ import '../../core/api/models.dart';
 import '../../shared/widgets/glass.dart';
 import '../../shared/widgets/message_parts.dart';
 import '../../shared/widgets/model_picker.dart';
+import '../../shared/widgets/session_status.dart';
 import '../home/providers.dart';
+import 'prompt_history.dart';
 import 'timeline.dart';
 
 /// The session screen: streaming timeline, with a floating glass composer
@@ -144,9 +146,10 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
           if (state != null)
             Padding(
               padding: const EdgeInsets.only(right: 10),
-              child: state.busy
-                  ? const StatusPill(label: 'working', color: GC.warn)
-                  : const StatusPill(label: 'idle', color: GC.ok),
+              child: LiveStatusPill(
+                sessionID: widget.sessionID,
+                busy: state.busy,
+              ),
             ),
         ],
       ),
@@ -495,7 +498,7 @@ class _AssistantTurnView extends StatelessWidget {
   }
 }
 
-class _Composer extends StatelessWidget {
+class _Composer extends StatefulWidget {
   const _Composer({
     required this.controller,
     required this.focusNode,
@@ -519,13 +522,81 @@ class _Composer extends StatelessWidget {
   final ValueChanged<String> onPickAgent;
 
   @override
+  State<_Composer> createState() => _ComposerState();
+}
+
+/// Recalls previously sent prompts with ↑/↓, like shell history. History is
+/// read from the session's own user messages, so it needs no separate store
+/// and survives navigating away and back.
+class _ComposerState extends State<_Composer> {
+  final _history = PromptHistoryCursor();
+  String? _lastRecalled;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_onTextChanged);
+  }
+
+  @override
+  void dispose() {
+    widget.controller.removeListener(_onTextChanged);
+    super.dispose();
+  }
+
+  /// A manual edit (including `_send`'s clear) abandons history browsing, so
+  /// the next ↑ starts a fresh recall from the top instead of jumping again.
+  void _onTextChanged() =>
+      _history.noteEdit(widget.controller.text, _lastRecalled);
+
+  List<String> get _prompts => [
+    for (final item in widget.state.items.reversed)
+      if (item is UserBubble && item.text.trim().isNotEmpty) item.text,
+  ];
+
+  void _apply(String text) {
+    _lastRecalled = text;
+    widget.controller.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+
+  KeyEventResult _onKey(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent && event is! KeyRepeatEvent) {
+      return KeyEventResult.ignored;
+    }
+    final selection = widget.controller.selection;
+    final String? text;
+    if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+      text = _history.older(
+        _prompts,
+        atStart: selection.isCollapsed && selection.baseOffset <= 0,
+        currentText: widget.controller.text,
+      );
+    } else if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      text = _history.newer(
+        _prompts,
+        atEnd:
+            selection.isCollapsed &&
+            selection.baseOffset >= widget.controller.text.length,
+      );
+    } else {
+      return KeyEventResult.ignored;
+    }
+    if (text == null) return KeyEventResult.ignored;
+    _apply(text);
+    return KeyEventResult.handled;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final busy = state.busy;
-    final primary = agents
+    final busy = widget.state.busy;
+    final primary = widget.agents
         .where((a) => !a.hidden && a.mode != 'subagent')
         .toList();
-    final currentAgent = state.session.agent ?? 'build';
+    final currentAgent = widget.state.session.agent ?? 'build';
 
     return SafeArea(
       top: false,
@@ -544,41 +615,48 @@ class _Composer extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  if (state.todos.isNotEmpty) _TodoLine(todos: state.todos),
-                  if (state.queued.isNotEmpty)
+                  if (widget.state.todos.isNotEmpty)
+                    _TodoLine(todos: widget.state.todos),
+                  if (widget.state.queued.isNotEmpty)
                     Padding(
                       padding: const EdgeInsets.only(top: 6),
                       child: Text(
-                        '${state.queued.length} queued — sent when this turn ends',
+                        '${widget.state.queued.length} queued — sent when this turn ends',
                         style: theme.textTheme.bodySmall,
                       ),
                     ),
-                  // Enter sends; Shift+Enter falls through as a newline.
-                  CallbackShortcuts(
-                    bindings: {
-                      const SingleActivator(LogicalKeyboardKey.enter): onSend,
-                      const SingleActivator(LogicalKeyboardKey.numpadEnter):
-                          onSend,
-                    },
-                    child: TextField(
-                      controller: controller,
-                      focusNode: focusNode,
-                      autofocus: true,
-                      minLines: 1,
-                      maxLines: 8,
-                      style: theme.textTheme.bodyLarge?.copyWith(
-                        color: GC.textHi,
-                      ),
-                      decoration: InputDecoration(
-                        hintText: busy
-                            ? 'Queue a follow-up…'
-                            : 'Ask gocode to build, fix, or explain…',
-                        filled: false,
-                        border: InputBorder.none,
-                        enabledBorder: InputBorder.none,
-                        focusedBorder: InputBorder.none,
-                        contentPadding: const EdgeInsets.symmetric(
-                          vertical: 12,
+                  // Enter sends, Shift+Enter falls through as a newline; ↑/↓
+                  // recall prompt history (see _onKey) and otherwise fall
+                  // through to normal cursor movement.
+                  Focus(
+                    onKeyEvent: _onKey,
+                    child: CallbackShortcuts(
+                      bindings: {
+                        const SingleActivator(LogicalKeyboardKey.enter):
+                            widget.onSend,
+                        const SingleActivator(LogicalKeyboardKey.numpadEnter):
+                            widget.onSend,
+                      },
+                      child: TextField(
+                        controller: widget.controller,
+                        focusNode: widget.focusNode,
+                        autofocus: true,
+                        minLines: 1,
+                        maxLines: 8,
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          color: GC.textHi,
+                        ),
+                        decoration: InputDecoration(
+                          hintText: busy
+                              ? 'Queue a follow-up…'
+                              : 'Ask gocode to build, fix, or explain…',
+                          filled: false,
+                          border: InputBorder.none,
+                          enabledBorder: InputBorder.none,
+                          focusedBorder: InputBorder.none,
+                          contentPadding: const EdgeInsets.symmetric(
+                            vertical: 12,
+                          ),
                         ),
                       ),
                     ),
@@ -593,7 +671,7 @@ class _Composer extends StatelessWidget {
                           children: [
                             PopupMenuButton<String>(
                               tooltip: 'Switch agent',
-                              onSelected: onPickAgent,
+                              onSelected: widget.onPickAgent,
                               itemBuilder: (_) => [
                                 for (final a in primary)
                                   PopupMenuItem(
@@ -611,8 +689,8 @@ class _Composer extends StatelessWidget {
                             ),
                             _Chip(
                               icon: Icons.memory_rounded,
-                              label: modelLabel,
-                              onTap: onPickModel,
+                              label: widget.modelLabel,
+                              onTap: widget.onPickModel,
                             ),
                           ],
                         ),
@@ -621,17 +699,19 @@ class _Composer extends StatelessWidget {
                         _RoundButton(
                           icon: Icons.stop_rounded,
                           tooltip: 'Interrupt',
-                          onPressed: onInterrupt,
+                          onPressed: widget.onInterrupt,
                           danger: true,
                         ),
                         const SizedBox(width: 8),
                       ],
                       ValueListenableBuilder<TextEditingValue>(
-                        valueListenable: controller,
+                        valueListenable: widget.controller,
                         builder: (context, value, _) => _RoundButton(
                           icon: Icons.arrow_upward_rounded,
                           tooltip: busy ? 'Queue' : 'Send',
-                          onPressed: value.text.trim().isEmpty ? null : onSend,
+                          onPressed: value.text.trim().isEmpty
+                              ? null
+                              : widget.onSend,
                         ),
                       ),
                     ],
