@@ -28,10 +28,11 @@ type RestoreOutcome struct {
 	KeyStored bool
 }
 
-// RestoreOnLogin derives the key from password, fetches the account's
-// settings, and applies them. On a fresh account it only primes the state
+// RestoreOnLogin derives the key from password, fetches this machine's own
+// settings doc (deviceID; see DeviceID), and applies it. On a fresh account
+// — or a machine that has never synced before — it only primes the state
 // (new salt) so the first push creates the doc.
-func RestoreOnLogin(ctx context.Context, client *gocoder.Client, account *gocoder.Account, password string, paths Paths, stateDir string, warn io.Writer) RestoreOutcome {
+func RestoreOnLogin(ctx context.Context, client *gocoder.Client, account *gocoder.Account, password string, paths Paths, stateDir string, deviceID string, warn io.Writer) RestoreOutcome {
 	var outcome RestoreOutcome
 
 	state, err := LoadState(stateDir)
@@ -40,7 +41,7 @@ func RestoreOnLogin(ctx context.Context, client *gocoder.Client, account *gocode
 		return outcome
 	}
 
-	doc, err := client.GetSettings(ctx, account.Key)
+	doc, err := client.GetSettings(ctx, account.Key, deviceID)
 	if err == gocoder.ErrNoSettings {
 		// Fresh account (or sync never used): prime a salt so the first
 		// push seals under a stable key, and store the key for the loops.
@@ -100,7 +101,7 @@ func RestoreOnLogin(ctx context.Context, client *gocoder.Client, account *gocode
 
 	// Local-wins on first contact: a machine that already has settings the
 	// user curated keeps them and pushes; a fresh machine takes the server's.
-	manager := NewManager(client, paths, stateDir, func() string { return account.Key })
+	manager := NewManager(client, paths, stateDir, func() string { return account.Key }, func() string { return deviceID })
 	if localGlobal, found := readGlobal(paths); found && localGlobal != bundle.Files[KeyGlobal] {
 		state.Salt = envelope.Salt
 		state.Iter = envelope.Iter

@@ -31,9 +31,9 @@ func defaultDeviceName() string {
 // interface so tests can run against an httptest server through the real
 // client, and so the manager never constructs HTTP itself.
 type Remote interface {
-	GetSettings(ctx context.Context, bearer string) (*gocoder.SettingsDoc, error)
-	PutSettings(ctx context.Context, bearer, envelope string, baseRevision int64, device string) (*gocoder.SettingsDoc, error)
-	SettingsRevision(ctx context.Context, bearer string) (int64, error)
+	GetSettings(ctx context.Context, bearer, deviceID string) (*gocoder.SettingsDoc, error)
+	PutSettings(ctx context.Context, bearer, deviceID, envelope string, baseRevision int64, device string) (*gocoder.SettingsDoc, error)
+	SettingsRevision(ctx context.Context, bearer, deviceID string) (int64, error)
 }
 
 // Manager owns the sync state machine: collect local files, apply remote
@@ -43,15 +43,23 @@ type Manager struct {
 	Paths    Paths
 	StateDir string
 	Bearer   func() string // API key, or "" when signed out
+	// DeviceID names which of the account's per-machine docs this manager
+	// reads and writes (see DeviceID). "" targets the legacy pre-device doc
+	// shared by every machine — the safe fallback when deriving one fails.
+	DeviceID func() string
 	Now      func() time.Time
 }
 
-// NewManager builds a manager. bearer may be nil (sync disabled).
-func NewManager(remote Remote, paths Paths, stateDir string, bearer func() string) *Manager {
+// NewManager builds a manager. bearer and deviceID may be nil (sync
+// disabled, and the legacy shared doc, respectively).
+func NewManager(remote Remote, paths Paths, stateDir string, bearer func() string, deviceID func() string) *Manager {
 	if bearer == nil {
 		bearer = func() string { return "" }
 	}
-	return &Manager{Remote: remote, Paths: paths, StateDir: stateDir, Bearer: bearer, Now: time.Now}
+	if deviceID == nil {
+		deviceID = func() string { return "" }
+	}
+	return &Manager{Remote: remote, Paths: paths, StateDir: stateDir, Bearer: bearer, DeviceID: deviceID, Now: time.Now}
 }
 
 func hashContent(content string) string {
@@ -244,7 +252,7 @@ func (m *Manager) Push(ctx context.Context) error {
 	if base == 0 {
 		base = -1
 	}
-	doc, err := m.Remote.PutSettings(ctx, m.Bearer(), string(encoded), base, DeviceName())
+	doc, err := m.Remote.PutSettings(ctx, m.Bearer(), m.DeviceID(), string(encoded), base, DeviceName())
 	if err != nil {
 		return err
 	}
@@ -265,7 +273,7 @@ func (m *Manager) Pull(ctx context.Context) (bool, error) {
 	if !state.IsEnabled() {
 		return false, nil
 	}
-	doc, err := m.Remote.GetSettings(ctx, m.Bearer())
+	doc, err := m.Remote.GetSettings(ctx, m.Bearer(), m.DeviceID())
 	if err != nil {
 		if err == gocoder.ErrNoSettings {
 			return false, nil
