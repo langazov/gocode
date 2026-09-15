@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/app.dart';
+import 'app/tray_controller.dart';
 import 'core/connection/controller.dart';
 
 Future<void> main() async {
@@ -33,6 +34,13 @@ Future<void> main() async {
   if (configured) {
     unawaited(container.read(connectionProvider.notifier).connect());
   }
+
+  // Deferred to after the first frame: window_manager/tray_manager need the
+  // native window fully attached, which isn't guaranteed yet at this point
+  // in main() — starting early enough could hit it mid-setup.
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(TrayController.instance.start());
+  });
 
   runApp(
     UncontrolledProviderScope(container: container, child: const GoCodeApp()),
