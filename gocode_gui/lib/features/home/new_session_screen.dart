@@ -10,6 +10,7 @@ import '../../core/api/models.dart';
 import '../../core/connection/controller.dart';
 import '../../shared/widgets/glass.dart';
 import '../../shared/widgets/model_picker.dart';
+import '../sidebar/projects.dart';
 import 'providers.dart';
 
 /// New-session flow: pick a directory, optionally an agent and a model, then
@@ -38,8 +39,15 @@ class _NewSessionScreenState extends ConsumerState<NewSessionScreen> {
   @override
   void initState() {
     super.initState();
+    // A project selected in the sidebar wins over every other default: it's
+    // an explicit "put the next chat here", so it goes first and blocks the
+    // heuristics below (they only fill an empty field).
+    final project = findProject(
+      ref.read(projectsProvider),
+      ref.read(selectedProjectProvider),
+    );
     _directory = TextEditingController(
-      text: ref.read(settingsProvider).workingDirectory,
+      text: project?.directory ?? ref.read(settingsProvider).workingDirectory,
     );
     // A remote server doesn't report its project directory; borrow the most
     // recent session's so the common case needs no typing.
@@ -119,6 +127,10 @@ class _NewSessionScreenState extends ConsumerState<NewSessionScreen> {
     final models = ref.watch(modelsProvider);
     final remote = settings.mode == ConnectionMode.remote;
     final canCreate = !_creating && _directory.text.trim().isNotEmpty;
+    final project = findProject(
+      ref.watch(projectsProvider),
+      ref.watch(selectedProjectProvider),
+    );
 
     return Scaffold(
       extendBodyBehindAppBar: true,
@@ -149,6 +161,10 @@ class _NewSessionScreenState extends ConsumerState<NewSessionScreen> {
                       'Choose where the agent works and which model drives it.',
                       style: theme.textTheme.bodyMedium,
                     ),
+                    if (project != null) ...[
+                      const SizedBox(height: 16),
+                      _ProjectBanner(project: project),
+                    ],
                     const SizedBox(height: 24),
                     GlassSurface(
                       blur: false,
@@ -380,6 +396,52 @@ class _PickerField extends StatelessWidget {
             ],
           ),
         ),
+      ),
+    );
+  }
+}
+
+/// Tells the user which project the new chat will join, with a way to back
+/// out without having to find that project in the sidebar again.
+class _ProjectBanner extends ConsumerWidget {
+  const _ProjectBanner({required this.project});
+
+  final Project project;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    return GlassSurface(
+      blur: false,
+      shadow: false,
+      radius: GC.rInput,
+      tint: const Color(0x1FE8862D),
+      borderColor: GC.borderAccent,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+      child: Row(
+        children: [
+          const Icon(Icons.folder_rounded, size: 16, color: GC.accentText),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'This chat will join "${project.name}"',
+              style: const TextStyle(
+                fontFamily: GC.sans,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: GC.accentText,
+              ),
+            ),
+          ),
+          TextButton(
+            onPressed: () => ref.read(selectedProjectProvider.notifier).clear(),
+            style: TextButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              visualDensity: VisualDensity.compact,
+              minimumSize: Size.zero,
+            ),
+            child: const Text('Not this one'),
+          ),
+        ],
       ),
     );
   }
