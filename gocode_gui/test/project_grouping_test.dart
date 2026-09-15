@@ -17,12 +17,8 @@ Session _session(
   timeUpdated: updated,
 );
 
-Project _project(String id, String directory, {int created = 0}) => Project(
-  id: id,
-  name: id,
-  directory: directory,
-  timeCreated: created,
-);
+Project _project(String id, String directory, {int created = 0}) =>
+    Project(id: id, name: id, directory: directory, timeCreated: created);
 
 void main() {
   group('groupByProject', () {

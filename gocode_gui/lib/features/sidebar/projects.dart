@@ -48,10 +48,9 @@ class Project {
 /// The last path segment, for defaulting an unnamed project's title.
 String nameFromDirectory(String directory) {
   final trimmed = directory.replaceAll(RegExp(r'[/\\]+$'), '');
-  final segment = trimmed.split(RegExp(r'[/\\]')).lastWhere(
-    (s) => s.isNotEmpty,
-    orElse: () => directory,
-  );
+  final segment = trimmed
+      .split(RegExp(r'[/\\]'))
+      .lastWhere((s) => s.isNotEmpty, orElse: () => directory);
   return segment;
 }
 
@@ -84,7 +83,10 @@ class ProjectsNotifier extends Notifier<List<Project>> {
 
   /// Creates a project rooted at [directory]. Returns it so the caller (the
   /// new-project dialog) can select it immediately.
-  Future<Project> create({required String name, required String directory}) async {
+  Future<Project> create({
+    required String name,
+    required String directory,
+  }) async {
     final project = Project(
       id: 'proj_${DateTime.now().microsecondsSinceEpoch}',
       name: name.trim().isEmpty ? nameFromDirectory(directory) : name.trim(),

@@ -148,11 +148,7 @@ class LiveStatusPill extends ConsumerWidget {
         const SizedBox(width: 7),
         AnimatedSwitcher(
           duration: const Duration(milliseconds: 180),
-          child: StatusPill(
-            key: ValueKey(label),
-            label: label,
-            color: color,
-          ),
+          child: StatusPill(key: ValueKey(label), label: label, color: color),
         ),
       ],
     );

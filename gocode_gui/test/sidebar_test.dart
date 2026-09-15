@@ -11,15 +11,20 @@ import 'package:gocode_gui/features/sidebar/projects.dart';
 import 'package:gocode_gui/features/sidebar/sidebar.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-Session _session(String id, String title, DateTime updated, {String? parent, String? directory}) =>
-    Session(
-      id: id,
-      title: title,
-      directory: directory ?? '/project',
-      parentID: parent,
-      timeCreated: updated.millisecondsSinceEpoch,
-      timeUpdated: updated.millisecondsSinceEpoch,
-    );
+Session _session(
+  String id,
+  String title,
+  DateTime updated, {
+  String? parent,
+  String? directory,
+}) => Session(
+  id: id,
+  title: title,
+  directory: directory ?? '/project',
+  parentID: parent,
+  timeCreated: updated.millisecondsSinceEpoch,
+  timeUpdated: updated.millisecondsSinceEpoch,
+);
 
 Future<void> _pump(
   WidgetTester tester,
@@ -93,7 +98,6 @@ void main() {
   // Project persistence goes through real shared_preferences; without this
   // a plugin call with no test-mode handler just hangs forever.
   SharedPreferences.setMockInitialValues({});
-
 
   testWidgets('shows the history grouped, without subagent sessions', (
     tester,
@@ -217,16 +221,11 @@ void main() {
 
     await tester.tap(find.byKey(SidebarKeys.projectsTab));
     await tester.pumpAndSettle();
-    expect(
-      find.textContaining('No projects yet'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('No projects yet'), findsOneWidget);
     expect(find.byKey(SidebarKeys.newProject), findsOneWidget);
   });
 
-  testWidgets('creating a project from the dialog selects it', (
-    tester,
-  ) async {
+  testWidgets('creating a project from the dialog selects it', (tester) async {
     await _pump(
       tester,
       const AccountInfo(signedIn: false, site: 'https://gocoder.org'),

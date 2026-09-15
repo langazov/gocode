@@ -41,11 +41,7 @@ void main() {
     test('↑ at the oldest entry returns null instead of looping', () {
       final cursor = PromptHistoryCursor();
       cursor.older(['only'], atStart: true, currentText: '');
-      final text = cursor.older(
-        ['only'],
-        atStart: false,
-        currentText: 'only',
-      );
+      final text = cursor.older(['only'], atStart: false, currentText: 'only');
       expect(text, isNull);
     });
 
@@ -101,10 +97,7 @@ void main() {
 
     test('empty history is a no-op', () {
       final cursor = PromptHistoryCursor();
-      expect(
-        cursor.older([], atStart: true, currentText: ''),
-        isNull,
-      );
+      expect(cursor.older([], atStart: true, currentText: ''), isNull);
     });
   });
 }
