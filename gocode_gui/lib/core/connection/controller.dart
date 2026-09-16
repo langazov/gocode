@@ -113,7 +113,14 @@ class ConnectionController {
   SseClient? _sse;
 
   /// The SSE feed's reconnect signal — owners reconcile on every emission.
-  Stream<void>? get reconnectSignal => _sse?.reconnectSignal;
+  ///
+  /// Backed by a persistent bus (like [events]) rather than a passthrough
+  /// getter onto the current [SseClient]: consumers may grab this stream
+  /// before [connect] has created the underlying `SseClient` (e.g. a
+  /// provider built during the "connecting" phase), and a `_sse?.foo` getter
+  /// snapshotted at that moment would be null forever, silently dropping
+  /// every future reconnect signal.
+  Stream<void> get reconnectSignal => _reconnectBus.stream;
 
   Stream<ApiEvent> get events => _eventBus.stream;
 
@@ -123,6 +130,8 @@ class ConnectionController {
   Stream<ConnectionState> get state => _state.stream;
 
   final _eventBus = StreamController<ApiEvent>.broadcast();
+  final _reconnectBus = StreamController<void>.broadcast();
+  StreamSubscription<void>? _reconnectSub;
 
   /// Every committed event from every connected session.
   // (getter defined above, next to reconnectSignal)
@@ -191,6 +200,7 @@ class ConnectionController {
       );
       _sse = sse;
       sse.events.listen(_eventBus.add);
+      _reconnectSub = sse.reconnectSignal.listen(_reconnectBus.add);
       await sse.start();
 
       _emit(
@@ -222,6 +232,8 @@ class ConnectionController {
   }
 
   Future<void> disconnect() async {
+    await _reconnectSub?.cancel();
+    _reconnectSub = null;
     _sse?.close();
     _sse = null;
     _client?.close();
@@ -235,6 +247,7 @@ class ConnectionController {
     disconnect();
     _state.close();
     _eventBus.close();
+    _reconnectBus.close();
   }
 }
 

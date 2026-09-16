@@ -24,7 +24,7 @@ final accountChangesProvider = Provider<Stream<void>>((ref) {
     controller.events
         .where((e) => e.type == accountUpdatedEvent)
         .listen((_) => changes.add(null)),
-    ?controller.reconnectSignal?.listen(changes.add),
+    controller.reconnectSignal.listen(changes.add),
   ];
   ref.onDispose(() {
     for (final sub in subs) {
