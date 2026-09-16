@@ -74,7 +74,7 @@ class _AmbientPainter extends CustomPainter {
 }
 
 /// `backdrop-filter: blur(24px) saturate(180%)`, the site's glass filter.
-final ui.ImageFilter _glassFilter = ui.ImageFilter.compose(
+final ui.ImageFilter glassFilter = ui.ImageFilter.compose(
   outer: ui.ImageFilter.blur(sigmaX: 24, sigmaY: 24),
   inner: const ColorFilter.matrix(<double>[
     1.62992, -0.57216, -0.05776, 0, 0, //
@@ -136,7 +136,7 @@ class _GlassSurfaceState extends State<GlassSurface> {
       child: Padding(padding: widget.padding, child: widget.child),
     );
     if (widget.blur) {
-      surface = BackdropFilter(filter: _glassFilter, child: surface);
+      surface = BackdropFilter(filter: glassFilter, child: surface);
     }
     surface = ClipRRect(borderRadius: radius, child: surface);
     if (widget.shadow) {

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -214,25 +215,38 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     // Scaffold folds the header and composer heights into this padding.
     final pad = MediaQuery.paddingOf(context);
     final padding = EdgeInsets.fromLTRB(16, pad.top + 12, 16, pad.bottom + 24);
+    final Widget list;
     if (state.items.isEmpty) {
-      return SingleChildScrollView(
+      list = SingleChildScrollView(
         padding: padding,
         child: _column(_EmptyTimeline(session: state.session)),
       );
+    } else {
+      final items = state.items;
+      // Reversed, so offset 0 is the newest message: a session opens at its
+      // end with nothing to scroll, only the messages on screen are built,
+      // and streamed text stays pinned to the bottom while the reader is
+      // there. (Scrolling to the end of a forward list instead lays out and
+      // paints every message on the way down.)
+      list = ListView.builder(
+        controller: _scroll,
+        reverse: true,
+        padding: padding,
+        itemCount: items.length,
+        itemBuilder: (context, i) =>
+            _column(_item(context, state, items[items.length - 1 - i])),
+      );
     }
-    final items = state.items;
-    // Reversed, so offset 0 is the newest message: a session opens at its end
-    // with nothing to scroll, only the messages on screen are built, and
-    // streamed text stays pinned to the bottom while the reader is there.
-    // (Scrolling to the end of a forward list instead lays out and paints
-    // every message on the way down.)
-    return ListView.builder(
-      controller: _scroll,
-      reverse: true,
-      padding: padding,
-      itemCount: items.length,
-      itemBuilder: (context, i) =>
-          _column(_item(context, state, items[items.length - 1 - i])),
+    // Scrolled content passes behind the floating header and composer; these
+    // frost and fade it out under that strip instead of letting it slide past
+    // sharp-edged, outside the glass panels' own (narrower, pill-shaped)
+    // rounded bounds.
+    return Stack(
+      children: [
+        Positioned.fill(child: list),
+        _EdgeBlur(height: pad.top, top: true),
+        _EdgeBlur(height: pad.bottom, top: false),
+      ],
     );
   }
 
@@ -319,6 +333,81 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
           ),
         );
     }
+  }
+}
+
+/// Frosts the strip of timeline content passing behind the floating header
+/// (top) or composer (bottom), graduating from fully blurred at the screen
+/// edge (bottom of menu → top; top of input → bottom) down to fully sharp
+/// where it meets the visible content — so it blurs away instead of sliding
+/// past visibly sharp at full width, outside their narrower pill-shaped
+/// glass bounds.
+///
+/// Built from several plain `BackdropFilter`s, each covering a
+/// progressively smaller slice anchored at the chrome edge with a stronger
+/// blur, so they compound near the edge and taper off toward the content —
+/// a stepped approximation of a graduated blur. (A single `BackdropFilter`
+/// inside a fading `ShaderMask` would be the direct way to do this, but
+/// `BackdropFilter` only sees what's painted within its own compositing
+/// layer, and `ShaderMask` isolates its child into a blank one — it ends up
+/// blurring nothing.)
+/// Ignores hits so scrolling still reaches the list underneath.
+class _EdgeBlur extends StatelessWidget {
+  const _EdgeBlur({required this.height, required this.top});
+
+  final double height;
+  final bool top;
+
+  /// Fraction of [height] each successive layer covers, measured inward
+  /// from the chrome edge, paired with that layer's own (small) blur.
+  /// Composing N Gaussian blurs is itself a Gaussian with variance equal to
+  /// their sum, so the effective blur near the chrome edge — where every
+  /// layer overlaps — is `sqrt(Σ sigma²)`, not `Σ sigma`: these peak around
+  /// sigma 6 at the edge, not the ~22 five layers of 3/6/9/12/15 compounded
+  /// to. Small, evenly-sized per-layer jumps (instead of one big 0→3 jump
+  /// at the full-height outermost layer) also keep any single step's own
+  /// hard edge from reading as a visible seam.
+  static const _steps = [
+    (fraction: 1.0, sigma: 1.0),
+    (fraction: 0.7, sigma: 1.6),
+    (fraction: 0.45, sigma: 2.2),
+    (fraction: 0.25, sigma: 2.8),
+    (fraction: 0.1, sigma: 3.4),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    if (height <= 0) return const SizedBox.shrink();
+    return Positioned(
+      top: top ? 0 : null,
+      bottom: top ? null : 0,
+      left: 0,
+      right: 0,
+      height: height,
+      child: IgnorePointer(
+        child: Stack(
+          children: [
+            for (final step in _steps)
+              Positioned(
+                top: top ? 0 : null,
+                bottom: top ? null : 0,
+                left: 0,
+                right: 0,
+                height: height * step.fraction,
+                child: ClipRect(
+                  child: BackdropFilter(
+                    filter: ui.ImageFilter.blur(
+                      sigmaX: step.sigma,
+                      sigmaY: step.sigma,
+                    ),
+                    child: const SizedBox.expand(),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
   }
 }
 
