@@ -390,6 +390,11 @@ type FreeModel struct {
 	ContextLength int    `json:"contextLength,omitempty"`
 	Modality      string `json:"modality,omitempty"`
 	Free          bool   `json:"free"`
+	// SupportsTools reports whether OpenRouter has at least one endpoint for
+	// this model that accepts the `tools` parameter. Many free-tier models
+	// have none, even when the paid tier of the same model does — sending
+	// tools to one 404s the whole chat completion.
+	SupportsTools bool `json:"supportsTools"`
 }
 
 // FreeModels lists gocoder.org's free ($0.0) inference models. Requires the

@@ -45,6 +45,7 @@ func gocoderFixture(t *testing.T, signedIn bool, models ...string) (*httptest.Se
 			list = append(list, map[string]any{
 				"id": id, "name": "Model " + string(rune('A'+i)),
 				"contextLength": 32768, "modality": "text->text", "free": true,
+				"supportsTools": true,
 			})
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"models": list, "count": len(list)})
@@ -179,9 +180,26 @@ func TestGocoderFetchModelsSurfacesAuthFailure(t *testing.T) {
 func TestFreeToCatalogMapsModality(t *testing.T) {
 	models := freeToCatalog([]gocoder.FreeModel{{
 		ID: "v1", Name: "Vision", ContextLength: 8192,
-		Modality: "text+image->text", Free: true,
+		Modality: "text+image->text", Free: true, SupportsTools: true,
 	}})
 	if !models["v1"].Attachment {
 		t.Error("image modality should set Attachment")
+	}
+}
+
+// A model with no tool-calling endpoint must not reach the picker: gocode
+// always sends tool definitions, so offering it just defers a 404 from
+// OpenRouter ("no endpoints found that support tool use") to the first tool
+// call instead of hiding the model up front.
+func TestFreeToCatalogExcludesModelsWithoutToolSupport(t *testing.T) {
+	models := freeToCatalog([]gocoder.FreeModel{
+		{ID: "no-tools", Name: "No Tools", Free: true, SupportsTools: false},
+		{ID: "has-tools", Name: "Has Tools", Free: true, SupportsTools: true},
+	})
+	if _, ok := models["no-tools"]; ok {
+		t.Error("model without tool support should be excluded from the catalog")
+	}
+	if _, ok := models["has-tools"]; !ok {
+		t.Error("model with tool support should be included in the catalog")
 	}
 }

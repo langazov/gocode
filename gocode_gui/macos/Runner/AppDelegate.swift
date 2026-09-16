@@ -14,8 +14,12 @@ class AppDelegate: FlutterAppDelegate {
     ProcessInfo.processInfo.disableSuddenTermination()
   }
 
+  // The tray icon keeps the app running with the window hidden (not closed),
+  // so losing the last visible window must not quit the app — returning true
+  // here (the default Flutter scaffold value) made the tray's own hide toggle
+  // kill the whole app on its first left click.
   override func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-    return true
+    return false
   }
 
   override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {

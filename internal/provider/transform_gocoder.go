@@ -131,11 +131,16 @@ func (c *gocoderModelCacheType) get(ctx context.Context, account *gocoder.Accoun
 }
 
 // freeToCatalog maps the site's FreeModel rows into catalog Model entries.
-// Tool calling is assumed available (the proxy is a protocol passthrough);
-// context length and modality come from the site's data.
+// Models without a tool-calling endpoint are excluded (same convention as
+// the copilot transform): gocode always sends tool definitions, so offering
+// a model that can't accept them just defers the failure to the first tool
+// call instead of hiding it from the picker up front.
 func freeToCatalog(free []gocoder.FreeModel) map[string]modelsdev.Model {
 	out := make(map[string]modelsdev.Model, len(free))
 	for _, m := range free {
+		if !m.SupportsTools {
+			continue
+		}
 		model := modelsdev.Model{
 			ID:       m.ID,
 			Name:     m.Name,
