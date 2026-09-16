@@ -52,12 +52,15 @@ const _unset = Object();
 /// build-watches-the-connection-and-resubscribes shape.
 class SessionActivityNotifier extends Notifier<Map<String, SessionActivity>> {
   StreamSubscription<ApiEvent>? _sub;
+  StreamSubscription<void>? _reconnectSub;
+  ConnectionController? _connection;
   final _finishTimers = <String, Timer>{};
 
   @override
   Map<String, SessionActivity> build() {
     ref.onDispose(() {
       _sub?.cancel();
+      _reconnectSub?.cancel();
       for (final timer in _finishTimers.values) {
         timer.cancel();
       }
@@ -65,8 +68,44 @@ class SessionActivityNotifier extends Notifier<Map<String, SessionActivity>> {
     });
 
     final connection = ref.watch(connectionControllerProvider);
+    _connection = connection;
     _sub = connection?.events.listen(_onEvent);
+    // SSE subscriptions are lossy by design, so a dropped run.ended/failed
+    // event would otherwise leave a session stuck showing "busy" forever.
+    // Every reconnect re-checks the server's ground truth for any session
+    // we currently believe is busy. `connection.client` is read lazily here
+    // (not captured at build time) since it's only assigned once `connect()`
+    // finishes, after this notifier may have already been built.
+    _reconnectSub = connection?.reconnectSignal.listen((_) => _reconcile());
     return const {};
+  }
+
+  Future<void> _reconcile() async {
+    final client = _connection?.client;
+    if (client == null) return;
+    final busySessions = state.entries
+        .where((e) => e.value.busy)
+        .map((e) => e.key)
+        .toList();
+    for (final sessionID in busySessions) {
+      bool stillBusy;
+      try {
+        stillBusy = await client.busy(sessionID);
+      } catch (_) {
+        continue;
+      }
+      if (!stillBusy) {
+        _finishTimers.remove(sessionID)?.cancel();
+        _update(
+          sessionID,
+          (a) => a.copyWith(busy: false, justFinished: true, runningTool: null),
+        );
+        _finishTimers[sessionID] = Timer(_finishFlashDuration, () {
+          _finishTimers.remove(sessionID);
+          _update(sessionID, (a) => a.copyWith(justFinished: false));
+        });
+      }
+    }
   }
 
   void _onEvent(ApiEvent event) {
