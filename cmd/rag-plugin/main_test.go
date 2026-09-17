@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/plugin"
 )
@@ -165,8 +166,8 @@ func TestRagPluginIndexAndSearchOverJSONRPC(t *testing.T) {
 	if instance.ID != "rag-plugin" {
 		t.Errorf("ID = %q, want rag-plugin", instance.ID)
 	}
-	if len(instance.Hooks.Tools) != 6 {
-		t.Fatalf("got %d tools, want 6: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
+	if len(instance.Hooks.Tools) != 8 {
+		t.Fatalf("got %d tools, want 8: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
 	}
 
 	indexTool := findTool(t, instance, "rag_index")
@@ -202,6 +203,178 @@ func TestRagPluginIndexAndSearchOverJSONRPC(t *testing.T) {
 	if strings.Index(searchResult.Output, "fruit.md") > strings.Index(searchResult.Output, "vegetable.md") &&
 		strings.Contains(searchResult.Output, "vegetable.md") {
 		t.Errorf("expected fruit.md to rank before vegetable.md, got %q", searchResult.Output)
+	}
+}
+
+// slowFakeEmbeddingServer is fakeEmbeddingServer with an artificial delay
+// per request, long enough that a wait:false rag_index call is guaranteed
+// to observe the job still running rather than racing a real embeddings
+// round trip that might finish before the test even checks.
+func slowFakeEmbeddingServer(t *testing.T, delay time.Duration) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(delay)
+		var req struct {
+			Input []string `json:"input"`
+		}
+		json.NewDecoder(r.Body).Decode(&req)
+		type item struct {
+			Embedding []float32 `json:"embedding"`
+			Index     int       `json:"index"`
+		}
+		var resp struct {
+			Data []item `json:"data"`
+		}
+		for i, text := range req.Input {
+			resp.Data = append(resp.Data, item{Embedding: fakeEmbed(text), Index: i})
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+}
+
+// jobIDFromOutput extracts the "jobId: ..." line formatIndexJob writes for
+// a still-running or canceled job.
+func jobIDFromOutput(t *testing.T, output string) string {
+	t.Helper()
+	for _, line := range strings.Split(output, "\n") {
+		if id, ok := strings.CutPrefix(line, "jobId: "); ok {
+			return id
+		}
+	}
+	t.Fatalf("no jobId line in output %q", output)
+	return ""
+}
+
+// TestRagPluginIndexAsyncThenPollToCompletion is the actual point of this
+// feature: rag_index with wait:false must return immediately with a jobId
+// while indexing keeps running in the background, and rag_index_status must
+// be able to poll it through to the same result a synchronous call would
+// have returned — proving the single-threaded request loop was free to
+// serve other tool calls (here, an interleaved rag_index_status poll) while
+// a slow index was still in flight.
+func TestRagPluginIndexAsyncThenPollToCompletion(t *testing.T) {
+	const embedDelay = 3 * time.Second
+	server := slowFakeEmbeddingServer(t, embedDelay)
+	defer server.Close()
+
+	root := t.TempDir()
+	writeFile(t, root, "fruit.md", "apple apple apple is a fruit\n")
+
+	instance := spawnRagPlugin(t, root, plugin.Options{
+		"embeddingBaseURL": server.URL,
+		"dbPath":           filepath.Join(t.TempDir(), "rag.db"),
+	})
+	tc := plugin.ToolContext{SessionID: "s1", Directory: root, Worktree: root}
+
+	indexTool := findTool(t, instance, "rag_index")
+	start := time.Now()
+	result, err := indexTool.Execute(context.Background(), map[string]any{"wait": false}, tc)
+	if err != nil {
+		t.Fatalf("rag_index wait:false: %v", err)
+	}
+	// Generous relative to embedDelay rather than an absolute bound, so
+	// this stays reliable under -race and parallel test load: the point is
+	// "did not wait for the embedding call," not a tight latency budget.
+	if elapsed := time.Since(start); elapsed > embedDelay/2 {
+		t.Fatalf("wait:false took %v, want it to return well before the %v embedding call finishes", elapsed, embedDelay)
+	}
+	if !strings.Contains(result.Output, "state: running") {
+		t.Fatalf("expected the job to still be running immediately after wait:false, got %q", result.Output)
+	}
+	jobID := jobIDFromOutput(t, result.Output)
+
+	statusTool := findTool(t, instance, "rag_index_status")
+	var final plugin.ToolResult
+	deadline := time.Now().Add(embedDelay * 3)
+	for {
+		final, err = statusTool.Execute(context.Background(), map[string]any{"jobId": jobID}, tc)
+		if err != nil {
+			t.Fatalf("rag_index_status: %v", err)
+		}
+		if !strings.Contains(final.Output, "state: running") {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("job %s never finished polling, last output %q", jobID, final.Output)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Finished successfully: the status output must be the exact same
+	// bare-JSON IndexSummary a synchronous rag_index call returns, not the
+	// jobId/state text block that covers the still-running case.
+	var summary struct {
+		FilesScanned int `json:"filesScanned"`
+		ChunksAdded  int `json:"chunksAdded"`
+	}
+	if err := json.Unmarshal([]byte(final.Output), &summary); err != nil {
+		t.Fatalf("decode finished job output %q: %v", final.Output, err)
+	}
+	if summary.FilesScanned != 1 || summary.ChunksAdded != 1 {
+		t.Fatalf("unexpected summary: %+v (raw %q)", summary, final.Output)
+	}
+
+	// And the chunks it embedded must actually be searchable.
+	searchTool := findTool(t, instance, "rag_search")
+	searchResult, err := searchTool.Execute(context.Background(), map[string]any{"query": "apple"}, tc)
+	if err != nil {
+		t.Fatalf("rag_search: %v", err)
+	}
+	if !strings.Contains(searchResult.Output, "fruit.md") {
+		t.Errorf("expected the background-indexed file to be searchable, got %q", searchResult.Output)
+	}
+}
+
+// TestRagPluginIndexAsyncCoalescesAndCancels covers the other two new
+// tools: a second rag_index call for the same scope while one is already
+// running must join it rather than starting a duplicate (visible as both
+// calls returning the same jobId), and rag_index_cancel must be able to
+// stop it before it finishes.
+func TestRagPluginIndexAsyncCoalescesAndCancels(t *testing.T) {
+	server := slowFakeEmbeddingServer(t, 2*time.Second)
+	defer server.Close()
+
+	root := t.TempDir()
+	writeFile(t, root, "fruit.md", "apple apple apple is a fruit\n")
+
+	instance := spawnRagPlugin(t, root, plugin.Options{
+		"embeddingBaseURL": server.URL,
+		"dbPath":           filepath.Join(t.TempDir(), "rag.db"),
+	})
+	tc := plugin.ToolContext{SessionID: "s1", Directory: root, Worktree: root}
+	indexTool := findTool(t, instance, "rag_index")
+
+	first, err := indexTool.Execute(context.Background(), map[string]any{"wait": false}, tc)
+	if err != nil {
+		t.Fatalf("first rag_index wait:false: %v", err)
+	}
+	firstID := jobIDFromOutput(t, first.Output)
+
+	second, err := indexTool.Execute(context.Background(), map[string]any{"wait": false}, tc)
+	if err != nil {
+		t.Fatalf("second rag_index wait:false: %v", err)
+	}
+	secondID := jobIDFromOutput(t, second.Output)
+	if secondID != firstID {
+		t.Fatalf("expected the second call to join the running job, got a different id: %s vs %s", secondID, firstID)
+	}
+
+	cancelTool := findTool(t, instance, "rag_index_cancel")
+	cancelResult, err := cancelTool.Execute(context.Background(), map[string]any{"jobId": firstID}, tc)
+	if err != nil {
+		t.Fatalf("rag_index_cancel: %v", err)
+	}
+	if !strings.Contains(cancelResult.Output, "state: cancelled") {
+		t.Fatalf("expected the job to report cancelled, got %q", cancelResult.Output)
+	}
+
+	statusTool := findTool(t, instance, "rag_index_status")
+	statusResult, err := statusTool.Execute(context.Background(), map[string]any{"jobId": firstID}, tc)
+	if err != nil {
+		t.Fatalf("rag_index_status after cancel: %v", err)
+	}
+	if !strings.Contains(statusResult.Output, "state: cancelled") {
+		t.Fatalf("expected status to still report cancelled, got %q", statusResult.Output)
 	}
 }
 
@@ -273,8 +446,8 @@ func TestRagPluginHandshakeDefersStoreOpen(t *testing.T) {
 		"dbPath":           dbPath,
 	})
 	// The manifest is static, so the handshake still declares every tool.
-	if len(instance.Hooks.Tools) != 6 {
-		t.Fatalf("got %d tools, want 6: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
+	if len(instance.Hooks.Tools) != 8 {
+		t.Fatalf("got %d tools, want 8: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
 	}
 	if _, err := os.Stat(dbPath); !os.IsNotExist(err) {
 		t.Fatalf("the handshake opened the store at %s (stat err = %v)", dbPath, err)

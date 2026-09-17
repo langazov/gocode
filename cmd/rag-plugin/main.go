@@ -6,15 +6,24 @@
 //
 // It speaks newline-delimited JSON-RPC 2.0 on stdin/stdout when launched by
 // the host, exactly like examples/plugin-echo. It can also run directly from
-// the shell — `rag-plugin index ...`, which exists because the host bounds a
-// tool call it makes with no deadline of its own to 30s
-// (internal/plugin/process.go's DefaultCallTimeout), too short for a large
-// repo's first index. The manifest (gocode-plugin.json) declares
-// callTimeoutSeconds: 300 to raise that to 5 minutes for this plugin, but a
-// repo whose first index exceeds even that can use the CLI directly. The CLI
-// also covers `list`/`clean`/`vacuum`, where a person can type the
+// the shell — `rag-plugin index ...` — for a one-shot index too large to
+// finish within a tool call's own timeout even in the background (see
+// below), and for `list`/`clean`/`vacuum`, where a person can type the
 // irreversible ones. Both paths share the same runtime construction and
 // the same internal/rag orchestration.
+//
+// rag_index itself always runs as a background job (see jobs.go), the same
+// pattern go-codegraph's MCP server uses for index_repository: a tool call
+// starts (or joins) a job that keeps running after the call returns, polled
+// with rag_index_status and stoppable with rag_index_cancel. wait=true
+// (the default) blocks the call watching that job — indistinguishable from
+// the old inline-indexing behavior for a project that finishes quickly — but
+// even then the job is never aborted just because the wait's own timeout
+// elapsed; only rag_index_cancel, or the plugin process itself exiting,
+// does that. wait=false is the point of the exercise: it returns
+// immediately with a jobId, freeing the single-threaded request loop below
+// to keep serving other tool calls (rag_search included) while a large
+// first index runs.
 //
 // The runtime is built in two tiers, and which tier a command or tool needs
 // is a real distinction rather than an optimization: indexing and searching
@@ -120,12 +129,15 @@ type runtimeOptions struct {
 // index by default; .git is already skipped unconditionally by chunk.Walk.
 var defaultExclude = []string{"**/node_modules/**", "**/vendor/**", "**/dist/**", "**/.venv/**"}
 
-// defaultIndexTimeoutSeconds is the default per-call timeout for rag_index,
-// applied as a context deadline inside the plugin. The host's own
-// CallTimeout (300s from the manifest) bounds how long it waits for the
-// JSON-RPC reply; this bounds the actual indexing work. They match so the
-// plugin gives up just before the host would, rather than the host timing
-// out first and leaving the plugin grinding.
+// defaultIndexTimeoutSeconds is the default for rag_index's wait=true path:
+// how long the call blocks watching the background job before replying with
+// whatever the job's status is at that point (finished, or still running).
+// It bounds the wait, never the indexing itself — a job outlives a timed-out
+// wait exactly as it outlives wait=false returning immediately. It matches
+// the host's own CallTimeout (300s from the manifest, which bounds how long
+// the host waits for this call's JSON-RPC reply) so a caller that left
+// wait at its default gets the status back just before the host would have
+// given up on the reply, rather than the host timing out first.
 const defaultIndexTimeoutSeconds = 300
 
 // runtime is the live set of services one plugin process (or one CLI
@@ -163,15 +175,26 @@ var (
 	pending *runtimeOptions
 )
 
+// jobs tracks background rag_index runs (see jobs.go). shutdownCtx roots
+// them: it outlives any single tool call, so a client that stops waiting on
+// rag_index (wait:false, or a timeout) never aborts indexing that's already
+// underway — only the plugin process exiting does, via shutdownCancel below.
+var (
+	jobs                        = newIndexJobs()
+	shutdownCtx, shutdownCancel = context.WithCancel(context.Background())
+)
+
 // ensureStore opens the store on first use, from the options the handshake
 // stashed, and stops there — no embeddings provider, no LSP service.
 //
 // It is deliberately not built during `initialize`. The host blocks boot on
-// that handshake (internal/plugin/process.go's Spawn), and store.Open eagerly
-// gob-decodes every collection in the vector DB into memory — several seconds
-// for a large index, paid by every `gocode tui`/`serve` start whether or not
-// the session ever searches anything. Deferring it to the first tool call
-// moves that cost onto the caller that actually wants it.
+// that handshake (internal/plugin/process.go's Spawn), and while store.Open
+// itself is cheap (see internal/rag/store's package doc — each project's
+// collection is decoded lazily, only when a tool call actually names it,
+// not eagerly for the whole database), there is still no reason to pay even
+// that during a handshake that happens whether or not the session ever
+// searches anything. Deferring it to the first tool call moves the cost
+// onto the caller that actually wants it.
 //
 // This is the tier the maintenance tools (rag_status, rag_clean, rag_vacuum)
 // run on. They inspect and delete stored chunks and never embed anything, so
@@ -1008,10 +1031,12 @@ func runPlugin() {
 			if !errors.Is(err, io.EOF) {
 				fmt.Fprintln(os.Stderr, "decode:", err)
 			}
+			shutdownCancel()
 			closeRuntime()
 			return
 		}
 		if message.Method == "shutdown" {
+			shutdownCancel()
 			closeRuntime()
 			return
 		}
@@ -1081,15 +1106,35 @@ func handleInitialize(message request) error {
 		"hooks": []string{},
 		"tools": []map[string]any{
 			{
-				"name":        "rag_index",
-				"description": "(Re)index project files for semantic search. Incremental: only changed files are re-embedded. Run after large edits, or if rag_search finds nothing.",
+				"name": "rag_index",
+				"description": "(Re)index project files for semantic search. Incremental: only changed files are re-embedded. Run after large edits, or if rag_search finds nothing. " +
+					"Runs as a background job: with wait=false (or a first index too large to finish within timeout), returns immediately with a jobId — poll rag_index_status with it, and rag_index_cancel to stop it. The job keeps running after this call returns either way.",
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
 						"path":    map[string]any{"type": "string", "description": "Subdirectory to index, relative to the project root. Default: the whole project."},
 						"force":   map[string]any{"type": "boolean", "description": "Re-embed every chunk. Needed after switching embedding models."},
-						"timeout": map[string]any{"type": "integer", "description": "Maximum time in seconds for this indexing call. Default 300."},
+						"wait":    map[string]any{"type": "boolean", "description": "Block until indexing finishes (or timeout elapses) before replying. Default true. Set false to get a jobId back immediately and keep working while it runs."},
+						"timeout": map[string]any{"type": "integer", "description": "With wait=true, how long to block for before returning the still-running job's status instead of its result. Default 300. Indexing itself is not canceled when this elapses — only the wait is."},
 					},
+				},
+			},
+			{
+				"name":        "rag_index_status",
+				"description": "Poll a background rag_index job by its jobId: current stage and progress if still running, or the final summary/error if finished.",
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"jobId": map[string]any{"type": "string", "description": "The jobId a prior rag_index call returned."}},
+					"required":   []string{"jobId"},
+				},
+			},
+			{
+				"name":        "rag_index_cancel",
+				"description": "Stop a running background rag_index job. Chunks it already embedded and stored stay indexed — this only stops it from embedding more.",
+				"parameters": map[string]any{
+					"type":       "object",
+					"properties": map[string]any{"jobId": map[string]any{"type": "string", "description": "The jobId a prior rag_index call returned."}},
+					"required":   []string{"jobId"},
 				},
 			},
 			{
@@ -1186,6 +1231,13 @@ func handleTool(message request) error {
 			return reply(message.ID, nil, err)
 		}
 		return handleMaintenanceTool(message, r, params.Name, params.Args)
+
+	// Polling or canceling an already-started job touches only the
+	// in-memory job registry, not the store or the embedding tier — it must
+	// keep working even if the embeddings provider that started the job has
+	// since gone away, the same reasoning as the maintenance tools above.
+	case "rag_index_status", "rag_index_cancel":
+		return handleIndexJobTool(message, params.Name, params.Args)
 	}
 
 	rt, err := ensureRuntime()
@@ -1195,19 +1247,7 @@ func handleTool(message request) error {
 
 	switch params.Name {
 	case "rag_index":
-		path := stringOpt(params.Args, "path", "")
-		force := boolOpt(params.Args, "force", false)
-		timeout := intOpt(params.Args, "timeout", defaultIndexTimeoutSeconds)
-		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
-		defer cancel()
-		summary, err := rt.indexer.Index(ctx, rt.indexOptions(path, force))
-		if err != nil {
-			return reply(message.ID, nil, err)
-		}
-		return reply(message.ID, map[string]any{
-			"title":  "rag_index",
-			"output": summary.String(),
-		}, nil)
+		return handleIndexTool(message, rt, params.Args)
 
 	case "rag_search":
 		query := stringOpt(params.Args, "query", "")
@@ -1227,6 +1267,91 @@ func handleTool(message request) error {
 	default:
 		return reply(message.ID, nil, fmt.Errorf("unknown tool %q", params.Name))
 	}
+}
+
+// handleIndexTool implements rag_index: it always starts (or joins) a
+// background job through the shared registry — see jobs.go — rather than
+// indexing inline, so a first index of a large project never has to hold
+// this single-threaded request loop hostage for minutes. wait (default
+// true) controls only how long this call blocks watching that job, never
+// how long the job itself is allowed to run.
+func handleIndexTool(message request, rt *runtime, args map[string]any) error {
+	path := stringOpt(args, "path", "")
+	force := boolOpt(args, "force", false)
+	wait := boolOpt(args, "wait", true)
+	timeout := intOpt(args, "timeout", defaultIndexTimeoutSeconds)
+
+	job, _ := jobs.start(shutdownCtx, rt.relativeScope(rt.indexRoot(path)), func(jobCtx context.Context, progress func(string, int, int)) (rag.IndexSummary, error) {
+		opts := rt.indexOptions(path, force)
+		opts.Progress = progress
+		return rt.indexer.Index(jobCtx, opts)
+	})
+	if wait {
+		job.wait(context.Background(), time.Duration(timeout)*time.Second)
+	}
+	return indexJobReply(message.ID, "rag_index", job.view())
+}
+
+// handleIndexJobTool implements rag_index_status and rag_index_cancel: both
+// only ever touch the in-memory job registry, so they work even if the
+// runtime that started the job can no longer be built (see handleTool's
+// routing comment).
+func handleIndexJobTool(message request, name string, args map[string]any) error {
+	jobID := stringOpt(args, "jobId", "")
+	if jobID == "" {
+		return reply(message.ID, nil, fmt.Errorf("%s: jobId is required", name))
+	}
+	job, ok := jobs.get(jobID)
+	if !ok {
+		return reply(message.ID, nil, fmt.Errorf("%s: no job %q (it may predate this plugin process, or the id is wrong)", name, jobID))
+	}
+
+	if name == "rag_index_cancel" {
+		if !job.requestCancel() {
+			return reply(message.ID, nil, fmt.Errorf("rag_index_cancel: job %q already finished (%s)", jobID, job.view().State))
+		}
+		// A short, bounded wait so the reply can usually report the
+		// cancellation having actually taken effect, without this call
+		// itself becoming an unbounded block if the job is slow to notice.
+		job.wait(context.Background(), 10*time.Second)
+	}
+	return indexJobReply(message.ID, name, job.view())
+}
+
+// indexJobReply renders a job's current view as one of these three tools'
+// reply. A synchronously-observed success stays exactly the plain
+// IndexSummary JSON rag_index has always returned — the case a caller
+// parsing "output" as JSON (a small project finishing within its wait) must
+// never see change — and a synchronously-observed failure surfaces as a
+// JSON-RPC error, matching the old inline-Index behavior exactly. Anything
+// else (still running, or canceled) is a state that couldn't happen before
+// background jobs existed, so it gets a small text block carrying the jobId
+// a caller needs to poll or cancel it.
+func indexJobReply(id *int64, title string, v indexJobView) error {
+	switch v.State {
+	case jobSucceeded:
+		return reply(id, map[string]any{"title": title, "output": v.Summary.String()}, nil)
+	case jobFailed:
+		return reply(id, nil, v.Err)
+	default: // jobRunning, jobCancelled
+		return reply(id, map[string]any{"title": title, "output": formatIndexJob(v)}, nil)
+	}
+}
+
+// formatIndexJob renders a still-running or canceled job as plain text.
+// indexJobReply routes the succeeded/failed cases elsewhere; this only ever
+// sees the other two.
+func formatIndexJob(v indexJobView) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "jobId: %s\nstate: %s\n", v.ID, v.State)
+	if v.State == jobRunning {
+		fmt.Fprintf(&b, "stage: %s (%d/%d)\n", v.Stage, v.Done, v.Total)
+		b.WriteString("still running — poll rag_index_status with this jobId, or rag_index_cancel to stop it.")
+		return b.String()
+	}
+	fmt.Fprintf(&b, "duration: %s\n", v.Ended.Sub(v.Started).Round(time.Millisecond))
+	b.WriteString("canceled — chunks already embedded and stored before cancellation remain indexed.")
+	return b.String()
 }
 
 // handleMaintenanceTool serves rag_status, rag_clean and rag_vacuum off a

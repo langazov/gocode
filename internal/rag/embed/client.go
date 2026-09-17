@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -135,11 +136,26 @@ type response struct {
 	} `json:"error"`
 }
 
-// Embed returns one vector per input text, in the same order. Inputs are
-// sent in batches of BatchSize (or DefaultBatchSize), up to Concurrency (or
-// DefaultConcurrency) of them in flight at once; a batch failure aborts the
-// whole call rather than returning a partial result, so a caller never has
-// to guess which vectors are missing.
+// Embed returns one vector per input text, in the same order. It is
+// EmbedWithProgress with no progress callback; see that doc comment for the
+// batching, concurrency, and blank-input behavior both share.
+func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return c.EmbedWithProgress(ctx, texts, nil)
+}
+
+// EmbedWithProgress is Embed with a callback invoked after each batch
+// completes successfully: done is the cumulative count of inputs embedded so
+// far (out of total, the count actually sent — blanks excluded), suitable
+// for driving a live progress readout on an index large enough to take a
+// noticeable time. onProgress may be called from whichever goroutine
+// finished that batch — batches run concurrently, so calls can arrive out of
+// order and from multiple goroutines — and must tolerate that; a nil
+// onProgress (what Embed passes) skips all of this at no cost.
+//
+// Inputs are sent in batches of BatchSize (or DefaultBatchSize), up to
+// Concurrency (or DefaultConcurrency) of them in flight at once; a batch
+// failure aborts the whole call rather than returning a partial result, so a
+// caller never has to guess which vectors are missing.
 //
 // A blank input (empty or whitespace-only) is never sent and comes back as a
 // nil vector. An empty string is a hard 400 at the endpoint ("input cannot
@@ -148,7 +164,7 @@ type response struct {
 // nothing to embed anyway. Callers that store results must skip the nil
 // entries rather than substituting a zero vector, which normalizes to NaN
 // and poisons every later similarity score.
-func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+func (c *Client) EmbedWithProgress(ctx context.Context, texts []string, onProgress func(done, total int)) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -177,6 +193,8 @@ func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		return out, nil
 	}
 
+	var completed atomic.Int64
+	total := len(inputs)
 	run := func(ctx context.Context, b batch) error {
 		vectors, err := c.embedBatch(ctx, inputs[b.start:b.end])
 		if err != nil {
@@ -184,6 +202,10 @@ func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error)
 		}
 		for i, v := range vectors {
 			out[positions[b.start+i]] = v
+		}
+		if onProgress != nil {
+			done := completed.Add(int64(b.end - b.start))
+			onProgress(int(done), total)
 		}
 		return nil
 	}

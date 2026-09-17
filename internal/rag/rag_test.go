@@ -123,6 +123,61 @@ func TestIndexThenSearchRanksRelevantChunkFirst(t *testing.T) {
 	}
 }
 
+// TestIndexReportsProgressThroughEachStage pins the contract a caller
+// driving a background job's status (cmd/rag-plugin's job registry) depends
+// on: walking is reported once up front, embedding advances live as batches
+// land (see embed.Client.EmbedWithProgress), and storing brackets the
+// final write — so a poller watching stage/done/total never sees it jump
+// straight from "walking" to a finished job with nothing in between.
+func TestIndexReportsProgressThroughEachStage(t *testing.T) {
+	ctx := context.Background()
+	h := newHarness(t)
+	writeFile(t, h.root, "fruit.md", "apple apple apple is a fruit\n")
+	writeFile(t, h.root, "vegetable.md", "carrot is a vegetable\n")
+
+	type call struct {
+		stage       string
+		done, total int
+	}
+	var calls []call
+	idx := &Indexer{Store: h.store, Embedder: h.embedder, ProjectID: "p1"}
+	_, err := idx.Index(ctx, IndexOptions{
+		Root: h.root, ChunkLines: 60, ChunkOverlap: 5,
+		Progress: func(stage string, done, total int) {
+			calls = append(calls, call{stage, done, total})
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(calls) == 0 || calls[0].stage != "walking" {
+		t.Fatalf("expected the first call to report \"walking\", got %+v", calls)
+	}
+	var sawEmbeddingComplete, sawStoringStart, sawStoringComplete bool
+	for _, c := range calls {
+		switch c.stage {
+		case "embedding":
+			if c.done == c.total && c.total > 0 {
+				sawEmbeddingComplete = true
+			}
+		case "storing":
+			if c.done == 0 {
+				sawStoringStart = true
+			}
+			if c.done == c.total && c.total > 0 {
+				sawStoringComplete = true
+			}
+		}
+	}
+	if !sawEmbeddingComplete {
+		t.Errorf("expected an \"embedding\" call reporting done==total, got %+v", calls)
+	}
+	if !sawStoringStart || !sawStoringComplete {
+		t.Errorf("expected \"storing\" to bracket the write (done=0 then done=total), got %+v", calls)
+	}
+}
+
 func TestReindexSkipsUnchangedChunksAndEmbedsOnlyChanged(t *testing.T) {
 	ctx := context.Background()
 	h := newHarness(t)

@@ -1,10 +1,13 @@
 # rag-plugin
 
 A gocode **process plugin** (see [examples/plugin-echo](../../examples/plugin-echo))
-that indexes a project's files for semantic search and exposes five tools:
+that indexes a project's files for semantic search and exposes seven tools:
 
 - `rag_index` — (re)index a directory. Incremental: only embeds chunks whose
-  content changed since the last index.
+  content changed since the last index. Runs as a background job — see
+  [Background indexing](#background-indexing).
+- `rag_index_status` / `rag_index_cancel` — poll or stop a background
+  `rag_index` job by the `jobId` it returned.
 - `rag_search` — embed a natural-language query and return the most similar
   indexed chunks, each labeled `path:startLine-endLine` for direct citation.
 - `rag_status` — report every indexed project, its size, and its health.
@@ -102,37 +105,54 @@ argument still gets indexed even if some ancestor `.gitignore` would have
 excluded it — an explicit request to index a directory wins. Set
 `disableGitignore: true` to fall back to `include`/`exclude` alone.
 
-## One-shot indexing outside the host
+## Background indexing
 
-The host bounds a tool call with no deadline of its own to 30 seconds
-(`DefaultCallTimeout` in `internal/plugin/process.go`). rag-plugin's
-`gocode-plugin.json` manifest declares `callTimeoutSeconds: 300`, which raises
-that bound to 5 minutes for this plugin's calls — enough for most first
-indexes. The option can also be set explicitly in the config, and takes
-precedence over the manifest:
-
-```json
-{ "plugin": [["rag-plugin", { "callTimeout": 600 }]] }
-```
-
-The `rag_index` tool also accepts an optional `timeout` argument (seconds,
-default 300) that sets a deadline on the indexing work itself. A larger
-value gives a long first index more room; a smaller one fails fast on a
-repo that's too large to index within the call:
+`rag_index` always runs as a background job — the same pattern
+[go-codegraph](https://github.com/langazov/go-codegraph)'s MCP server uses
+for `index_repository`: the call starts (or joins, if one for the same path
+is already running) a job that keeps going after the call returns, so
+indexing a large project never has to hold the plugin's single-threaded
+request loop — and with it, every other tool call — hostage for minutes.
 
 ```json
-{"path": "src", "timeout": 600}
+{"path": "src", "wait": false}
 ```
 
-For a repo whose first index still exceeds the timeout, rag-plugin also runs
-as a plain CLI, independent of the JSON-RPC protocol:
+- `wait` (default `true`) controls only how long *this call* blocks watching
+  the job, never how long the job itself is allowed to run. With the
+  default, a small project that finishes quickly behaves exactly like a
+  synchronous call always did — same JSON summary, no `jobId` in sight.
+  `wait: false` returns immediately with a `jobId`, freeing the model to do
+  other things (including `rag_search` over whatever is already indexed)
+  while a large first index runs.
+- `timeout` (seconds, default 300) bounds that wait, not the indexing work.
+  A `wait: true` call that hits the timeout gets back the job's still-running
+  status — including its `jobId` — rather than an error; the job keeps
+  running regardless. This is what the manifest's `callTimeoutSeconds: 300`
+  (which raises the host's own 30-second `DefaultCallTimeout` for this
+  plugin's calls) also matches, so a caller that left `timeout` at its
+  default gets the status back just before the host would have given up
+  waiting for the reply.
+- `rag_index_status {"jobId": "..."}` polls a job: current stage
+  (`walking`/`embedding`/`storing`) and progress while running, or the final
+  summary/error once finished.
+- `rag_index_cancel {"jobId": "..."}` stops a running job. Chunks it already
+  embedded and stored before that stay indexed — only further embedding
+  work is stopped.
+
+Nothing here is bounded by the host's call timeout at all when `wait` is
+`false`: a first index that would otherwise run for tens of minutes just
+keeps running, polled at whatever cadence the model chooses. For a repo
+where even watching it via polling is inconvenient, rag-plugin also runs as
+a plain CLI, independent of the JSON-RPC protocol and its background-job
+machinery (indexing there is a plain synchronous call, with no `jobId`):
 
 ```sh
 ./rag-plugin index -root . -embedding-provider openai
 ```
 
-Run this once before first use on a large project; `rag_search` and later,
-smaller `rag_index` calls stay fast enough for the tool-call path.
+Run this once before first use on a very large project; `rag_search` and
+later, smaller `rag_index` calls stay fast either way.
 
 If indexing fails with the embeddings endpoint's "maximum input length"
 error, `embed.Client` already clamps each chunk to `DefaultMaxInputChars`

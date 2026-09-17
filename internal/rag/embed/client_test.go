@@ -552,3 +552,78 @@ func TestEmbedConcurrentDispatchPreservesResultOrder(t *testing.T) {
 // server, which is exactly the kind of test that hangs or flakes on CI
 // without proving much beyond what net/http already guarantees for
 // context-canceled requests — so that property is left unverified here.
+
+func TestEmbedWithProgressReportsCumulativeDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req request
+		json.NewDecoder(r.Body).Decode(&req)
+		var resp response
+		for i := range req.Input {
+			resp.Data = append(resp.Data, struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{Embedding: []float32{1}, Index: i})
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "sk-test", "m")
+	client.BatchSize = 2
+	client.Concurrency = 1 // deterministic call order for this assertion
+	texts := make([]string, 7)
+	for i := range texts {
+		texts[i] = "t"
+	}
+
+	var mu sync.Mutex
+	var reported []int
+	var lastTotal int
+	vectors, err := client.EmbedWithProgress(context.Background(), texts, func(done, total int) {
+		mu.Lock()
+		reported = append(reported, done)
+		lastTotal = total
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors) != 7 {
+		t.Fatalf("got %d vectors, want 7", len(vectors))
+	}
+	if lastTotal != 7 {
+		t.Errorf("total = %d, want 7", lastTotal)
+	}
+	want := []int{2, 4, 6, 7}
+	if len(reported) != len(want) {
+		t.Fatalf("got progress calls %v, want %v", reported, want)
+	}
+	for i, w := range want {
+		if reported[i] != w {
+			t.Errorf("progress call %d: got done=%d, want %d", i, reported[i], w)
+		}
+	}
+}
+
+func TestEmbedNilProgressCallbackIsNeverInvoked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req request
+		json.NewDecoder(r.Body).Decode(&req)
+		var resp response
+		for i := range req.Input {
+			resp.Data = append(resp.Data, struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{Embedding: []float32{1}, Index: i})
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "sk-test", "m")
+	if _, err := client.Embed(context.Background(), []string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	// Embed's whole point here is that it works with no progress callback at
+	// all; reaching this line without a nil-pointer panic is the assertion.
+}
