@@ -23,6 +23,9 @@
 *.test
 *.out
 
+# script/rag-eval.sh's timestamped JSON snapshots.
+/reports/
+
 # macOS
 .DS_Store
 /blobs/*

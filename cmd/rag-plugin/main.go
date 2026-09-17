@@ -68,6 +68,12 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "eval":
+			if err := runCLIEval(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "rag-plugin eval:", err)
+				os.Exit(1)
+			}
+			return
 		case "list":
 			if err := runCLIList(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "rag-plugin list:", err)

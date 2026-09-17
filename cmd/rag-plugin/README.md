@@ -147,6 +147,52 @@ prints the largest chunks by byte size, flagging any still over the clamp:
 ./rag-plugin scan -root . -top 20
 ```
 
+## Evaluation
+
+Whether chunking splits files sensibly and whether `rag_search` finds the
+right thing are both measurable, not just spot-checkable. `rag-plugin eval`
+(CLI only — it needs no host, and one of its two modes needs no embeddings
+provider either) covers both, backed by `internal/rag/eval`:
+
+```sh
+rag-plugin eval chunks -root .
+```
+
+Walks the tree once with the plain sliding window and once with syntax-aware
+splitting, and for both scores the resulting chunks against real
+function/class/method boundaries (from the same LSP resolver `rag_index`
+itself uses) — reporting what fraction of symbols land inside a single chunk
+(`boundary integrity`) and the containment-ratio distribution for the rest.
+Syntax-aware splitting should read at or near 1.0 by construction; the
+sliding window's number is the real one, and moving `-chunk-lines`/
+`-chunk-overlap` should move it measurably. Needs no embeddings provider —
+only an LSP server for the languages present.
+
+```sh
+rag-plugin eval retrieval -root . -k 8
+```
+
+Mines (query, relevant-region) pairs from the project's own commit history —
+a commit's subject line stands in for a query, the lines it touched stand in
+for the answer — then runs `rag_search` against each and reports **Recall@K**
+and **MRR**, each with a bootstrap 95% confidence interval. The interval
+matters more than the point estimate: it is what tells you whether a change
+to `chunkLines`, `chunkOverlap`, or the embedding model actually moved
+retrieval quality, versus noise from which queries happened to be easy. This
+mode needs the project already indexed and a working embeddings provider,
+same as `rag_search` itself. `-v` prints every gold pair's outcome
+(hit rank or miss) for spot-checking which kinds of queries the index still
+misses.
+
+`script/rag-eval.sh` (or `make rag-eval`) wraps both: it builds the plugin,
+runs both modes with `-json`, saves a timestamped snapshot of each under
+`reports/rag-eval/` (gitignored), and diffs the new run's headline numbers
+against the most recent previous snapshot — including whether a retrieval
+confidence interval actually moved or just overlaps the last one. Set
+`RAG_EVAL_SKIP_RETRIEVAL=1` to run the chunking half only (no index or
+provider needed); pass extra `rag-plugin eval retrieval` flags with
+`make rag-eval EVAL_ARGS="-k 20"` or `script/rag-eval.sh -- -k 20`.
+
 ## Maintenance
 
 Indexing prunes as it goes: `rag_index` diffs the chunk IDs a fresh walk
