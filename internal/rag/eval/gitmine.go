@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/langazov/gocode-go/internal/rag/chunk"
 )
 
 // Region is a 1-based, inclusive line range within one file,
@@ -163,6 +165,15 @@ func MineGoldSet(ctx context.Context, repoRoot string, opts MineOptions) ([]Gold
 				continue
 			}
 			f = strings.TrimPrefix(f, "b/")
+			if !chunk.IsDefaultTextCandidate(f) {
+				// rag-plugin's own indexer would never chunk this file (a
+				// lockfile, go.mod/go.sum, a bare .gitignore, ...), so a gold
+				// region here could never be found by search. Counting it as
+				// a miss would blame retrieval quality for an unsearchable
+				// gold pair instead of a real one.
+				curFile = ""
+				continue
+			}
 			curFile = f
 			if _, seen := curFiles[f]; !seen {
 				curFiles[f] = nil

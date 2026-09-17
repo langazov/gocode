@@ -205,7 +205,7 @@ func matches(relative string, include, exclude []string) bool {
 		}
 	}
 	if len(include) == 0 {
-		return isDefaultTextCandidate(relative)
+		return IsDefaultTextCandidate(relative)
 	}
 	for _, pattern := range include {
 		if ok, _ := doublestar.Match(pattern, relative); ok {
@@ -276,10 +276,13 @@ var smallDataExtMaxBytes = map[string]int64{
 	".json": 64 << 10, // 64KB
 }
 
-// isDefaultTextCandidate reports whether relative names a file Walk should
+// IsDefaultTextCandidate reports whether relative names a file Walk should
 // consider by default (Options.Include empty): a recognized code/doc
-// extension, or a well-known extensionless filename.
-func isDefaultTextCandidate(relative string) bool {
+// extension, or a well-known extensionless filename. Exported so callers
+// outside this package (internal/rag/eval's gold-set mining) can tell
+// whether a path is even capable of being indexed, without duplicating the
+// allowlist.
+func IsDefaultTextCandidate(relative string) bool {
 	if textFilenames[filepath.Base(relative)] {
 		return true
 	}

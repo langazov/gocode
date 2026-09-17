@@ -90,6 +90,59 @@ func TestMineGoldSetSkipsWideCommits(t *testing.T) {
 	}
 }
 
+func TestMineGoldSetSkipsFilesRagPluginWouldNeverIndex(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	writeAndCommit(t, dir, "go.sum", "\n", "wip")
+	writeAndCommit(t, dir, "go.sum",
+		"github.com/example/pkg v1.0.0 h1:abc=\n",
+		"chore(deps): update dependencies to latest versions in go.mod and go.sum")
+
+	pairs, err := MineGoldSet(context.Background(), dir, MineOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range pairs {
+		if p.Query == "chore(deps): update dependencies to latest versions in go.mod and go.sum" {
+			t.Fatalf("go.sum is never indexed by rag-plugin, so this commit should have yielded no gold pair, got %+v", p.Relevant)
+		}
+	}
+}
+
+func TestMineGoldSetDropsOnlyUnindexableFilesFromAMixedCommit(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	writeAndCommit(t, dir, "auth.go", "package auth\n\nfunc Login() {}\n", "wip")
+	writeAndCommit(t, dir, ".gitignore", "*.tmp\n", "wip2")
+
+	path := filepath.Join(dir, "auth.go")
+	if err := os.WriteFile(path, []byte("package auth\n\nfunc Login() {}\n\nfunc Logout() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".gitignore"), []byte("*.tmp\n*.log\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runGit(t, dir, "add", ".")
+	runGit(t, dir, "commit", "-q", "-m", "add logout handling and ignore log files")
+
+	pairs, err := MineGoldSet(context.Background(), dir, MineOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found bool
+	for _, p := range pairs {
+		if p.Query == "add logout handling and ignore log files" {
+			found = true
+			if len(p.Relevant) != 1 || p.Relevant[0].Path != "auth.go" {
+				t.Fatalf("expected only the auth.go region to survive, got %+v", p.Relevant)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected a gold pair for the mixed commit, got %+v", pairs)
+	}
+}
+
 func TestMineGoldSetDropsRegionsPastCurrentFileLength(t *testing.T) {
 	dir := t.TempDir()
 	runGit(t, dir, "init", "-q", "-b", "main")
