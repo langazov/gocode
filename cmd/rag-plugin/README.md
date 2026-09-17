@@ -1,10 +1,13 @@
 # rag-plugin
 
 A gocode **process plugin** (see [examples/plugin-echo](../../examples/plugin-echo))
-that indexes a project's files for semantic search and exposes five tools:
+that indexes a project's files for semantic search and exposes seven tools:
 
 - `rag_index` — (re)index a directory. Incremental: only embeds chunks whose
-  content changed since the last index.
+  content changed since the last index. Runs as a background job — see
+  [Background indexing](#background-indexing).
+- `rag_index_status` / `rag_index_cancel` — poll or stop a background
+  `rag_index` job by the `jobId` it returned.
 - `rag_search` — embed a natural-language query and return the most similar
   indexed chunks, each labeled `path:startLine-endLine` for direct citation.
 - `rag_status` — report every indexed project, its size, and its health.
@@ -102,37 +105,54 @@ argument still gets indexed even if some ancestor `.gitignore` would have
 excluded it — an explicit request to index a directory wins. Set
 `disableGitignore: true` to fall back to `include`/`exclude` alone.
 
-## One-shot indexing outside the host
+## Background indexing
 
-The host bounds a tool call with no deadline of its own to 30 seconds
-(`DefaultCallTimeout` in `internal/plugin/process.go`). rag-plugin's
-`gocode-plugin.json` manifest declares `callTimeoutSeconds: 300`, which raises
-that bound to 5 minutes for this plugin's calls — enough for most first
-indexes. The option can also be set explicitly in the config, and takes
-precedence over the manifest:
-
-```json
-{ "plugin": [["rag-plugin", { "callTimeout": 600 }]] }
-```
-
-The `rag_index` tool also accepts an optional `timeout` argument (seconds,
-default 300) that sets a deadline on the indexing work itself. A larger
-value gives a long first index more room; a smaller one fails fast on a
-repo that's too large to index within the call:
+`rag_index` always runs as a background job — the same pattern
+[go-codegraph](https://github.com/langazov/go-codegraph)'s MCP server uses
+for `index_repository`: the call starts (or joins, if one for the same path
+is already running) a job that keeps going after the call returns, so
+indexing a large project never has to hold the plugin's single-threaded
+request loop — and with it, every other tool call — hostage for minutes.
 
 ```json
-{"path": "src", "timeout": 600}
+{"path": "src", "wait": false}
 ```
 
-For a repo whose first index still exceeds the timeout, rag-plugin also runs
-as a plain CLI, independent of the JSON-RPC protocol:
+- `wait` (default `true`) controls only how long *this call* blocks watching
+  the job, never how long the job itself is allowed to run. With the
+  default, a small project that finishes quickly behaves exactly like a
+  synchronous call always did — same JSON summary, no `jobId` in sight.
+  `wait: false` returns immediately with a `jobId`, freeing the model to do
+  other things (including `rag_search` over whatever is already indexed)
+  while a large first index runs.
+- `timeout` (seconds, default 300) bounds that wait, not the indexing work.
+  A `wait: true` call that hits the timeout gets back the job's still-running
+  status — including its `jobId` — rather than an error; the job keeps
+  running regardless. This is what the manifest's `callTimeoutSeconds: 300`
+  (which raises the host's own 30-second `DefaultCallTimeout` for this
+  plugin's calls) also matches, so a caller that left `timeout` at its
+  default gets the status back just before the host would have given up
+  waiting for the reply.
+- `rag_index_status {"jobId": "..."}` polls a job: current stage
+  (`walking`/`embedding`/`storing`) and progress while running, or the final
+  summary/error once finished.
+- `rag_index_cancel {"jobId": "..."}` stops a running job. Chunks it already
+  embedded and stored before that stay indexed — only further embedding
+  work is stopped.
+
+Nothing here is bounded by the host's call timeout at all when `wait` is
+`false`: a first index that would otherwise run for tens of minutes just
+keeps running, polled at whatever cadence the model chooses. For a repo
+where even watching it via polling is inconvenient, rag-plugin also runs as
+a plain CLI, independent of the JSON-RPC protocol and its background-job
+machinery (indexing there is a plain synchronous call, with no `jobId`):
 
 ```sh
 ./rag-plugin index -root . -embedding-provider openai
 ```
 
-Run this once before first use on a large project; `rag_search` and later,
-smaller `rag_index` calls stay fast enough for the tool-call path.
+Run this once before first use on a very large project; `rag_search` and
+later, smaller `rag_index` calls stay fast either way.
 
 If indexing fails with the embeddings endpoint's "maximum input length"
 error, `embed.Client` already clamps each chunk to `DefaultMaxInputChars`
@@ -146,6 +166,58 @@ prints the largest chunks by byte size, flagging any still over the clamp:
 ```sh
 ./rag-plugin scan -root . -top 20
 ```
+
+## Evaluation
+
+Whether chunking splits files sensibly and whether `rag_search` finds the
+right thing are both measurable, not just spot-checkable. `rag-plugin eval`
+(CLI only — it needs no host, and one of its two modes needs no embeddings
+provider either) covers both, backed by `internal/rag/eval`:
+
+```sh
+rag-plugin eval chunks -root .
+```
+
+Walks the tree once with the plain sliding window and once with syntax-aware
+splitting, and for both scores the resulting chunks against real
+function/class/method boundaries (from the same LSP resolver `rag_index`
+itself uses) — reporting what fraction of symbols land inside a single chunk
+(`boundary integrity`) and the containment-ratio distribution for the rest.
+Syntax-aware splitting should read at or near 1.0 by construction; the
+sliding window's number is the real one, and moving `-chunk-lines`/
+`-chunk-overlap` should move it measurably. Needs no embeddings provider —
+only an LSP server for the languages present.
+
+```sh
+rag-plugin eval retrieval -root . -k 8
+```
+
+Mines (query, relevant-region) pairs from the project's own commit history —
+a commit's subject line stands in for a query, the lines it touched stand in
+for the answer — then runs `rag_search` against each and reports
+**Recall@K**, **MRR**, and **NDCG@K**, each with a bootstrap 95% confidence
+interval. The interval matters more than the point estimate: it is what
+tells you whether a change to `chunkLines`, `chunkOverlap`, or the embedding
+model actually moved retrieval quality, versus noise from which queries
+happened to be easy. Recall@K and MRR both judge only the *first* relevant
+hit; NDCG@K also credits finding more of a multi-file commit's relevant
+regions, discounted by how far down the ranking each one took, and decays
+more gently by rank than MRR's raw `1/rank` — so a Recall@K that looks
+unchanged alongside a moved NDCG@K is often relevant hits shifting rank
+without crossing the top-K threshold either way. This mode needs the
+project already indexed and a working embeddings provider, same as
+`rag_search` itself. `-v` prints every gold pair's outcome (hit rank or
+miss) for spot-checking which kinds of queries the index still
+misses.
+
+`script/rag-eval.sh` (or `make rag-eval`) wraps both: it builds the plugin,
+runs both modes with `-json`, saves a timestamped snapshot of each under
+`reports/rag-eval/` (gitignored), and diffs the new run's headline numbers
+against the most recent previous snapshot — including whether a retrieval
+confidence interval actually moved or just overlaps the last one. Set
+`RAG_EVAL_SKIP_RETRIEVAL=1` to run the chunking half only (no index or
+provider needed); pass extra `rag-plugin eval retrieval` flags with
+`make rag-eval EVAL_ARGS="-k 20"` or `script/rag-eval.sh -- -k 20`.
 
 ## Maintenance
 
@@ -169,12 +241,12 @@ Three kinds of data fall outside it:
 - **Bookkeeping rows whose collection was lost** (`dangling`). The mirror
   image: the diff believes chunks are stored that no search can return.
 
-This matters more than it sounds, because `store.Open` decodes *every*
-collection in the database into memory eagerly — so one abandoned project
-costs startup time and RAM on every run, for every other project sharing the
-database. And because chromem-go names each collection directory after a
-hash of the project id, none of it is identifiable, let alone deletable, by
-hand.
+This matters more than it sounds: `rag-plugin list`/`vacuum` open every
+project's data to report on it, so an abandoned project still costs decode
+time whenever one of those runs, even though a search or index call for a
+different project never touches it (see [Vector storage](#vector-storage)).
+And because chromem-go names each collection directory after a hash of the
+project id, none of it is identifiable, let alone deletable, by hand.
 
 ```sh
 rag-plugin list                                  # what is in there, largest first
@@ -227,6 +299,18 @@ unconditionally import a Windows-incompatible dependency, so neither even
 compiles for `GOOS=windows`. chromem-go has none of these problems, verified
 directly against this project's own replace/delete/reopen/cross-compile
 scenarios — see `internal/rag/store/store.go`'s package doc for the specifics.
+
+Each project also gets its own persistence directory under `<dbPath>/projects/`,
+opened only when that project is actually referenced — not one shared
+directory holding every project chromem-go decodes in full on every open.
+That's a deliberate departure from chromem-go's own single-directory
+examples: without it, a `rag_search` call for one small project would still
+pay to decode every other project sharing the database first. An existing
+database on the old shared layout migrates to this one automatically, once,
+the first time it's opened — a plain directory rename per project, so it
+costs nothing proportional to how much is stored. `list` and `vacuum` are the
+exception: answering "what does this whole database hold" means opening
+everything, so they do, on demand, rather than paying for it on every run.
 
 The trade-off: chromem-go's brute-force search is O(n) per query rather than
 an ANN graph's sub-linear cost. For a single project's indexed files (tens of

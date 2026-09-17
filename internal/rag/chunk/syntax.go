@@ -13,7 +13,7 @@ import (
 // the language-agnostic fallback uses.
 const maxDeclLinesMultiplier = 4
 
-// boundaryKinds are the LSP SymbolKind values worth splitting a file at on
+// BoundaryKinds are the LSP SymbolKind values worth splitting a file at on
 // their own: container-like declarations, one retrieval unit each.
 //
 // Everything else — Variable, Constant, Field, Property, EnumMember, ... —
@@ -24,7 +24,11 @@ const maxDeclLinesMultiplier = 4
 // \"reject\"" with no idea what block or type it belongs to). Leaving them
 // out of this set means such a symbol is simply absorbed into whichever
 // chunk surrounds it, the same as any other non-symbol content.
-var boundaryKinds = map[int]bool{
+//
+// Exported so internal/rag/eval can judge chunk boundary quality against
+// exactly the symbol kinds this package itself splits on, rather than
+// keeping a second list that could silently drift from this one.
+var BoundaryKinds = map[int]bool{
 	lsp.SymbolKindClass:       true,
 	lsp.SymbolKindMethod:      true,
 	lsp.SymbolKindConstructor: true,
@@ -60,7 +64,7 @@ func chunksFromSymbols(relPath string, lines []string, symbols []lsp.DocumentSym
 
 	bounds := make([]boundary, 0, len(symbols))
 	for _, sym := range symbols {
-		if !boundaryKinds[sym.Kind] {
+		if !BoundaryKinds[sym.Kind] {
 			continue
 		}
 		start := clampLine(sym.Range.Start.Line, len(lines))

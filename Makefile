@@ -52,7 +52,7 @@ PLUGIN_CONFIG := $(GO) run tools/pluginconfig.go
 .PHONY: help build release run install test cover fmt fmt-check vet lint check wasm wasm-run \
         example-plugin install-plugin install-example-plugin uninstall-plugin \
         enable-plugin disable-plugin plugin-root clean \
-        rag-plugin install-rag-plugin mdlsp install-mdlsp
+        rag-plugin install-rag-plugin rag-eval mdlsp install-mdlsp
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -169,6 +169,15 @@ install-rag-plugin: ## Build and install the RAG plugin as "rag-plugin"
 	@echo 'Installed to $(PLUGIN_ROOT)/rag-plugin'
 	@if [ '$(CONFIGURE)' = '1' ]; then $(PLUGIN_CONFIG) -add rag-plugin -options '$(OPTIONS)'; \
 	else echo 'Enable it with: "plugin": ["rag-plugin"]'; fi
+
+# Statistical eval of chunking/retrieval quality, not a spot-checked
+# impression. See script/rag-eval.sh's own header and cmd/rag-plugin/README.md's
+# "Evaluation" section for the methodology. Pass extra rag-plugin eval
+# retrieval flags after EVAL_ARGS, e.g. `make rag-eval EVAL_ARGS="-k 20"`.
+EVAL_ARGS ?=
+
+rag-eval: ## Run chunking + retrieval eval and diff against the last snapshot
+	script/rag-eval.sh -- $(EVAL_ARGS)
 
 # The markdown language server. A standalone LSP binary: point your editor at
 # it (VS Code "go.languageServerFlags"-style config, nvim-lspconfig, ...).

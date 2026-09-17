@@ -2,9 +2,12 @@ package chunk
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/lsp"
 )
@@ -277,5 +280,61 @@ func TestWalkSkipsWhitespaceOnlyChunks(t *testing.T) {
 	}
 	if len(chunks) != 1 {
 		t.Fatalf("got %d chunks, want 1: %+v", len(chunks), chunks)
+	}
+}
+
+// slowConcurrentResolver simulates a real LSP server's per-request latency,
+// tracking how many DocumentSymbols calls overlap in time, to verify Walk
+// actually chunks files concurrently rather than one at a time.
+type slowConcurrentResolver struct {
+	mu                sync.Mutex
+	inFlight, maxSeen int
+	delay             time.Duration
+}
+
+func (r *slowConcurrentResolver) DocumentSymbols(ctx context.Context, file string) ([]lsp.DocumentSymbol, error) {
+	r.mu.Lock()
+	r.inFlight++
+	if r.inFlight > r.maxSeen {
+		r.maxSeen = r.inFlight
+	}
+	r.mu.Unlock()
+
+	time.Sleep(r.delay)
+
+	r.mu.Lock()
+	r.inFlight--
+	r.mu.Unlock()
+
+	return []lsp.DocumentSymbol{sym("Fn", 0, 2)}, nil
+}
+
+func TestWalkChunksFilesConcurrently(t *testing.T) {
+	root := t.TempDir()
+	const numFiles = 16
+	for i := 0; i < numFiles; i++ {
+		writeFile(t, root, fmt.Sprintf("f%d.go", i), "package main\n\nfunc Fn() {}\n")
+	}
+	resolver := &slowConcurrentResolver{delay: 20 * time.Millisecond}
+
+	start := time.Now()
+	chunks, err := Walk(context.Background(), root, Options{LSP: resolver})
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(chunks) != numFiles {
+		t.Fatalf("got %d chunks, want %d (one per file)", len(chunks), numFiles)
+	}
+	resolver.mu.Lock()
+	maxSeen := resolver.maxSeen
+	resolver.mu.Unlock()
+	if maxSeen < 2 {
+		t.Fatalf("DocumentSymbols calls never overlapped (max concurrent = %d): Walk is not chunking files concurrently", maxSeen)
+	}
+	// 16 files at 20ms each: serial would take >=320ms; walkConcurrency=8
+	// should clear it in two rounds, well under that.
+	if elapsed >= numFiles*20*time.Millisecond {
+		t.Fatalf("Walk took %v, no faster than chunking %d files one at a time", elapsed, numFiles)
 	}
 }

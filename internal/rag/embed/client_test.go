@@ -3,9 +3,12 @@ package embed
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -73,6 +76,7 @@ func TestEmbedBatchesLargeInput(t *testing.T) {
 
 	client := New(server.URL, "sk-test", "m")
 	client.BatchSize = 3
+	client.Concurrency = 1 // this test asserts request order, which only a single worker guarantees
 	texts := make([]string, 7)
 	for i := range texts {
 		texts[i] = "t"
@@ -436,6 +440,7 @@ func TestEmbedBatchesSkipBlanksWhenSplitting(t *testing.T) {
 
 	client := New(server.URL, "sk-test", "m")
 	client.BatchSize = 2
+	client.Concurrency = 1 // this test asserts request order, which only a single worker guarantees
 	vectors, err := client.Embed(context.Background(), texts)
 	if err != nil {
 		t.Fatal(err)
@@ -449,4 +454,176 @@ func TestEmbedBatchesSkipBlanksWhenSplitting(t *testing.T) {
 			t.Errorf("vector %d: got %v, want nil only for the blank inputs", i, v)
 		}
 	}
+}
+
+func TestEmbedBatchesRunConcurrently(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, maxInFlight := 0, 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		inFlight++
+		if inFlight > maxInFlight {
+			maxInFlight = inFlight
+		}
+		mu.Unlock()
+		time.Sleep(30 * time.Millisecond)
+		mu.Lock()
+		inFlight--
+		mu.Unlock()
+
+		var req request
+		json.NewDecoder(r.Body).Decode(&req)
+		var resp response
+		for i := range req.Input {
+			resp.Data = append(resp.Data, struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{Embedding: []float32{1}, Index: i})
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "sk-test", "m")
+	client.BatchSize = 1
+	texts := make([]string, 8)
+	for i := range texts {
+		texts[i] = fmt.Sprintf("t%d", i)
+	}
+
+	start := time.Now()
+	vectors, err := client.Embed(context.Background(), texts)
+	elapsed := time.Since(start)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors) != 8 {
+		t.Fatalf("got %d vectors, want 8", len(vectors))
+	}
+	if maxInFlight < 2 {
+		t.Fatalf("requests never overlapped (max concurrent = %d): Embed is not dispatching batches concurrently", maxInFlight)
+	}
+	// 8 batches at 30ms each: serial would take >=240ms; DefaultConcurrency=4
+	// should clear two rounds well under that.
+	if elapsed >= 8*30*time.Millisecond {
+		t.Fatalf("Embed took %v, no faster than fully serial dispatch of 8 batches", elapsed)
+	}
+}
+
+func TestEmbedConcurrentDispatchPreservesResultOrder(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req request
+		json.NewDecoder(r.Body).Decode(&req)
+		n, _ := strconv.Atoi(strings.TrimPrefix(req.Input[0], "text-"))
+		// The first-dispatched batch is also the slowest, so it's the last
+		// to actually finish; output position must still land correctly.
+		if n == 0 {
+			time.Sleep(50 * time.Millisecond)
+		}
+		json.NewEncoder(w).Encode(response{Data: []struct {
+			Embedding []float32 `json:"embedding"`
+			Index     int       `json:"index"`
+		}{{Embedding: []float32{float32(n)}, Index: 0}}})
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "sk-test", "m")
+	client.BatchSize = 1
+	texts := make([]string, 8)
+	for i := range texts {
+		texts[i] = fmt.Sprintf("text-%d", i)
+	}
+
+	vectors, err := client.Embed(context.Background(), texts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, v := range vectors {
+		if len(v) != 1 || v[0] != float32(i) {
+			t.Fatalf("vector %d = %v, want [%d]: concurrent dispatch must not scramble output order", i, v, i)
+		}
+	}
+}
+
+// A batch failure still aborts the whole call (embedBatchAbortsOnError-style
+// tests above already cover that for the single-batch path Concurrency=1
+// takes). Testing that concurrent siblings are cut off *promptly* would need
+// asserting on real socket-level cancellation timing against an httptest
+// server, which is exactly the kind of test that hangs or flakes on CI
+// without proving much beyond what net/http already guarantees for
+// context-canceled requests — so that property is left unverified here.
+
+func TestEmbedWithProgressReportsCumulativeDone(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req request
+		json.NewDecoder(r.Body).Decode(&req)
+		var resp response
+		for i := range req.Input {
+			resp.Data = append(resp.Data, struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{Embedding: []float32{1}, Index: i})
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "sk-test", "m")
+	client.BatchSize = 2
+	client.Concurrency = 1 // deterministic call order for this assertion
+	texts := make([]string, 7)
+	for i := range texts {
+		texts[i] = "t"
+	}
+
+	var mu sync.Mutex
+	var reported []int
+	var lastTotal int
+	vectors, err := client.EmbedWithProgress(context.Background(), texts, func(done, total int) {
+		mu.Lock()
+		reported = append(reported, done)
+		lastTotal = total
+		mu.Unlock()
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(vectors) != 7 {
+		t.Fatalf("got %d vectors, want 7", len(vectors))
+	}
+	if lastTotal != 7 {
+		t.Errorf("total = %d, want 7", lastTotal)
+	}
+	want := []int{2, 4, 6, 7}
+	if len(reported) != len(want) {
+		t.Fatalf("got progress calls %v, want %v", reported, want)
+	}
+	for i, w := range want {
+		if reported[i] != w {
+			t.Errorf("progress call %d: got done=%d, want %d", i, reported[i], w)
+		}
+	}
+}
+
+func TestEmbedNilProgressCallbackIsNeverInvoked(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req request
+		json.NewDecoder(r.Body).Decode(&req)
+		var resp response
+		for i := range req.Input {
+			resp.Data = append(resp.Data, struct {
+				Embedding []float32 `json:"embedding"`
+				Index     int       `json:"index"`
+			}{Embedding: []float32{1}, Index: i})
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+
+	client := New(server.URL, "sk-test", "m")
+	if _, err := client.Embed(context.Background(), []string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	// Embed's whole point here is that it works with no progress callback at
+	// all; reaching this line without a nil-pointer panic is the assertion.
 }

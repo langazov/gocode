@@ -18,6 +18,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -34,6 +36,16 @@ const DefaultBatchSize = 96
 // steady state, not a failure — the fix is to wait as long as the endpoint
 // asks and retry, not to abort the whole index over it.
 const DefaultMaxRetries = 5
+
+// DefaultConcurrency bounds how many batches are in flight at once. A
+// whole-project first index is dozens to hundreds of independent batches —
+// different chunks, disjoint output positions, no ordering dependency
+// between them — so the dominant cost (the network round trip itself) is
+// fully parallelizable. Kept modest rather than unbounded so this client
+// doesn't manufacture its own 429 storm against a provider with a tighter
+// per-minute limit than OpenAI's; DefaultMaxRetries above is what absorbs the
+// rate limiting that does happen either way.
+const DefaultConcurrency = 4
 
 // maxRetryDelay bounds how long a single wait ever runs, even if the
 // endpoint's own Retry-After (or a "try again in Ns" message) asks for
@@ -88,6 +100,11 @@ type Client struct {
 	// value disables retrying (fail on the first rate limit or server
 	// error, matching this client's original behavior).
 	MaxRetries int
+	// Concurrency overrides DefaultConcurrency (batches in flight at once).
+	// 0 means default; 1 forces fully serial dispatch — useful for a caller
+	// that needs batches issued (and thus observed by a fake endpoint) in
+	// order, and for keeping raw retry/backoff timing deterministic in tests.
+	Concurrency int
 }
 
 // New builds a Client with a sane default HTTP timeout.
@@ -119,10 +136,26 @@ type response struct {
 	} `json:"error"`
 }
 
-// Embed returns one vector per input text, in the same order. Inputs are
-// sent in batches of BatchSize (or DefaultBatchSize); a batch failure aborts
-// the whole call rather than returning a partial result, so a caller never
-// has to guess which vectors are missing.
+// Embed returns one vector per input text, in the same order. It is
+// EmbedWithProgress with no progress callback; see that doc comment for the
+// batching, concurrency, and blank-input behavior both share.
+func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+	return c.EmbedWithProgress(ctx, texts, nil)
+}
+
+// EmbedWithProgress is Embed with a callback invoked after each batch
+// completes successfully: done is the cumulative count of inputs embedded so
+// far (out of total, the count actually sent — blanks excluded), suitable
+// for driving a live progress readout on an index large enough to take a
+// noticeable time. onProgress may be called from whichever goroutine
+// finished that batch — batches run concurrently, so calls can arrive out of
+// order and from multiple goroutines — and must tolerate that; a nil
+// onProgress (what Embed passes) skips all of this at no cost.
+//
+// Inputs are sent in batches of BatchSize (or DefaultBatchSize), up to
+// Concurrency (or DefaultConcurrency) of them in flight at once; a batch
+// failure aborts the whole call rather than returning a partial result, so a
+// caller never has to guess which vectors are missing.
 //
 // A blank input (empty or whitespace-only) is never sent and comes back as a
 // nil vector. An empty string is a hard 400 at the endpoint ("input cannot
@@ -131,7 +164,7 @@ type response struct {
 // nothing to embed anyway. Callers that store results must skip the nil
 // entries rather than substituting a zero vector, which normalizes to NaN
 // and poisons every later similarity score.
-func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error) {
+func (c *Client) EmbedWithProgress(ctx context.Context, texts []string, onProgress func(done, total int)) ([][]float32, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
@@ -149,18 +182,89 @@ func (c *Client) Embed(ctx context.Context, texts []string) ([][]float32, error)
 	if batchSize <= 0 {
 		batchSize = DefaultBatchSize
 	}
-	out := make([][]float32, len(texts))
+
+	type batch struct{ start, end int }
+	var batches []batch
 	for start := 0; start < len(inputs); start += batchSize {
-		end := min(start+batchSize, len(inputs))
-		vectors, err := c.embedBatch(ctx, inputs[start:end])
+		batches = append(batches, batch{start, min(start+batchSize, len(inputs))})
+	}
+	out := make([][]float32, len(texts))
+	if len(batches) == 0 {
+		return out, nil
+	}
+
+	var completed atomic.Int64
+	total := len(inputs)
+	run := func(ctx context.Context, b batch) error {
+		vectors, err := c.embedBatch(ctx, inputs[b.start:b.end])
 		if err != nil {
-			return nil, fmt.Errorf("embed: batch %d-%d: %w", start, end, err)
+			return fmt.Errorf("embed: batch %d-%d: %w", b.start, b.end, err)
 		}
 		for i, v := range vectors {
-			out[positions[start+i]] = v
+			out[positions[b.start+i]] = v
 		}
+		if onProgress != nil {
+			done := completed.Add(int64(b.end - b.start))
+			onProgress(int(done), total)
+		}
+		return nil
 	}
-	return out, nil
+
+	concurrency := c.Concurrency
+	if concurrency <= 0 {
+		concurrency = DefaultConcurrency
+	}
+	// A single worker keeps dispatch order strictly serial: deterministic
+	// for a caller relying on it (a test asserting per-request batch sizes),
+	// and no different in outcome from the pool below otherwise.
+	if concurrency == 1 || len(batches) == 1 {
+		for _, b := range batches {
+			if err := run(ctx, b); err != nil {
+				return nil, err
+			}
+		}
+		return out, nil
+	}
+
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	jobs := make(chan batch)
+	errs := make(chan error, 1)
+	var wg sync.WaitGroup
+	for range min(concurrency, len(batches)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for b := range jobs {
+				if err := run(ctx, b); err != nil {
+					select {
+					case errs <- err:
+						cancel() // stop dispatch and let sibling requests abort early
+					default:
+					}
+					return
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for _, b := range batches {
+			select {
+			case jobs <- b:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	wg.Wait()
+
+	select {
+	case err := <-errs:
+		return nil, err
+	default:
+		return out, nil
+	}
 }
 
 // maxInputChars resolves Client.MaxInputChars against the documented

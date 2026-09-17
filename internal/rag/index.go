@@ -41,6 +41,22 @@ type IndexOptions struct {
 	Exclude      []string
 	ChunkLines   int
 	ChunkOverlap int
+	// Progress, when set, is called as indexing moves through its stages:
+	// "walking" (done=total=0 — the walk itself isn't incremental), then
+	// "embedding" (done/total updating live as batches complete — see
+	// embed.Client.EmbedWithProgress), then "storing" (done=total=records
+	// written). Nil is the zero-cost default; a caller driving a background
+	// job's status (see cmd/rag-plugin's job registry) is the intended user,
+	// not routine indexing.
+	Progress func(stage string, done, total int)
+}
+
+// reportProgress is a nil-safe call to opts.Progress, so every call site
+// below doesn't need its own nil check.
+func (o IndexOptions) reportProgress(stage string, done, total int) {
+	if o.Progress != nil {
+		o.Progress(stage, done, total)
+	}
 }
 
 // IndexSummary reports what one Index call changed.
@@ -84,6 +100,7 @@ type Indexer struct {
 // restricted to the scoped subtree, so indexing one subdirectory never marks
 // the rest of the project's chunks stale.
 func (idx *Indexer) Index(ctx context.Context, opts IndexOptions) (IndexSummary, error) {
+	opts.reportProgress("walking", 0, 0)
 	chunks, err := chunk.Walk(ctx, opts.Root, chunk.Options{
 		Include:          opts.Include,
 		Exclude:          opts.Exclude,
@@ -131,11 +148,14 @@ func (idx *Indexer) Index(ctx context.Context, opts IndexOptions) (IndexSummary,
 	summary.ChunksRemoved = len(staleIDs)
 
 	if len(toEmbed) > 0 {
+		opts.reportProgress("embedding", 0, len(toEmbed))
 		texts := make([]string, len(toEmbed))
 		for i, c := range toEmbed {
 			texts[i] = c.Content
 		}
-		vectors, err := idx.Embedder.Embed(ctx, texts)
+		vectors, err := idx.Embedder.EmbedWithProgress(ctx, texts, func(done, total int) {
+			opts.reportProgress("embedding", done, total)
+		})
 		if err != nil {
 			return IndexSummary{}, fmt.Errorf("rag: embed %d chunks: %w", len(toEmbed), err)
 		}
@@ -166,9 +186,11 @@ func (idx *Indexer) Index(ctx context.Context, opts IndexOptions) (IndexSummary,
 			})
 		}
 		if len(records) > 0 {
+			opts.reportProgress("storing", 0, len(records))
 			if err := idx.Store.Put(ctx, records); err != nil {
 				return IndexSummary{}, fmt.Errorf("rag: store %d chunks: %w", len(records), err)
 			}
+			opts.reportProgress("storing", len(records), len(records))
 		}
 	}
 
