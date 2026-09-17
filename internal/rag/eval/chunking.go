@@ -5,9 +5,19 @@ import (
 	"fmt"
 	"path/filepath"
 	"sort"
+	"sync"
 
+	"github.com/langazov/gocode-go/internal/lsp"
 	"github.com/langazov/gocode-go/internal/rag/chunk"
 )
+
+// symbolFetchConcurrency bounds how many ground-truth DocumentSymbols calls
+// run at once, mirroring chunk.walkConcurrency's reasoning: this loop calls
+// the resolver once per file regardless of whether chunk.Walk's own pass
+// already did (it must, to score the plain sliding window, which never
+// touches the resolver at all), so a large project pays this serial,
+// per-file LSP round trip twice over — once per BoundaryReport requested.
+const symbolFetchConcurrency = 8
 
 // BoundaryReport summarizes how well one chunking pass respects real
 // function/class/method boundaries, judged against an LSP resolver's symbol
@@ -65,16 +75,50 @@ func EvaluateChunking(ctx context.Context, root string, resolver chunk.SymbolRes
 	for _, c := range chunks {
 		byPath[c.Path] = append(byPath[c.Path], c)
 	}
+	paths := make([]string, 0, len(byPath))
+	for p := range byPath {
+		paths = append(paths, p)
+	}
+
+	// One DocumentSymbols round trip per file, fanned out the same way
+	// chunk.Walk fans out its own resolver calls: independent per file, no
+	// ordering dependency (results are only ever aggregated by path below).
+	type groundTruth struct {
+		symbols []lsp.DocumentSymbol
+		ok      bool
+	}
+	results := make([]groundTruth, len(paths))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for range min(symbolFetchConcurrency, len(paths)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				abs := filepath.Join(root, filepath.FromSlash(paths[i]))
+				if symbols, err := resolver.DocumentSymbols(ctx, abs); err == nil && len(symbols) > 0 {
+					results[i] = groundTruth{symbols: symbols, ok: true}
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for i := range paths {
+			jobs <- i
+		}
+	}()
+	wg.Wait()
 
 	var report BoundaryReport
-	for path, fileChunks := range byPath {
-		abs := filepath.Join(root, filepath.FromSlash(path))
-		symbols, err := resolver.DocumentSymbols(ctx, abs)
-		if err != nil || len(symbols) == 0 {
+	for i, path := range paths {
+		res := results[i]
+		if !res.ok {
 			continue // no ground truth for this file (language unsupported, no symbols): not scoreable, not a failure
 		}
 		report.Files++
-		for _, sym := range symbols {
+		fileChunks := byPath[path]
+		for _, sym := range res.symbols {
 			if !chunk.BoundaryKinds[sym.Kind] {
 				continue
 			}

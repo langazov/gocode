@@ -21,9 +21,23 @@
 // reindex needs exactly that enumeration (every stored chunk ID's content
 // hash), so this package keeps a small side manifest — chunk ID and content
 // hash only, no vectors or content — as plain JSON alongside chromem-go's own
-// persistence directory. It is a bookkeeping index, not a second copy of the
-// data: chromem-go's directory remains the sole source of truth for
+// persistence directories. It is a bookkeeping index, not a second copy of
+// the data: those directories remain the sole source of truth for
 // embeddings and chunk content.
+//
+// A second trade-off shapes the on-disk layout: chromem-go's NewPersistentDB
+// decodes every collection under whatever directory it's given, with no
+// lazy-load option. A database sharing one such directory across every
+// project (chromem-go's own examples do this) means opening any one project
+// pays to decode all of them — for a database with a handful of large
+// projects, seconds of eager work no matter which project a search or index
+// call actually names. This package instead gives each project its own
+// persistence directory under <dir>/projects/ (see projectDir), opened only
+// when collection actually asks for that project, so a single-project
+// operation never touches another project's data. Projects (and Vacuum,
+// which depends on it) is the deliberate exception: "what does this whole
+// database hold" has to open everything to answer, so it does, on demand
+// rather than on every Open.
 package store
 
 import (
@@ -81,41 +95,103 @@ func manifestKey(projectID, chunkID string) string {
 
 // Store is safe for concurrent use.
 type Store struct {
-	db *chromem.DB
-	// dir is chromem-go's persistence directory — the same path Open was
-	// given. Kept because chromem-go exposes no way to ask a collection
-	// where it lives on disk, and reporting/reclaiming per-project disk
-	// usage needs exactly that (see collectionDirName).
+	// dir is the store's root directory — the same path Open was given.
+	// Each project gets its own chromem-go persistence directory under
+	// dir/projects/ (see projectDir); dir itself holds only that directory
+	// and manifest.json.
 	dir          string
 	manifestPath string
 
-	mu          sync.Mutex
+	mu sync.Mutex
+	// collections caches each project's chromem-go collection once opened.
+	// Unlike the single-shared-DB layout this package used to keep, nothing
+	// here is populated eagerly at Open: chromem-go's NewPersistentDB decodes
+	// every collection under whatever directory it's given, so opening N
+	// projects used to mean decoding all N regardless of which one a caller
+	// actually wanted. Giving each project its own directory turns that
+	// per-DB cost into a per-project one — Open stays cheap, and a project
+	// is only ever decoded when collection(id) is actually asked for it.
 	collections map[string]*chromem.Collection
 	manifest    map[string]manifestEntry
 }
 
-// Open opens (creating if needed) the chromem-go persistence directory at
-// path, reloading any collections and the chunk manifest already there.
+// Open opens (creating if needed) the store's root directory at path,
+// reloading the chunk manifest already there. No project's chromem-go
+// collection is opened, and no old-layout directory is migrated, until that
+// specific project is actually asked for — see collection's and
+// ensureMigrated's doc comments for why both are lazy rather than done here.
 func Open(ctx context.Context, path string) (*Store, error) {
-	db, err := chromem.NewPersistentDB(path, false)
-	if err != nil {
-		return nil, fmt.Errorf("store: open: %w", err)
-	}
-
 	s := &Store{
-		db:           db,
 		dir:          path,
 		manifestPath: filepath.Join(path, "manifest.json"),
 		collections:  map[string]*chromem.Collection{},
 		manifest:     map[string]manifestEntry{},
 	}
-	for name, col := range db.ListCollections() {
-		s.collections[name] = col
-	}
 	if err := s.loadManifest(); err != nil {
 		return nil, err
 	}
 	return s, nil
+}
+
+// projectsRoot is the directory holding one subdirectory per project.
+func (s *Store) projectsRoot() string {
+	return filepath.Join(s.dir, "projects")
+}
+
+// projectDir is projectID's own chromem-go persistence root: a directory
+// holding exactly one collection, so opening it only ever decodes this one
+// project's data, never any other project sharing this database.
+func (s *Store) projectDir(projectID string) string {
+	return filepath.Join(s.projectsRoot(), collectionDirName(projectID))
+}
+
+// ensureMigrated moves projectID's collection from the old layout (every
+// project's collection directly under dir, all decoded by one shared
+// chromem-go DB) into its own directory under projectsRoot, if it's still
+// there. A plain directory rename is enough: chromem-go's own on-disk format
+// for a collection never changes, only which directory tree holds it, so
+// this never opens, decodes, or re-encodes a single document.
+//
+// Deliberately lazy — called from collection and collectionIfExists rather
+// than once for every project at Open — for two reasons. First, it keeps
+// Open itself cheap regardless of database size, same as the per-project
+// layout it's migrating into. Second, and more subtly: a collection with no
+// manifest rows at all (a true orphan — see Projects' doc comment) isn't
+// discoverable by scanning the manifest, only by Projects opening it once it
+// turns up in a directory listing (see discoverOrphanDirs) — so a
+// migration pass that only knew about manifest-listed projects would leave
+// pre-existing orphans permanently stranded on the old layout the moment
+// discoverOrphanDirs started looking in the new one instead. Doing this at
+// the point of access instead means whichever code path reaches a project
+// first — a search, an index, or Projects/Vacuum discovering an orphan —
+// is exactly the one that migrates it.
+//
+// Idempotent (a project already on the new layout is left untouched) and
+// safe under concurrent callers: two callers racing to migrate the same
+// never-yet-moved project cannot corrupt anything, because whichever one
+// loses the rename finds its source already gone and treats that as
+// success, not failure.
+func (s *Store) ensureMigrated(projectID string) error {
+	newDir := s.projectDir(projectID)
+	if _, err := os.Stat(newDir); err == nil {
+		return nil // already migrated
+	}
+	oldDir := filepath.Join(s.dir, collectionDirName(projectID))
+	if _, err := os.Stat(oldDir); err != nil {
+		return nil // nothing at the old location: a fresh project, or already moved
+	}
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		return fmt.Errorf("store: migrate project %q: %w", projectID, err)
+	}
+	// The collection keeps its own name (the project id) unchanged, so its
+	// persisted directory name — a hash of that same id — lands on exactly
+	// the same value whether computed by chromem-go inside the new
+	// per-project root or, as here, reproduced to place it there.
+	err := os.Rename(oldDir, filepath.Join(newDir, collectionDirName(projectID)))
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("store: migrate project %q: %w", projectID, err)
+	}
+	return nil
 }
 
 func (s *Store) loadManifest() error {
@@ -162,22 +238,123 @@ func (s *Store) Close() error {
 	return nil
 }
 
-// collection returns the project's chromem-go collection, creating it if this
-// is the first time this project has been written to or searched. One
-// collection per project gives free isolation between projects — no manual
-// filter needed, unlike a single shared collection would require.
+// collection returns the project's chromem-go collection, opening (and, if
+// this is the first time this project has been written to or searched,
+// creating) its own per-project persistence directory. One collection per
+// project gives free isolation between projects — no manual filter needed,
+// unlike a single shared collection would require — and one *directory* per
+// project (rather than one shared directory holding every project's
+// collection, as chromem-go's own examples do) is what keeps this cheap:
+// NewPersistentDB decodes everything under whatever directory it's given,
+// so a directory holding only this project only ever costs decoding this
+// project, no matter how many other projects share the database.
 func (s *Store) collection(projectID string) (*chromem.Collection, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if col, ok := s.collections[projectID]; ok {
 		return col, nil
 	}
-	col, err := s.db.GetOrCreateCollection(projectID, nil, nil)
+	if err := s.ensureMigrated(projectID); err != nil {
+		return nil, err
+	}
+	db, err := chromem.NewPersistentDB(s.projectDir(projectID), false)
+	if err != nil {
+		return nil, fmt.Errorf("store: open project %q: %w", projectID, err)
+	}
+	col, err := db.GetOrCreateCollection(projectID, nil, nil)
 	if err != nil {
 		return nil, fmt.Errorf("store: create collection: %w", err)
 	}
 	s.collections[projectID] = col
 	return col, nil
+}
+
+// collectionIfExists is collection without the "create if missing" half: it
+// returns a project's collection when one is already cached or a directory
+// for it exists on disk, and (nil, false, nil) otherwise. Projects uses this
+// to tell "no collection" apart from "collection", which collection's
+// get-or-create semantics can't: calling collection for every candidate id
+// would silently manufacture an empty collection (and its directory) for
+// every dangling manifest entry Projects looks at.
+func (s *Store) collectionIfExists(projectID string) (*chromem.Collection, bool, error) {
+	s.mu.Lock()
+	if col, ok := s.collections[projectID]; ok {
+		s.mu.Unlock()
+		return col, true, nil
+	}
+	s.mu.Unlock()
+
+	if err := s.ensureMigrated(projectID); err != nil {
+		return nil, false, err
+	}
+	if _, err := os.Stat(s.projectDir(projectID)); err != nil {
+		if os.IsNotExist(err) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("store: stat project %q: %w", projectID, err)
+	}
+	col, err := s.collection(projectID)
+	if err != nil {
+		return nil, false, err
+	}
+	return col, true, nil
+}
+
+// discoverOrphanDirs finds project collections that known (manifest-derived)
+// ids don't already account for — a true orphan: one with no manifest rows
+// at all, which nothing but a directory listing can find, since a
+// collection's directory name is a hash of its project id that can't be
+// reversed. It looks in both places such a collection could still be
+// sitting.
+//
+// The two layouts need different treatment. Under projectsRoot (the current
+// layout), each immediate subdirectory is one project's own root — the same
+// shape collection itself opens — holding exactly one collection one level
+// further down, so each unrecognized one is opened individually via
+// NewPersistentDB to read back its real id. dir itself (the old,
+// pre-migration layout) is different: there, a project's collection sits
+// directly under dir, so dir is already the right root to hand
+// NewPersistentDB in one call — it decodes every collection still there
+// (ensureMigrated only ever moves one once something actually asks for it
+// by id, and an orphan's id is exactly what nothing asks for until this
+// finds it) and its own "projects" subdirectory is silently skipped:
+// chromem-go treats a subdirectory with no metadata or documents as a
+// user-added directory, not an error.
+func (s *Store) discoverOrphanDirs(knownIDs map[string]bool) (map[string]bool, error) {
+	discovered := map[string]bool{}
+
+	knownDirs := make(map[string]bool, len(knownIDs))
+	for id := range knownIDs {
+		knownDirs[collectionDirName(id)] = true
+	}
+	entries, err := os.ReadDir(s.projectsRoot())
+	if err != nil && !os.IsNotExist(err) {
+		return nil, fmt.Errorf("store: list project directories: %w", err)
+	}
+	for _, e := range entries {
+		if !e.IsDir() || knownDirs[e.Name()] {
+			continue
+		}
+		db, err := chromem.NewPersistentDB(filepath.Join(s.projectsRoot(), e.Name()), false)
+		if err != nil {
+			return nil, fmt.Errorf("store: open project directory %q: %w", e.Name(), err)
+		}
+		for name := range db.ListCollections() {
+			discovered[name] = true
+		}
+	}
+
+	oldDB, err := chromem.NewPersistentDB(s.dir, false)
+	if err != nil {
+		return nil, fmt.Errorf("store: open %q: %w", s.dir, err)
+	}
+	for name := range oldDB.ListCollections() {
+		if !knownIDs[name] {
+			discovered[name] = true
+		}
+	}
+
+	return discovered, nil
 }
 
 // Put inserts or updates records. chromem-go's Add is a genuine upsert
@@ -482,10 +659,10 @@ func (s *Store) Search(ctx context.Context, projectID string, queryVector []floa
 // embeds anything, so they need no provider, no API key, and no network.
 
 // ProjectStat describes one project's footprint in the store. It is
-// deliberately reported per project rather than per chunk: chromem-go opens
-// every collection eagerly on Open, so a stale project costs boot time and
-// memory for every other project too, and "which projects exist and how big
-// are they" is the question that actually precedes a cleanup decision.
+// deliberately reported per project rather than per chunk: an abandoned
+// project still costs disk space and, the moment something asks Projects to
+// look, decode time — and "which projects exist and how big are they" is
+// the question that actually precedes a cleanup decision.
 type ProjectStat struct {
 	ProjectID string `json:"projectId"`
 	// Chunks is how many chunks the manifest records for this project.
@@ -529,9 +706,15 @@ type ProjectStat struct {
 
 // Projects reports every project the store knows about, largest first.
 //
-// "Knows about" is the union of two sources that are supposed to agree —
-// chromem-go's collections and the manifest's rows — precisely so the cases
-// where they don't are visible rather than silently unreachable.
+// "Knows about" is the union of two sources that are supposed to agree — a
+// project directory under projectsRoot and the manifest's rows for it —
+// precisely so the cases where they don't are visible rather than silently
+// unreachable. Unlike every other method in this file, Projects
+// deliberately opens every project's collection rather than only the ones a
+// caller already asked for: "which projects exist and how big are they" is
+// the question that precedes a cleanup decision, so it needs the full
+// picture. That cost is paid here, once, when this is actually called —
+// not on every Open regardless of whether anyone asked.
 func (s *Store) Projects(ctx context.Context) ([]ProjectStat, error) {
 	s.mu.Lock()
 	chunks := map[string]int{}
@@ -549,24 +732,26 @@ func (s *Store) Projects(ctx context.Context) ([]ProjectStat, error) {
 		}
 		paths[id][entry.Path] = true
 	}
-	collections := make(map[string]*chromem.Collection, len(s.collections))
-	for name, col := range s.collections {
-		collections[name] = col
-	}
-	dir := s.dir
 	s.mu.Unlock()
 
 	ids := map[string]bool{}
 	for id := range chunks {
 		ids[id] = true
 	}
-	for id := range collections {
+	orphanIDs, err := s.discoverOrphanDirs(ids)
+	if err != nil {
+		return nil, err
+	}
+	for id := range orphanIDs {
 		ids[id] = true
 	}
 
 	out := make([]ProjectStat, 0, len(ids))
 	for id := range ids {
-		col, hasCollection := collections[id]
+		col, hasCollection, err := s.collectionIfExists(id)
+		if err != nil {
+			return nil, err
+		}
 		stat := ProjectStat{
 			ProjectID:   id,
 			Chunks:      chunks[id],
@@ -579,7 +764,7 @@ func (s *Store) Projects(ctx context.Context) ([]ProjectStat, error) {
 		if hasCollection {
 			stat.Documents = col.Count()
 		}
-		size, modTime, err := dirStat(filepath.Join(dir, collectionDirName(id)))
+		size, modTime, err := dirStat(s.projectDir(id))
 		if err != nil {
 			return nil, fmt.Errorf("store: stat project %q: %w", id, err)
 		}
@@ -599,18 +784,17 @@ func (s *Store) Projects(ctx context.Context) ([]ProjectStat, error) {
 // DeleteProject removes a project's collection and every manifest row for
 // it, returning how many chunks were dropped.
 //
-// The two halves must both run even when one has nothing to do: chromem-go's
-// DeleteCollection is a no-op for a name it doesn't hold, which is exactly
-// the dangling case, and a collection with no manifest rows is exactly the
-// orphan case. Doing only the half that "looks" necessary is what lets the
-// two sources drift apart in the first place.
+// The two halves must both run even when one has nothing to do: removing a
+// directory that isn't there is a no-op, which is exactly the dangling
+// case, and a directory with no manifest rows is exactly the orphan case.
+// Doing only the half that "looks" necessary is what lets the two sources
+// drift apart in the first place.
 func (s *Store) DeleteProject(ctx context.Context, projectID string) (int, error) {
-	if err := s.db.DeleteCollection(projectID); err != nil {
-		return 0, fmt.Errorf("store: delete project %q: %w", projectID, err)
-	}
-
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := os.RemoveAll(s.projectDir(projectID)); err != nil {
+		return 0, fmt.Errorf("store: delete project %q: %w", projectID, err)
+	}
 	delete(s.collections, projectID)
 	prefix := projectID + "\x00"
 	removed := 0
@@ -629,18 +813,21 @@ func (s *Store) DeleteProject(ctx context.Context, projectID string) (int, error
 // Reset empties the store: every project, every chunk, for every directory
 // sharing this database.
 //
-// chromem-go's own Reset removes and recreates the whole persistence
-// directory — which contains manifest.json, since that sidecar lives
-// alongside the collections. So the manifest is destroyed on disk here
-// whether or not this code says so; clearing the in-memory copy first is
-// what stops the next Put from writing all 30,000 stale rows straight back
-// out.
+// This removes dir wholesale (every project's collection, migrated or not,
+// plus manifest.json) and recreates it, rather than only clearing
+// projectsRoot — a store mid-migration, or one still on the pre-per-project
+// layout, must come out just as empty as one that already finished. Clearing
+// the in-memory copy first is what stops the next Put from writing all
+// 30,000 stale manifest rows straight back out.
 func (s *Store) Reset(ctx context.Context) error {
-	if err := s.db.Reset(); err != nil {
-		return fmt.Errorf("store: reset: %w", err)
-	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if err := os.RemoveAll(s.dir); err != nil {
+		return fmt.Errorf("store: reset: %w", err)
+	}
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return fmt.Errorf("store: reset: %w", err)
+	}
 	s.collections = map[string]*chromem.Collection{}
 	s.manifest = map[string]manifestEntry{}
 	// Recreate the file rather than leaving it absent. Both states load

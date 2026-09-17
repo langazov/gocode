@@ -20,10 +20,25 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/bmatcuk/doublestar/v4"
 	"github.com/langazov/gocode-go/internal/lsp"
 )
+
+// walkConcurrency bounds how many files are chunked (read, hashed, and — when
+// opts.LSP is set — sent through the syntax-aware resolver) at once.
+// Chunking a file is overwhelmingly I/O: a local LSP round trip per file when
+// syntax-aware splitting is on, otherwise just a read. That round trip is
+// exactly the cost that used to make a full walk of a multi-thousand-file
+// project take tens of seconds with every file processed one at a time. The
+// work is embarrassingly parallel — each file's chunks are independent, and
+// Walk sorts the combined result anyway — so a bounded worker pool turns
+// that serial wait into a parallel one. Bounded rather than unbounded so an
+// LSP server that doesn't pipeline well isn't hit with a request-per-file
+// burst; the LSP client itself supports concurrent calls (see
+// internal/jsonrpc's Conn.Call), so this only needs to pick a sane width.
+const walkConcurrency = 8
 
 // SymbolResolver is the subset of *lsp.Service a syntax-aware chunker needs:
 // one file's outline. Depending on this narrow interface instead of *lsp.Service
@@ -126,7 +141,12 @@ func Walk(ctx context.Context, root string, opts Options) ([]Chunk, error) {
 		ignores = newIgnoreStack(root, opts.IgnoreBase)
 	}
 
-	var chunks []Chunk
+	// The directory traversal itself stays single-threaded: it carries the
+	// gitignore stack's push/pop state, which assumes one walker descending
+	// in order. What's expensive (reading and, when LSP is set, resolving
+	// each file's symbols) is independent per file, so it's collected here
+	// and fanned out below instead of done inline.
+	var candidates []candidateFile
 	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
 		if err != nil {
 			if entry != nil && entry.IsDir() {
@@ -178,17 +198,14 @@ func Walk(ctx context.Context, root string, opts Options) ([]Chunk, error) {
 		if prefix != "" {
 			relPath = prefix + "/" + relative
 		}
-		fileChunks, readErr := chunkFile(ctx, path, relPath, opts)
-		if readErr != nil {
-			// Unreadable or binary: skip, don't fail the whole walk.
-			return nil
-		}
-		chunks = append(chunks, fileChunks...)
+		candidates = append(candidates, candidateFile{absPath: path, relPath: relPath})
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
+
+	chunks := chunkFilesConcurrently(ctx, candidates, opts)
 	sort.Slice(chunks, func(i, j int) bool {
 		if chunks[i].Path != chunks[j].Path {
 			return chunks[i].Path < chunks[j].Path
@@ -287,6 +304,51 @@ func IsDefaultTextCandidate(relative string) bool {
 		return true
 	}
 	return textExtensions[strings.ToLower(filepath.Ext(relative))]
+}
+
+// candidateFile is one file Walk's traversal decided is worth chunking,
+// queued for the concurrent pass below.
+type candidateFile struct {
+	absPath string
+	relPath string
+}
+
+// chunkFilesConcurrently chunks every candidate with a bounded pool of
+// walkConcurrency workers and returns the combined, unsorted result. A
+// file that fails to chunk (unreadable, or turns out to look binary once
+// read) is skipped exactly as the serial version was: silently, without
+// failing the walk.
+func chunkFilesConcurrently(ctx context.Context, files []candidateFile, opts Options) []Chunk {
+	if len(files) == 0 {
+		return nil
+	}
+	results := make([][]Chunk, len(files))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for range min(walkConcurrency, len(files)) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range jobs {
+				if fileChunks, err := chunkFile(ctx, files[i].absPath, files[i].relPath, opts); err == nil {
+					results[i] = fileChunks
+				}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		for i := range files {
+			jobs <- i
+		}
+	}()
+	wg.Wait()
+
+	var chunks []Chunk
+	for _, fc := range results {
+		chunks = append(chunks, fc...)
+	}
+	return chunks
 }
 
 func chunkFile(ctx context.Context, absPath, relPath string, opts Options) ([]Chunk, error) {

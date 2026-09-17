@@ -215,12 +215,12 @@ Three kinds of data fall outside it:
 - **Bookkeeping rows whose collection was lost** (`dangling`). The mirror
   image: the diff believes chunks are stored that no search can return.
 
-This matters more than it sounds, because `store.Open` decodes *every*
-collection in the database into memory eagerly — so one abandoned project
-costs startup time and RAM on every run, for every other project sharing the
-database. And because chromem-go names each collection directory after a
-hash of the project id, none of it is identifiable, let alone deletable, by
-hand.
+This matters more than it sounds: `rag-plugin list`/`vacuum` open every
+project's data to report on it, so an abandoned project still costs decode
+time whenever one of those runs, even though a search or index call for a
+different project never touches it (see [Vector storage](#vector-storage)).
+And because chromem-go names each collection directory after a hash of the
+project id, none of it is identifiable, let alone deletable, by hand.
 
 ```sh
 rag-plugin list                                  # what is in there, largest first
@@ -273,6 +273,18 @@ unconditionally import a Windows-incompatible dependency, so neither even
 compiles for `GOOS=windows`. chromem-go has none of these problems, verified
 directly against this project's own replace/delete/reopen/cross-compile
 scenarios — see `internal/rag/store/store.go`'s package doc for the specifics.
+
+Each project also gets its own persistence directory under `<dbPath>/projects/`,
+opened only when that project is actually referenced — not one shared
+directory holding every project chromem-go decodes in full on every open.
+That's a deliberate departure from chromem-go's own single-directory
+examples: without it, a `rag_search` call for one small project would still
+pay to decode every other project sharing the database first. An existing
+database on the old shared layout migrates to this one automatically, once,
+the first time it's opened — a plain directory rename per project, so it
+costs nothing proportional to how much is stored. `list` and `vacuum` are the
+exception: answering "what does this whole database hold" means opening
+everything, so they do, on demand, rather than paying for it on every run.
 
 The trade-off: chromem-go's brute-force search is O(n) per query rather than
 an ANN graph's sub-linear cost. For a single project's indexed files (tens of

@@ -2,11 +2,14 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
+
+	chromem "github.com/philippgille/chromem-go"
 )
 
 func testStore(t *testing.T) *Store {
@@ -239,14 +242,15 @@ func TestCollectionDirNameMatchesChromem(t *testing.T) {
 	defer s.Close()
 	putProject(t, s, "some/project/id", "a.go")
 
-	dir := filepath.Join(path, collectionDirName("some/project/id"))
+	projectRoot := s.projectDir("some/project/id")
+	dir := filepath.Join(projectRoot, collectionDirName("some/project/id"))
 	if _, err := os.Stat(dir); err != nil {
-		entries, _ := os.ReadDir(path)
+		entries, _ := os.ReadDir(projectRoot)
 		var got []string
 		for _, e := range entries {
 			got = append(got, e.Name())
 		}
-		t.Fatalf("collectionDirName gave %q, which does not exist; directory holds %v", filepath.Base(dir), got)
+		t.Fatalf("collectionDirName gave %q, which does not exist under the project's own root; that root holds %v", filepath.Base(dir), got)
 	}
 }
 
@@ -315,7 +319,7 @@ func TestDeleteProjectRemovesCollectionAndManifest(t *testing.T) {
 
 	// The collection directory must be gone too, not merely unreferenced —
 	// reclaiming the disk is the entire point.
-	if _, err := os.Stat(filepath.Join(s.dir, collectionDirName("p1"))); !os.IsNotExist(err) {
+	if _, err := os.Stat(s.projectDir("p1")); !os.IsNotExist(err) {
 		t.Errorf("p1's collection directory survived: stat err = %v", err)
 	}
 
@@ -473,7 +477,7 @@ func TestVacuumDropsOrphanAndDanglingProjects(t *testing.T) {
 
 	// Dangling: manifest rows kept, collection directory removed behind the
 	// store's back.
-	if err := os.RemoveAll(filepath.Join(path, collectionDirName("dangling"))); err != nil {
+	if err := os.RemoveAll(s.projectDir("dangling")); err != nil {
 		t.Fatal(err)
 	}
 	s.mu.Lock()
@@ -504,7 +508,7 @@ func TestVacuumDropsOrphanAndDanglingProjects(t *testing.T) {
 	if len(stats) != 1 || stats[0].ProjectID != "healthy" {
 		t.Fatalf("after vacuum, got %+v, want only healthy", stats)
 	}
-	if _, err := os.Stat(filepath.Join(path, collectionDirName("orphan"))); !os.IsNotExist(err) {
+	if _, err := os.Stat(s.projectDir("orphan")); !os.IsNotExist(err) {
 		t.Errorf("the orphan's directory survived: stat err = %v", err)
 	}
 }
@@ -541,7 +545,7 @@ func TestVacuumDryRunChangesNothing(t *testing.T) {
 	if report.BytesFreed <= 0 {
 		t.Errorf("dry run should still project a saving, got %d bytes", report.BytesFreed)
 	}
-	if _, err := os.Stat(filepath.Join(path, collectionDirName("orphan"))); err != nil {
+	if _, err := os.Stat(s.projectDir("orphan")); err != nil {
 		t.Errorf("dry run deleted the collection: %v", err)
 	}
 }
@@ -644,6 +648,201 @@ func TestStaleCount(t *testing.T) {
 	}
 	if stale != 0 {
 		t.Errorf("unknown project: got %d stale, want 0", stale)
+	}
+}
+
+// TestSearchOnlyOpensTheRequestedProjectsCollection is the whole point of
+// giving each project its own persistence directory: a database can hold
+// many projects, and a call naming one of them must never decode another.
+func TestSearchOnlyOpensTheRequestedProjectsCollection(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "rag.db")
+	s1, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	putProject(t, s1, "p1", "a.go")
+	putProject(t, s1, "p2", "b.go")
+	if err := s1.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A fresh Store, so s2.collections starts empty regardless of what s1
+	// happened to have opened while writing the fixture above.
+	s2, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+
+	if _, err := s2.Search(ctx, "p1", vec(1, 0), 10, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	s2.mu.Lock()
+	_, p1Open := s2.collections["p1"]
+	_, p2Open := s2.collections["p2"]
+	s2.mu.Unlock()
+	if !p1Open {
+		t.Error("p1 should be open after searching it")
+	}
+	if p2Open {
+		t.Error("p2's collection was opened even though only p1 was searched — defeats the point of per-project persistence directories")
+	}
+}
+
+// TestOpenMigratesLegacySharedLayout builds a database on the pre-refactor
+// layout by hand — one shared chromem-go DB holding every project's
+// collection directly, the same shape this package always wrote until now —
+// and checks that touching a project moves it into its own directory, the
+// data survives intact, and reopening an already-migrated database is a
+// no-op rather than an error. Migration is lazy (see ensureMigrated's doc
+// comment) — Open itself does not move anything.
+func TestOpenMigratesLegacySharedLayout(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "rag.db")
+
+	oldDB, err := chromem.NewPersistentDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"p1", "p2"} {
+		col, err := oldDB.GetOrCreateCollection(id, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta := map[string]string{"path": "a.go", "startLine": "1", "endLine": "1", "updatedAt": "0"}
+		if err := col.Add(ctx, []string{id + "#0"}, [][]float32{{1, 0}}, []map[string]string{meta}, []string{"content-" + id}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	manifest := map[string]manifestEntry{
+		"p1\x00p1#0": {ProjectID: "p1", Path: "a.go", ContentHash: "h1"},
+		"p2\x00p2#0": {ProjectID: "p2", Path: "a.go", ContentHash: "h2"},
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(path, "manifest.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Confirm the fixture really is the old flat layout before Open gets a
+	// chance to migrate it — otherwise this test would pass for the wrong
+	// reason if the fixture-building above ever stopped matching reality.
+	if _, err := os.Stat(filepath.Join(path, collectionDirName("p1"))); err != nil {
+		t.Fatalf("test setup didn't produce the old flat layout: %v", err)
+	}
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	// Open itself must not have migrated anything yet.
+	if _, err := os.Stat(filepath.Join(path, collectionDirName("p1"))); err != nil {
+		t.Fatalf("Open must not migrate eagerly; p1's old-layout directory is already gone: %v", err)
+	}
+
+	for _, id := range []string{"p1", "p2"} {
+		results, err := s.Search(ctx, id, vec(1, 0), 10, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(results) != 1 || results[0].Content != "content-"+id {
+			t.Fatalf("%s: migrated data unreadable, got %+v", id, results)
+		}
+	}
+
+	// Searching p1 must have migrated it (and only it) on the spot.
+	if _, err := os.Stat(filepath.Join(path, collectionDirName("p1"))); !os.IsNotExist(err) {
+		t.Errorf("p1's old-layout directory should have been moved after searching it, stat err = %v", err)
+	}
+	if _, err := os.Stat(s.projectDir("p1")); err != nil {
+		t.Errorf("p1 should now live under its own project directory: %v", err)
+	}
+
+	hashes, err := s.Hashes(ctx, "p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hashes["p1#0"] != "h1" {
+		t.Errorf("manifest hash lost across migration: got %v", hashes)
+	}
+
+	// Idempotent: reopening an already-migrated database must not error,
+	// duplicate data, or try to move a directory that isn't there anymore.
+	s2, err := Open(ctx, path)
+	if err != nil {
+		t.Fatalf("second Open after migration failed: %v", err)
+	}
+	defer s2.Close()
+	results, err := s2.Search(ctx, "p1", vec(1, 0), 10, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("re-opening a migrated database corrupted it: got %+v", results)
+	}
+}
+
+// TestProjectsDiscoversOrphanFromOldLayout pins a real bug found while
+// verifying this migration against production data: a collection that
+// predates any manifest row for it (a true orphan) sits directly under the
+// database root, the pre-per-project layout every collection used to use.
+// Nothing in the normal read/write path ever names it by id, so
+// ensureMigrated never has a reason to move it — meaning Projects/Vacuum
+// must still find it there directly, or an old orphan silently becomes
+// permanently invisible (not deleted, just unreachable by any tool) the
+// moment discoverOrphanDirs only looked in the new layout.
+func TestProjectsDiscoversOrphanFromOldLayout(t *testing.T) {
+	ctx := context.Background()
+	path := filepath.Join(t.TempDir(), "rag.db")
+
+	oldDB, err := chromem.NewPersistentDB(path, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	col, err := oldDB.GetOrCreateCollection("legacy-orphan", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta := map[string]string{"path": "a.go", "startLine": "1", "endLine": "1", "updatedAt": "0"}
+	if err := col.Add(ctx, []string{"x#0"}, [][]float32{{1, 0}}, []map[string]string{meta}, []string{"stale"}); err != nil {
+		t.Fatal(err)
+	}
+	// No manifest.json at all: this orphan has never had a manifest row.
+
+	s, err := Open(ctx, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+
+	stats, err := s.Projects(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stat := projectByID(t, stats, "legacy-orphan")
+	if !stat.Orphan {
+		t.Errorf("expected legacy-orphan to be reported as orphan, got %+v", stat)
+	}
+	if stat.Documents != 1 {
+		t.Errorf("expected the orphan's real document count, got %+v", stat)
+	}
+
+	// Visible is not enough — it must actually be reclaimable.
+	report, err := s.Vacuum(ctx, VacuumOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.OrphanCollections) != 1 || report.OrphanCollections[0] != "legacy-orphan" {
+		t.Fatalf("vacuum should have found the legacy orphan, got %+v", report)
+	}
+	if _, err := os.Stat(filepath.Join(path, collectionDirName("legacy-orphan"))); !os.IsNotExist(err) {
+		t.Error("legacy-orphan's old-layout directory should be gone after vacuum")
 	}
 }
 
