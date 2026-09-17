@@ -1,14 +1,13 @@
 package eval
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -79,6 +78,14 @@ const commitPrefix = "\x02commit\x02"
 // line count (absent, per the format, when the count is 1).
 var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 
+// minedHunk is one hunk's post-image range plus the exact text it added, so
+// the range can later be checked against the current file's content at that
+// same location — not just against the file's current line count.
+type minedHunk struct {
+	Region
+	added []string
+}
+
 // MineGoldSet mines (query, relevant-region) pairs for retrieval evaluation
 // from repoRoot's own commit history: a commit's subject line stands in for
 // a query a developer might type, and the lines it changed stand in for the
@@ -87,13 +94,16 @@ var hunkHeader = regexp.MustCompile(`^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@`)
 // any single pair, but statistically usable across the hundreds it produces,
 // which a hand-labeled set of a dozen examples never is.
 //
-// A hunk's post-image range is only kept when it still fits inside the
-// file's *current* line count. The file may have grown or shrunk since that
-// commit, and telling whether the same lines still hold the same content
-// would mean walking every intervening diff — so a range that plainly no
-// longer exists is dropped rather than mapped onto the wrong lines. This
-// trades recall (older commits contribute fewer pairs) for precision (the
-// pairs that remain point at real, currently-searchable content).
+// A hunk's post-image range is kept only when the current file still has the
+// exact text that hunk added at that same location. Checking the line count
+// alone is not enough: on a file edited again since (a later commit adding
+// or removing lines above the hunk), the range still fits inside the file
+// but now names entirely different content — silently scoring the pair
+// against the wrong lines rather than dropping it. Comparing the hunk's own
+// recorded text against the current line range catches that directly,
+// without needing to replay every intervening diff. This trades recall
+// (heavily-churned files contribute fewer surviving pairs) for precision
+// (the pairs that remain point at real, currently-searchable content).
 func MineGoldSet(ctx context.Context, repoRoot string, opts MineOptions) ([]GoldPair, error) {
 	opts = opts.withDefaults()
 
@@ -116,13 +126,13 @@ func MineGoldSet(ctx context.Context, repoRoot string, opts MineOptions) ([]Gold
 
 	var pairs []GoldPair
 	var curHash, curSubject, curFile string
-	curFiles := map[string][]Region{}
+	curFiles := map[string][]minedHunk{}
 	var curFileOrder []string
 
 	flush := func() {
 		defer func() {
 			curHash, curSubject, curFile = "", "", ""
-			curFiles = map[string][]Region{}
+			curFiles = map[string][]minedHunk{}
 			curFileOrder = nil
 		}()
 		if curHash == "" {
@@ -144,10 +154,14 @@ func MineGoldSet(ctx context.Context, repoRoot string, opts MineOptions) ([]Gold
 		pairs = append(pairs, GoldPair{Query: curSubject, CommitHash: curHash, Relevant: relevant})
 	}
 
-	scanner := bufio.NewScanner(bytes.NewReader(output))
-	scanner.Buffer(make([]byte, 0, 64*1024), 4<<20) // a generated-file diff can produce a very long line
-	for scanner.Scan() {
-		line := scanner.Text()
+	// Lines are indexed by hand (rather than ranged over via bufio.Scanner)
+	// because a hunk header's body must be consumed inline: with
+	// --unified=0 a hunk's lines are exactly its removed ("-") lines
+	// followed by its added ("+") lines, with no surrounding context, so the
+	// added text can be read off directly instead of re-deriving it later.
+	lines := strings.Split(string(output), "\n")
+	for i := 0; i < len(lines); {
+		line := lines[i]
 		switch {
 		case strings.HasPrefix(line, commitPrefix):
 			flush()
@@ -157,11 +171,13 @@ func MineGoldSet(ctx context.Context, repoRoot string, opts MineOptions) ([]Gold
 			if len(parts) > 1 {
 				curSubject = parts[1]
 			}
+			i++
 
 		case strings.HasPrefix(line, "+++ "):
 			f := strings.TrimPrefix(line, "+++ ")
 			if f == "/dev/null" {
 				curFile = "" // this file was deleted by the commit: nothing to index
+				i++
 				continue
 			}
 			f = strings.TrimPrefix(f, "b/")
@@ -172,6 +188,7 @@ func MineGoldSet(ctx context.Context, repoRoot string, opts MineOptions) ([]Gold
 				// a miss would blame retrieval quality for an unsearchable
 				// gold pair instead of a real one.
 				curFile = ""
+				i++
 				continue
 			}
 			curFile = f
@@ -179,13 +196,12 @@ func MineGoldSet(ctx context.Context, repoRoot string, opts MineOptions) ([]Gold
 				curFiles[f] = nil
 				curFileOrder = append(curFileOrder, f)
 			}
+			i++
 
 		case strings.HasPrefix(line, "@@ "):
-			if curFile == "" {
-				continue
-			}
 			m := hunkHeader.FindStringSubmatch(line)
-			if m == nil {
+			i++
+			if curFile == "" || m == nil {
 				continue
 			}
 			start, _ := strconv.Atoi(m[1])
@@ -193,60 +209,80 @@ func MineGoldSet(ctx context.Context, repoRoot string, opts MineOptions) ([]Gold
 			if m[2] != "" {
 				count, _ = strconv.Atoi(m[2])
 			}
+			var added []string
+			for i < len(lines) && len(added) < count {
+				body := lines[i]
+				switch {
+				case strings.HasPrefix(body, "+") && !strings.HasPrefix(body, "+++"):
+					added = append(added, strings.TrimPrefix(body, "+"))
+					i++
+				case strings.HasPrefix(body, "-") && !strings.HasPrefix(body, "---"):
+					i++
+				default:
+					added = nil // hunk body ended before count was satisfied: malformed, ignore
+				}
+				if added == nil && count > 0 {
+					break
+				}
+			}
 			if count == 0 {
 				continue // a pure deletion at this point adds no lines to search for
 			}
-			curFiles[curFile] = append(curFiles[curFile], Region{Path: curFile, StartLine: start, EndLine: start + count - 1})
+			curFiles[curFile] = append(curFiles[curFile], minedHunk{
+				Region: Region{Path: curFile, StartLine: start, EndLine: start + count - 1},
+				added:  added,
+			})
+
+		default:
+			i++
 		}
-	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("eval: scan git log output: %w", err)
 	}
 	flush()
 	return pairs, nil
 }
 
-// validateAndMergeRegions drops any region that no longer fits inside path's
-// current line count and merges the rest, so a commit whose file has since
-// shrunk contributes only the part of it that is still real, and adjacent or
-// overlapping hunks in one file collapse into one region.
-func validateAndMergeRegions(repoRoot, path string, regions []Region) []Region {
-	if len(regions) == 0 {
+// validateAndMergeRegions drops any hunk whose recorded text no longer
+// matches the current file at that same line range — whether because the
+// range no longer fits inside the file, or because later commits shifted or
+// rewrote what's there — and merges the survivors, so a commit whose file
+// has since changed elsewhere contributes only the part that is still real.
+func validateAndMergeRegions(repoRoot, path string, hunks []minedHunk) []Region {
+	if len(hunks) == 0 {
 		return nil
 	}
-	lineCount, err := countLines(filepath.Join(repoRoot, filepath.FromSlash(path)))
+	curLines, err := readLines(filepath.Join(repoRoot, filepath.FromSlash(path)))
 	if err != nil {
 		return nil // file deleted or unreadable since: nothing left to point at
 	}
 
-	sort.Slice(regions, func(i, j int) bool { return regions[i].StartLine < regions[j].StartLine })
+	sort.Slice(hunks, func(i, j int) bool { return hunks[i].StartLine < hunks[j].StartLine })
 	var out []Region
-	for _, r := range regions {
-		if r.StartLine > lineCount || r.EndLine > lineCount {
+	for _, h := range hunks {
+		if h.StartLine < 1 || h.EndLine > len(curLines) {
 			continue
 		}
-		if n := len(out); n > 0 && r.StartLine <= out[n-1].EndLine+1 {
-			if r.EndLine > out[n-1].EndLine {
-				out[n-1].EndLine = r.EndLine
+		if !slices.Equal(curLines[h.StartLine-1:h.EndLine], h.added) {
+			continue // content at this location has since changed: stale mapping, not a real answer
+		}
+		if n := len(out); n > 0 && h.StartLine <= out[n-1].EndLine+1 {
+			if h.EndLine > out[n-1].EndLine {
+				out[n-1].EndLine = h.EndLine
 			}
 			continue
 		}
-		out = append(out, r)
+		out = append(out, h.Region)
 	}
 	return out
 }
 
-func countLines(path string) (int, error) {
+func readLines(path string) ([]string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	if len(data) == 0 {
-		return 0, nil
+	text := strings.TrimSuffix(string(data), "\n")
+	if text == "" {
+		return nil, nil
 	}
-	n := bytes.Count(data, []byte("\n"))
-	if !bytes.HasSuffix(data, []byte("\n")) {
-		n++
-	}
-	return n, nil
+	return strings.Split(text, "\n"), nil
 }

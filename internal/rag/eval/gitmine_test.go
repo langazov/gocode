@@ -143,6 +143,32 @@ func TestMineGoldSetDropsOnlyUnindexableFilesFromAMixedCommit(t *testing.T) {
 	}
 }
 
+func TestMineGoldSetDropsRegionsWhoseContentHasDrifted(t *testing.T) {
+	dir := t.TempDir()
+	runGit(t, dir, "init", "-q", "-b", "main")
+	writeAndCommit(t, dir, "netretry.go", "package session\n\nfunc awaitNetwork() {}\n", "wip")
+	writeAndCommit(t, dir, "netretry.go",
+		"package session\n\nfunc awaitNetwork() {\n\t// treat a reached deadline as spent\n\tspent := true\n\t_ = spent\n}\n",
+		"fix: treat a reached retry budget as spent")
+
+	// A later, unrelated commit inserts lines above awaitNetwork, shifting it
+	// down. The line range the retry-budget commit touched now still fits
+	// inside the file, but holds this new function instead.
+	writeAndCommit(t, dir, "netretry.go",
+		"package session\n\nfunc newHelper() {\n\t// unrelated\n\tx := 1\n\t_ = x\n}\n\nfunc awaitNetwork() {\n\t// treat a reached deadline as spent\n\tspent := true\n\t_ = spent\n}\n",
+		"add an unrelated helper above awaitNetwork")
+
+	pairs, err := MineGoldSet(context.Background(), dir, MineOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range pairs {
+		if p.Query == "fix: treat a reached retry budget as spent" {
+			t.Fatalf("region shifted by a later commit should have been dropped as drifted, got %+v", p.Relevant)
+		}
+	}
+}
+
 func TestMineGoldSetDropsRegionsPastCurrentFileLength(t *testing.T) {
 	dir := t.TempDir()
 	runGit(t, dir, "init", "-q", "-b", "main")
