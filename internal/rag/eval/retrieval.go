@@ -30,6 +30,13 @@ type QueryScore struct {
 	// Rank is the 1-based position of the first hit that overlapped any of
 	// Gold.Relevant, or 0 if none of the top-K hits did.
 	Rank int
+	// NDCG is this query's normalized discounted cumulative gain at K —
+	// see ndcgAtK's doc comment. Unlike Rank (which only ever asks "was the
+	// first relevant hit found, and how fast"), this also rewards finding
+	// more than one of several relevant regions (a commit can touch up to
+	// MaxFilesPerCommit files), each discounted by how far down the
+	// ranking it took to find it.
+	NDCG float64
 }
 
 func (q QueryScore) hit() bool { return q.Rank > 0 }
@@ -62,6 +69,14 @@ type Metrics struct {
 	// MRR is the mean reciprocal rank of the first relevant result (0 for a
 	// query with no relevant result in the top K).
 	MRR Stat
+	// NDCG is the mean normalized discounted cumulative gain at K (see
+	// ndcgAtK). Where MRR only asks "how fast was the first relevant hit,"
+	// NDCG also credits finding additional relevant regions further down
+	// the ranking — a gentler, more forgiving decay by rank than MRR's raw
+	// 1/rank (NDCG@2 for a rank-2 hit is ~0.63 vs MRR's 0.5), so the two
+	// together show whether a given Recall@K number reflects hits clustered
+	// near the top or scattered deep in the results.
+	NDCG Stat
 }
 
 // defaultBootstrapIterations balances a tight-enough CI against runtime: at
@@ -85,16 +100,18 @@ func Evaluate(ctx context.Context, gold []GoldPair, search SearchFunc, k, bootst
 		if err != nil {
 			return Metrics{}, nil, fmt.Errorf("eval: search %q: %w", g.Query, err)
 		}
-		scores[i] = QueryScore{Gold: g, Rank: firstRelevantRank(g, hits)}
+		scores[i] = QueryScore{Gold: g, Rank: firstRelevantRank(g, hits), NDCG: ndcgAtK(g, hits, k)}
 	}
 
 	recall := make([]float64, len(scores))
 	rr := make([]float64, len(scores))
+	ndcg := make([]float64, len(scores))
 	for i, s := range scores {
 		if s.hit() {
 			recall[i] = 1
 		}
 		rr[i] = s.reciprocalRank()
+		ndcg[i] = s.NDCG
 	}
 
 	return Metrics{
@@ -102,6 +119,7 @@ func Evaluate(ctx context.Context, gold []GoldPair, search SearchFunc, k, bootst
 		K:         k,
 		RecallAtK: bootstrap(recall, bootstrapIterations),
 		MRR:       bootstrap(rr, bootstrapIterations),
+		NDCG:      bootstrap(ndcg, bootstrapIterations),
 	}, scores, nil
 }
 
@@ -115,6 +133,59 @@ func firstRelevantRank(g GoldPair, hits []Hit) int {
 		}
 	}
 	return 0
+}
+
+// ndcgAtK is one query's normalized discounted cumulative gain at k:
+// DCG@k / IDCG@k, using binary relevance (a hit either overlaps a gold
+// region or it doesn't — git-mined pairs carry no finer-grained judgment)
+// and treating each of g.Relevant's regions as one distinct relevant item,
+// the same unit Recall@K and MRR already score against.
+//
+// Each relevant region contributes gain exactly once, to the first
+// (highest-ranked) hit that overlaps it — not to every hit that happens to
+// overlap it. Without that, two adjacent chunks both overlapping the same
+// single relevant region (routine with a nonzero chunk overlap) would earn
+// gain twice for one real answer, and NDCG could exceed 1.0, breaking the
+// normalization the "N" is for. IDCG@k is the gain of the best possible
+// ranking: min(len(g.Relevant), k) relevant items placed at ranks 1..m, so
+// a query with only one relevant region is capped at the same ceiling a
+// single hit at rank 1 already reaches (IDCG=1, same as MRR's).
+func ndcgAtK(g GoldPair, hits []Hit, k int) float64 {
+	if len(g.Relevant) == 0 {
+		return 0
+	}
+	if len(hits) > k {
+		hits = hits[:k]
+	}
+
+	credited := make([]bool, len(g.Relevant))
+	dcg := 0.0
+	for i, h := range hits {
+		region := h.region()
+		for ri, rel := range g.Relevant {
+			if credited[ri] {
+				continue
+			}
+			if region.Overlaps(rel) {
+				credited[ri] = true
+				dcg += 1 / math.Log2(float64(i+2)) // i is 0-based; rank i+1, discount log2(rank+1)
+				break
+			}
+		}
+	}
+
+	ideal := len(g.Relevant)
+	if ideal > k {
+		ideal = k
+	}
+	idcg := 0.0
+	for i := 0; i < ideal; i++ {
+		idcg += 1 / math.Log2(float64(i+2))
+	}
+	if idcg == 0 {
+		return 0
+	}
+	return dcg / idcg
 }
 
 // bootstrap resamples values with replacement `iterations` times, computing

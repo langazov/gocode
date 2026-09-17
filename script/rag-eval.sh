@@ -146,6 +146,7 @@ else:
     print(f"  gold pairs: {retrieval_new['N']}  (k={retrieval_new['K']})")
     stat_line("Recall@K", (retrieval_prev or {}).get("RecallAtK"), retrieval_new["RecallAtK"])
     stat_line("MRR", (retrieval_prev or {}).get("MRR"), retrieval_new["MRR"])
+    stat_line("NDCG@K", (retrieval_prev or {}).get("NDCG"), retrieval_new["NDCG"])
 PY
 
 echo

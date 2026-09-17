@@ -32,8 +32,9 @@ func runCLIEval(args []string) error {
 }
 
 // runCLIEvalRetrieval scores an already-indexed project's rag_search against
-// a gold set mined from its own commit history, reporting Recall@K and MRR
-// with bootstrap confidence intervals instead of a spot-checked impression.
+// a gold set mined from its own commit history, reporting Recall@K, MRR, and
+// NDCG@K with bootstrap confidence intervals instead of a spot-checked
+// impression.
 func runCLIEvalRetrieval(args []string) error {
 	fs := flag.NewFlagSet("rag-plugin eval retrieval", flag.ContinueOnError)
 	root := fs.String("root", ".", "project root; must already be indexed (see rag-plugin index)")
@@ -125,6 +126,7 @@ func runCLIEvalRetrieval(args []string) error {
 	fmt.Printf("gold pairs: %d (mined from up to %d commits)\n", metrics.N, *maxCommits)
 	fmt.Printf("Recall@%-2d %.3f  [%.3f, %.3f] 95%% CI\n", metrics.K, metrics.RecallAtK.Mean, metrics.RecallAtK.CILow, metrics.RecallAtK.CIHigh)
 	fmt.Printf("MRR       %.3f  [%.3f, %.3f] 95%% CI\n", metrics.MRR.Mean, metrics.MRR.CILow, metrics.MRR.CIHigh)
+	fmt.Printf("NDCG@%-3d %.3f  [%.3f, %.3f] 95%% CI\n", metrics.K, metrics.NDCG.Mean, metrics.NDCG.CILow, metrics.NDCG.CIHigh)
 	return nil
 }
 

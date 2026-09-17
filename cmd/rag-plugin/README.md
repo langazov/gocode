@@ -194,14 +194,20 @@ rag-plugin eval retrieval -root . -k 8
 
 Mines (query, relevant-region) pairs from the project's own commit history —
 a commit's subject line stands in for a query, the lines it touched stand in
-for the answer — then runs `rag_search` against each and reports **Recall@K**
-and **MRR**, each with a bootstrap 95% confidence interval. The interval
-matters more than the point estimate: it is what tells you whether a change
-to `chunkLines`, `chunkOverlap`, or the embedding model actually moved
-retrieval quality, versus noise from which queries happened to be easy. This
-mode needs the project already indexed and a working embeddings provider,
-same as `rag_search` itself. `-v` prints every gold pair's outcome
-(hit rank or miss) for spot-checking which kinds of queries the index still
+for the answer — then runs `rag_search` against each and reports
+**Recall@K**, **MRR**, and **NDCG@K**, each with a bootstrap 95% confidence
+interval. The interval matters more than the point estimate: it is what
+tells you whether a change to `chunkLines`, `chunkOverlap`, or the embedding
+model actually moved retrieval quality, versus noise from which queries
+happened to be easy. Recall@K and MRR both judge only the *first* relevant
+hit; NDCG@K also credits finding more of a multi-file commit's relevant
+regions, discounted by how far down the ranking each one took, and decays
+more gently by rank than MRR's raw `1/rank` — so a Recall@K that looks
+unchanged alongside a moved NDCG@K is often relevant hits shifting rank
+without crossing the top-K threshold either way. This mode needs the
+project already indexed and a working embeddings provider, same as
+`rag_search` itself. `-v` prints every gold pair's outcome (hit rank or
+miss) for spot-checking which kinds of queries the index still
 misses.
 
 `script/rag-eval.sh` (or `make rag-eval`) wraps both: it builds the plugin,
