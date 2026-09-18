@@ -1,0 +1,4 @@
+{
+  "command": ["./library-plugin"],
+  "callTimeoutSeconds": 150
+}

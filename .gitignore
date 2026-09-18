@@ -1,6 +1,7 @@
 # Build output.
 /gocode
 /rag-plugin
+/library-plugin
 /build/
 /dist/
 /go/
@@ -13,6 +14,10 @@
 # Same reasoning for the rag-plugin process plugin.
 /cmd/rag-plugin/rag-plugin
 /cmd/rag-plugin/rag-plugin.exe
+
+# Same reasoning for the library-plugin process plugin.
+/cmd/library-plugin/library-plugin
+/cmd/library-plugin/library-plugin.exe
 
 # The markdown LSP server binary, same pattern.
 /cmd/mdlsp/mdlsp

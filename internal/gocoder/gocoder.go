@@ -266,13 +266,42 @@ func (c *Client) do(ctx context.Context, method, path, token string, body, out a
 		}
 		reader = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, reader)
+	data, err := c.doRaw(ctx, method, path, token, reader, "application/json")
 	if err != nil {
 		return err
 	}
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
+	if out == nil || data == nil {
+		return nil
 	}
+	if err := json.Unmarshal(data, out); err != nil {
+		return fmt.Errorf("gocoder.org: unexpected response: %w", err)
+	}
+	return nil
+}
+
+// doRaw is do's transport-only half: send a request, return the raw response
+// body. Shared with library.go's multipart upload and its text/markdown
+// content fetch, neither of which fits do's JSON-in/JSON-out shape.
+// contentType is only set on the request when body is non-nil; pass ""
+// for a bodyless request (GET) or when the caller already set its own
+// Content-Type (multipart's own boundary header, set by the caller before
+// calling doRawRequest instead — see UploadLibraryFile).
+func (c *Client) doRaw(ctx context.Context, method, path, token string, body io.Reader, contentType string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.BaseURL+path, body)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil && contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	return c.doRequest(req, token)
+}
+
+// doRequest sends an already-built request (its body and Content-Type set by
+// the caller — see UploadLibraryFile, which needs multipart's own boundary
+// header) and returns the raw response body, translating a non-2xx status
+// into an *APIError the same way do/doRaw do.
+func (c *Client) doRequest(req *http.Request, token string) ([]byte, error) {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("User-Agent", "gocode/"+installation.Version)
 	if token != "" {
@@ -280,34 +309,35 @@ func (c *Client) do(ctx context.Context, method, path, token string, body, out a
 	}
 	resp, err := c.HTTP.Do(req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer resp.Body.Close()
 	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
-		apiErr := &APIError{Status: resp.StatusCode}
-		var envelope struct {
-			Error struct {
-				Code    string `json:"code"`
-				Message string `json:"message"`
-			} `json:"error"`
-		}
-		if json.Unmarshal(data, &envelope) == nil {
-			apiErr.Code = envelope.Error.Code
-			apiErr.Message = envelope.Error.Message
-		}
-		return apiErr
+		return nil, apiErrorFrom(resp.StatusCode, data)
 	}
-	if out == nil {
-		return nil
+	return data, nil
+}
+
+// apiErrorFrom decodes the website's {"error":{"code","message"}} envelope
+// (falling back to a bare status when the body isn't that shape) into an
+// *APIError.
+func apiErrorFrom(status int, data []byte) *APIError {
+	apiErr := &APIError{Status: status}
+	var envelope struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
 	}
-	if err := json.Unmarshal(data, out); err != nil {
-		return fmt.Errorf("gocoder.org: unexpected response: %w", err)
+	if json.Unmarshal(data, &envelope) == nil {
+		apiErr.Code = envelope.Error.Code
+		apiErr.Message = envelope.Error.Message
 	}
-	return nil
+	return apiErr
 }
 
 // Account is the persisted sign-in: who, against which site, and the key.

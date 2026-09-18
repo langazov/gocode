@@ -86,7 +86,7 @@ jobs:
           version="${{ steps.version.outputs.version }}"
           pkg="github.com/langazov/gocode-go/internal/installation"
           ext="${{ matrix.extension }}"
-          mkdir -p dist/rag-plugin
+          mkdir -p dist/rag-plugin dist/library-plugin
 
           go build \
             -trimpath \
@@ -116,6 +116,16 @@ jobs:
             ./cmd/rag-plugin
           cp cmd/rag-plugin/gocode-plugin.json dist/rag-plugin/
 
+          # Same reasoning for the Library plugin: gocoder.org's hosted
+          # semantic search over the user's uploaded documents.
+          go build \
+            -trimpath \
+            -buildmode=exe \
+            -ldflags "-s -w" \
+            -o "dist/library-plugin/library-plugin${ext}" \
+            ./cmd/library-plugin
+          cp cmd/library-plugin/gocode-plugin.json dist/library-plugin/
+
       - name: Package
         working-directory: dist
         run: |
@@ -127,9 +137,10 @@ jobs:
           # Everything the Homebrew formula installs. gocode stays first and
           # keeps its plain name at the archive root, so the documented
           # "unpack, then mv gocode" path is unchanged by the additions. An
-          # array rather than a word-split string: rag-plugin is a directory,
-          # and one stray space in a name would silently drop a member.
-          contents=( "gocode${ext}" "mdlsp${ext}" "rag-plugin" )
+          # array rather than a word-split string: rag-plugin/library-plugin
+          # are directories, and one stray space in a name would silently
+          # drop a member.
+          contents=( "gocode${ext}" "mdlsp${ext}" "rag-plugin" "library-plugin" )
 
           if [ "${{ matrix.goos }}" = "windows" ]; then
             zip -9 -r "${name}.zip" "${contents[@]}"
@@ -236,22 +247,31 @@ jobs:
             ext=""
           fi
 
-          # 3. The two binaries the Homebrew formula installs alongside gocode.
-          # A formula that references a missing file fails on the user's
-          # machine, after the release is already public.
-          chmod +x "./mdlsp${ext}" "./rag-plugin/rag-plugin${ext}" 2>/dev/null || true
+          # 3. The three binaries the Homebrew formula installs alongside
+          # gocode. A formula that references a missing file fails on the
+          # user's machine, after the release is already public.
+          chmod +x "./mdlsp${ext}" "./rag-plugin/rag-plugin${ext}" "./library-plugin/library-plugin${ext}" 2>/dev/null || true
 
           echo "mdlsp version: $(./mdlsp${ext} --version)"
 
           test -f ./rag-plugin/gocode-plugin.json \
             || { echo "::error::rag-plugin/gocode-plugin.json is missing; the plugin cannot load without its manifest"; exit 1; }
+          test -f ./library-plugin/gocode-plugin.json \
+            || { echo "::error::library-plugin/gocode-plugin.json is missing; the plugin cannot load without its manifest"; exit 1; }
 
-          # rag-plugin speaks the plugin protocol on stdin and has no --version.
-          # Empty stdin is a clean handshake-free start: it must reach EOF and
-          # exit 0 rather than crash on a missing dependency.
+          # Both process plugins speak the plugin protocol on stdin and have
+          # no --version. Empty stdin is a clean handshake-free start: each
+          # must reach EOF and exit 0 rather than crash on a missing
+          # dependency (library-plugin's account lookup included — no
+          # gocoder.org account is signed in on this runner, and it must not
+          # need one just to start).
           printf '' | "./rag-plugin/rag-plugin${ext}" \
             || { echo "::error::rag-plugin did not start cleanly"; exit 1; }
           echo "rag-plugin: starts and exits cleanly"
+
+          printf '' | "./library-plugin/library-plugin${ext}" \
+            || { echo "::error::library-plugin did not start cleanly"; exit 1; }
+          echo "library-plugin: starts and exits cleanly"
 
   gui:
     # The desktop client ships in the same release as the CLI it drives.
@@ -336,9 +356,10 @@ jobs:
             | `gocode` | the agent |
             | `mdlsp` | markdown language server — gocode starts it for `.md` files, and any LSP-speaking editor can use it directly |
             | `rag-plugin/` | semantic code search plugin (`rag_index`, `rag_search`), binary plus its manifest |
+            | `library-plugin/` | search plugin (`library_search`, `library_list`, `library_get`, `library_upload`) over your gocoder.org Library — needs a gocoder.org account (`gocode login`) |
 
             Only `gocode` is needed; unpack and move it as before if that is all
-            you want. `brew install` wires up all three.
+            you want. `brew install` wires up all four.
 
             | Platform | Bare binary | Archive |
             |---|---|---|
@@ -374,8 +395,9 @@ jobs:
 
             ## Install
 
-            **Homebrew** (macOS / Linux) — installs gocode, mdlsp and
-            rag-plugin, and wires the last two into `~/.config/gocode`:
+            **Homebrew** (macOS / Linux) — installs gocode, mdlsp, rag-plugin
+            and library-plugin, and wires the last three into
+            `~/.config/gocode`:
             ```sh
             brew install langazov/tap/gocode
             ```
