@@ -31,6 +31,12 @@ RAG_PLUGIN_DIR := cmd/rag-plugin
 RAG_PLUGIN_SRC := ./$(RAG_PLUGIN_DIR)
 RAG_PLUGIN_OUT := $(RAG_PLUGIN_DIR)/rag-plugin$(shell $(GO) env GOEXE)
 
+# The Library process plugin (gocoder.org's hosted, semantically searchable
+# document library). Same reasoning as the example/RAG plugins above.
+LIBRARY_PLUGIN_DIR := cmd/library-plugin
+LIBRARY_PLUGIN_SRC := ./$(LIBRARY_PLUGIN_DIR)
+LIBRARY_PLUGIN_OUT := $(LIBRARY_PLUGIN_DIR)/library-plugin$(shell $(GO) env GOEXE)
+
 # Where a plugin referred to by bare name is looked up. This must match
 # plugin.InstallRoot() in internal/plugin/loader.go, which is pinned by
 # TestInstallDir. Note there is no second "gocode" segment: global.Paths.Config
@@ -52,7 +58,8 @@ PLUGIN_CONFIG := $(GO) run tools/pluginconfig.go
 .PHONY: help build release run install test cover fmt fmt-check vet lint check wasm wasm-run \
         example-plugin install-plugin install-example-plugin uninstall-plugin \
         enable-plugin disable-plugin plugin-root clean \
-        rag-plugin install-rag-plugin rag-eval mdlsp install-mdlsp
+        rag-plugin install-rag-plugin rag-eval mdlsp install-mdlsp \
+        library-plugin install-library-plugin
 
 help: ## Show available targets
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
@@ -169,6 +176,21 @@ install-rag-plugin: ## Build and install the RAG plugin as "rag-plugin"
 	@echo 'Installed to $(PLUGIN_ROOT)/rag-plugin'
 	@if [ '$(CONFIGURE)' = '1' ]; then $(PLUGIN_CONFIG) -add rag-plugin -options '$(OPTIONS)'; \
 	else echo 'Enable it with: "plugin": ["rag-plugin"]'; fi
+
+library-plugin: ## Build the Library process plugin into cmd/library-plugin/
+	$(GO) build -o $(LIBRARY_PLUGIN_OUT) $(LIBRARY_PLUGIN_SRC)
+	@echo 'Library plugin: $(LIBRARY_PLUGIN_OUT)'
+	@echo 'Enable it with: "plugin": ["$(CURDIR)/$(LIBRARY_PLUGIN_DIR)"]'
+
+# Builds into the install directory rather than copying the source tree, so
+# only the manifest and the binary are installed — not main.go and README.md.
+install-library-plugin: ## Build and install the Library plugin as "library-plugin"
+	@mkdir -p '$(PLUGIN_ROOT)/library-plugin'
+	$(GO) build -o '$(PLUGIN_ROOT)/library-plugin/library-plugin$(shell $(GO) env GOEXE)' $(LIBRARY_PLUGIN_SRC)
+	cp '$(LIBRARY_PLUGIN_DIR)/gocode-plugin.json' '$(PLUGIN_ROOT)/library-plugin/'
+	@echo 'Installed to $(PLUGIN_ROOT)/library-plugin'
+	@if [ '$(CONFIGURE)' = '1' ]; then $(PLUGIN_CONFIG) -add library-plugin -options '$(OPTIONS)'; \
+	else echo 'Enable it with: "plugin": ["library-plugin"]'; fi
 
 # Statistical eval of chunking/retrieval quality, not a spot-checked
 # impression. See script/rag-eval.sh's own header and cmd/rag-plugin/README.md's
