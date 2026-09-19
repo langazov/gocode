@@ -43,9 +43,11 @@ architecture) by specifying the *visual and interaction contract*.
 ## 1. The rendering model
 
 The TUI is **Bubble Tea v2** (`charm.land/bubbletea/v2`) with **lipgloss v2**
-for styling, **glamour v2** for markdown and **chroma** for syntax highlighting.
-There is no widget tree, no layout engine, no flexbox. Every frame is a single
-string built from styled segments and then cropped.
+for styling, **glamour v2** for markdown, **chroma** for syntax highlighting,
+and **huh v2** (`charm.land/huh/v2`) for dialogs — every dialog is a huh form
+embedded in the `dialog.Shell` wrapper (§9). There is no widget tree, no layout
+engine, no flexbox. Every frame is a single string built from styled segments
+and then cropped.
 
 ```
 App.Update(msg) ──▶ mutate App state, return tea.Cmd
@@ -62,9 +64,9 @@ program.View()  ──▶ tea.View{AltScreen, MouseModeAllMotion, BackgroundColo
 | Rule | Why |
 |---|---|
 | `Update` must never block | The key handler runs on the same goroutine; a 100 ms HTTP call is 100 ms of dead keyboard. Return a `tea.Cmd`. |
-| `View` must be cheap and side-effect-light | It runs every frame. The only writes allowed are **layout caches** the mouse handler needs (`chatWindowStart`, `chatWindowPad`, `chatReasoningRows`, `linkHits`, `overlayHits`). |
+| `View` must be cheap and side-effect-light | It runs every frame. The only writes allowed are **layout caches** the mouse handler needs (`chatWindowStart`, `chatWindowPad`, `chatReasoningRows`, `linkHits`, the dialog shell's `dialog.Hits`). |
 | Modal composition is a **canvas composite** | `compositeDialog()` parses the base into a cell buffer, dims each cell, and layers the panel with lipgloss's `Compositor` — one pass. Non-modal overlays (toast, narrow sidebar) splice by *display cell* instead: `spliceAt()` / `sliceCells()`, never `line[a:b]`. |
-| Anything absolutely positioned must record its hit-test spans | Dialogs return `*overlayHits`; toasts return a `linkHit`. A clickable thing with no recorded span is a bug. |
+| Anything absolutely positioned must record its hit-test spans | Dialogs return `*dialog.Hits`; toasts return a `linkHit`. A clickable thing with no recorded span is a bug. |
 | Frames are cropped, never scrolled by the terminal | `frame()` truncates to `a.height`. If a block overflows its row budget, the *bottom* is lost — which is where the buttons are. Budget first, render second. |
 
 ### Where lipgloss primitives are used — and where they deliberately are not
@@ -850,22 +852,42 @@ A dialog is a **centered, borderless `BackgroundPanel` block spliced over a
 dimmed frame**, at `top = height/4`, sized so it sits balanced between that
 offset and a matching margin below (§4.5). It owns the keyboard completely while
 open.
-There is exactly one `overlay` at a time (`a.overlay`), of one of eight kinds:
+
+Every dialog is a **`huh.Form` embedded in a `dialog.Shell`** (package
+`internal/tui/dialog`, built on `charm.land/huh/v2`). The Shell owns the panel
+chrome (header with the esc hint, footer action bar), the keyboard contract and
+the close-then-dispatch ordering; huh owns the form lifecycle (fields, focus,
+position bookkeeping, accessible-mode plumbing). Stock huh fields are used
+where they fit (`Input`, `Text`, `Confirm`, `Note`); two custom fields supply
+the rendering the spec demands — `listField` (the DialogSelect port: filter,
+grouped rows, gutters, scroll window, footer actions) and `noteField` (the
+read-only panels with a scroll budget).
+
+There is exactly one Shell at a time (`a.overlay`), of one of seven kinds:
 
 | Kind | Purpose | Constructor |
 |---|---|---|
-| `overlayList` | Pick one thing from a filtered, grouped list | `openList(title, items)` |
-| `overlayInput` | Type one value | `openInput(title, placeholder, onSubmit)` |
-| `overlayConfirm` | Two-button destructive/irreversible confirmation | `openConfirm(title, msg, cancelLabel, onConfirm, onCancel)` |
-| `overlayAlert` | One-button acknowledgement | `openAlert(title, msg, onConfirm)` |
-| `overlayHelp` | Static help paragraph + ok | `&overlay{kind: overlayHelp, title: "Help"}` |
-| `overlayStatus` | Read-only MCP/formatter/plugin status | `&overlay{kind: overlayStatus, …}` |
-| `overlayStats` | Read-only scrollable usage report | `openStatsOverlay()` |
+| `dialog.KindList` | Pick one thing from a filtered, grouped list | `openList(title, items)` → `dialog.NewList` |
+| `dialog.KindInput` | Type one value | `openInput(title, value, onSubmit)` → `dialog.NewInput` |
+| `dialog.KindConfirm` | Two-button destructive/irreversible confirmation | `openConfirm(title, msg, cancelLabel, onConfirm, onCancel)` |
+| `dialog.KindAlert` | One-button acknowledgement | `openAlert(title, msg, onConfirm)` |
+| `dialog.KindHelp` | Static help paragraph + ok | `openHelpDialog(title, lines)` → note field |
+| `dialog.KindStatus` | Read-only MCP/formatter/plugin status | `openStatusDialog()` → note field |
+| `dialog.KindStats` | Read-only scrollable usage report | `openStatsOverlay()` → note field + scroll budget |
 
-**Rule:** do not add a ninth kind unless the interaction genuinely differs. A new
-*screen* is almost always an `overlayList` with custom items, actions and an
+**Rule:** do not add an eighth kind unless the interaction genuinely differs. A
+new *screen* is almost always a `KindList` with custom items, actions and an
 empty view — that is how models, providers, agents, themes, sessions, skills,
 plugins, memories, timeline and files are all built.
+
+**Close-then-run ordering.** Activating a list row returns a
+`dialog.CloseThenMsg` carrying a *thunk*: the App closes the dialog first, then
+runs the thunk. This is load-bearing — Go evaluates `tea.Batch`/`tea.Sequence`
+arguments eagerly, so `tea.Batch(Close(), action())` would run the action
+*before* any close lands, killing dialogs the action itself opens (the model →
+variant-picker hand-off) or leaving one standing behind actions that assume
+none is (`sessionOpenedMsg`). Never inline an item action into a Batch
+argument.
 
 ### 9.2 List dialog anatomy
 
@@ -890,7 +912,7 @@ plugins, memories, timeline and files are all built.
 └──────────────────────────────────────────────────────────┘
 ```
 
-**Row geometry** (`listRow`) — this is exact and has been wrong before:
+**Row geometry** (`listField.listRow`) — this is exact and has been wrong before:
 
 ```
 col: 0  1  2  3  4  5  6 ................................ w-3  w
@@ -934,15 +956,15 @@ there is no way to move focus to it and no cursor to place. Consequences:
 
 - **Never bind `j`/`k` to movement.** They are characters to type. Use
   `up`/`down` and `ctrl+p`/`ctrl+n`.
-- `typedText(key)` is the only way to turn a key name into a character — it
-  handles `"space"` and multi-byte runes, which naive `len(key) == 1` drops.
+- `dialog.TypedText(key)` is the only way to turn a key name into a character —
+  it handles `"space"` and multi-byte runes, which naive `len(key) == 1` drops.
 - Cursor is a `Primary` block after the text, or resting on the placeholder's
   first character when empty.
 - Suppress it with `hideFilter` only for lists that are never long.
 
 ### 9.4 Footer actions
 
-`dialogAction{title, keys, right, standalone, onTrigger}`.
+`dialog.Action{Title, Keys, Right, Standalone, OnTrigger}`.
 
 - Rendered as `Title` in `Text` + `keys` in `TextMuted`; focused actions invert
   to a `Primary` fill.
@@ -1021,21 +1043,22 @@ func (a *App) thingsOverlay() tea.Cmd {
 func (a *App) openThingList(things []client.Thing) {
     a.openList("Select thing", a.thingItems(things))
     o := a.overlay
-    o.size = dialogLarge              // 3. widest column decides the size
-    o.current = a.currentThingID()    // 4. ● marks what is already in effect
-    o.placeholder = "Search things..."
-    o.actions = []dialogAction{       // 5. actions name their keys
-        {title: "refresh", keys: "ctrl+r", standalone: true,
-            onTrigger: func(overlayItem) tea.Cmd { return a.loadThingsCmd() }},
-        {title: "close", keys: "esc", right: true,
-            onTrigger: func(overlayItem) tea.Cmd { a.closeOverlay(); return nil }},
-    }
-    if len(o.items) == 0 {            // 6. distinguish the empty states
+    o.SetSize(dialogLarge)            // 3. widest column decides the size
+    o.SetCurrent(a.currentThingID())  // 4. ● marks what is already in effect
+    o.SetPlaceholder("Search things...")
+    o.SetActions([]dialogAction{      // 5. actions name their keys
+        {Title: "refresh", Keys: "ctrl+r", Standalone: true,
+            OnTrigger: func(overlayItem) tea.Cmd { return a.loadThingsCmd() }},
+        {Title: "close", Keys: "esc", Right: true,
+            OnTrigger: func(overlayItem) tea.Cmd { a.closeOverlay(); return nil }},
+    })
+    if !o.HasItems() {                // 6. distinguish the empty states
         switch {
         case a.thingErr != "":
-            o.emptyTitle, o.emptyBody, o.locked = "Could not load things", a.thingErr, true
+            o.SetEmptyView("Could not load things", a.thingErr)
+            o.SetLocked(true)
         default:
-            o.emptyTitle, o.emptyBody = "No things", "Add one with `gocode thing add`."
+            o.SetEmptyView("No things", "Add one with `gocode thing add`.")
         }
     }
 }
@@ -1053,8 +1076,9 @@ Then:
 10. Add a layout test in `dialogs_layout_test.go`.
 
 **Rule:** dialogs must not compute their own hit-test spans separately from
-their rendering. `overlayPanel()` builds content and `overlayHits` in the same
-pass so a click always matches what is on screen.
+their rendering. `Shell.Panel()` builds content and `dialog.Hits` in the same
+pass so a click always matches what is on screen; `Shell.MouseTarget` resolves
+a screen cell against that same pass.
 
 ---
 
@@ -1428,10 +1452,11 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | `views.go` | `frame`, geometry, `viewChat`, `viewHome`, sidebar, prompt box, status bar, ask banners, child-ask attribution |
 | `markdown.go` | Glamour renderers, normal and dimmed, plus the chroma code theme |
 | `highlight.go` | File body renderers (code, markdown, wrapped) |
-| `dialogs.go` | Overlay model, list/input rendering, compositing, hit tests, command registry |
-| `dialogs_confirm.go` | Buttons, button rows, alert/confirm, filter row, empty view |
+| `dialog/` | The dialog engine on charm.land/huh/v2: `Shell` (chrome, keyboard, embedded `huh.Form`), the `listField` (DialogSelect) and `noteField`/`inputField` (read-only panels, DialogPrompt), `Item`/`Action`, hit maps, the `Palette` bridge |
+| `dialogs.go` | App-side dialog wiring: shell builders, close/cmd adapters (`wrapDialogCmd`, `CloseThenMsg`), compositing entry points, command registry |
+| `dialogs_confirm.go` | The read-only panels' content (help, status, stats body/hints/budget) |
 | `dialogs_{model,provider,plugins,memory,skill}.go` | Individual dialog content |
-| `stats_overlay.go` | `/stats` panel |
+| `stats_overlay.go` | `/stats` aggregation (the computation half) |
 | `diffviewer.go` | The `/diff` route: state, fetch, layout, navigation, keys, mouse (see §6.5) |
 | `diffviewer_tree.go` | The diff viewer's file-tree logic: build, flatten, navigate |
 | `diffstate.go` | The diff viewer's persisted preferences (diffstate.json) |

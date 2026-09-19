@@ -64,10 +64,10 @@ func TestDialogsOpenWithoutWaitingOnTheNetwork(t *testing.T) {
 			if app.overlay == nil {
 				t.Fatal("the dialog must be open as soon as the key is handled")
 			}
-			if app.overlay.title != c.title {
-				t.Errorf("title = %q, want %q", app.overlay.title, c.title)
+			if app.overlay.Title != c.title {
+				t.Errorf("title = %q, want %q", app.overlay.Title, c.title)
 			}
-			if len(app.overlay.items) == 0 {
+			if len(app.overlay.Items()) == 0 {
 				t.Error("the dialog must render the cached list, not an empty one")
 			}
 			// The assertion that matters: opening did not block on the backend.
@@ -94,8 +94,8 @@ func TestModelDialogShowsLoadingBeforeCatalogArrives(t *testing.T) {
 	if app.overlay == nil {
 		t.Fatal("expected the dialog to open")
 	}
-	if app.overlay.emptyTitle != "Loading models" {
-		t.Errorf("emptyTitle = %q, want a loading state", app.overlay.emptyTitle)
+	if app.overlay.EmptyTitle() != "Loading models" {
+		t.Errorf("emptyTitle = %q, want a loading state", app.overlay.EmptyTitle())
 	}
 }
 
@@ -106,16 +106,16 @@ func TestCatalogRefreshUpdatesOpenDialog(t *testing.T) {
 	app.ctx = context.Background()
 	app.catalogModels = nil
 	app.modelsOverlay()
-	if len(app.overlay.items) != 0 {
+	if len(app.overlay.Items()) != 0 {
 		t.Fatal("expected an empty dialog before the catalog arrives")
 	}
 
 	app.update(catalogMsg{models: testModels, providers: testProviders})
 
-	if app.overlay == nil || app.overlay.title != "Select model" {
+	if app.overlay == nil || app.overlay.Title != "Select model" {
 		t.Fatal("the refresh must not close the dialog")
 	}
-	if len(app.overlay.items) == 0 {
+	if len(app.overlay.Items()) == 0 {
 		t.Error("the refreshed catalog must populate the open dialog")
 	}
 }
@@ -129,15 +129,16 @@ func TestCatalogRefreshKeepsSelection(t *testing.T) {
 	app.modelsOverlay()
 
 	target := 2
-	if len(app.overlay.items) <= target {
-		t.Fatalf("only %d items", len(app.overlay.items))
+	if len(app.overlay.Items()) <= target {
+		t.Fatalf("only %d items", len(app.overlay.Items()))
 	}
-	app.overlay.selected = target
-	want := app.overlay.items[target].value
+	app.overlay.MoveTo(target)
+	want := app.overlay.Items()[target].Value
 
 	app.update(catalogMsg{models: testModels, providers: testProviders})
 
-	got := app.overlay.items[app.overlay.selected].value
+	item, _ := app.overlay.SelectedItem()
+	got := item.Value
 	if got != want {
 		t.Errorf("selection moved from %q to %q across a refresh", want, got)
 	}

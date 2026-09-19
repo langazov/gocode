@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -91,7 +92,7 @@ func TestStatsCommandOpensOverlay(t *testing.T) {
 	}
 	drive(t, app, cmd())
 
-	if app.overlay == nil || app.overlay.kind != overlayStats {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindStats {
 		t.Fatal("/stats should open the stats overlay")
 	}
 }
@@ -226,14 +227,14 @@ func TestStatsOverlayScrolls(t *testing.T) {
 
 	// Scrolling down should move scrollTop.
 	press(t, app, "down")
-	if app.overlay.scrollTop == 0 {
+	if app.overlay.ScrollPos() == 0 {
 		t.Fatal("down should scroll the stats overlay")
 	}
 
 	// Scrolling back up should return to 0.
 	press(t, app, "up")
-	if app.overlay.scrollTop != 0 {
-		t.Fatalf("up should scroll back to top, got scrollTop=%d", app.overlay.scrollTop)
+	if app.overlay.ScrollPos() != 0 {
+		t.Fatalf("up should scroll back to top, got scrollTop=%d", app.overlay.ScrollPos())
 	}
 }
 
@@ -366,13 +367,13 @@ func TestStatsOverlayClampsScroll(t *testing.T) {
 
 	press(t, app, "end")
 	app.View() // the render is what clamps
-	settled := app.overlay.scrollTop
+	settled := app.overlay.ScrollPos()
 
 	before, _ := app.overlayPanel()
 	press(t, app, "down")
 	after, _ := app.overlayPanel()
-	if app.overlay.scrollTop != settled {
-		t.Fatalf("scrollTop moved past the end: %d -> %d", settled, app.overlay.scrollTop)
+	if app.overlay.ScrollPos() != settled {
+		t.Fatalf("scrollTop moved past the end: %d -> %d", settled, app.overlay.ScrollPos())
 	}
 	if before != after {
 		t.Fatal("scrolling past the end changed the rendered panel")
@@ -471,7 +472,7 @@ func TestStatsOverlayDistinguishesLoading(t *testing.T) {
 	app.sessions = []client.Session{{ID: "ses_a", Title: "one"}, {ID: "ses_b", Title: "two"}}
 	app.allStats = nil // no batch has landed yet
 
-	app.overlay = &overlay{kind: overlayStats, title: "Stats", size: dialogXLarge}
+	app.openStatsOverlay()
 	view := ansi.Strip(app.View())
 	if !strings.Contains(view, "Loading usage") {
 		t.Fatalf("a pending batch should report as loading:\n%s", view)
@@ -604,7 +605,7 @@ func assertOrder(t *testing.T, body string, want ...string) {
 // content assertion does not depend on how much of it happens to fit on a
 // given terminal — the window has its own tests.
 func statsBodyText(app *App) string {
-	body := app.statsBody(dialogXLarge-2*statsPad, app.computeStatsAggregate())
+	body := app.statsBody(app.palette(), dialogXLarge)
 	return ansi.Strip(strings.Join(body, "\n"))
 }
 
@@ -626,7 +627,7 @@ func TestStatsSlashCommandInRegistry(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	found := false
 	for _, item := range app.commandsRegistry() {
-		if item.slash == "stats" {
+		if item.Slash == "stats" {
 			found = true
 			break
 		}

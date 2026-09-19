@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -136,10 +137,10 @@ func applyCmd(t *testing.T, app *App, cmd tea.Cmd) {
 	}
 }
 
-func openMemoryDialog(t *testing.T, app *App) *overlay {
+func openMemoryDialog(t *testing.T, app *App) *dialog.Shell {
 	t.Helper()
 	driveCmd(t, app, app.memoriesOverlay())
-	if app.overlay == nil || app.overlay.kind != overlayList || app.overlay.title != "Memories" {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindList || app.overlay.Title != "Memories" {
 		t.Fatal("memoriesOverlay did not open the memory list")
 	}
 	return app.overlay
@@ -149,24 +150,24 @@ func TestMemoryDialogListsAndGroupsByScope(t *testing.T) {
 	app, _ := memoryTestApp(t, sampleMemories()...)
 	o := openMemoryDialog(t, app)
 
-	if len(o.items) != 2 {
-		t.Fatalf("dialog has %d rows, want 2: %+v", len(o.items), o.items)
+	if len(o.Items()) != 2 {
+		t.Fatalf("dialog has %d rows, want 2: %+v", len(o.Items()), o.Items())
 	}
 	byValue := map[string]overlayItem{}
-	for _, item := range o.items {
-		byValue[item.value] = item
+	for _, item := range o.Items() {
+		byValue[item.Value] = item
 	}
-	if got := byValue["mem_a"].category; got != "Project" {
+	if got := byValue["mem_a"].Category; got != "Project" {
 		t.Errorf("mem_a category = %q, want Project", got)
 	}
-	if got := byValue["mem_b"].category; got != "Global" {
+	if got := byValue["mem_b"].Category; got != "Global" {
 		t.Errorf("mem_b category = %q, want Global", got)
 	}
-	if byValue["mem_b"].gutter == "" {
+	if byValue["mem_b"].Gutter == "" {
 		t.Error("a pinned memory should carry a gutter glyph")
 	}
-	if !strings.Contains(byValue["mem_a"].hint, "workflow") {
-		t.Errorf("hint = %q, want it to mention the category", byValue["mem_a"].hint)
+	if !strings.Contains(byValue["mem_a"].Hint, "workflow") {
+		t.Errorf("hint = %q, want it to mention the category", byValue["mem_a"].Hint)
 	}
 }
 
@@ -177,19 +178,19 @@ func TestMemoryDialogShowsMuted(t *testing.T) {
 		ID: "mem_a", Content: "Silenced", Scope: "prj_1", Disabled: true,
 	})
 	o := openMemoryDialog(t, app)
-	if !strings.Contains(o.items[0].hint, "muted") {
-		t.Errorf("hint = %q, want it to mark the memory muted", o.items[0].hint)
+	if !strings.Contains(o.Items()[0].Hint, "muted") {
+		t.Errorf("hint = %q, want it to mark the memory muted", o.Items()[0].Hint)
 	}
 }
 
 func TestMemoryDialogEmptyState(t *testing.T) {
 	app, _ := memoryTestApp(t)
 	o := openMemoryDialog(t, app)
-	if len(o.items) != 0 {
-		t.Fatalf("want no rows, got %+v", o.items)
+	if len(o.Items()) != 0 {
+		t.Fatalf("want no rows, got %+v", o.Items())
 	}
-	if !strings.Contains(o.emptyBody, "/memory") {
-		t.Errorf("empty state = %q, want it to say how to save one", o.emptyBody)
+	if !strings.Contains(o.EmptyBody(), "/memory") {
+		t.Errorf("empty state = %q, want it to say how to save one", o.EmptyBody())
 	}
 }
 
@@ -198,13 +199,13 @@ func TestMemoryDialogEmptyState(t *testing.T) {
 func TestMemoryDeleteRequiresConfirmation(t *testing.T) {
 	app, state := memoryTestApp(t, sampleMemories()...)
 	o := openMemoryDialog(t, app)
-	target := o.items[0]
+	target := o.Items()[0]
 
 	if cmd := app.deleteMemoryAction(target); cmd != nil {
 		t.Error("the first press should arm, not delete")
 	}
-	if app.overlay.armValue != target.value {
-		t.Errorf("armValue = %q, want %q", app.overlay.armValue, target.value)
+	if app.overlay.Armed() != target.Value {
+		t.Errorf("armValue = %q, want %q", app.overlay.Armed(), target.Value)
 	}
 	if len(state.snapshot()) != 2 {
 		t.Fatal("the armed press already deleted something")
@@ -215,7 +216,7 @@ func TestMemoryDeleteRequiresConfirmation(t *testing.T) {
 	if len(remaining) != 1 {
 		t.Fatalf("after confirming, %d memories remain, want 1", len(remaining))
 	}
-	if remaining[0].ID == target.value {
+	if remaining[0].ID == target.Value {
 		t.Error("the wrong memory was deleted")
 	}
 }
@@ -225,8 +226,8 @@ func TestMemoryToggleScope(t *testing.T) {
 	o := openMemoryDialog(t, app)
 
 	var project overlayItem
-	for _, item := range o.items {
-		if item.value == "mem_a" {
+	for _, item := range o.Items() {
+		if item.Value == "mem_a" {
 			project = item
 		}
 	}
@@ -242,7 +243,7 @@ func TestMemoryToggleScope(t *testing.T) {
 func TestMemoryToggleMuted(t *testing.T) {
 	app, state := memoryTestApp(t, sampleMemories()...)
 	o := openMemoryDialog(t, app)
-	applyCmd(t, app, app.toggleMemoryMutedAction(o.items[0]))
+	applyCmd(t, app, app.toggleMemoryMutedAction(o.Items()[0]))
 
 	state.mu.Lock()
 	patches := append([]client.MemoryPatch(nil), state.patches...)
@@ -277,7 +278,7 @@ func TestSlashMemoryWithArgumentsQuickAdds(t *testing.T) {
 func TestSlashMemoryWithoutArgumentsOpensDialog(t *testing.T) {
 	app, _ := memoryTestApp(t, sampleMemories()...)
 	applyCmd(t, app, app.runSlashCommand("/memory"))
-	if app.overlay == nil || app.overlay.title != "Memories" {
+	if app.overlay == nil || app.overlay.Title != "Memories" {
 		t.Fatal("/memory with no arguments should open the manager")
 	}
 }
@@ -287,7 +288,7 @@ func TestSlashMemoryWithoutArgumentsOpensDialog(t *testing.T) {
 func TestSlashArgumentsIgnoredByArgumentlessCommands(t *testing.T) {
 	app, _ := memoryTestApp(t)
 	applyCmd(t, app, app.runSlashCommand("/help some stray arguments"))
-	if app.overlay == nil || app.overlay.kind != overlayHelp {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindHelp {
 		t.Fatal("/help with arguments should still open help")
 	}
 }
@@ -300,7 +301,7 @@ func TestMemoryDialogReportsLoadFailure(t *testing.T) {
 		t.Fatal("a failed load should be recorded")
 	}
 	app.openMemoryDialog(nil)
-	if app.overlay.emptyTitle != "Could not load memories" {
-		t.Errorf("empty title = %q, want the error state", app.overlay.emptyTitle)
+	if app.overlay.EmptyTitle() != "Could not load memories" {
+		t.Errorf("empty title = %q, want the error state", app.overlay.EmptyTitle())
 	}
 }

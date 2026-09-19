@@ -74,12 +74,12 @@ func TestAlertButtonIsRightAligned(t *testing.T) {
 			width = w
 		}
 	}
-	if len(hits.buttons) != 1 {
-		t.Fatalf("got %d button spans, want 1", len(hits.buttons))
+	if len(hits.Buttons) != 1 {
+		t.Fatalf("got %d button spans, want 1", len(hits.Buttons))
 	}
-	if hits.buttons[0].end != width-2 {
+	if hits.Buttons[0].End != width-2 {
 		t.Errorf("ok button ends at col %d, want %d (panel width %d less padding 2)",
-			hits.buttons[0].end, width-2, width)
+			hits.Buttons[0].End, width-2, width)
 	}
 }
 
@@ -93,7 +93,7 @@ func TestConfirmDialogButtons(t *testing.T) {
 	if !strings.HasSuffix(row, " Cancel  Confirm") {
 		t.Fatalf("button row = %q, want cancel then confirm each padded by 1", row)
 	}
-	if !app.overlay.confirmActive {
+	if !app.overlay.ConfirmActive() {
 		t.Error("confirm should start active, matching DialogConfirm's initial state")
 	}
 }
@@ -162,7 +162,7 @@ func TestAlertEscapeRunsContinuation(t *testing.T) {
 // placeholder while empty.
 func TestListDialogRendersFilterRow(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	app.openList("Commands", []overlayItem{{label: "session.new"}})
+	app.openList("Commands", []overlayItem{{Label: "session.new"}})
 	lines := panelLines(t, app)
 	if !blank(lines[2]) {
 		t.Errorf("row after the title = %q, want the filter box's paddingTop", lines[2])
@@ -174,7 +174,7 @@ func TestListDialogRendersFilterRow(t *testing.T) {
 		t.Errorf("row after the filter = %q, want the parent gap", lines[4])
 	}
 
-	app.overlay.filter = "ses"
+	app.overlay.SetFilter("ses")
 	if got := trimmed(panelLines(t, app)[3]); !strings.HasPrefix(got, "    ses") {
 		t.Errorf("filter row = %q, want the typed text", got)
 	}
@@ -183,8 +183,8 @@ func TestListDialogRendersFilterRow(t *testing.T) {
 // TestListDialogCustomPlaceholder pins DialogSelect's placeholder prop.
 func TestListDialogCustomPlaceholder(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	app.openList("Skills", []overlayItem{{label: "review"}})
-	app.overlay.placeholder = "Search skills..."
+	app.openList("Skills", []overlayItem{{Label: "review"}})
+	app.overlay.SetPlaceholder("Search skills...")
 	if got := trimmed(panelLines(t, app)[3]); got != "    Search skills..." {
 		t.Errorf("filter row = %q", got)
 	}
@@ -194,8 +194,8 @@ func TestListDialogCustomPlaceholder(t *testing.T) {
 // straight by the parent gap and the list.
 func TestListDialogHideFilter(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	app.openList("Timeline", []overlayItem{{label: "first message"}})
-	app.overlay.hideFilter = true
+	app.openList("Timeline", []overlayItem{{Label: "first message"}})
+	app.overlay.SetHideFilter(true)
 	lines := panelLines(t, app)
 	for _, line := range lines {
 		if strings.Contains(line, "Search") {
@@ -216,8 +216,8 @@ func TestListDialogEmptyView(t *testing.T) {
 		t.Error("an empty list should fall back to No results found")
 	}
 
-	app.overlay.emptyTitle = "Could not load skills"
-	app.overlay.emptyBody = "connection refused"
+	app.overlay.SetEmptyTitle("Could not load skills")
+	app.overlay.SetEmptyBody("connection refused")
 	rendered := strings.Join(panelLines(t, app), "\n")
 	if strings.Contains(rendered, "No results found") {
 		t.Error("emptyView should replace the default fallback")
@@ -232,17 +232,17 @@ func TestListDialogEmptyView(t *testing.T) {
 // movement are inert, and only escape still closes the dialog.
 func TestLockedListIgnoresInput(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	app.openList("Skills", []overlayItem{{label: "a"}, {label: "b"}})
-	app.overlay.locked = true
+	app.openList("Skills", []overlayItem{{Label: "a", Value: "a"}, {Label: "b", Value: "b"}})
+	app.overlay.SetLocked(true)
 	for _, key := range []string{"down", "x", "enter"} {
 		app.handleOverlayKey(key)
 	}
 	if app.overlay == nil {
 		t.Fatal("a locked dialog should stay open")
 	}
-	if app.overlay.selected != 0 || app.overlay.filter != "" {
-		t.Errorf("locked dialog moved to %d / filtered %q",
-			app.overlay.selected, app.overlay.filter)
+	if item, _ := app.overlay.SelectedItem(); item.Value != "a" || app.overlay.Filter() != "" {
+		t.Errorf("locked dialog moved to %+v / filtered %q",
+			item.Value, app.overlay.Filter())
 	}
 	app.handleOverlayKey("esc")
 	if app.overlay != nil {

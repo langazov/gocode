@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"strings"
 	"testing"
 
@@ -45,7 +46,7 @@ func TestLeaderFIsNotBound(t *testing.T) {
 // Dialogs close on escape (and enter, for help) — not on `q`.
 func TestDialogsDoNotCloseOnQ(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	app.overlay = &overlay{kind: overlayHelp, title: "Help"}
+	app.openHelpDialog("Help", nil)
 	app.handleOverlayKey("q")
 	if app.overlay == nil {
 		t.Fatal("q is not a dialog binding upstream")
@@ -87,7 +88,7 @@ func TestLeaderDownOpensChildSessions(t *testing.T) {
 	app.active = &client.Session{ID: "ses_1"}
 	app.leaderArmed = true
 	driveCmd(t, app, app.handleKey(tea.KeyPressMsg{Code: tea.KeyDown}))
-	if app.overlay == nil || app.overlay.kind != overlayList {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindList {
 		t.Fatal("<leader>down should open the child session list")
 	}
 }

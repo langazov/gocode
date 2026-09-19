@@ -7,6 +7,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/langazov/gocode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 )
 
 // This file ports packages/tui/src/component/dialog-model.tsx and
@@ -68,9 +69,9 @@ func (a *App) modelsOverlay() tea.Cmd {
 func (a *App) openModelDialog(models []client.Model) {
 	a.openList("Select model", a.modelItems(models, ""))
 	o := a.overlay
-	o.size = dialogLarge
-	o.current = a.currentModelLabel()
-	o.actions = a.modelDialogActions(models)
+	o.SetSize(dialogLarge)
+	o.SetCurrent(a.currentModelLabel())
+	o.SetActions(a.modelDialogActions(models))
 	if len(models) == 0 {
 		// Three different reasons produce an empty list, and they need three
 		// different messages. Reporting all of them as "Loading" is what made
@@ -78,14 +79,11 @@ func (a *App) openModelDialog(models []client.Model) {
 		// arrived, it was just empty because no provider is connected.
 		switch {
 		case a.catalogErr != "":
-			o.emptyTitle = "Could not load models"
-			o.emptyBody = a.catalogErr
+			o.SetEmptyView("Could not load models", a.catalogErr)
 		case !a.catalogLoaded:
-			o.emptyTitle = "Loading models"
-			o.emptyBody = "Fetching the model catalog..."
+			o.SetEmptyView("Loading models", "Fetching the model catalog...")
 		default:
-			o.emptyTitle = "No models available"
-			o.emptyBody = "No provider is connected yet. Press ctrl+p to connect one."
+			o.SetEmptyView("No models available", "No provider is connected yet. Press ctrl+p to connect one.")
 		}
 	}
 }
@@ -94,44 +92,32 @@ func (a *App) openModelDialog(models []client.Model) {
 // when a fresh catalog arrives, preserving the filter and selected row.
 func (a *App) refreshOpenCatalogDialog() {
 	o := a.overlay
-	if o == nil || o.kind != overlayList {
+	if o == nil || o.Kind != dialog.KindList {
 		return
 	}
-	switch o.title {
+	switch o.Title {
 	case "Select model":
-		filter, selected := o.filter, a.selectedOverlayValue()
+		filter, selected := o.Filter(), a.selectedOverlayValue()
 		a.openModelDialog(a.catalogModels)
 		a.restoreOverlaySelection(filter, selected)
 	case "Connect a provider":
-		filter, selected := o.filter, a.selectedOverlayValue()
+		filter, selected := o.Filter(), a.selectedOverlayValue()
 		a.openProviderDialog()
 		a.restoreOverlaySelection(filter, selected)
 	}
 }
 
 func (a *App) selectedOverlayValue() string {
-	o := a.overlay
-	if o == nil || o.selected < 0 || o.selected >= len(o.items) {
-		return ""
-	}
-	return o.items[o.selected].value
+	return a.overlay.SelectedValue()
 }
 
 // restoreOverlaySelection reapplies a filter and moves the cursor back to the
 // row it was on, so a background refresh does not move the selection.
 func (a *App) restoreOverlaySelection(filter, value string) {
-	o := a.overlay
-	if o == nil {
+	if a.overlay == nil {
 		return
 	}
-	o.filter = filter
-	o.applyFilter()
-	for i, item := range o.items {
-		if item.value == value {
-			o.selected = i
-			return
-		}
-	}
+	a.overlay.RestoreSelection(filter, value)
 }
 
 // modelDialogActions ports the `actions` array on dialog-model.tsx's
@@ -143,9 +129,9 @@ func (a *App) modelDialogActions(models []client.Model) []dialogAction {
 		title = "Connect provider"
 	}
 	actions := []dialogAction{{
-		title: title,
-		keys:  "ctrl+p",
-		onTrigger: func(overlayItem) tea.Cmd {
+		Title: title,
+		Keys:  "ctrl+p",
+		OnTrigger: func(overlayItem) tea.Cmd {
 			return a.providersOverlay()
 		},
 	}}
@@ -153,10 +139,10 @@ func (a *App) modelDialogActions(models []client.Model) []dialogAction {
 	// free tier has nothing worth pinning.
 	if isConnected {
 		actions = append(actions, dialogAction{
-			title: "Favorite",
-			keys:  "ctrl+f",
-			onTrigger: func(item overlayItem) tea.Cmd {
-				ref, ok := parseModelLabel(item.value)
+			Title: "Favorite",
+			Keys:  "ctrl+f",
+			OnTrigger: func(item overlayItem) tea.Cmd {
+				ref, ok := parseModelLabel(item.Value)
 				if !ok {
 					return nil
 				}
@@ -168,7 +154,7 @@ func (a *App) modelDialogActions(models []client.Model) []dialogAction {
 				if added {
 					verb = "added to"
 				}
-				return staticMsg(statusMsg{text: item.label + " " + verb + " favorites"})
+				return staticMsg(statusMsg{text: item.Label + " " + verb + " favorites"})
 			},
 		})
 	}
@@ -179,21 +165,10 @@ func (a *App) modelDialogActions(models []client.Model) []dialogAction {
 // filter and the selected row's identity.
 func (a *App) refreshModelItems(models []client.Model) {
 	o := a.overlay
-	if o == nil || o.kind != overlayList {
+	if o == nil || o.Kind != dialog.KindList {
 		return
 	}
-	var selectedValue string
-	if o.selected >= 0 && o.selected < len(o.items) {
-		selectedValue = o.items[o.selected].value
-	}
-	o.all = a.modelItems(models, o.filter)
-	o.applyFilter()
-	for i, item := range o.items {
-		if item.value == selectedValue {
-			o.selected = i
-			break
-		}
-	}
+	o.SetAllItems(a.modelItems(models, o.Filter()))
 }
 
 // modelItems assembles the rows, porting the options() memo.
@@ -296,12 +271,12 @@ func (a *App) modelRow(model client.Model, category string, favorite bool) overl
 		footer = "Free"
 	}
 	return overlayItem{
-		label:    title,
-		hint:     hint,
-		value:    label,
-		category: category,
-		footer:   footer,
-		action: func() tea.Msg {
+		Label:    title,
+		Hint:     hint,
+		Value:    label,
+		Category: category,
+		Footer:   footer,
+		Action: func() tea.Msg {
 			a.models.markRecent(modelRef{ProviderID: model.ProviderID, ModelID: model.ID})
 			// The new model's persisted variant rides along when it is still
 			// valid for it (variant.list includes it, or "default");

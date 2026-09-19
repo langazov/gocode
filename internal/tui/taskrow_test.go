@@ -324,9 +324,9 @@ func TestSessionListExcludesChildren(t *testing.T) {
 	if app.overlay == nil {
 		t.Fatal("overlay did not open")
 	}
-	ids := make([]string, 0, len(app.overlay.items))
-	for _, item := range app.overlay.items {
-		ids = append(ids, item.value)
+	ids := make([]string, 0, len(app.overlay.Items()))
+	for _, item := range app.overlay.Items() {
+		ids = append(ids, item.Value)
 	}
 	for _, id := range ids {
 		if id == "ses_child_1" {

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"testing"
 )
 
@@ -10,12 +11,12 @@ import (
 func TestMemoryAddFromEmptyList(t *testing.T) {
 	app, state := memoryTestApp(t)
 	o := openMemoryDialog(t, app)
-	if len(o.items) != 0 {
-		t.Fatalf("expected an empty list, got %+v", o.items)
+	if len(o.Items()) != 0 {
+		t.Fatalf("expected an empty list, got %+v", o.Items())
 	}
 
 	driveCmd(t, app, app.handleOverlayKey("ctrl+a"))
-	if app.overlay == nil || app.overlay.kind != overlayInput {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindInput {
 		t.Fatal("ctrl+a on an empty list did not open the input dialog")
 	}
 
@@ -47,11 +48,11 @@ func TestMemoryAddReopensTheManager(t *testing.T) {
 	if app.overlay == nil {
 		t.Fatal("the manager did not reopen after saving")
 	}
-	if app.overlay.title != "Memories" {
-		t.Fatalf("overlay = %q, want the manager", app.overlay.title)
+	if app.overlay.Title != "Memories" {
+		t.Fatalf("overlay = %q, want the manager", app.overlay.Title)
 	}
-	if len(app.overlay.items) != 3 {
-		t.Errorf("reopened list has %d rows, want the 3 that now exist", len(app.overlay.items))
+	if len(app.overlay.Items()) != 3 {
+		t.Errorf("reopened list has %d rows, want the 3 that now exist", len(app.overlay.Items()))
 	}
 }
 
@@ -59,20 +60,20 @@ func TestMemoryEditReopensTheManager(t *testing.T) {
 	app, state := memoryTestApp(t, sampleMemories()...)
 	o := openMemoryDialog(t, app)
 
-	applyCmd(t, app, app.editMemoryAction(o.items[0]))
-	if app.overlay == nil || app.overlay.kind != overlayInput {
+	applyCmd(t, app, app.editMemoryAction(o.Items()[0]))
+	if app.overlay == nil || app.overlay.Kind != dialog.KindInput {
 		t.Fatal("edit did not open the input dialog")
 	}
 	// The input is prefilled with the current wording, so an edit is an edit
 	// rather than a retype.
-	if app.overlay.input != o.items[0].label {
-		t.Errorf("input = %q, want it prefilled with %q", app.overlay.input, o.items[0].label)
+	if app.overlay.InputValue() != o.Items()[0].Label {
+		t.Errorf("input = %q, want it prefilled with %q", app.overlay.InputValue(), o.Items()[0].Label)
 	}
 
-	app.overlay.input = "revised wording"
+	app.overlay.SetInputValue("revised wording")
 	applyCmd(t, app, app.handleOverlayKey("enter"))
 
-	if app.overlay == nil || app.overlay.title != "Memories" {
+	if app.overlay == nil || app.overlay.Title != "Memories" {
 		t.Fatal("the manager did not reopen after editing")
 	}
 	var found bool
@@ -91,19 +92,18 @@ func TestMemoryEditReopensTheManager(t *testing.T) {
 func TestMemoryInPlaceActionKeepsFilter(t *testing.T) {
 	app, _ := memoryTestApp(t, sampleMemories()...)
 	o := openMemoryDialog(t, app)
-	o.filter = "stdlib"
-	o.applyFilter()
-	if len(o.items) != 1 {
-		t.Fatalf("filter matched %d rows, want 1", len(o.items))
+	o.SetFilter("stdlib")
+	if len(o.Items()) != 1 {
+		t.Fatalf("filter matched %d rows, want 1", len(o.Items()))
 	}
 
-	driveCmd(t, app, app.toggleMemoryMutedAction(o.items[0]))
+	driveCmd(t, app, app.toggleMemoryMutedAction(o.Items()[0]))
 
-	if app.overlay == nil || app.overlay.title != "Memories" {
+	if app.overlay == nil || app.overlay.Title != "Memories" {
 		t.Fatal("the manager closed on an in-place action")
 	}
-	if app.overlay.filter != "stdlib" {
-		t.Errorf("filter = %q, want it preserved across the refresh", app.overlay.filter)
+	if app.overlay.Filter() != "stdlib" {
+		t.Errorf("filter = %q, want it preserved across the refresh", app.overlay.Filter())
 	}
 }
 
@@ -112,13 +112,13 @@ func TestMemoryDialogAdvertisesNew(t *testing.T) {
 	app, _ := memoryTestApp(t)
 	o := openMemoryDialog(t, app)
 	var titles []string
-	for _, action := range o.actions {
-		titles = append(titles, action.title)
+	for _, action := range o.Actions() {
+		titles = append(titles, action.Title)
 	}
 	if len(titles) == 0 || titles[0] != "new" {
 		t.Errorf("actions = %v, want \"new\" offered first", titles)
 	}
-	if !o.actions[0].standalone {
+	if !o.Actions()[0].Standalone {
 		t.Error("the new action must be standalone so it works with nothing selected")
 	}
 }
@@ -127,15 +127,15 @@ func TestMemoryDialogAdvertisesNew(t *testing.T) {
 // list movement inside this dialog.
 func TestMemoryDialogCtrlNStillMoves(t *testing.T) {
 	app, _ := memoryTestApp(t, sampleMemories()...)
-	o := openMemoryDialog(t, app)
-	before := o.selected
+	openMemoryDialog(t, app)
+	before := app.overlay.SelectedIndex()
 
 	driveCmd(t, app, app.handleOverlayKey("ctrl+n"))
 
-	if app.overlay == nil || app.overlay.kind != overlayList {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindList {
 		t.Fatal("ctrl+n opened something instead of moving the selection")
 	}
-	if app.overlay.selected == before {
+	if app.overlay.SelectedIndex() == before {
 		t.Error("ctrl+n did not move the selection")
 	}
 }

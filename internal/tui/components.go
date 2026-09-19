@@ -101,6 +101,17 @@ func splitRow(width int, left, right string, minWidthGap int) string {
 	return left + strings.Repeat(" ", gap) + right
 }
 
+// onPanel styles text on the dialog panel's background: explicit panel
+// background so composed segments keep the tint after each segment's reset
+// sequence. Shared with the sidebar/footer panel text helpers below.
+func (a *App) onPanel(fg color.Color, bold bool) lipgloss.Style {
+	s := lipgloss.NewStyle().Foreground(fg).Background(a.theme.BackgroundPanel)
+	if bold {
+		s = s.Bold(true)
+	}
+	return s
+}
+
 // onPanelText renders text on the panel background, line by line — safe to
 // embed inside a backgroundPanel fill (see renderLines' doc comment in
 // render.go for why a single multi-line Render is not).

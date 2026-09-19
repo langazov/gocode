@@ -39,18 +39,15 @@ func (a *App) openProviderDialog() {
 	}
 	a.openList("Connect a provider", items)
 	o := a.overlay
-	o.size = dialogLarge
+	o.SetSize(dialogLarge)
 	if len(providers) == 0 {
 		switch {
 		case a.allProvidersErr != "":
-			o.emptyTitle = "Could not load providers"
-			o.emptyBody = a.allProvidersErr
+			o.SetEmptyView("Could not load providers", a.allProvidersErr)
 		case !a.allProvidersLoaded:
-			o.emptyTitle = "Loading providers"
-			o.emptyBody = "Fetching the provider list..."
+			o.SetEmptyView("Loading providers", "Fetching the provider list...")
 		default:
-			o.emptyTitle = "No providers found"
-			o.emptyBody = "The model catalog returned no providers."
+			o.SetEmptyView("No providers found", "The model catalog returned no providers.")
 		}
 	}
 }
@@ -106,24 +103,24 @@ func (a *App) providerItems(providers []client.Provider) []overlayItem {
 			category = "Popular"
 		}
 		item := overlayItem{
-			label:    providerLabel(entry),
-			hint:     providerBlurb[entry.ID],
-			value:    entry.ID,
-			category: category,
-			action:   func() tea.Msg { return a.beginProviderLogin(entry.ID, providerLabel(entry)) },
+			Label:    providerLabel(entry),
+			Hint:     providerBlurb[entry.ID],
+			Value:    entry.ID,
+			Category: category,
+			Action:   func() tea.Msg { return a.beginProviderLogin(entry.ID, providerLabel(entry)) },
 		}
 		if entry.Connected {
-			item.gutter, item.gutterOK = "✓", true
+			item.Gutter, item.GutterOK = "✓", true
 		}
 		items = append(items, item)
 	}
 
 	items = append(items, overlayItem{
-		label:    "Other",
-		hint:     "Custom provider",
-		value:    customProviderValue,
-		category: "Providers",
-		action:   func() tea.Msg { return a.promptCustomProvider() },
+		Label:    "Other",
+		Hint:     "Custom provider",
+		Value:    customProviderValue,
+		Category: "Providers",
+		Action:   func() tea.Msg { return a.promptCustomProvider() },
 	})
 	return items
 }
@@ -178,10 +175,10 @@ func (a *App) beginProviderLogin(providerID, name string) tea.Msg {
 			}
 		}
 		items = append(items, overlayItem{
-			label:  method.Label,
-			hint:   hint,
-			value:  method.Label,
-			action: func() tea.Msg { return a.runAuthMethod(providerID, name, method) },
+			Label:  method.Label,
+			Hint:   hint,
+			Value:  method.Label,
+			Action: func() tea.Msg { return a.runAuthMethod(providerID, name, method) },
 		})
 	}
 	a.openList("Select auth method", items)
@@ -272,11 +269,10 @@ func (a *App) showOAuthWait(name string, attempt *client.OAuthAttempt) {
 
 	a.openList(name, nil)
 	o := a.overlay
-	o.size = dialogLarge
-	o.locked = true
-	o.hideFilter = true
-	o.emptyTitle = name
-	o.emptyBody = body.String()
+	o.SetSize(dialogLarge)
+	o.SetLocked(true)
+	o.SetHideFilter(true)
+	o.SetEmptyView(name, body.String())
 }
 
 // oauthPollMsg drives the wait loop.

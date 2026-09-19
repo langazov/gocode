@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"strings"
 	"testing"
 )
@@ -20,9 +21,9 @@ func TestTypedText(t *testing.T) {
 		"€":     "€",
 	}
 	for key, want := range typed {
-		got, ok := typedText(key)
+		got, ok := dialog.TypedText(key)
 		if !ok || got != want {
-			t.Errorf("typedText(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
+			t.Errorf("dialog.TypedText(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
 		}
 	}
 
@@ -33,8 +34,8 @@ func TestTypedText(t *testing.T) {
 		"up", "down", "left", "right", "home", "end", "pgup", "pgdown",
 		"ctrl+a", "ctrl+c", "ctrl+d", "f1",
 	} {
-		if got, ok := typedText(key); ok {
-			t.Errorf("typedText(%q) = (%q, true), want no text", key, got)
+		if got, ok := dialog.TypedText(key); ok {
+			t.Errorf("dialog.TypedText(%q) = (%q, true), want no text", key, got)
 		}
 	}
 }
@@ -49,8 +50,8 @@ func TestInputDialogAcceptsSpaces(t *testing.T) {
 	for _, key := range []string{"r", "u", "n", "space", "m", "a", "k", "e"} {
 		driveCmd(t, app, app.handleOverlayKey(key))
 	}
-	if app.overlay.input != "run make" {
-		t.Fatalf("input = %q, want %q", app.overlay.input, "run make")
+	if app.overlay.InputValue() != "run make" {
+		t.Fatalf("input = %q, want %q", app.overlay.InputValue(), "run make")
 	}
 
 	applyCmd(t, app, app.handleOverlayKey("enter"))
@@ -68,8 +69,8 @@ func TestInputDialogAcceptsNonASCII(t *testing.T) {
 	for _, key := range []string{"c", "a", "f", "é", "space", "世", "界"} {
 		driveCmd(t, app, app.handleOverlayKey(key))
 	}
-	if app.overlay.input != "café 世界" {
-		t.Errorf("input = %q, want %q", app.overlay.input, "café 世界")
+	if app.overlay.InputValue() != "café 世界" {
+		t.Errorf("input = %q, want %q", app.overlay.InputValue(), "café 世界")
 	}
 }
 
@@ -82,14 +83,14 @@ func TestInputDialogShiftEnterInsertsNewline(t *testing.T) {
 	for _, key := range []string{"a", "shift+enter", "b"} {
 		driveCmd(t, app, app.handleOverlayKey(key))
 	}
-	if app.overlay.input != "a\nb" {
-		t.Fatalf("input = %q, want %q", app.overlay.input, "a\nb")
+	if app.overlay.InputValue() != "a\nb" {
+		t.Fatalf("input = %q, want %q", app.overlay.InputValue(), "a\nb")
 	}
 
 	// The panel must render the extra line rather than smuggling a raw
 	// newline into a composited row, which would tear the dialog.
 	app.width, app.height = 100, 30
-	panel := app.inputOverlay(dialogMedium)
+	panel, _ := app.overlay.Panel()
 	rows := strings.Split(panel, "\n")
 	var withA, withB bool
 	for _, row := range rows {
@@ -120,11 +121,11 @@ func TestInputDialogHeightStableForSingleLine(t *testing.T) {
 	app, _ := memoryTestApp(t)
 	openMemoryDialog(t, app)
 	driveCmd(t, app, app.handleOverlayKey("ctrl+a"))
-	app.overlay.input = "one line"
-	single := len(strings.Split(app.inputOverlay(dialogMedium), "\n"))
+	app.overlay.SetInputValue("one line")
+	single := len(strings.Split(inputContent(t, app), "\n"))
 
-	app.overlay.input = "one\ntwo\nthree\nfour\nfive"
-	taller := len(strings.Split(app.inputOverlay(dialogMedium), "\n"))
+	app.overlay.SetInputValue("one\ntwo\nthree\nfour\nfive")
+	taller := len(strings.Split(inputContent(t, app), "\n"))
 
 	if single != 8 {
 		t.Errorf("single-line panel is %d rows, want the original 8", single)
@@ -143,13 +144,21 @@ func TestListFilterAcceptsSpaces(t *testing.T) {
 	for _, key := range []string{"r", "u", "n", "space", "m", "a", "k", "e"} {
 		driveCmd(t, app, app.handleOverlayKey(key))
 	}
-	if o.filter != "run make" {
-		t.Fatalf("filter = %q, want %q", o.filter, "run make")
+	if o.Filter() != "run make" {
+		t.Fatalf("filter = %q, want %q", o.Filter(), "run make")
 	}
-	if len(o.items) != 1 {
-		t.Fatalf("filter matched %d rows, want the one containing the phrase", len(o.items))
+	if len(o.Items()) != 1 {
+		t.Fatalf("filter matched %d rows, want the one containing the phrase", len(o.Items()))
 	}
-	if !strings.Contains(o.items[0].label, "Run make check") {
-		t.Errorf("matched the wrong row: %q", o.items[0].label)
+	if !strings.Contains(o.Items()[0].Label, "Run make check") {
+		t.Errorf("matched the wrong row: %q", o.Items()[0].Label)
 	}
+}
+
+// inputContent renders the input dialog's content lines (the panel minus its
+// own paddingTop), the unit the old inputOverlay returned.
+func inputContent(t *testing.T, app *App) string {
+	t.Helper()
+	_, _ = app.overlay.Panel()
+	return app.overlay.InputContent()
 }

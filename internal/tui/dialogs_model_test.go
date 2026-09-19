@@ -28,18 +28,18 @@ func categoriesOf(items []overlayItem) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, item := range items {
-		if item.category == "" || seen[item.category] {
+		if item.Category == "" || seen[item.Category] {
 			continue
 		}
-		seen[item.category] = true
-		out = append(out, item.category)
+		seen[item.Category] = true
+		out = append(out, item.Category)
 	}
 	return out
 }
 
 func findItem(items []overlayItem, value string) (overlayItem, bool) {
 	for _, item := range items {
-		if item.value == value {
+		if item.Value == value {
 			return item, true
 		}
 	}
@@ -63,12 +63,12 @@ func TestModelDialogHasProviderAction(t *testing.T) {
 	if len(actions) == 0 {
 		t.Fatal("the model dialog must offer footer actions")
 	}
-	if actions[0].title != "Connect provider" {
-		t.Errorf("first action = %q, want %q", actions[0].title, "Connect provider")
+	if actions[0].Title != "Connect provider" {
+		t.Errorf("first action = %q, want %q", actions[0].Title, "Connect provider")
 	}
 	var favorite bool
 	for _, action := range actions {
-		favorite = favorite || action.title == "Favorite"
+		favorite = favorite || action.Title == "Favorite"
 	}
 	if !favorite {
 		t.Error("a connected user must get the Favorite action")
@@ -84,8 +84,8 @@ func TestModelDialogActionsWhenNotConnected(t *testing.T) {
 	if len(actions) != 1 {
 		t.Fatalf("got %d actions, want only the providers action", len(actions))
 	}
-	if actions[0].title != "View all providers" {
-		t.Errorf("action = %q, want %q", actions[0].title, "View all providers")
+	if actions[0].Title != "View all providers" {
+		t.Errorf("action = %q, want %q", actions[0].Title, "View all providers")
 	}
 }
 
@@ -113,13 +113,13 @@ func TestModelItemsMarksFreeAndHidesNano(t *testing.T) {
 	if !ok {
 		t.Fatal("missing the free model")
 	}
-	if free.footer != "Free" {
-		t.Errorf("footer = %q, want %q", free.footer, "Free")
+	if free.Footer != "Free" {
+		t.Errorf("footer = %q, want %q", free.Footer, "Free")
 	}
 
 	paid, _ := findItem(items, "opencode/paid-one")
-	if paid.footer != "" {
-		t.Errorf("a paid model must not be labelled Free, got %q", paid.footer)
+	if paid.Footer != "" {
+		t.Errorf("a paid model must not be labelled Free, got %q", paid.Footer)
 	}
 
 	// DialogSelect filters disabled options out of the list, so the original
@@ -157,12 +157,12 @@ func TestFavoritesAndRecentSections(t *testing.T) {
 	if len(items) == 0 {
 		t.Fatal("no items")
 	}
-	if items[0].category != "Favorites" || items[0].value != "anthropic/claude-x" {
+	if items[0].Category != "Favorites" || items[0].Value != "anthropic/claude-x" {
 		t.Errorf("first row = %+v, want the favorite at the top under Favorites", items[0])
 	}
 	var recent bool
 	for _, item := range items {
-		if item.category == "Recent" && item.value == "opencode/paid-one" {
+		if item.Category == "Recent" && item.Value == "opencode/paid-one" {
 			recent = true
 		}
 	}
@@ -173,7 +173,7 @@ func TestFavoritesAndRecentSections(t *testing.T) {
 	// dropped from its provider group.
 	count := 0
 	for _, item := range items {
-		if item.value == "anthropic/claude-x" {
+		if item.Value == "anthropic/claude-x" {
 			count++
 		}
 	}
@@ -189,8 +189,8 @@ func TestSectionsHiddenWhileFiltering(t *testing.T) {
 	app.models.toggleFavorite(modelRef{"anthropic", "claude-x"})
 	items := app.modelItems(testModels, "claude")
 	for _, item := range items {
-		if item.category == "Favorites" || item.category == "Recent" {
-			t.Fatalf("sections must not appear while filtering, got %q", item.category)
+		if item.Category == "Favorites" || item.Category == "Recent" {
+			t.Fatalf("sections must not appear while filtering, got %q", item.Category)
 		}
 	}
 }
@@ -289,7 +289,7 @@ func TestModelDialogRendersSections(t *testing.T) {
 	app := testApp(t)
 	app.width, app.height = 120, 40
 	app.openList("Select model", app.modelItems(testModels, ""))
-	app.overlay.actions = app.modelDialogActions(testModels)
+	app.overlay.SetActions(app.modelDialogActions(testModels))
 
 	frame, _ := app.overlayPanel()
 	if !strings.Contains(frame, "Connect provider") {

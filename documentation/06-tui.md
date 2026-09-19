@@ -95,7 +95,8 @@ dropping frames, never by applying back-pressure to the runner.
 | `render.go` | messages, tool calls, diffs |
 | `diffviewer.go` | the `/diff` full-screen route (file tree + patch pane; see the recommendations' §6.5) |
 | `markdown.go` | assistant prose via Glamour |
-| `dialogs*.go` | modal dialogs — model picker, provider, confirm |
+| `dialog/` | the dialog engine on [huh v2](https://github.com/charmbracelet/huh): the `Shell` wrapper (panel chrome, keyboard, embedded form) plus the custom `listField`/`noteField`/`inputField` |
+| `dialogs*.go` | dialog content and wiring — model picker, provider, confirm, plugins, memories |
 | `autocomplete.go` | the inline `/` and `@` popup |
 | `footer.go` | status line — model, tokens, cost, LSP |
 | `styles.go` | theme-derived Lipgloss styles |

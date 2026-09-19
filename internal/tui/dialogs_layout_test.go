@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"strings"
 	"testing"
 
@@ -25,10 +26,10 @@ func listApp(t *testing.T, items ...overlayItem) *App {
 // without shifting its title.
 func TestListRowTitlesAlignAtTheSameColumn(t *testing.T) {
 	app := listApp(t,
-		overlayItem{label: "alpha", value: "a"},
-		overlayItem{label: "beta", value: "b"},
+		overlayItem{Label: "alpha", Value: "a"},
+		overlayItem{Label: "beta", Value: "b"},
 	)
-	app.overlay.current = "b"
+	app.overlay.SetCurrent("b")
 
 	var plain, marked string
 	for _, line := range panelLines(t, app) {
@@ -53,7 +54,7 @@ func TestListRowTitlesAlignAtTheSameColumn(t *testing.T) {
 // The background lives on the row box, so a highlighted row is filled edge to
 // edge — including both paddings, which this port used to leave unstyled.
 func TestSelectedRowHighlightSpansThePaddings(t *testing.T) {
-	app := listApp(t, overlayItem{label: "alpha", value: "a"})
+	app := listApp(t, overlayItem{Label: "alpha", Value: "a"})
 	panel, _ := app.overlayPanel()
 
 	var row string
@@ -81,8 +82,8 @@ func TestSelectedRowHighlightSpansThePaddings(t *testing.T) {
 // Category headers get the scrollbox's pad plus their own paddingLeft={3}.
 func TestCategoryHeadersIndentByFour(t *testing.T) {
 	app := listApp(t,
-		overlayItem{label: "alpha", category: "Session", value: "a"},
-		overlayItem{label: "beta", category: "Model", value: "b"},
+		overlayItem{Label: "alpha", Category: "Session", Value: "a"},
+		overlayItem{Label: "beta", Category: "Model", Value: "b"},
 	)
 	lines := panelLines(t, app)
 	found := false
@@ -108,8 +109,8 @@ func TestCategoryHeadersIndentByFour(t *testing.T) {
 // appears even when the dialog is wide enough to hold the whole title.
 func TestListRowTruncatesTitlesAtSixtyOne(t *testing.T) {
 	long := strings.Repeat("x", 80)
-	app := listApp(t, overlayItem{label: long, value: "a"})
-	app.overlay.size = dialogXLarge
+	app := listApp(t, overlayItem{Label: long, Value: "a"})
+	app.overlay.SetSize(dialogXLarge)
 	app.width = 140
 
 	var row string
@@ -122,16 +123,16 @@ func TestListRowTruncatesTitlesAtSixtyOne(t *testing.T) {
 	if !strings.HasSuffix(trimmed, "…") {
 		t.Fatalf("a long title should carry the ellipsis, got %q", trimmed)
 	}
-	if got := len([]rune(trimmed)); got != dialogTitleWidth {
-		t.Fatalf("title rendered %d runes, want %d", got, dialogTitleWidth)
+	if got := len([]rune(trimmed)); got != 61 {
+		t.Fatalf("title rendered %d runes, want %d", got, 61)
 	}
 }
 
 func TestTruncateEllipsisMatchesLocaleTruncate(t *testing.T) {
-	if got := truncateEllipsis("hello", 10); got != "hello" {
+	if got := dialog.TruncateEllipsis("hello", 10); got != "hello" {
 		t.Fatalf("a short string is untouched, got %q", got)
 	}
-	if got := truncateEllipsis("hello world", 5); got != "hell…" {
+	if got := dialog.TruncateEllipsis("hello world", 5); got != "hell…" {
 		t.Fatalf("truncate = %q, want %q", got, "hell…")
 	}
 }
@@ -141,11 +142,11 @@ func TestTruncateEllipsisMatchesLocaleTruncate(t *testing.T) {
 // The footer is a space-between row: `paddingLeft={4}` on the left group,
 // `paddingRight={2}` on the right one.
 func TestFooterActionsSplitLeftAndRight(t *testing.T) {
-	app := listApp(t, overlayItem{label: "alpha", value: "a"})
-	app.overlay.actions = []dialogAction{
-		{title: "Select", keys: "enter"},
-		{title: "Delete", keys: "ctrl+d", right: true},
-	}
+	app := listApp(t, overlayItem{Label: "alpha", Value: "a"})
+	app.overlay.SetActions([]dialogAction{
+		{Title: "Select", Keys: "enter"},
+		{Title: "Delete", Keys: "ctrl+d", Right: true},
+	})
 	var row string
 	for _, line := range panelLines(t, app) {
 		if strings.Contains(line, "Select") {
@@ -163,38 +164,38 @@ func TestFooterActionsSplitLeftAndRight(t *testing.T) {
 // moveAction(): tab enters at the first action, shift+tab at the last, and
 // stepping off either end releases focus back to the list.
 func TestTabCyclesFooterActionFocusAndReleases(t *testing.T) {
-	app := listApp(t, overlayItem{label: "alpha", value: "a"})
-	app.overlay.actions = []dialogAction{{title: "One", keys: "1"}, {title: "Two", keys: "2"}}
+	app := listApp(t, overlayItem{Label: "alpha", Value: "a"})
+	app.overlay.SetActions([]dialogAction{{Title: "One", Keys: "1"}, {Title: "Two", Keys: "2"}})
 	o := app.overlay
 
 	app.handleOverlayKey("tab")
-	if o.focusedAction != 0 {
-		t.Fatalf("tab should focus the first action, got %d", o.focusedAction)
+	if o.FocusedAction() != 0 {
+		t.Fatalf("tab should focus the first action, got %d", o.FocusedAction())
 	}
 	app.handleOverlayKey("tab")
-	if o.focusedAction != 1 {
-		t.Fatalf("tab should advance, got %d", o.focusedAction)
+	if o.FocusedAction() != 1 {
+		t.Fatalf("tab should advance, got %d", o.FocusedAction())
 	}
 	app.handleOverlayKey("tab")
-	if o.focusedAction != -1 {
-		t.Fatalf("stepping off the end releases focus, got %d", o.focusedAction)
+	if o.FocusedAction() != -1 {
+		t.Fatalf("stepping off the end releases focus, got %d", o.FocusedAction())
 	}
 	app.handleOverlayKey("shift+tab")
-	if o.focusedAction != len(o.actions)-1 {
-		t.Fatalf("shift+tab should enter at the last action, got %d", o.focusedAction)
+	if o.FocusedAction() != len(o.Actions())-1 {
+		t.Fatalf("shift+tab should enter at the last action, got %d", o.FocusedAction())
 	}
 	// moveTo() clears the focused action.
 	app.handleOverlayKey("down")
-	if o.focusedAction != -1 {
-		t.Fatalf("moving the selection releases action focus, got %d", o.focusedAction)
+	if o.FocusedAction() != -1 {
+		t.Fatalf("moving the selection releases action focus, got %d", o.FocusedAction())
 	}
 }
 
 // While an action is focused the selected row steps back to backgroundElement
 // and its text goes muted (Option's `muted` prop).
 func TestFocusedActionMutesTheSelectedRow(t *testing.T) {
-	app := listApp(t, overlayItem{label: "alpha", value: "a"})
-	app.overlay.actions = []dialogAction{{title: "One", keys: "1"}}
+	app := listApp(t, overlayItem{Label: "alpha", Value: "a"})
+	app.overlay.SetActions([]dialogAction{{Title: "One", Keys: "1"}})
 
 	rowOf := func() string {
 		panel, _ := app.overlayPanel()
@@ -226,11 +227,11 @@ func TestFocusedActionMutesTheSelectedRow(t *testing.T) {
 // enter triggers the focused action instead of the selected item (submit()).
 func TestEnterTriggersTheFocusedAction(t *testing.T) {
 	triggered := false
-	app := listApp(t, overlayItem{label: "alpha", value: "a", action: func() tea.Msg { return nil }})
-	app.overlay.actions = []dialogAction{{title: "One", keys: "1", onTrigger: func(overlayItem) tea.Cmd {
+	app := listApp(t, overlayItem{Label: "alpha", Value: "a", Action: func() tea.Msg { return nil }})
+	app.overlay.SetActions([]dialogAction{{Title: "One", Keys: "1", OnTrigger: func(overlayItem) tea.Cmd {
 		triggered = true
 		return nil
-	}}}
+	}}})
 
 	app.handleOverlayKey("tab")
 	app.handleOverlayKey("enter")
@@ -246,48 +247,48 @@ func TestEnterTriggersTheFocusedAction(t *testing.T) {
 // to type — binding them to movement made those letters unsearchable.
 func TestFilterAcceptsLettersThatArePagerKeysElsewhere(t *testing.T) {
 	app := listApp(t,
-		overlayItem{label: "jkl", value: "a"},
-		overlayItem{label: "other", value: "b"},
+		overlayItem{Label: "jkl", Value: "a"},
+		overlayItem{Label: "other", Value: "b"},
 	)
 	app.handleOverlayKey("j")
 	app.handleOverlayKey("k")
-	if app.overlay.filter != "jk" {
-		t.Fatalf("j and k should type into the filter, got %q", app.overlay.filter)
+	if app.overlay.Filter() != "jk" {
+		t.Fatalf("j and k should type into the filter, got %q", app.overlay.Filter())
 	}
 }
 
 func TestDialogNavigationKeys(t *testing.T) {
 	items := make([]overlayItem, 30)
 	for i := range items {
-		items[i] = overlayItem{label: string(rune('a' + i%26)), value: string(rune('a' + i))}
+		items[i] = overlayItem{Label: string(rune('a' + i%26)), Value: string(rune('a' + i))}
 	}
 	app := listApp(t, items...)
 	o := app.overlay
 
 	app.handleOverlayKey("ctrl+n")
-	if o.selected != 1 {
-		t.Fatalf("ctrl+n should advance, got %d", o.selected)
+	if o.SelectedIndex() != 1 {
+		t.Fatalf("ctrl+n should advance, got %d", o.SelectedIndex())
 	}
 	app.handleOverlayKey("ctrl+p")
-	if o.selected != 0 {
-		t.Fatalf("ctrl+p should go back, got %d", o.selected)
+	if o.SelectedIndex() != 0 {
+		t.Fatalf("ctrl+p should go back, got %d", o.SelectedIndex())
 	}
 	app.handleOverlayKey("pagedown")
-	if o.selected != 10 {
-		t.Fatalf("pagedown moves ten, got %d", o.selected)
+	if o.SelectedIndex() != 10 {
+		t.Fatalf("pagedown moves ten, got %d", o.SelectedIndex())
 	}
 	app.handleOverlayKey("end")
-	if o.selected != len(items)-1 {
-		t.Fatalf("end goes to the last item, got %d", o.selected)
+	if o.SelectedIndex() != len(items)-1 {
+		t.Fatalf("end goes to the last item, got %d", o.SelectedIndex())
 	}
 	app.handleOverlayKey("home")
-	if o.selected != 0 {
-		t.Fatalf("home goes to the first item, got %d", o.selected)
+	if o.SelectedIndex() != 0 {
+		t.Fatalf("home goes to the first item, got %d", o.SelectedIndex())
 	}
 	// move() wraps at both ends.
 	app.handleOverlayKey("up")
-	if o.selected != len(items)-1 {
-		t.Fatalf("moving up from the first item wraps, got %d", o.selected)
+	if o.SelectedIndex() != len(items)-1 {
+		t.Fatalf("moving up from the first item wraps, got %d", o.SelectedIndex())
 	}
 }
 
@@ -298,23 +299,24 @@ func TestDialogNavigationKeys(t *testing.T) {
 func TestArrowsCenterWhileHomeEndScrollMinimally(t *testing.T) {
 	items := make([]overlayItem, 40)
 	for i := range items {
-		items[i] = overlayItem{label: strings.Repeat("x", i%5+3), value: string(rune('a' + i))}
+		items[i] = overlayItem{Label: strings.Repeat("x", i%5+3), Value: string(rune('a' + i))}
 	}
 	app := listApp(t, items...)
 	app.height = 30 // maxRows = 30/2 - 6 = 9
+	app.overlay.SetGeometry(app.width, app.height, app.palette())
 	o := app.overlay
 
-	app.moveSelectionTo(o, 20)
+	app.overlay.MoveTo(20)
 	app.overlayPanel()
-	minimal := o.scrollTop
+	minimal := o.ScrollPos()
 	if minimal != 20-9+1 {
 		t.Fatalf("moveTo should scroll just far enough, top = %d, want %d", minimal, 20-9+1)
 	}
 
-	app.moveSelection(o, 1)
+	app.overlay.Move(1)
 	app.overlayPanel()
-	if o.scrollTop != 21-9/2 {
-		t.Fatalf("move() recenters, top = %d, want %d", o.scrollTop, 21-9/2)
+	if o.ScrollPos() != 21-9/2 {
+		t.Fatalf("move() recenters, top = %d, want %d", o.ScrollPos(), 21-9/2)
 	}
 }
 
@@ -366,7 +368,7 @@ func TestBackdropConvertsIndexedColours(t *testing.T) {
 
 // The dialog panel itself is drawn on top of the scrim and keeps full brightness.
 func TestDialogPanelIsNotDimmed(t *testing.T) {
-	app := listApp(t, overlayItem{label: "alpha", value: "a"})
+	app := listApp(t, overlayItem{Label: "alpha", Value: "a"})
 	app.view = viewChat
 	view := app.viewOverlay()
 	// 238;238;238 is #eeeeee, this app's default theme's text color (see

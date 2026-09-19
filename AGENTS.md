@@ -50,7 +50,8 @@ Everything the agent does becomes a durable event in SQLite before visible state
 | `internal/event/` | Event store, bus, replay, projections |
 | `internal/db/` | SQLite schema, migrations, connection pool |
 | `internal/server/` | HTTP API routes |
-| `internal/tui/` | Bubble Tea interface |
+| `internal/tui/` | Bubble Tea interface (dialogs via `internal/tui/dialog` on charm.land/huh/v2) |
+| `internal/tui/dialog/` | Dialog engine: `Shell` + custom huh fields (`listField`, `noteField`, `inputField`) |
 | `internal/lsp/` | 28 built-in language servers, lazy-started |
 | `internal/mdlsp/` | Markdown language server (`cmd/mdlsp`): actor-based, goldmark-backed |
 | `internal/rag/` | Semantic search: chunking, embeddings, vector store (powers `rag-plugin`) |

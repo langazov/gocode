@@ -93,18 +93,18 @@ func TestVariantsDialogListsDefaultAndVariants(t *testing.T) {
 	app, _, _ := variantFixture(t)
 	driveCmd(t, app, runItemAction(variantEntry(t, app, "variants")))
 
-	if app.overlay == nil || app.overlay.title != "Select variant" {
+	if app.overlay == nil || app.overlay.Title != "Select variant" {
 		t.Fatalf("expected the Select variant dialog, got %+v", app.overlay)
 	}
 	var labels []string
-	for _, item := range app.overlay.items {
-		labels = append(labels, item.label)
+	for _, item := range app.overlay.Items() {
+		labels = append(labels, item.Label)
 	}
 	if strings.Join(labels, ",") != "Default,high,max" {
 		t.Fatalf("dialog rows = %v, want [Default high max]", labels)
 	}
-	if app.overlay.current != "" {
-		t.Fatalf("no selection yet, but current = %q", app.overlay.current)
+	if app.overlay.Current() != "" {
+		t.Fatalf("no selection yet, but current = %q", app.overlay.Current())
 	}
 
 	// Pick max, reopen: the ● sits on max.
@@ -115,8 +115,8 @@ func TestVariantsDialogListsDefaultAndVariants(t *testing.T) {
 		t.Fatalf("after picking the third row, variant = %q, want max", got)
 	}
 	driveCmd(t, app, runItemAction(variantEntry(t, app, "variants")))
-	if app.overlay.current != "max" {
-		t.Fatalf("dialog current = %q, want max", app.overlay.current)
+	if app.overlay.Current() != "max" {
+		t.Fatalf("dialog current = %q, want max", app.overlay.Current())
 	}
 
 	// Pick Default: the selection clears and the ● sits on Default.
@@ -127,8 +127,8 @@ func TestVariantsDialogListsDefaultAndVariants(t *testing.T) {
 		t.Fatalf("after picking Default, variant = %q, want none", got)
 	}
 	driveCmd(t, app, runItemAction(variantEntry(t, app, "variants")))
-	if app.overlay.current != "default" {
-		t.Fatalf("dialog current = %q, want default", app.overlay.current)
+	if app.overlay.Current() != "default" {
+		t.Fatalf("dialog current = %q, want default", app.overlay.Current())
 	}
 }
 
@@ -138,13 +138,13 @@ func TestVariantsDialogListsDefaultAndVariants(t *testing.T) {
 func TestVariantListCommandHiddenWithoutVariants(t *testing.T) {
 	app, _, _ := variantFixture(t)
 	// Sonnet has variants: listed.
-	if entry, ok := variantEntryOk(app, "variants"); !ok || entry.hidden {
+	if entry, ok := variantEntryOk(app, "variants"); !ok || entry.Hidden {
 		t.Fatal("variant.list must list (not hidden) for a model with variants")
 	}
 	// Switch to opus: hidden.
 	app.active.Model = &client.ModelRef{ProviderID: "anthropic", ID: "claude-opus-4-5"}
 
-	if entry, ok := variantEntryOk(app, "variants"); !ok || !entry.hidden {
+	if entry, ok := variantEntryOk(app, "variants"); !ok || !entry.Hidden {
 		t.Fatal("variant.list must be hidden for a model without variants")
 	}
 	// The toast when /variants is dispatched anyway.
@@ -226,14 +226,14 @@ func TestModelDialogHandsOffToVariantPicker(t *testing.T) {
 
 	driveCmd(t, app, app.modelsOverlay())
 	o := app.overlay
-	for i, item := range o.items {
-		if item.value == "anthropic/claude-sonnet-4-5" {
-			o.selected = i
+	for _, item := range o.Items() {
+		if item.Value == "anthropic/claude-sonnet-4-5" {
+			o.MoveTo(o.SelectedIndexOf(item.Value))
 			break
 		}
 	}
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if app.overlay == nil || app.overlay.title != "Select variant" {
+	if app.overlay == nil || app.overlay.Title != "Select variant" {
 		t.Fatalf("model pick should hand off to the variant picker, got %+v", app.overlay)
 	}
 }
@@ -266,7 +266,7 @@ func variantEntry(t *testing.T, app *App, slash string) overlayItem {
 
 func variantEntryOk(app *App, slash string) (overlayItem, bool) {
 	for _, item := range app.commandsRegistry() {
-		if item.slash == slash {
+		if item.Slash == slash {
 			return item, true
 		}
 	}

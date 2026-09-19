@@ -1300,24 +1300,24 @@ func (a *App) diffToggleSinglePatch() tea.Cmd {
 func (a *App) diffSwitchSource() tea.Cmd {
 	d := a.diff
 	items := []overlayItem{
-		{label: "Working tree", hint: "Show current git changes", value: string(diffModeGit)},
+		{Label: "Working tree", Hint: "Show current git changes", Value: string(diffModeGit)},
 	}
 	if info := d.vcsInfo; info != nil {
 		if info.Branch != "" && info.DefaultBranch != "" && info.Branch != info.DefaultBranch {
 			items = append(items, overlayItem{
-				label: "Main branch", hint: "Show changes compared to main branch", value: string(diffModeBranch),
+				Label: "Main branch", Hint: "Show changes compared to main branch", Value: string(diffModeBranch),
 			})
 		}
 	}
 	a.openList("Switch source", items)
 	o := a.overlay
-	o.hideFilter = true
-	o.current = string(d.mode)
+	o.SetHideFilter(true)
+	o.SetCurrent(string(d.mode))
 	// The picker navigates rather than picks-and-closes: onActivate leaves
 	// the dialog open so the user can see each source, exactly like the TS
 	// dialog's onSelect navigate.
-	o.onActivate = func(item overlayItem) tea.Cmd {
-		mode := diffMode(item.value)
+	o.SetOnActivate(func(item overlayItem) tea.Cmd {
+		mode := diffMode(item.Value)
 		if a.diff == nil || mode == a.diff.mode {
 			return nil
 		}
@@ -1328,15 +1328,14 @@ func (a *App) diffSwitchSource() tea.Cmd {
 		a.diff.scroll = 0
 		a.closeOverlay()
 		return a.loadDiffCmd(mode)
-	}
+	})
 	return nil
 }
 
-// diffHelp opens the shortcut sheet through the help overlay, extended with
+// diffHelp opens the shortcut sheet through the help panel, extended with
 // the viewer's rows (an existing kind with content, not a ninth kind).
 func (a *App) diffHelp() tea.Cmd {
-	a.overlay = &overlay{kind: overlayHelp, title: "Diff shortcuts", size: dialogLarge}
-	a.overlay.helpLines = a.diffHelpLines()
+	a.openHelpDialog("Diff shortcuts", a.diffHelpLines())
 	return nil
 }
 
