@@ -379,11 +379,11 @@ func formatSearchHits(hits []gocoder.LibrarySearchHit) string {
 		if i > 0 {
 			b.WriteString("\n\n")
 		}
-		p := "?"
+		p, id := "?", "?"
 		if hit.Node != nil {
-			p = hit.Node.Path
+			p, id = hit.Node.Path, hit.Node.ID
 		}
-		fmt.Fprintf(&b, "%s:%d-%d  (score %.3f)", p, hit.StartLine, hit.EndLine, hit.Score)
+		fmt.Fprintf(&b, "%s:%d-%d  (score %.3f, id=%s)", p, hit.StartLine, hit.EndLine, hit.Score, id)
 		if len(hit.HeadingPath) > 0 {
 			fmt.Fprintf(&b, "  [%s]", strings.Join(hit.HeadingPath, " > "))
 		}
@@ -475,6 +475,15 @@ func handleLibraryList(ctx context.Context, rt *runtime, pathPrefix string) (str
 }
 
 func handleLibraryGet(ctx context.Context, rt *runtime, id, path string, withContent bool) (string, error) {
+	// A real node id (a Mongo ObjectID hex string) never contains "/". A
+	// caller — the model included, since it only ever sees a hit's Path in
+	// library_search's citation line, not its id — sometimes passes a path
+	// where an id was asked for; recover rather than let GET
+	// /library/nodes/{escaped path} 404.
+	if id != "" && strings.Contains(id, "/") {
+		path, id = id, ""
+	}
+
 	var n *gocoder.LibraryNode
 	var err error
 	switch {
@@ -753,8 +762,8 @@ func handleInitialize(message request) error {
 				"parameters": map[string]any{
 					"type": "object",
 					"properties": map[string]any{
-						"id":          map[string]any{"type": "string", "description": "Node id, e.g. from library_search or library_list. Preferred over path — cheaper to resolve."},
-						"path":        map[string]any{"type": "string", "description": "Node path, if the id is unknown. Resolved by walking the tree, one call per path segment."},
+						"id":          map[string]any{"type": "string", "description": "Node id (the id= shown in library_search/library_list output, e.g. \"68d2...\" — never a path). Preferred over path — cheaper to resolve."},
+						"path":        map[string]any{"type": "string", "description": "Node path, e.g. \"docs/notes.md\" — the citation before the colon in library_search output. Use this, not id, if you only have the path. Resolved by walking the tree, one call per path segment."},
 						"withContent": map[string]any{"type": "boolean", "description": "Also fetch the full converted Markdown. Only valid for a file node."},
 					},
 				},

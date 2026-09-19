@@ -375,6 +375,34 @@ func TestGetByIDAndByPath(t *testing.T) {
 	}
 }
 
+// TestGetTreatsAPathPassedAsIDAsAPath is a regression test: a caller (the
+// model included — library_search's citation line only ever shows Path, not
+// id) sometimes passes a path into the id argument. A node id never
+// contains "/", so this must resolve as a path rather than fail with a
+// not-found error from GET /library/nodes/{escaped path}.
+func TestGetTreatsAPathPassedAsIDAsAPath(t *testing.T) {
+	fake := newFakeLibraryServer(1)
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	fake.addNode(gocoder.LibraryNode{ID: "f1", Path: "Documents", Name: "Documents", Type: gocoder.LibraryTypeFolder}, "")
+	fake.addNode(gocoder.LibraryNode{ID: "f2", Path: "Documents/IMS Accounting", ParentPath: "Documents", Name: "IMS Accounting", Type: gocoder.LibraryTypeFolder}, "")
+	fake.addNode(gocoder.LibraryNode{ID: "f3", Path: "Documents/IMS Accounting/Mikrotik", ParentPath: "Documents/IMS Accounting", Name: "Mikrotik", Type: gocoder.LibraryTypeFolder}, "")
+	fake.addNode(gocoder.LibraryNode{
+		ID: "n1", Path: "Documents/IMS Accounting/Mikrotik/TR-069_9863195.md", ParentPath: "Documents/IMS Accounting/Mikrotik",
+		Name: "TR-069_9863195.md", Type: gocoder.LibraryTypeFile, Status: gocoder.LibraryStatusReady,
+	}, "router config notes")
+
+	rt := testRuntime(t, srv)
+
+	out, err := handleLibraryGet(context.Background(), rt, "Documents/IMS Accounting/Mikrotik/TR-069_9863195.md", "", true)
+	if err != nil {
+		t.Fatalf("expected the path-as-id mistake to be recovered, got error: %v", err)
+	}
+	if !strings.Contains(out, "router config notes") {
+		t.Fatalf("out = %q", out)
+	}
+}
+
 func TestUploadCreatesAncestorFoldersAndWaitsForReady(t *testing.T) {
 	fake := newFakeLibraryServer(2) // "ready" only after the 2nd status poll
 	srv := httptest.NewServer(fake.handler())
