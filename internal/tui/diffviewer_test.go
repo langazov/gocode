@@ -3,6 +3,7 @@ package tui
 import (
 	"errors"
 	"fmt"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"image/color"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/langazov/gocode-go/internal/tui/client"
 	"github.com/langazov/gocode-go/internal/tui/theme"
 )
@@ -405,17 +407,17 @@ func TestDiffViewerSourceDialogGatesBranchOption(t *testing.T) {
 
 	// Without repository info, only the working-tree source is offered.
 	pressKey(t, app, "d")
-	if app.overlay == nil || app.overlay.title != "Switch source" {
+	if app.overlay == nil || app.overlay.Title != "Switch source" {
 		t.Fatal("d did not open the source dialog")
 	}
 	count := 0
-	for _, item := range app.overlay.items {
-		if item.value == string(diffModeBranch) {
+	for _, item := range app.overlay.Items() {
+		if item.Value == string(diffModeBranch) {
 			count++
 		}
 	}
 	if count != 0 {
-		t.Fatalf("branch source offered without repository info: %+v", app.overlay.items)
+		t.Fatalf("branch source offered without repository info: %+v", app.overlay.Items())
 	}
 
 	// With a distinct default branch, the option appears.
@@ -423,8 +425,8 @@ func TestDiffViewerSourceDialogGatesBranchOption(t *testing.T) {
 	app.diff.vcsInfo = &client.VcsInfo{Branch: "feature", DefaultBranch: "main"}
 	pressKey(t, app, "d")
 	found := false
-	for _, item := range app.overlay.items {
-		if item.value == string(diffModeBranch) {
+	for _, item := range app.overlay.Items() {
+		if item.Value == string(diffModeBranch) {
 			found = true
 		}
 	}
@@ -436,8 +438,8 @@ func TestDiffViewerSourceDialogGatesBranchOption(t *testing.T) {
 	pressKey(t, app, "esc")
 	app.diff.vcsInfo = &client.VcsInfo{Branch: "main", DefaultBranch: "main"}
 	pressKey(t, app, "d")
-	for _, item := range app.overlay.items {
-		if item.value == string(diffModeBranch) {
+	for _, item := range app.overlay.Items() {
+		if item.Value == string(diffModeBranch) {
 			t.Fatal("branch source offered while on the default branch")
 		}
 	}
@@ -450,9 +452,9 @@ func TestDiffViewerSwitchSourceRefetches(t *testing.T) {
 	pressKey(t, app, "d")
 	// Activate the branch item through the dialog's real path: the picker's
 	// onActivate, which is what a row activation runs.
-	for _, item := range app.overlay.items {
-		if item.value == string(diffModeBranch) {
-			drive(t, app, staticMsg(app.overlay.onActivate(item)))
+	for _, item := range app.overlay.Items() {
+		if item.Value == string(diffModeBranch) {
+			drive(t, app, app.overlay.OnActivate(item))
 			break
 		}
 	}
@@ -466,11 +468,15 @@ func TestDiffViewerSwitchSourceRefetches(t *testing.T) {
 
 func TestDiffViewerHelpSheet(t *testing.T) {
 	app := openDiff(t, diffFixture())
+	// Tall enough for the whole sheet: the help panel takes the read-only
+	// panels' scroll budget, so on a short terminal it windows instead of
+	// running off the bottom (see the scrolling arm below).
+	app.width, app.height = 120, 60
 	pressKey(t, app, "?")
-	if app.overlay == nil || app.overlay.kind != overlayHelp {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindHelp {
 		t.Fatal("? did not open the help overlay")
 	}
-	if len(app.overlay.helpLines) == 0 {
+	if len(app.overlay.HelpLines()) == 0 {
 		t.Fatal("help overlay carries no diff shortcut rows")
 	}
 	rendered := app.View()
@@ -478,6 +484,28 @@ func TestDiffViewerHelpSheet(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("help sheet missing %q:\n%s", want, rendered)
 		}
+	}
+}
+
+// A shortcut sheet longer than the terminal windows and says so, the way the
+// stats panel does — it used to run off the bottom of the screen with no
+// key that could move it.
+func TestDiffViewerHelpSheetScrollsWhenItDoesNotFit(t *testing.T) {
+	app := openDiff(t, diffFixture())
+	app.width, app.height = 120, 24
+	pressKey(t, app, "?")
+
+	panel, _ := app.overlayPanel()
+	first := ansi.Strip(panel)
+	for _, want := range []string{"scroll", "more", "close esc"} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("a windowed help sheet should hint %q:\n%s", want, first)
+		}
+	}
+	driveCmd(t, app, app.handleOverlayKey("down"))
+	panel, _ = app.overlayPanel()
+	if ansi.Strip(panel) == first {
+		t.Fatal("down should move a windowed help sheet")
 	}
 }
 

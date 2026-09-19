@@ -3,6 +3,10 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 )
 
 // What reaches handleOverlayKey is a key *name* from tea.KeyMsg.String(), not
@@ -20,9 +24,9 @@ func TestTypedText(t *testing.T) {
 		"€":     "€",
 	}
 	for key, want := range typed {
-		got, ok := typedText(key)
+		got, ok := dialog.TypedText(key)
 		if !ok || got != want {
-			t.Errorf("typedText(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
+			t.Errorf("dialog.TypedText(%q) = (%q, %v), want (%q, true)", key, got, ok, want)
 		}
 	}
 
@@ -33,8 +37,8 @@ func TestTypedText(t *testing.T) {
 		"up", "down", "left", "right", "home", "end", "pgup", "pgdown",
 		"ctrl+a", "ctrl+c", "ctrl+d", "f1",
 	} {
-		if got, ok := typedText(key); ok {
-			t.Errorf("typedText(%q) = (%q, true), want no text", key, got)
+		if got, ok := dialog.TypedText(key); ok {
+			t.Errorf("dialog.TypedText(%q) = (%q, true), want no text", key, got)
 		}
 	}
 }
@@ -49,8 +53,8 @@ func TestInputDialogAcceptsSpaces(t *testing.T) {
 	for _, key := range []string{"r", "u", "n", "space", "m", "a", "k", "e"} {
 		driveCmd(t, app, app.handleOverlayKey(key))
 	}
-	if app.overlay.input != "run make" {
-		t.Fatalf("input = %q, want %q", app.overlay.input, "run make")
+	if app.overlay.InputValue() != "run make" {
+		t.Fatalf("input = %q, want %q", app.overlay.InputValue(), "run make")
 	}
 
 	applyCmd(t, app, app.handleOverlayKey("enter"))
@@ -68,8 +72,8 @@ func TestInputDialogAcceptsNonASCII(t *testing.T) {
 	for _, key := range []string{"c", "a", "f", "é", "space", "世", "界"} {
 		driveCmd(t, app, app.handleOverlayKey(key))
 	}
-	if app.overlay.input != "café 世界" {
-		t.Errorf("input = %q, want %q", app.overlay.input, "café 世界")
+	if app.overlay.InputValue() != "café 世界" {
+		t.Errorf("input = %q, want %q", app.overlay.InputValue(), "café 世界")
 	}
 }
 
@@ -82,14 +86,14 @@ func TestInputDialogShiftEnterInsertsNewline(t *testing.T) {
 	for _, key := range []string{"a", "shift+enter", "b"} {
 		driveCmd(t, app, app.handleOverlayKey(key))
 	}
-	if app.overlay.input != "a\nb" {
-		t.Fatalf("input = %q, want %q", app.overlay.input, "a\nb")
+	if app.overlay.InputValue() != "a\nb" {
+		t.Fatalf("input = %q, want %q", app.overlay.InputValue(), "a\nb")
 	}
 
 	// The panel must render the extra line rather than smuggling a raw
 	// newline into a composited row, which would tear the dialog.
 	app.width, app.height = 100, 30
-	panel := app.inputOverlay(dialogMedium)
+	panel, _ := app.overlay.Panel()
 	rows := strings.Split(panel, "\n")
 	var withA, withB bool
 	for _, row := range rows {
@@ -120,14 +124,14 @@ func TestInputDialogHeightStableForSingleLine(t *testing.T) {
 	app, _ := memoryTestApp(t)
 	openMemoryDialog(t, app)
 	driveCmd(t, app, app.handleOverlayKey("ctrl+a"))
-	app.overlay.input = "one line"
-	single := len(strings.Split(app.inputOverlay(dialogMedium), "\n"))
+	app.overlay.SetInputValue("one line")
+	single := len(strings.Split(inputContent(t, app), "\n"))
 
-	app.overlay.input = "one\ntwo\nthree\nfour\nfive"
-	taller := len(strings.Split(app.inputOverlay(dialogMedium), "\n"))
+	app.overlay.SetInputValue("one\ntwo\nthree\nfour\nfive")
+	taller := len(strings.Split(inputContent(t, app), "\n"))
 
-	if single != 8 {
-		t.Errorf("single-line panel is %d rows, want the original 8", single)
+	if single != 9 {
+		t.Errorf("single-line panel is %d rows, want 9", single)
 	}
 	if taller <= single {
 		t.Errorf("a 5-line entry rendered %d rows, not more than the %d of one line", taller, single)
@@ -143,13 +147,108 @@ func TestListFilterAcceptsSpaces(t *testing.T) {
 	for _, key := range []string{"r", "u", "n", "space", "m", "a", "k", "e"} {
 		driveCmd(t, app, app.handleOverlayKey(key))
 	}
-	if o.filter != "run make" {
-		t.Fatalf("filter = %q, want %q", o.filter, "run make")
+	if o.Filter() != "run make" {
+		t.Fatalf("filter = %q, want %q", o.Filter(), "run make")
 	}
-	if len(o.items) != 1 {
-		t.Fatalf("filter matched %d rows, want the one containing the phrase", len(o.items))
+	if len(o.Items()) != 1 {
+		t.Fatalf("filter matched %d rows, want the one containing the phrase", len(o.Items()))
 	}
-	if !strings.Contains(o.items[0].label, "Run make check") {
-		t.Errorf("matched the wrong row: %q", o.items[0].label)
+	if !strings.Contains(o.Items()[0].Label, "Run make check") {
+		t.Errorf("matched the wrong row: %q", o.Items()[0].Label)
+	}
+}
+
+// inputContent renders the input dialog's content lines (the panel minus its
+// own paddingTop), the unit the old inputOverlay returned.
+func inputContent(t *testing.T, app *App) string {
+	t.Helper()
+	_, _ = app.overlay.Panel()
+	return app.overlay.InputContent()
+}
+
+// --- paste --------------------------------------------------------------------
+
+// The API key field opens empty, with its prompt as a muted placeholder.
+// It used to open pre-filled with the literal string "Paste your API key",
+// which had to be deleted before a key could be typed — and was submitted as
+// the key by anyone who pressed enter without looking.
+func TestAPIKeyInputOpensEmptyWithAPlaceholder(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	drive(t, app, app.promptAPIKey("anthropic", "Anthropic"))
+
+	if app.overlay == nil || app.overlay.Kind != dialog.KindInput {
+		t.Fatal("promptAPIKey did not open an input dialog")
+	}
+	if got := app.overlay.InputValue(); got != "" {
+		t.Fatalf("the key field opened holding %q, want it empty", got)
+	}
+	panel, _ := app.overlayPanel()
+	if !strings.Contains(ansi.Strip(panel), "Paste your API key") {
+		t.Fatalf("the prompt should show as a placeholder:\n%s", ansi.Strip(panel))
+	}
+	// And it is a placeholder, not the value: typing replaces it.
+	app.handleOverlayKey("s")
+	if got := app.overlay.InputValue(); got != "s" {
+		t.Fatalf("after one keystroke the value is %q, want %q", got, "s")
+	}
+}
+
+// Bracketed paste reaches the open dialog. It used to be routed to the prompt
+// editor and dropped whenever a dialog was open, which made the one field
+// most likely to be pasted into — an API key — typeable only by hand.
+func TestBracketedPasteReachesTheInputDialog(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	drive(t, app, app.promptAPIKey("anthropic", "Anthropic"))
+
+	drive(t, app, tea.PasteMsg{Content: "sk-ant-secret-key\n"})
+	if got := app.overlay.InputValue(); got != "sk-ant-secret-key" {
+		t.Fatalf("pasted value = %q, want the key with its trailing newline trimmed", got)
+	}
+	// A second paste appends rather than replacing.
+	drive(t, app, tea.PasteMsg{Content: "-tail"})
+	if got := app.overlay.InputValue(); got != "sk-ant-secret-key-tail" {
+		t.Fatalf("a second paste gave %q", got)
+	}
+}
+
+// A CRLF paste is normalized before it reaches the field, so a key copied on
+// Windows does not arrive with a carriage return in it.
+func TestPasteIntoInputNormalizesLineEndings(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	drive(t, app, app.promptAPIKey("anthropic", "Anthropic"))
+
+	drive(t, app, tea.PasteMsg{Content: "sk-key\r\n"})
+	if got := app.overlay.InputValue(); got != "sk-key" {
+		t.Fatalf("pasted value = %q, want %q", got, "sk-key")
+	}
+}
+
+// A list dialog takes a paste into its filter, with any line structure
+// collapsed — the filter is one row, and a newline in it would tear the row
+// the compositor splices.
+func TestPasteIntoListFiltersIt(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.openList("Commands", []overlayItem{
+		{Label: "New session", Value: "session.new"},
+		{Label: "Select model", Value: "model.select"},
+	})
+
+	drive(t, app, tea.PasteMsg{Content: "select\nmodel"})
+	if got := app.overlay.Filter(); got != "select model" {
+		t.Fatalf("filter = %q, want the paste with its newline collapsed", got)
+	}
+}
+
+// A dialog with nothing to type into says so rather than swallowing the
+// paste: an affordance that silently does nothing looks broken.
+func TestPasteIntoAPanelReportsThereIsNowhereToPutIt(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.openStatusDialog()
+
+	// Update, not drive: the command it returns is the toast's own expiry
+	// tick, and running it here would clear what is being asserted.
+	app.Update(tea.PasteMsg{Content: "anything"})
+	if app.toast == nil {
+		t.Fatal("pasting into a read-only panel should report that it went nowhere")
 	}
 }

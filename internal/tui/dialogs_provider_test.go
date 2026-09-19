@@ -23,7 +23,7 @@ func TestProviderDialogOrdersByPriority(t *testing.T) {
 
 	var ids []string
 	for _, item := range items {
-		ids = append(ids, item.value)
+		ids = append(ids, item.Value)
 	}
 	want := []string{"opencode", "openai", "anthropic", "aaa-obscure", "zzz-obscure", customProviderValue}
 	if len(ids) != len(want) {
@@ -42,10 +42,10 @@ func TestProviderDialogHasCustomOption(t *testing.T) {
 	app := testApp(t)
 	items := app.providerItems(testProviders)
 	last := items[len(items)-1]
-	if last.value != customProviderValue {
-		t.Fatalf("last row = %q, want the custom-provider option", last.value)
+	if last.Value != customProviderValue {
+		t.Fatalf("last row = %q, want the custom-provider option", last.Value)
 	}
-	if last.label != "Other" || last.hint != "Custom provider" {
+	if last.Label != "Other" || last.Hint != "Custom provider" {
 		t.Errorf("custom row = %+v, want Other/Custom provider", last)
 	}
 }
@@ -55,11 +55,11 @@ func TestProviderDialogCategories(t *testing.T) {
 	items := app.providerItems(testProviders)
 	for _, item := range items {
 		want := "Providers"
-		if _, popular := providerPriority[item.value]; popular {
+		if _, popular := providerPriority[item.Value]; popular {
 			want = "Popular"
 		}
-		if item.category != want {
-			t.Errorf("%s category = %q, want %q", item.value, item.category, want)
+		if item.Category != want {
+			t.Errorf("%s category = %q, want %q", item.Value, item.Category, want)
 		}
 	}
 }
@@ -70,12 +70,12 @@ func TestProviderDialogTicksConnected(t *testing.T) {
 	items := app.providerItems(testProviders)
 
 	connected, _ := findItem(items, "anthropic")
-	if connected.gutter != "✓" || !connected.gutterOK {
+	if connected.Gutter != "✓" || !connected.GutterOK {
 		t.Errorf("connected provider = %+v, want a success-colored ✓", connected)
 	}
 	unconnected, _ := findItem(items, "openai")
-	if unconnected.gutter != "" {
-		t.Errorf("unconnected provider must have no tick, got %q", unconnected.gutter)
+	if unconnected.Gutter != "" {
+		t.Errorf("unconnected provider must have no tick, got %q", unconnected.Gutter)
 	}
 }
 
@@ -83,12 +83,12 @@ func TestProviderDialogDescriptions(t *testing.T) {
 	app := testApp(t)
 	items := app.providerItems(testProviders)
 	opencode, _ := findItem(items, "opencode")
-	if opencode.hint != "(Recommended)" {
-		t.Errorf("opencode hint = %q, want %q", opencode.hint, "(Recommended)")
+	if opencode.Hint != "(Recommended)" {
+		t.Errorf("opencode hint = %q, want %q", opencode.Hint, "(Recommended)")
 	}
 	obscure, _ := findItem(items, "zzz-obscure")
-	if obscure.hint != "" {
-		t.Errorf("a provider with no blurb should have none, got %q", obscure.hint)
+	if obscure.Hint != "" {
+		t.Errorf("a provider with no blurb should have none, got %q", obscure.Hint)
 	}
 }
 
@@ -114,10 +114,10 @@ func TestProviderDialogRenders(t *testing.T) {
 	app := testApp(t)
 	app.width, app.height = 120, 40
 	app.openList("Connect a provider", app.providerItems(testProviders))
-	app.overlay.size = dialogLarge
+	app.overlay.SetSize(dialogLarge)
 
 	frame, _ := app.overlayPanel()
-	for _, want := range []string{"Connect a provider", "Popular", "Providers", "Other", "✓"} {
+	for _, want := range []string{"Connect a provider", "POPULAR", "PROVIDERS", "Other", "✓"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("rendered dialog is missing %q:\n%s", want, frame)
 		}
@@ -140,7 +140,7 @@ func TestOAuthWaitShowsCodeAndURL(t *testing.T) {
 			t.Errorf("oauth wait panel is missing %q:\n%s", want, frame)
 		}
 	}
-	if !app.overlay.locked {
+	if !app.overlay.Locked() {
 		t.Error("the wait panel must be locked: there is nothing to select while polling")
 	}
 }

@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -124,26 +123,25 @@ func (a *App) openPluginList() {
 	state.detail = ""
 	a.openList("Plugins", a.pluginItems())
 	o := a.overlay
-	o.size = dialogLarge
-	o.placeholder = "Search plugins..."
-	o.onActivate = func(item overlayItem) tea.Cmd {
+	o.SetSize(dialogLarge)
+	o.SetPlaceholder("Search plugins...")
+	o.SetOnActivate(func(item overlayItem) tea.Cmd {
 		a.togglePlugin(item)
 		return nil
-	}
-	o.onCancel = a.savePluginsOnClose(state)
-	o.actions = []dialogAction{
-		{title: "toggle", keys: "ctrl+t", onTrigger: func(item overlayItem) tea.Cmd {
+	})
+	o.SetOnCancel(a.savePluginsOnClose(state))
+	o.SetActions([]dialogAction{
+		{Title: "toggle", Keys: "ctrl+t", OnTrigger: func(item overlayItem) tea.Cmd {
 			a.togglePlugin(item)
 			return nil
 		}},
-		{title: "details", keys: "right", onTrigger: func(item overlayItem) tea.Cmd {
+		{Title: "details", Keys: "right", OnTrigger: func(item overlayItem) tea.Cmd {
 			a.drillPlugin(item)
 			return nil
 		}},
-	}
-	if len(o.items) == 0 {
-		o.emptyTitle = "No plugins"
-		o.emptyBody = "Nothing is configured in the `plugin` array and no native plugin is loaded."
+	})
+	if !a.overlay.HasItems() {
+		a.overlay.SetEmptyView("No plugins", "Nothing is configured in the `plugin` array and no native plugin is loaded.")
 	}
 }
 
@@ -167,11 +165,11 @@ func (a *App) pluginItems() []overlayItem {
 			status = row.source + " · " + row.state
 		}
 		items = append(items, overlayItem{
-			label:    row.id,
-			hint:     enabledWord(state.enabled[row.spec]) + " — " + status,
-			value:    row.spec,
-			gutter:   gutter,
-			gutterOK: true,
+			Label:    row.id,
+			Hint:     enabledWord(state.enabled[row.spec]) + " — " + status,
+			Value:    row.spec,
+			Gutter:   gutter,
+			GutterOK: true,
 		})
 	}
 	return items
@@ -184,21 +182,16 @@ func (a *App) rebuildPluginItems() {
 	if o == nil || a.pluginDialog == nil || a.pluginDialog.detail != "" {
 		return
 	}
-	selected := o.selected
-	o.all = a.pluginItems()
-	o.applyFilter()
-	if selected < len(o.items) {
-		o.selected = selected
-	}
+	o.SetAllItemsKeepIndex(a.pluginItems())
 }
 
 // togglePlugin flips a plugin's enable state in the working copy.
 func (a *App) togglePlugin(item overlayItem) {
 	state := a.pluginDialog
-	if state == nil || item.value == "" {
+	if state == nil || item.Value == "" {
 		return
 	}
-	state.enabled[item.value] = !state.enabled[item.value]
+	state.enabled[item.Value] = !state.enabled[item.Value]
 	state.dirty = true
 	a.rebuildPluginItems()
 }
@@ -207,33 +200,34 @@ func (a *App) togglePlugin(item overlayItem) {
 // its rows replaced by the plugin's identity, state and registrations.
 func (a *App) drillPlugin(item overlayItem) {
 	state := a.pluginDialog
-	if state == nil || item.label == "" {
+	if state == nil || item.Label == "" {
 		return
 	}
-	row, ok := pluginRow(a.pluginRows(), item.label)
+	row, ok := pluginRow(a.pluginRows(), item.Label)
 	if !ok {
 		return
 	}
 	state.detail = row.id
 	a.openList("Plugins / "+row.id, pluginDetailItems(row, state.enabled[row.spec]))
 	o := a.overlay
-	o.size = dialogLarge
+	o.SetSize(dialogLarge)
 	// A detail row is information, not a choice: enter must not fall through
 	// to activateItem, which closes the dialog.
-	o.onActivate = func(overlayItem) tea.Cmd { return nil }
-	o.onCancel = a.savePluginsOnClose(state)
-	o.actions = []dialogAction{
-		{title: "back", keys: "left", onTrigger: func(overlayItem) tea.Cmd {
+	o.SetOnActivate(func(overlayItem) tea.Cmd { return nil })
+	o.SetOnCancel(a.savePluginsOnClose(state))
+	o.SetActions([]dialogAction{
+		{Title: "back", Keys: "left", OnTrigger: func(overlayItem) tea.Cmd {
 			a.openPluginList()
 			return nil
 		}},
-	}
+	})
 }
 
 // pluginDetailItems is the drill-in body: identity and state as label/value
 // rows, then what the plugin registered, grouped under its own heading. The
-// field names are padded to a common width so the values line up — listRow
-// lays a row out as title, one space, hint, with no column of its own.
+// field names carry no padding of their own — listRow aligns every hint in
+// the dialog at one column, so hand-counting the gap here would only fight
+// it (§9.7: never hand-count the padding per row).
 func pluginDetailItems(row clientPluginRow, enabled bool) []overlayItem {
 	var items []overlayItem
 	field := func(name, value string) {
@@ -242,9 +236,7 @@ func pluginDetailItems(row clientPluginRow, enabled bool) []overlayItem {
 		if value == "" {
 			return
 		}
-		items = append(items, overlayItem{
-			label: name + strings.Repeat(" ", 8-len(name)), hint: value, value: name,
-		})
+		items = append(items, overlayItem{Label: name, Hint: value, Value: name})
 	}
 	yesNo := "no"
 	if enabled {
@@ -264,10 +256,10 @@ func pluginDetailItems(row clientPluginRow, enabled bool) []overlayItem {
 		field("warning", "not in the config's plugin array — enable it, then restart")
 	}
 	for _, hook := range sortStrings(row.hooks) {
-		items = append(items, overlayItem{label: hook, value: "hook:" + hook, category: "hooks"})
+		items = append(items, overlayItem{Label: hook, Value: "hook:" + hook, Category: "hooks"})
 	}
 	for _, tool := range sortStrings(row.tools) {
-		items = append(items, overlayItem{label: tool, value: "tool:" + tool, category: "tools"})
+		items = append(items, overlayItem{Label: tool, Value: "tool:" + tool, Category: "tools"})
 	}
 	return items
 }

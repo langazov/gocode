@@ -83,5 +83,23 @@ func (a *App) pasteFromClipboard() tea.Cmd {
 	case text == "":
 		return nil
 	}
+	if a.overlay != nil {
+		return a.pasteIntoOverlay(text)
+	}
 	return a.handlePaste(tea.PasteMsg{Content: text})
+}
+
+// pasteIntoOverlay hands pasted text to the open dialog. A dialog with
+// nothing to type into says so rather than swallowing the paste — an
+// affordance that silently does nothing is indistinguishable from one that
+// is broken.
+func (a *App) pasteIntoOverlay(text string) tea.Cmd {
+	text = normalizePastedText(text)
+	if text == "" {
+		return nil
+	}
+	if !a.overlay.Paste(text) {
+		return a.showToast("Nothing to paste into here", false)
+	}
+	return nil
 }

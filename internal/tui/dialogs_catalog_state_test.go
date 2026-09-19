@@ -51,10 +51,10 @@ func TestModelDialogEmptyStateDistinguishesLoadingFromNothingConnected(t *testin
 			c.prepare(app)
 			app.openModelDialog(app.catalogModels)
 
-			if got := app.overlay.emptyTitle; got != c.wantTitle {
+			if got := app.overlay.EmptyTitle(); got != c.wantTitle {
 				t.Errorf("emptyTitle = %q, want %q", got, c.wantTitle)
 			}
-			if body := app.overlay.emptyBody; !strings.Contains(body, c.wantInBody) {
+			if body := app.overlay.EmptyBody(); !strings.Contains(body, c.wantInBody) {
 				t.Errorf("emptyBody = %q, want it to mention %q", body, c.wantInBody)
 			}
 		})
@@ -83,20 +83,20 @@ func TestCatalogRefreshDoesNotEmptyTheConnectDialog(t *testing.T) {
 	app.providersOverlay()
 	app.update(providerListMsg{providers: testProviders})
 
-	if len(app.overlay.items) == 0 {
+	if len(app.overlay.Items()) == 0 {
 		t.Fatal("the connect dialog should list the providers it just fetched")
 	}
-	before := len(app.overlay.items)
+	before := len(app.overlay.Items())
 
 	// Now the slower catalog reply arrives carrying the reachable-only list,
 	// which on a fresh machine is empty.
 	app.update(catalogMsg{models: nil, providers: nil, providersOK: true})
 
-	if got := len(app.overlay.items); got != before {
+	if got := len(app.overlay.Items()); got != before {
 		t.Errorf("connect dialog dropped to %d items after the catalog refresh (was %d); "+
 			"the reachable-only list must not overwrite the unfiltered one", got, before)
 	}
-	if _, ok := findItem(app.overlay.items, "anthropic"); !ok {
+	if _, ok := findItem(app.overlay.Items(), "anthropic"); !ok {
 		t.Error("the provider list was emptied by the catalog refresh")
 	}
 }

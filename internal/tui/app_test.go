@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -938,7 +939,7 @@ func TestCommandPalette(t *testing.T) {
 	// model.list is always suggested, and with nothing connected
 	// provider.connect joins it under the Suggested header. Hidden commands
 	// (session.interrupt) never list.
-	if !strings.Contains(view, "Suggested") || !strings.Contains(view, "Connect provider") {
+	if !strings.Contains(view, "SUGGESTED") || !strings.Contains(view, "Connect provider") {
 		t.Fatalf("palette should lead with suggested commands, got %q", view)
 	}
 	if strings.Contains(view, "Interrupt session") {
@@ -950,12 +951,12 @@ func TestCommandPalette(t *testing.T) {
 	// ref.filter is set)
 	press(t, app, "t")
 	press(t, app, "h")
-	if got := len(app.overlay.items); got >= len(app.overlay.all) {
-		t.Fatalf("filter should narrow commands, got %d of %d", got, len(app.overlay.all))
+	if got := len(app.overlay.Items()); got >= len(app.overlay.AllItems()) {
+		t.Fatalf("filter should narrow commands, got %d of %d", got, len(app.overlay.AllItems()))
 	}
-	for _, item := range app.overlay.items {
-		if item.category == "Suggested" {
-			t.Fatalf("a filtered palette must not repeat suggested rows, got %q", item.label)
+	for _, item := range app.overlay.Items() {
+		if item.Category == "Suggested" {
+			t.Fatalf("a filtered palette must not repeat suggested rows, got %q", item.Label)
 		}
 	}
 }
@@ -969,7 +970,7 @@ func TestSlashCommandExecutes(t *testing.T) {
 		press(t, app, string(r))
 	}
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if app.overlay == nil || app.overlay.kind != overlayHelp {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindHelp {
 		t.Fatal("/help should open the help dialog")
 	}
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
@@ -990,7 +991,7 @@ func TestRenameDialog(t *testing.T) {
 	openSession(t, app)
 
 	drive(t, app, tea.KeyPressMsg{Code: 'r', Mod: tea.ModCtrl})
-	if app.overlay == nil || app.overlay.kind != overlayInput {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindInput {
 		t.Fatal("ctrl+r should open the rename dialog")
 	}
 	press(t, app, "!")
@@ -1019,8 +1020,8 @@ func TestModelDialogSwitchesModel(t *testing.T) {
 	}
 
 	// select the first model
-	app.overlay.selected = 0
-	chosen := app.overlay.items[app.overlay.selected]
+	app.overlay.MoveTo(0)
+	_, chosen := app.overlay.SelectedItem()
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 	_ = chosen
 	// The session's own Model field is the source of truth once a session
@@ -1054,7 +1055,7 @@ func TestModelDialogFromHomeAppliesToNewSession(t *testing.T) {
 	if app.overlay == nil {
 		t.Fatal("expected model dialog")
 	}
-	app.overlay.selected = 0
+	app.overlay.MoveTo(0)
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if !app.activeModelSet() {
@@ -1093,17 +1094,17 @@ func TestSkillsDialogOpensViaSlashCommand(t *testing.T) {
 
 	var entry overlayItem
 	for _, item := range app.commandsRegistry() {
-		if item.slash == "skills" {
+		if item.Slash == "skills" {
 			entry = item
 			break
 		}
 	}
-	if entry.action == nil {
+	if entry.Action == nil {
 		t.Fatal("expected a \"skills\" palette entry with slash=\"skills\"")
 	}
 	driveCmd(t, app, runItemAction(entry))
 
-	if app.overlay == nil || app.overlay.title != "Skills" {
+	if app.overlay == nil || app.overlay.Title != "Skills" {
 		t.Fatalf("expected the Skills dialog to open, got overlay %+v", app.overlay)
 	}
 	view := app.View()
@@ -1130,7 +1131,7 @@ func TestSkillDialogSelectionInsertsSlashCommand(t *testing.T) {
 		t.Fatal("expected skills dialog")
 	}
 	// Skills are sorted by name: "artifact-design" before "chunk-sidecar".
-	app.overlay.selected = 0
+	app.overlay.MoveTo(0)
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
 
 	if got := app.input.Value(); got != "/artifact-design " {
@@ -1155,10 +1156,10 @@ func TestSkillsDialogShowsLoadError(t *testing.T) {
 	if app.overlay == nil {
 		t.Fatal("expected skills dialog")
 	}
-	if app.overlay.emptyTitle != "Could not load skills" {
-		t.Errorf("emptyTitle = %q, want the load-failure message", app.overlay.emptyTitle)
+	if app.overlay.EmptyTitle() != "Could not load skills" {
+		t.Errorf("emptyTitle = %q, want the load-failure message", app.overlay.EmptyTitle())
 	}
-	if !app.overlay.locked {
+	if !app.overlay.Locked() {
 		t.Error("a failed load should lock the dialog rather than let it look searchable")
 	}
 }
@@ -1270,7 +1271,7 @@ func TestStatusOverlay(t *testing.T) {
 
 	armLeader(t, app)
 	press(t, app, "s")
-	if app.overlay == nil || app.overlay.kind != overlayStatus {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindStatus {
 		t.Fatal("leader+s should open the status view")
 	}
 	view := app.View()

@@ -1,11 +1,15 @@
 package tui
 
 import (
+	"fmt"
+	"image/color"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 )
 
 // panelLines renders the current dialog panel and returns its plain-text
@@ -21,6 +25,11 @@ func panelLines(t *testing.T, app *App) []string {
 	return out
 }
 
+// isRule reports whether a row is one of the dialog frame's ─ rules.
+func isRule(line string) bool {
+	return strings.Contains(line, "─")
+}
+
 // blank reports whether a rendered panel row carries no text — the panel
 // pads every line to its full width, so gap rows are runs of spaces.
 func blank(line string) bool { return strings.TrimSpace(line) == "" }
@@ -29,71 +38,71 @@ func blank(line string) bool { return strings.TrimSpace(line) == "" }
 // against the text it is meant to end with.
 func trimmed(line string) string { return strings.TrimRight(line, " ") }
 
-// TestAlertDialogLayout pins ui/dialog-alert.tsx: the panel's own paddingTop,
-// the title row with its esc hint, a blank gap, the muted message, the
-// message box's paddingBottom plus the parent gap, then the ok button.
+// TestAlertDialogLayout pins the shared dialog frame on an alert: the
+// panel's paddingTop, the title row with its esc hint, the rule under the
+// header, a gap, the muted message, a gap, the rule above the footer, the
+// button row and the panel's trailing blank.
 func TestAlertDialogLayout(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.openAlert("Retry Error", "the model refused the request", nil)
 	lines := panelLines(t, app)
 
-	if len(lines) != 8 {
-		t.Fatalf("alert panel has %d lines, want 8 (padTop, title, gap, message, "+
-			"padBottom, gap, button, padBottom):\n%q", len(lines), lines)
+	if len(lines) != 9 {
+		t.Fatalf("alert panel has %d lines, want 9 (padTop, title, rule, gap, "+
+			"message, gap, rule, button, padBottom):\n%q", len(lines), lines)
 	}
 	if !blank(lines[0]) {
 		t.Errorf("first row = %q, want the panel's paddingTop", lines[0])
 	}
-	if !strings.HasPrefix(lines[1], "  Retry Error") {
-		t.Errorf("title row = %q, want it padded by 2 with the title", lines[1])
+	if !strings.HasPrefix(lines[1], "   Retry Error") {
+		t.Errorf("title row = %q, want it padded by dialog.PadX with the title", lines[1])
 	}
 	if !strings.HasSuffix(trimmed(lines[1]), "esc") {
 		t.Errorf("title row = %q, want a right-aligned esc hint", lines[1])
 	}
-	if !blank(lines[2]) || !blank(lines[4]) || !blank(lines[5]) || !blank(lines[7]) {
-		t.Errorf("gap rows = %q/%q/%q/%q, want all blank",
-			lines[2], lines[4], lines[5], lines[7])
+	if !isRule(lines[2]) || !isRule(lines[6]) {
+		t.Errorf("rule rows = %q/%q, want the header and footer rules", lines[2], lines[6])
 	}
-	if trimmed(lines[3]) != "  the model refused the request" {
-		t.Errorf("message row = %q", lines[3])
+	if !blank(lines[3]) || !blank(lines[5]) || !blank(lines[8]) {
+		t.Errorf("gap rows = %q/%q/%q, want all blank", lines[3], lines[5], lines[8])
 	}
-	if !strings.HasSuffix(trimmed(lines[6]), "   ok") {
-		t.Errorf("button row = %q, want a right-aligned ok padded by 3", lines[6])
+	if trimmed(lines[4]) != "   the model refused the request" {
+		t.Errorf("message row = %q", lines[4])
+	}
+	if !strings.HasSuffix(trimmed(lines[7]), "  Ok") {
+		t.Errorf("button row = %q, want a right-aligned Ok padded by 2", lines[7])
 	}
 }
 
 // TestAlertButtonIsRightAligned checks the ok button ends at the panel's
-// right padding (justifyContent="flex-end" inside a box padded by 2).
+// shared content column rather than at an inset of its own.
 func TestAlertButtonIsRightAligned(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.openAlert("Title", "body", nil)
 	panel, hits := app.overlayPanel()
-	width := 0
-	for _, line := range strings.Split(panel, "\n") {
-		if w := len(ansi.Strip(line)); w > width {
-			width = w
-		}
+	// Cells, not bytes: the frame's ─ rules are three bytes each.
+	width := lipgloss.Width(panel)
+	if len(hits.Buttons) != 1 {
+		t.Fatalf("got %d button spans, want 1", len(hits.Buttons))
 	}
-	if len(hits.buttons) != 1 {
-		t.Fatalf("got %d button spans, want 1", len(hits.buttons))
-	}
-	if hits.buttons[0].end != width-2 {
-		t.Errorf("ok button ends at col %d, want %d (panel width %d less padding 2)",
-			hits.buttons[0].end, width-2, width)
+	if hits.Buttons[0].End != width-dialog.PadX {
+		t.Errorf("ok button ends at col %d, want %d (panel width %d less PadX)",
+			hits.Buttons[0].End, width-dialog.PadX, width)
 	}
 }
 
-// TestConfirmDialogButtons pins ui/dialog-confirm.tsx: a cancel/confirm pair
-// in that order, titlecased, with confirm active on open.
+// TestConfirmDialogButtons pins the cancel/confirm pair: that order,
+// titlecased, each padded by dialog's single button padding, with a cell
+// between them and confirm active on open.
 func TestConfirmDialogButtons(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.openConfirm("Confirm Redo", "restore the reverted messages?", "", nil, nil)
 	lines := panelLines(t, app)
 	row := trimmed(lines[len(lines)-2])
-	if !strings.HasSuffix(row, " Cancel  Confirm") {
-		t.Fatalf("button row = %q, want cancel then confirm each padded by 1", row)
+	if !strings.HasSuffix(row, "  Cancel     Confirm") {
+		t.Fatalf("button row = %q, want cancel then confirm, each padded by 2", row)
 	}
-	if !app.overlay.confirmActive {
+	if !app.overlay.ConfirmActive() {
 		t.Error("confirm should start active, matching DialogConfirm's initial state")
 	}
 }
@@ -104,7 +113,7 @@ func TestConfirmCancelLabelOverride(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.openConfirm("Delete", "sure?", "keep", nil, nil)
 	lines := panelLines(t, app)
-	if row := trimmed(lines[len(lines)-2]); !strings.HasSuffix(row, " Keep  Confirm") {
+	if row := trimmed(lines[len(lines)-2]); !strings.HasSuffix(row, "  Keep     Confirm") {
 		t.Fatalf("button row = %q, want the titlecased label in place of Cancel", row)
 	}
 }
@@ -157,25 +166,25 @@ func TestAlertEscapeRunsContinuation(t *testing.T) {
 	}
 }
 
-// TestListDialogRendersFilterRow pins DialogSelect's filter input, which sits
-// under the title inside the same padded box (paddingTop 1) and shows the
+// TestListDialogRendersFilterRow pins the filter input: it sits directly
+// under the header rule, carries the ⌕ in the gutter lane, and shows the
 // placeholder while empty.
 func TestListDialogRendersFilterRow(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	app.openList("Commands", []overlayItem{{label: "session.new"}})
+	app.openList("Commands", []overlayItem{{Label: "session.new"}})
 	lines := panelLines(t, app)
-	if !blank(lines[2]) {
-		t.Errorf("row after the title = %q, want the filter box's paddingTop", lines[2])
+	if !isRule(lines[2]) {
+		t.Errorf("row after the title = %q, want the header rule", lines[2])
 	}
-	if trimmed(lines[3]) != "    Search" {
-		t.Errorf("filter row = %q, want the placeholder padded by 4", lines[3])
+	if trimmed(lines[3]) != "   ⌕ Search" {
+		t.Errorf("filter row = %q, want the ⌕ at PadX and the placeholder after it", lines[3])
 	}
 	if !blank(lines[4]) {
 		t.Errorf("row after the filter = %q, want the parent gap", lines[4])
 	}
 
-	app.overlay.filter = "ses"
-	if got := trimmed(panelLines(t, app)[3]); !strings.HasPrefix(got, "    ses") {
+	app.overlay.SetFilter("ses")
+	if got := trimmed(panelLines(t, app)[3]); !strings.HasPrefix(got, "   ⌕ ses") {
 		t.Errorf("filter row = %q, want the typed text", got)
 	}
 }
@@ -183,27 +192,30 @@ func TestListDialogRendersFilterRow(t *testing.T) {
 // TestListDialogCustomPlaceholder pins DialogSelect's placeholder prop.
 func TestListDialogCustomPlaceholder(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	app.openList("Skills", []overlayItem{{label: "review"}})
-	app.overlay.placeholder = "Search skills..."
-	if got := trimmed(panelLines(t, app)[3]); got != "    Search skills..." {
+	app.openList("Skills", []overlayItem{{Label: "review"}})
+	app.overlay.SetPlaceholder("Search skills...")
+	if got := trimmed(panelLines(t, app)[3]); got != "   ⌕ Search skills..." {
 		t.Errorf("filter row = %q", got)
 	}
 }
 
-// TestListDialogHideFilter pins renderFilter={false}: the title is followed
-// straight by the parent gap and the list.
+// TestListDialogHideFilter pins renderFilter={false}: the header rule is
+// followed straight by the parent gap and the list.
 func TestListDialogHideFilter(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	app.openList("Timeline", []overlayItem{{label: "first message"}})
-	app.overlay.hideFilter = true
+	app.openList("Timeline", []overlayItem{{Label: "first message"}})
+	app.overlay.SetHideFilter(true)
 	lines := panelLines(t, app)
 	for _, line := range lines {
 		if strings.Contains(line, "Search") {
 			t.Fatalf("hideFilter should suppress the filter row:\n%q", lines)
 		}
 	}
-	if !blank(lines[2]) {
-		t.Errorf("row after the title = %q, want the parent gap", lines[2])
+	if !isRule(lines[2]) {
+		t.Errorf("row after the title = %q, want the header rule", lines[2])
+	}
+	if !blank(lines[3]) {
+		t.Errorf("row after the rule = %q, want the parent gap", lines[3])
 	}
 }
 
@@ -212,19 +224,40 @@ func TestListDialogHideFilter(t *testing.T) {
 func TestListDialogEmptyView(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.openList("Skills", nil)
-	if !strings.Contains(strings.Join(panelLines(t, app), "\n"), "    No results found") {
+	if !strings.Contains(strings.Join(panelLines(t, app), "\n"), "   No results found") {
 		t.Error("an empty list should fall back to No results found")
 	}
 
-	app.overlay.emptyTitle = "Could not load skills"
-	app.overlay.emptyBody = "connection refused"
+	app.overlay.SetEmptyTitle("Could not load skills")
+	app.overlay.SetEmptyBody("connection refused")
 	rendered := strings.Join(panelLines(t, app), "\n")
 	if strings.Contains(rendered, "No results found") {
 		t.Error("emptyView should replace the default fallback")
 	}
-	if !strings.Contains(rendered, "    Could not load skills") ||
-		!strings.Contains(rendered, "    connection refused") {
+	if !strings.Contains(rendered, "   Could not load skills") ||
+		!strings.Contains(rendered, "   connection refused") {
 		t.Errorf("emptyView not rendered:\n%s", rendered)
+	}
+}
+
+// TestEmptyViewIsRedOnlyWhenTheLoadFailed pins §9.5's distinction: a list
+// that is genuinely empty is not an error, and must not be colored as one.
+func TestEmptyViewIsRedOnlyWhenTheLoadFailed(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.openList("Memories", nil)
+	app.overlay.SetEmptyView("No memories", "Add one with the memory tool.")
+	// The foreground SGR parameters alone: the title also carries bold and
+	// a background, so the rendered prefix is not a single sequence.
+	errSeq := ansiForeground(t, app.theme.Error)
+
+	panel, _ := app.overlayPanel()
+	if strings.Contains(panel, errSeq) {
+		t.Error("an empty list is not a failed one; its title must not be red")
+	}
+
+	app.overlay.SetLocked(true)
+	if panel, _ = app.overlayPanel(); !strings.Contains(panel, errSeq) {
+		t.Error("a locked list reports a failed load, and its title is red")
 	}
 }
 
@@ -232,20 +265,28 @@ func TestListDialogEmptyView(t *testing.T) {
 // movement are inert, and only escape still closes the dialog.
 func TestLockedListIgnoresInput(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
-	app.openList("Skills", []overlayItem{{label: "a"}, {label: "b"}})
-	app.overlay.locked = true
+	app.openList("Skills", []overlayItem{{Label: "a", Value: "a"}, {Label: "b", Value: "b"}})
+	app.overlay.SetLocked(true)
 	for _, key := range []string{"down", "x", "enter"} {
 		app.handleOverlayKey(key)
 	}
 	if app.overlay == nil {
 		t.Fatal("a locked dialog should stay open")
 	}
-	if app.overlay.selected != 0 || app.overlay.filter != "" {
-		t.Errorf("locked dialog moved to %d / filtered %q",
-			app.overlay.selected, app.overlay.filter)
+	if item, _ := app.overlay.SelectedItem(); item.Value != "a" || app.overlay.Filter() != "" {
+		t.Errorf("locked dialog moved to %+v / filtered %q",
+			item.Value, app.overlay.Filter())
 	}
 	app.handleOverlayKey("esc")
 	if app.overlay != nil {
 		t.Error("escape should still close a locked dialog")
 	}
+}
+
+// ansiForeground returns the "38;2;r;g;b" parameters a color renders as, for
+// asserting that a span is painted in a given theme token.
+func ansiForeground(t *testing.T, c color.Color) string {
+	t.Helper()
+	r, g, b, _ := c.RGBA()
+	return fmt.Sprintf("38;2;%d;%d;%d", r>>8, g>>8, b>>8)
 }

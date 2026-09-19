@@ -1,12 +1,12 @@
 package tui
 
 import (
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"strings"
 
 	"github.com/charmbracelet/x/ansi"
 
 	tea "charm.land/bubbletea/v2"
-	"charm.land/lipgloss/v2"
 )
 
 // This file ports packages/tui/src mouse support to Bubble Tea's cell-mouse
@@ -88,14 +88,14 @@ func (a *App) handleMouse(msg tea.MouseMsg) tea.Cmd {
 func (a *App) handleWheel(msg tea.Mouse) tea.Cmd {
 	up := msg.Button == tea.MouseWheelUp
 	if a.overlay != nil {
-		if len(a.overlay.items) == 0 {
+		if !a.overlay.HasItems() {
 			return nil
 		}
 		delta := 1
 		if up {
 			delta = -1
 		}
-		a.moveSelection(a.overlay, delta)
+		a.overlay.Move(delta)
 		return nil
 	}
 	// The diff viewer owns the wheel while open: it scrolls whichever pane
@@ -125,8 +125,8 @@ func (a *App) handleMousePress(msg tea.Mouse) tea.Cmd {
 	}
 	a.selection.begin(msg.Y, msg.X)
 	if a.overlay != nil {
-		if target := a.overlayMouseTarget(msg.Y, msg.X); target.kind == overlayTargetItem {
-			a.moveSelectionTo(a.overlay, target.item)
+		if target := a.overlayMouseTarget(msg.Y, msg.X); target.Kind == dialog.TargetItem {
+			a.overlay.MoveTo(target.Item)
 		}
 	}
 	return nil
@@ -140,8 +140,8 @@ func (a *App) handleMouseMotion(msg tea.Mouse) tea.Cmd {
 		return nil
 	}
 	if a.overlay != nil {
-		if target := a.overlayMouseTarget(msg.Y, msg.X); target.kind == overlayTargetItem {
-			a.moveSelectionTo(a.overlay, target.item)
+		if target := a.overlayMouseTarget(msg.Y, msg.X); target.Kind == dialog.TargetItem {
+			a.overlay.MoveTo(target.Item)
 		}
 	}
 	return nil
@@ -195,29 +195,27 @@ func (a *App) handleClick(x, y int) tea.Cmd {
 		return nil
 	}
 	o := a.overlay
-	switch target := a.overlayMouseTarget(y, x); target.kind {
-	case overlayTargetBackdrop, overlayTargetEsc:
+	switch target := a.overlayMouseTarget(y, x); target.Kind {
+	case dialog.TargetBackdrop, dialog.TargetEsc:
 		// Dismissing with the mouse runs the same onCancel the escape key
 		// does (dialog.tsx settles both through the dialog's onClose): the
 		// theme dialog's revert and the plugins dialog's save are close
 		// handlers, and a click outside the panel must not skip them.
-		return a.resolveOverlay(o.onCancel)
-	case overlayTargetItem:
-		return a.activateItem(o.items[target.item])
-	case overlayTargetAction:
-		if sel, ok := o.selectedItem(); ok {
-			return o.actions[target.action].onTrigger(sel)
-		}
-	case overlayTargetButton:
+		return a.resolveOverlay(o.OnCancel())
+	case dialog.TargetItem:
+		return a.activateItem(o.Items()[target.Item])
+	case dialog.TargetAction:
+		return a.wrapDialogCmd(o.TriggerAction(target.Action))
+	case dialog.TargetButton:
 		// The buttons carry their own onMouseUp in dialog-alert.tsx and
 		// dialog-confirm.tsx; a confirm's row is [cancel, confirm].
-		if o.kind == overlayAlert {
-			return a.resolveOverlay(o.onConfirm)
+		if o.Kind == dialog.KindAlert {
+			return a.resolveOverlay(o.AlertConfirm())
 		}
-		if target.button == 0 {
-			return a.resolveOverlay(o.onCancel)
+		if target.Button == 0 {
+			return a.resolveOverlay(o.OnCancel())
 		}
-		return a.resolveOverlay(o.onConfirm)
+		return a.resolveOverlay(o.ConfirmBranch())
 	}
 	return nil
 }
@@ -272,62 +270,11 @@ func (a *App) taskClickTarget(row int) (childID string, ok bool) {
 	return childID, found
 }
 
-// overlayTargetKind classifies what an absolute screen cell lands on within
-// the open dialog.
-type overlayTargetKind int
-
-const (
-	overlayTargetBackdrop overlayTargetKind = iota // outside the panel: Dialog's backdrop
-	overlayTargetPanel                             // inside the panel, nothing interactive there
-	overlayTargetItem
-	overlayTargetEsc
-	overlayTargetAction
-	overlayTargetButton // an alert's ok, or a confirm's cancel/confirm
-)
-
-type overlayTarget struct {
-	kind   overlayTargetKind
-	item   int
-	action int
-	button int
-}
-
 // overlayMouseTarget resolves an absolute screen (row, col) against the
 // currently open dialog, using the exact same panel render + hit map that
 // produced what's on screen (see overlayPanel/overlayOrigin in dialogs.go).
-func (a *App) overlayMouseTarget(row, col int) overlayTarget {
-	panel, hits := a.overlayPanel()
-	panelW := lipgloss.Width(panel)
-	top, left := a.overlayOrigin(panelW)
-	localRow := row - top
-	localCol := col - left
-	panelLines := strings.Count(panel, "\n") + 1
-	if localRow < 0 || localRow >= panelLines || localCol < 0 || localCol >= panelW {
-		return overlayTarget{kind: overlayTargetBackdrop}
-	}
-	if hits.escRow == localRow && localCol >= hits.escStart && localCol < hits.escEnd {
-		return overlayTarget{kind: overlayTargetEsc}
-	}
-	if hits.buttonRow == localRow {
-		for _, span := range hits.buttons {
-			if localCol >= span.start && localCol < span.end {
-				return overlayTarget{kind: overlayTargetButton, button: span.index}
-			}
-		}
-	}
-	if hits.actionRow == localRow {
-		for _, span := range hits.actions {
-			if localCol >= span.start && localCol < span.end {
-				return overlayTarget{kind: overlayTargetAction, action: span.index}
-			}
-		}
-	}
-	if localRow >= 0 && localRow < len(hits.rowItem) {
-		if idx := hits.rowItem[localRow]; idx >= 0 && a.overlay != nil && idx < len(a.overlay.items) {
-			return overlayTarget{kind: overlayTargetItem, item: idx}
-		}
-	}
-	return overlayTarget{kind: overlayTargetPanel}
+func (a *App) overlayMouseTarget(row, col int) dialog.Target {
+	return a.overlay.MouseTarget(row, col)
 }
 
 // currentFrame renders exactly what's on screen right now (sans selection

@@ -23,6 +23,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/glamour/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 )
 
 const (
@@ -81,7 +82,10 @@ type App struct {
 	toast    *toast
 	linkHits []linkHit // clickable regions recorded by the last render, see link.go
 
-	overlay           *overlay
+	// overlay is the open dialog shell (nil while none is open). See
+	// internal/tui/dialog: every dialog is a huh.Form wrapped in the Shell
+	// that owns the panel chrome and keyboard contract.
+	overlay           *dialog.Shell
 	sidebar           bool
 	sidebarTodos      []client.Todo
 	timestamps        bool
@@ -1280,6 +1284,11 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
+		// An open dialog re-measures: its panel clamps to width-2 and its
+		// list viewport to height/2-6.
+		if a.overlay != nil {
+			a.overlay.SetGeometry(a.width, a.height, a.palette())
+		}
 		// syncPromptSize (called from Update) resizes the editor; the width
 		// and height both depend on the new dimensions.
 		return nil
@@ -1580,7 +1589,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case allStatsMsg:
 		a.allStats = msg.stats
 		// If the stats overlay is open, refresh it with the loaded data.
-		if a.overlay != nil && a.overlay.kind == overlayStats {
+		if a.overlay != nil && a.overlay.Kind == dialog.KindStats {
 			a.invalidateRenderCache()
 		}
 		return nil
@@ -1637,8 +1646,8 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		return tea.Batch(cmds...)
 	case agentListMsg:
 		a.agentList = msg.agents
-		if o := a.overlay; o != nil && o.kind == overlayList && o.title == "Select agent" {
-			filter, selected := o.filter, a.selectedOverlayValue()
+		if o := a.overlay; o != nil && o.Kind == dialog.KindList && o.Title == "Select agent" {
+			filter, selected := o.Filter(), a.selectedOverlayValue()
 			a.openAgentDialog(a.agentList)
 			a.restoreOverlaySelection(filter, selected)
 		}
@@ -1651,8 +1660,8 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 			a.skillListLoaded = true
 			a.skillList = msg.skills
 		}
-		if o := a.overlay; o != nil && o.kind == overlayList && o.title == "Skills" {
-			filter, selected := o.filter, a.selectedOverlayValue()
+		if o := a.overlay; o != nil && o.Kind == dialog.KindList && o.Title == "Skills" {
+			filter, selected := o.Filter(), a.selectedOverlayValue()
 			a.openSkillDialog(a.skillList)
 			a.restoreOverlaySelection(filter, selected)
 		}
@@ -1667,8 +1676,8 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		}
 		// Only rebuild the dialog when it is the one open. A quick add from
 		// the prompt refreshes the cache without stealing focus.
-		if o := a.overlay; o != nil && o.kind == overlayList && o.title == "Memories" {
-			filter, selected := o.filter, a.selectedOverlayValue()
+		if o := a.overlay; o != nil && o.Kind == dialog.KindList && o.Title == "Memories" {
+			filter, selected := o.Filter(), a.selectedOverlayValue()
 			a.openMemoryDialog(a.memoryList)
 			a.restoreOverlaySelection(filter, selected)
 		} else if msg.reopen && a.overlay == nil {
@@ -1735,6 +1744,12 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		// Bracketed paste. Without this case the message falls through the
 		// switch and the pasted text is silently dropped.
 		//
+		// A dialog owns the keyboard while it is open, and that has to
+		// include the paste: routing every paste to the prompt meant the
+		// provider dialog's API key field silently ignored one.
+		if a.overlay != nil {
+			return a.pasteIntoOverlay(msg.Content)
+		}
 		// Gated on the prompt being mounted: an unmounted textarea has no
 		// paste target (upstream's pasteInputText runs inside the Prompt
 		// component's key handling).
@@ -1766,6 +1781,12 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	// A dialog owns the keyboard while open (modal mode in the original).
 	if a.overlay != nil {
+		// ctrl+v ahead of the dialog's own keymap, for the terminals that
+		// do not send a bracketed paste: the shell would otherwise read it
+		// as an unknown chord and drop it.
+		if msg.String() == "ctrl+v" {
+			return a.pasteFromClipboard()
+		}
 		return a.handleOverlayKey(msg.String())
 	}
 	// The diff viewer route owns the keyboard while open, the same way a
@@ -1797,7 +1818,7 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 			a.themesOverlay()
 			return nil
 		case "s":
-			a.overlay = &overlay{kind: overlayStatus, title: "Status"}
+			a.openStatusDialog()
 			return nil
 		case "g":
 			a.openList("Timeline", a.timelineOverlayItems())
@@ -1873,7 +1894,7 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return staticMsg(statusMsg{text: "open a session first"})
 		}
 		current := sessionTitleOf(*a.active)
-		a.openInput("Rename Session", current, func(value string) tea.Msg {
+		a.openInput("Rename Session", current, "", func(value string) tea.Msg {
 			if err := a.client.Rename(a.ctx, a.active.ID, value); err != nil {
 				return statusMsg{text: "rename failed: " + err.Error()}
 			}
@@ -2671,7 +2692,7 @@ func (a *App) runSlashCommand(input string) tea.Cmd {
 	}
 
 	for _, entry := range a.commandsRegistry() {
-		if entry.matchesSlash(name) {
+		if entry.MatchesSlash(name) {
 			return runItemActionWithArgs(entry, arguments)
 		}
 	}
@@ -2707,7 +2728,7 @@ func (a *App) openSlashAutocomplete() {
 func (a *App) openMentionAutocomplete() {
 	var items []autocompleteItem
 	for _, item := range fileMentions("") {
-		path := item.label
+		path := item.Label
 		items = append(items, autocompleteItem{
 			display: "@" + path,
 			value:   path,
@@ -2859,23 +2880,23 @@ func (a *App) slashAutocompleteItems() []autocompleteItem {
 		entry := entry
 		// Hidden commands stay slash-resolvable but are not offered, the
 		// same isVisiblePaletteCommand gate the palette itself applies.
-		if entry.slash == "" || entry.hidden {
+		if entry.Slash == "" || entry.Hidden {
 			continue
 		}
 		// The description is the command's desc falling back to its title
 		// (useCommandSlashes), with this port's alias suffix so the extra
 		// names stay discoverable.
-		description := entry.hint
+		description := entry.Hint
 		if description == "" {
-			description = entry.label
+			description = entry.Label
 		}
-		if len(entry.slashAliases) > 0 {
-			description = strings.TrimSpace(description + " (" + strings.Join(entry.slashAliases, ", ") + ")")
+		if len(entry.SlashAliases) > 0 {
+			description = strings.TrimSpace(description + " (" + strings.Join(entry.SlashAliases, ", ") + ")")
 		}
 		items = append(items, autocompleteItem{
-			display:     "/" + entry.slash,
+			display:     "/" + entry.Slash,
 			description: description,
-			value:       entry.slash,
+			value:       entry.Slash,
 			action:      func() tea.Cmd { return runItemAction(entry) },
 		})
 	}
@@ -2899,11 +2920,11 @@ func (a *App) slashCommandItems() []overlayItem {
 			category = "Skills"
 		}
 		items = append(items, overlayItem{
-			label:    entry.Name,
-			hint:     hint,
-			value:    entry.Name,
-			category: category,
-			action: func() tea.Msg {
+			Label:    entry.Name,
+			Hint:     hint,
+			Value:    entry.Name,
+			Category: category,
+			Action: func() tea.Msg {
 				a.input.SetValue("/" + entry.Name + " ")
 				a.input.MoveToEnd()
 				return nil
@@ -2915,20 +2936,20 @@ func (a *App) slashCommandItems() []overlayItem {
 		// Listed under the name a user actually types. An interface command
 		// with no slash name is palette-only, exactly as upstream drops any
 		// entry whose slashName is unset.
-		if entry.slash == "" {
+		if entry.Slash == "" {
 			continue
 		}
-		hint := entry.hint
-		if len(entry.slashAliases) > 0 {
-			hint = strings.TrimSpace(hint + "  (" + strings.Join(entry.slashAliases, ", ") + ")")
+		hint := entry.Hint
+		if len(entry.SlashAliases) > 0 {
+			hint = strings.TrimSpace(hint + "  (" + strings.Join(entry.SlashAliases, ", ") + ")")
 		}
 		items = append(items, overlayItem{
-			label:    entry.slash,
-			hint:     hint,
-			value:    entry.slash,
-			category: "Interface",
-			footer:   entry.footer,
-			action:   entry.action,
+			Label:    entry.Slash,
+			Hint:     hint,
+			Value:    entry.Slash,
+			Category: "Interface",
+			Footer:   entry.Footer,
+			Action:   entry.Action,
 		})
 	}
 	return items
@@ -2940,8 +2961,8 @@ func (a *App) openFileMentions() {
 	query := ""
 	items := fileMentions(query)
 	for i := range items {
-		path := items[i].label
-		items[i].action = func() tea.Msg {
+		path := items[i].Label
+		items[i].Action = func() tea.Msg {
 			a.input.InsertString(path + " ")
 			return nil
 		}

@@ -64,11 +64,11 @@ func TestThemesOverlayCancelRestoresAndPersists(t *testing.T) {
 	initial := app.theme.Name
 
 	app.themesOverlay()
-	if app.overlay == nil || app.overlay.onMove == nil || app.overlay.onCancel == nil {
+	if app.overlay == nil || app.overlay.OnMoveHook() == nil || app.overlay.OnCancel() == nil {
 		t.Fatal("themesOverlay did not wire onMove/onCancel")
 	}
 	// Simulate browsing to a different theme.
-	app.overlay.onMove(overlayItem{value: "gruvbox-light"})
+	app.overlay.OnMoveHook()(overlayItem{Value: "gruvbox-light"})
 	if app.theme.Name != "gruvbox-light" {
 		t.Fatalf("theme after onMove = %q, want gruvbox-light", app.theme.Name)
 	}
@@ -78,7 +78,7 @@ func TestThemesOverlayCancelRestoresAndPersists(t *testing.T) {
 
 	// Escape: onCancel should put the original theme back, in-memory and
 	// on disk.
-	app.overlay.onCancel()
+	app.overlay.OnCancel()()
 	if app.theme.Name != initial {
 		t.Fatalf("theme after onCancel = %q, want %q", app.theme.Name, initial)
 	}

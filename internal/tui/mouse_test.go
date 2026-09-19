@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"strings"
 	"testing"
 
@@ -146,13 +147,21 @@ func TestExtractSelectionMultiLineTrimsTrailingSpace(t *testing.T) {
 
 // --- overlay hit-testing ---------------------------------------------------
 
-func testListOverlay(items ...overlayItem) *overlay {
-	return &overlay{kind: overlayList, title: "Test", items: items, all: items}
+func testListOverlay(items ...overlayItem) *dialog.Shell {
+	return dialog.NewList("Test", items)
 }
 
-// rowForItem finds the panel-relative row hits.rowItem assigns to item index.
-func rowForItem(hits *overlayHits, item int) int {
-	for row, idx := range hits.rowItem {
+// mountList installs a test list dialog the way a real open would, with the
+// App's geometry and palette applied.
+func mountList(app *App, items ...overlayItem) *dialog.Shell {
+	app.overlay = dialog.NewList("Test", items)
+	app.overlay.SetGeometry(app.width, app.height, app.palette())
+	return app.overlay
+}
+
+// rowForItem finds the panel-relative row hits.RowItem assigns to item index.
+func rowForItem(hits *dialog.Hits, item int) int {
+	for row, idx := range hits.RowItem {
 		if idx == item {
 			return row
 		}
@@ -163,9 +172,9 @@ func rowForItem(hits *overlayHits, item int) int {
 func TestOverlayMouseTargetResolvesItemEscAndBackdrop(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.width, app.height = 100, 40
-	app.overlay = testListOverlay(
-		overlayItem{label: "Alpha", value: "a"},
-		overlayItem{label: "Bravo", value: "b"},
+	mountList(app,
+		overlayItem{Label: "Alpha", Value: "a"},
+		overlayItem{Label: "Bravo", Value: "b"},
 	)
 
 	panel, hits := app.overlayPanel()
@@ -173,38 +182,38 @@ func TestOverlayMouseTargetResolvesItemEscAndBackdrop(t *testing.T) {
 
 	row := rowForItem(hits, 1)
 	if row < 0 {
-		t.Fatalf("hits.rowItem has no row for item 1: %v", hits.rowItem)
+		t.Fatalf("hits.RowItem has no row for item 1: %v", hits.RowItem)
 	}
-	if target := app.overlayMouseTarget(top+row, left+5); target.kind != overlayTargetItem || target.item != 1 {
+	if target := app.overlayMouseTarget(top+row, left+5); target.Kind != dialog.TargetItem || target.Item != 1 {
 		t.Fatalf("overlayMouseTarget on Bravo's row = %+v, want item 1", target)
 	}
 
-	if hits.escRow < 0 {
+	if hits.EscRow < 0 {
 		t.Fatalf("list overlay should have an esc hint row")
 	}
-	if target := app.overlayMouseTarget(top+hits.escRow, left+hits.escStart); target.kind != overlayTargetEsc {
-		t.Fatalf("overlayMouseTarget on the esc hint = %+v, want overlayTargetEsc", target)
+	if target := app.overlayMouseTarget(top+hits.EscRow, left+hits.EscStart); target.Kind != dialog.TargetEsc {
+		t.Fatalf("overlayMouseTarget on the esc hint = %+v, want dialog.TargetEsc", target)
 	}
 
-	if target := app.overlayMouseTarget(0, 0); target.kind != overlayTargetBackdrop {
-		t.Fatalf("overlayMouseTarget at (0,0) = %+v, want overlayTargetBackdrop (top=%d)", target, top)
+	if target := app.overlayMouseTarget(0, 0); target.Kind != dialog.TargetBackdrop {
+		t.Fatalf("overlayMouseTarget at (0,0) = %+v, want dialog.TargetBackdrop (top=%d)", target, top)
 	}
 }
 
 func TestOverlayMouseTargetResolvesFooterAction(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.width, app.height = 100, 40
-	app.overlay = testListOverlay(overlayItem{label: "Alpha", value: "a"})
-	app.overlay.actions = []dialogAction{{title: "delete", keys: "ctrl+d"}}
+	mountList(app, overlayItem{Label: "Alpha", Value: "a"})
+	app.overlay.SetActions([]dialogAction{{Title: "delete", Keys: "ctrl+d"}})
 
 	panel, hits := app.overlayPanel()
 	top, left := app.overlayOrigin(lipgloss.Width(panel))
-	if hits.actionRow < 0 || len(hits.actions) == 0 {
+	if hits.ActionRow < 0 || len(hits.Actions) == 0 {
 		t.Fatalf("expected a footer action row, hits=%+v", hits)
 	}
-	span := hits.actions[0]
-	target := app.overlayMouseTarget(top+hits.actionRow, left+span.start)
-	if target.kind != overlayTargetAction || target.action != 0 {
+	span := hits.Actions[0]
+	target := app.overlayMouseTarget(top+hits.ActionRow, left+span.Start)
+	if target.Kind != dialog.TargetAction || target.Action != 0 {
 		t.Fatalf("overlayMouseTarget on the action label = %+v, want action 0", target)
 	}
 }
@@ -215,9 +224,9 @@ func TestMouseHoverPreselectsWithoutActivating(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.width, app.height = 100, 40
 	activated := false
-	app.overlay = testListOverlay(
-		overlayItem{label: "Alpha", value: "a"},
-		overlayItem{label: "Bravo", value: "b", action: func() tea.Msg { activated = true; return nil }},
+	mountList(app,
+		overlayItem{Label: "Alpha", Value: "a"},
+		overlayItem{Label: "Bravo", Value: "b", Action: func() tea.Msg { activated = true; return nil }},
 	)
 
 	panel, hits := app.overlayPanel()
@@ -225,8 +234,9 @@ func TestMouseHoverPreselectsWithoutActivating(t *testing.T) {
 	row := rowForItem(hits, 1)
 
 	drive(t, app, tea.MouseMotionMsg{X: left + 5, Y: top + row})
-	if app.overlay == nil || app.overlay.selected != 1 {
-		t.Fatalf("hovering item 1 should preselect it without activating, overlay=%+v", app.overlay)
+	item, _ := app.overlay.SelectedItem()
+	if app.overlay == nil || item.Value != "b" {
+		t.Fatalf("hovering item 1 should preselect it without activating, got %+v", item)
 	}
 	if activated {
 		t.Fatalf("hover must not activate the item")
@@ -237,9 +247,9 @@ func TestMousePlainClickActivatesRowAndClosesDialog(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.width, app.height = 100, 40
 	activated := false
-	app.overlay = testListOverlay(
-		overlayItem{label: "Alpha", value: "a"},
-		overlayItem{label: "Bravo", value: "b", action: func() tea.Msg { activated = true; return nil }},
+	mountList(app,
+		overlayItem{Label: "Alpha", Value: "a"},
+		overlayItem{Label: "Bravo", Value: "b", Action: func() tea.Msg { activated = true; return nil }},
 	)
 
 	panel, hits := app.overlayPanel()
@@ -260,7 +270,7 @@ func TestMousePlainClickActivatesRowAndClosesDialog(t *testing.T) {
 func TestMouseClickBackdropClosesDialog(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.width, app.height = 100, 40
-	app.overlay = testListOverlay(overlayItem{label: "Alpha", value: "a"})
+	mountList(app, overlayItem{Label: "Alpha", Value: "a"})
 
 	drive(t, app, tea.MouseClickMsg{X: 0, Y: 0, Button: tea.MouseLeft})
 	drive(t, app, tea.MouseReleaseMsg{X: 0, Y: 0, Button: tea.MouseLeft})
@@ -274,13 +284,13 @@ func TestMouseDragSelectsAndCopiesWithoutActivating(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.width, app.height = 100, 40
 	activated := false
-	app.overlay = testListOverlay(overlayItem{label: "Alpha", value: "a", action: func() tea.Msg { activated = true; return nil }})
+	mountList(app, overlayItem{Label: "Alpha", Value: "a", Action: func() tea.Msg { activated = true; return nil }})
 
 	// Drag across the dialog's own "Test" title (the esc-hint row, pad 4) so
 	// there's real, non-blank text under the selection to copy.
 	panel, hits := app.overlayPanel()
 	top, left := app.overlayOrigin(lipgloss.Width(panel))
-	titleRow := top + hits.escRow
+	titleRow := top + hits.EscRow
 	// Update directly (not drive): the release's returned Cmd is the toast's
 	// real-time expiry tick, which a full drive would run to completion.
 	app.Update(tea.MouseClickMsg{X: left + 4, Y: titleRow, Button: tea.MouseLeft})
@@ -313,16 +323,16 @@ func TestMouseWheelScrollsChatAndOverlayList(t *testing.T) {
 		t.Fatalf("wheel up should increase scrollOffset by %d, got %d", wheelScrollLines, app.scrollOffset)
 	}
 
-	app.overlay = testListOverlay(
-		overlayItem{value: "a"}, overlayItem{value: "b"}, overlayItem{value: "c"},
+	mountList(app,
+		overlayItem{Value: "a"}, overlayItem{Value: "b"}, overlayItem{Value: "c"},
 	)
 	drive(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelDown})
-	if app.overlay.selected != 1 {
-		t.Fatalf("wheel down over an open list dialog should move the selection, got %d", app.overlay.selected)
+	if app.overlay.SelectedIndex() != 1 {
+		t.Fatalf("wheel down over an open list dialog should move the selection, got %d", app.overlay.SelectedIndex())
 	}
 	drive(t, app, tea.MouseWheelMsg{Button: tea.MouseWheelUp})
-	if app.overlay.selected != 0 {
-		t.Fatalf("wheel up over an open list dialog should move the selection back, got %d", app.overlay.selected)
+	if app.overlay.SelectedIndex() != 0 {
+		t.Fatalf("wheel up over an open list dialog should move the selection back, got %d", app.overlay.SelectedIndex())
 	}
 }
 
@@ -331,10 +341,10 @@ func TestMouseWheelScrollsChatAndOverlayList(t *testing.T) {
 func TestCtrlCCopiesSelectionInsteadOfQuitting(t *testing.T) {
 	app := newTestApp(t, "http://example.invalid")
 	app.width, app.height = 100, 40
-	app.overlay = testListOverlay(overlayItem{label: "Alpha", value: "a"})
+	mountList(app, overlayItem{Label: "Alpha", Value: "a"})
 	panel, hits := app.overlayPanel()
 	top, left := app.overlayOrigin(lipgloss.Width(panel))
-	titleRow := top + hits.escRow
+	titleRow := top + hits.EscRow
 	app.selection.begin(titleRow, left+4) // over the dialog's "Test" title
 	app.selection.extend(titleRow, left+8)
 

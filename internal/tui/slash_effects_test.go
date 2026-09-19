@@ -76,7 +76,7 @@ func TestSlashCommandsAllDoSomething(t *testing.T) {
 func snapshotEffects(app *App) string {
 	var builder strings.Builder
 	if app.overlay != nil {
-		builder.WriteString("overlay:" + app.overlay.title + ";")
+		builder.WriteString("overlay:" + app.overlay.Title + ";")
 	}
 	if app.active != nil {
 		builder.WriteString("session:" + app.active.ID + ";")
@@ -122,8 +122,8 @@ func TestSlashModelsOpensTheDialog(t *testing.T) {
 	if app.overlay == nil {
 		t.Fatal("/models did not open a dialog")
 	}
-	if app.overlay.title != "Select model" {
-		t.Errorf("dialog title = %q", app.overlay.title)
+	if app.overlay.Title != "Select model" {
+		t.Errorf("dialog title = %q", app.overlay.Title)
 	}
 	if cmd != nil {
 		drive(t, app, cmd())

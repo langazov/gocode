@@ -127,6 +127,7 @@ Known deliberate divergences:
 | `/api/vcs*` takes no `directory` parameter | this server is one project per process (`bootStack`); the TS server is multi-project and resolves the worktree per request |
 | Diff viewer has no "last turn" source | TS derives it from snapshot hashes (`snapshot.diffFull`); this port records no snapshots — `AssistantSnapshot` exists in the wire schema but nothing populates it, and rebuilding the snapshot system for one viewer is out of scope. The viewer offers working-tree and main-branch sources only |
 | Diff viewer does not read `diff_style: "stacked"` | the Go config schema has no such key; the viewer's split/unified toggle persists in its own state file like every other viewer preference |
+| Dialogs run on charm.land/huh/v2, not hand-rolled rendering | the port's dialogs keep the TS layout and keyboard contract exactly (see the recommendations' §9) but the engine is a huh form embedded in the `dialog.Shell` wrapper; stock huh fields are used where the contract allows and two custom fields supply the DialogSelect/readonly rendering huh cannot express |
 
 ## CI
 

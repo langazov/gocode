@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -39,7 +40,7 @@ func pluginTestApp(t *testing.T) (*App, string) {
 	return app, filepath.Join(dir, "gocode", "gocode.json")
 }
 
-func openPluginsDialog(t *testing.T, app *App) *overlay {
+func openPluginsDialog(t *testing.T, app *App) *dialog.Shell {
 	t.Helper()
 	// The returned command is the rescan; the tests that care about it drive
 	// it themselves against a stub server.
@@ -47,7 +48,7 @@ func openPluginsDialog(t *testing.T, app *App) *overlay {
 	// The dialog is an ordinary DialogSelect, like the theme picker: no
 	// bespoke overlay kind, so it inherits the filter, the scroll window and
 	// the mouse hit map.
-	if app.overlay == nil || app.overlay.kind != overlayList {
+	if app.overlay == nil || app.overlay.Kind != dialog.KindList {
 		t.Fatal("pluginsOverlay did not open a list dialog")
 	}
 	return app.overlay
@@ -58,13 +59,13 @@ func TestPluginsDialogListsPlugins(t *testing.T) {
 	app, _ := pluginTestApp(t)
 	o := openPluginsDialog(t, app)
 
-	if len(o.items) != 2 {
-		t.Fatalf("items = %d, want 2", len(o.items))
+	if len(o.Items()) != 2 {
+		t.Fatalf("items = %d, want 2", len(o.Items()))
 	}
 	// Enabled rows carry the ✓ gutter the connect dialog uses.
-	for _, item := range o.items {
-		if item.gutter != "✓" || !item.gutterOK {
-			t.Fatalf("enabled row %q should carry the success gutter, got %q", item.label, item.gutter)
+	for _, item := range o.Items() {
+		if item.Gutter != "✓" || !item.GutterOK {
+			t.Fatalf("enabled row %q should carry the success gutter, got %q", item.Label, item.Gutter)
 		}
 	}
 	view := ansi.Strip(app.View())
@@ -93,11 +94,11 @@ func TestPluginsDialogToggleKeys(t *testing.T) {
 	if !state.dirty {
 		t.Fatal("a change must mark the dialog dirty")
 	}
-	if o.items[0].hint != "disabled — process · running" {
-		t.Fatalf("row hint = %q, want disabled", o.items[0].hint)
+	if o.Items()[0].Hint != "disabled — process · running" {
+		t.Fatalf("row hint = %q, want disabled", o.Items()[0].Hint)
 	}
-	if o.items[0].gutter != "" {
-		t.Fatalf("a disabled row should have no ✓, got %q", o.items[0].gutter)
+	if o.Items()[0].Gutter != "" {
+		t.Fatalf("a disabled row should have no ✓, got %q", o.Items()[0].Gutter)
 	}
 
 	// enter toggles it back on.
@@ -123,11 +124,11 @@ func TestPluginsDialogFilters(t *testing.T) {
 	for _, r := range "sub" {
 		drive(t, app, tea.KeyPressMsg{Text: string(r), Code: r})
 	}
-	if o.filter != "sub" {
-		t.Fatalf("filter = %q, want sub", o.filter)
+	if o.Filter() != "sub" {
+		t.Fatalf("filter = %q, want sub", o.Filter())
 	}
-	if len(o.items) != 1 || o.items[0].label != "subagents" {
-		t.Fatalf("filtered items = %+v, want just subagents", o.items)
+	if len(o.Items()) != 1 || o.Items()[0].Label != "subagents" {
+		t.Fatalf("filtered items = %+v, want just subagents", o.Items())
 	}
 	if app.pluginDialog.dirty {
 		t.Fatal("typing a filter must not change any enable state")
@@ -135,8 +136,8 @@ func TestPluginsDialogFilters(t *testing.T) {
 
 	// A toggle rebuilds the rows without dropping the filter.
 	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if len(o.items) != 1 || o.items[0].hint != "disabled — native · loaded" {
-		t.Fatalf("rebuilt filtered row = %+v", o.items)
+	if len(o.Items()) != 1 || o.Items()[0].Hint != "disabled — native · loaded" {
+		t.Fatalf("rebuilt filtered row = %+v", o.Items())
 	}
 }
 
@@ -150,7 +151,7 @@ func TestPluginsDialogDrillDown(t *testing.T) {
 		t.Fatalf("detail = %q, want rag-plugin", app.pluginDialog.detail)
 	}
 	view := ansi.Strip(app.View())
-	for _, want := range []string{"spec", "/work/rag-plugin", "process", "running", "tools", "rag_index", "rag_search", "back"} {
+	for _, want := range []string{"spec", "/work/rag-plugin", "process", "running", "TOOLS", "rag_index", "rag_search", "back"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("detail view missing %q, got:\n%s", want, view)
 		}
@@ -167,8 +168,8 @@ func TestPluginsDialogDrillDown(t *testing.T) {
 	if app.pluginDialog.detail != "" {
 		t.Fatal("left did not return to the list level")
 	}
-	if app.overlay.title != "Plugins" {
-		t.Fatalf("title = %q, want Plugins", app.overlay.title)
+	if app.overlay.Title != "Plugins" {
+		t.Fatalf("title = %q, want Plugins", app.overlay.Title)
 	}
 
 	// esc from the detail level closes (and saves), it does not step back.
@@ -246,18 +247,18 @@ func TestPluginsDialogShowsInstalledAsDisabled(t *testing.T) {
 		available:  []client.PluginAvailable{{Name: "lint", Ref: "lint", Path: "/home/u/.config/gocode/plugin/lint"}},
 	})
 
-	if len(o.items) != 3 {
-		t.Fatalf("items = %d, want 3 (two configured, one installed)", len(o.items))
+	if len(o.Items()) != 3 {
+		t.Fatalf("items = %d, want 3 (two configured, one installed)", len(o.Items()))
 	}
-	found := o.items[2]
-	if found.label != "lint" {
-		t.Fatalf("installed plugin should come last, got %+v", o.items)
+	found := o.Items()[2]
+	if found.Label != "lint" {
+		t.Fatalf("installed plugin should come last, got %+v", o.Items())
 	}
-	if found.hint != "disabled — installed" {
-		t.Fatalf("installed row hint = %q, want disabled", found.hint)
+	if found.Hint != "disabled — installed" {
+		t.Fatalf("installed row hint = %q, want disabled", found.Hint)
 	}
-	if found.gutter != "" {
-		t.Fatalf("an unconfigured plugin must not show the enabled ✓, got %q", found.gutter)
+	if found.Gutter != "" {
+		t.Fatalf("an unconfigured plugin must not show the enabled ✓, got %q", found.Gutter)
 	}
 	if app.pluginDialog.dirty {
 		t.Fatal("discovering a plugin is not an edit")
@@ -376,7 +377,7 @@ func TestPluginsSlashCommand(t *testing.T) {
 	app, _ := pluginTestApp(t)
 	found := false
 	for _, entry := range app.commandsRegistry() {
-		if entry.slash == "plugins" {
+		if entry.Slash == "plugins" {
 			found = true
 			drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
 			break

@@ -26,31 +26,28 @@ func (a *App) memoriesOverlay() tea.Cmd {
 func (a *App) openMemoryDialog(memories []client.Memory) {
 	a.openList("Memories", a.memoryItems(memories))
 	o := a.overlay
-	o.size = dialogLarge
-	o.placeholder = "Search memories..."
-	o.actions = []dialogAction{
-		// standalone: adding must work from the empty list, which is where a
+	o.SetSize(dialogLarge)
+	o.SetPlaceholder("Search memories...")
+	o.SetActions([]dialogAction{
+		// Standalone: adding must work from the empty list, which is where a
 		// user most needs it. ctrl+a rather than ctrl+n, which the list
 		// dialog already binds to "move down".
-		{title: "new", keys: "ctrl+a", standalone: true, onTrigger: a.newMemoryAction},
-		{title: "edit", keys: "ctrl+r", onTrigger: a.editMemoryAction},
-		{title: "delete", keys: "ctrl+d", onTrigger: a.deleteMemoryAction},
-		{title: "scope", keys: "ctrl+g", onTrigger: a.toggleMemoryScopeAction},
-		{title: "mute", keys: "ctrl+t", onTrigger: a.toggleMemoryMutedAction},
-	}
+		{Title: "new", Keys: "ctrl+a", Standalone: true, OnTrigger: a.newMemoryAction},
+		{Title: "edit", Keys: "ctrl+r", OnTrigger: a.editMemoryAction},
+		{Title: "delete", Keys: "ctrl+d", OnTrigger: a.deleteMemoryAction},
+		{Title: "scope", Keys: "ctrl+g", OnTrigger: a.toggleMemoryScopeAction},
+		{Title: "mute", Keys: "ctrl+t", OnTrigger: a.toggleMemoryMutedAction},
+	})
 	if len(memories) == 0 {
 		switch {
 		case a.memoryListErr != "":
-			o.emptyTitle = "Could not load memories"
-			o.emptyBody = a.memoryListErr
-			o.locked = true
-			o.hideFilter = true
+			o.SetEmptyView("Could not load memories", a.memoryListErr)
+			o.SetLocked(true)
+			o.SetHideFilter(true)
 		case !a.memoryListLoaded:
-			o.emptyTitle = "Loading memories"
-			o.emptyBody = "Fetching saved memories..."
+			o.SetEmptyView("Loading memories", "Fetching saved memories...")
 		default:
-			o.emptyTitle = "No memories yet"
-			o.emptyBody = "Press ctrl+a to add one, or type /memory <instruction> in the prompt."
+			o.SetEmptyView("No memories yet", "Press ctrl+a to add one, or type /memory <instruction> in the prompt.")
 		}
 	}
 }
@@ -78,11 +75,11 @@ func (a *App) memoryItems(memories []client.Memory) []overlayItem {
 			category = "Global"
 		}
 		items = append(items, overlayItem{
-			label:    strings.Join(strings.Fields(item.Content), " "),
-			hint:     memoryHint(item),
-			value:    item.ID,
-			category: category,
-			gutter:   memoryGutter(item),
+			Label:    strings.Join(strings.Fields(item.Content), " "),
+			Hint:     memoryHint(item),
+			Value:    item.ID,
+			Category: category,
+			Gutter:   memoryGutter(item),
 		})
 	}
 	return items
@@ -135,7 +132,7 @@ func (a *App) newMemoryAction(overlayItem) tea.Cmd {
 	// openInput closes the manager before running this callback, so the
 	// refresh has to put it back — otherwise saving a memory makes the list
 	// the user was working in disappear.
-	a.openInput("New Memory", "", func(value string) tea.Msg {
+	a.openInput("New Memory", "", "What should be remembered?", func(value string) tea.Msg {
 		saved, err := a.client.CreateMemory(a.ctx, value, "project")
 		if err != nil {
 			return statusMsg{text: "could not save memory: " + err.Error()}
@@ -146,14 +143,14 @@ func (a *App) newMemoryAction(overlayItem) tea.Cmd {
 }
 
 func (a *App) editMemoryAction(item overlayItem) tea.Cmd {
-	existing, ok := a.memoryByID(item.value)
+	existing, ok := a.memoryByID(item.Value)
 	if !ok {
 		return nil
 	}
 	id := existing.ID
 	// As with a new memory, the input dialog has replaced the manager by the
 	// time this runs, so the refresh reopens it.
-	a.openInput("Edit Memory", existing.Content, func(value string) tea.Msg {
+	a.openInput("Edit Memory", existing.Content, "", func(value string) tea.Msg {
 		if _, err := a.client.UpdateMemory(a.ctx, id, client.MemoryPatch{Content: &value}); err != nil {
 			return statusMsg{text: "edit failed: " + err.Error()}
 		}
@@ -170,13 +167,12 @@ func (a *App) deleteMemoryAction(item overlayItem) tea.Cmd {
 	if o == nil {
 		return nil
 	}
-	if o.armValue != item.value {
-		o.armValue = item.value
-		o.armKeys = "ctrl+d"
+	if o.Armed() != item.Value {
+		o.Arm(item.Value, "ctrl+d")
 		return nil
 	}
-	o.armValue = ""
-	id := item.value
+	o.Disarm()
+	id := item.Value
 	return func() tea.Msg {
 		if err := a.client.DeleteMemory(a.ctx, id); err != nil {
 			return statusMsg{text: "delete failed: " + err.Error()}
@@ -186,7 +182,7 @@ func (a *App) deleteMemoryAction(item overlayItem) tea.Cmd {
 }
 
 func (a *App) toggleMemoryScopeAction(item overlayItem) tea.Cmd {
-	existing, ok := a.memoryByID(item.value)
+	existing, ok := a.memoryByID(item.Value)
 	if !ok {
 		return nil
 	}
@@ -207,7 +203,7 @@ func (a *App) toggleMemoryScopeAction(item overlayItem) tea.Cmd {
 // the reason `disabled` exists as a column rather than the user having to
 // delete and retype.
 func (a *App) toggleMemoryMutedAction(item overlayItem) tea.Cmd {
-	existing, ok := a.memoryByID(item.value)
+	existing, ok := a.memoryByID(item.Value)
 	if !ok {
 		return nil
 	}

@@ -29,21 +29,18 @@ func (a *App) skillsOverlay() tea.Cmd {
 func (a *App) openSkillDialog(skills []client.Skill) {
 	a.openList("Skills", a.skillItems(skills))
 	o := a.overlay
-	o.size = dialogLarge
-	o.placeholder = "Search skills..."
+	o.SetSize(dialogLarge)
+	o.SetPlaceholder("Search skills...")
 	if len(skills) == 0 {
 		switch {
 		case a.skillListErr != "":
-			o.emptyTitle = "Could not load skills"
-			o.emptyBody = a.skillListErr
-			o.locked = true
-			o.hideFilter = true
+			o.SetEmptyView("Could not load skills", a.skillListErr)
+			o.SetLocked(true)
+			o.SetHideFilter(true)
 		case !a.skillListLoaded:
-			o.emptyTitle = "Loading skills"
-			o.emptyBody = "Fetching the skill list..."
+			o.SetEmptyView("Loading skills", "Fetching the skill list...")
 		default:
-			o.emptyTitle = "No skills found"
-			o.emptyBody = "No SKILL.md files were discovered for this project."
+			o.SetEmptyView("No skills found", "No SKILL.md files were discovered for this project.")
 		}
 	}
 }
@@ -61,11 +58,11 @@ func (a *App) skillItems(skills []client.Skill) []overlayItem {
 	for _, skill := range sorted {
 		skill := skill
 		items = append(items, overlayItem{
-			label:    skill.Name,
-			hint:     strings.Join(strings.Fields(skill.Description), " "),
-			value:    skill.Name,
-			category: "Skills",
-			action: func() tea.Msg {
+			Label:    skill.Name,
+			Hint:     strings.Join(strings.Fields(skill.Description), " "),
+			Value:    skill.Name,
+			Category: "Skills",
+			Action: func() tea.Msg {
 				a.input.SetValue("/" + skill.Name + " ")
 				a.input.MoveToEnd()
 				return nil

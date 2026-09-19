@@ -264,10 +264,10 @@ func (a *App) timelineOverlayItems() []overlayItem {
 		}
 		messageID := message.ID
 		items = append(items, overlayItem{
-			label:  strings.ReplaceAll(data.Text, "\n", " "),
-			value:  messageID,
-			footer: time.UnixMilli(message.TimeCreated).Format("3:04 PM"),
-			action: func() tea.Msg {
+			Label:  strings.ReplaceAll(data.Text, "\n", " "),
+			Value:  messageID,
+			Footer: time.UnixMilli(message.TimeCreated).Format("3:04 PM"),
+			Action: func() tea.Msg {
 				return a.forkFrom(messageID)
 			},
 		})
@@ -355,10 +355,10 @@ func (a *App) childrenOverlay() tea.Cmd {
 				hint = "running · " + hint
 			}
 			item := overlayItem{
-				label: sessionTitleOf(child),
-				hint:  hint,
-				value: child.ID,
-				action: func() tea.Msg {
+				Label: sessionTitleOf(child),
+				Hint:  hint,
+				Value: child.ID,
+				Action: func() tea.Msg {
 					// The child session is already in hand (the list was
 					// fetched to build it), so no re-fetch: straight to the
 					// sessionOpenedMsg that resets the per-session state
@@ -386,12 +386,12 @@ func (a *App) childrenOverlay() tea.Cmd {
 		items := make([]overlayItem, 0, len(children))
 		for _, group := range groups {
 			for i := range group.items {
-				group.items[i].category = group.category
+				group.items[i].Category = group.category
 			}
 			items = append(items, group.items...)
 		}
 		if len(items) == 0 {
-			items = append(items, overlayItem{label: "(no running subagents)"})
+			items = append(items, overlayItem{Label: "(no running subagents)"})
 		}
 		a.openList("Running subagents", items)
 		return nil
