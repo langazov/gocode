@@ -62,7 +62,7 @@ func TestStatusOverlayListsPlugins(t *testing.T) {
 	app.openStatusDialog()
 	panel, _ := app.overlay.Panel()
 	view := ansi.Strip(panel)
-	for _, want := range []string{"1 Plugins", "rag-plugin", "process · running"} {
+	for _, want := range []string{"Plugins", "rag-plugin", "process · running"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("status overlay missing %q, got:\n%s", want, view)
 		}

@@ -11,6 +11,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/langazov/gocode-go/internal/tui/client"
 	"github.com/langazov/gocode-go/internal/tui/theme"
 )
@@ -467,6 +468,10 @@ func TestDiffViewerSwitchSourceRefetches(t *testing.T) {
 
 func TestDiffViewerHelpSheet(t *testing.T) {
 	app := openDiff(t, diffFixture())
+	// Tall enough for the whole sheet: the help panel takes the read-only
+	// panels' scroll budget, so on a short terminal it windows instead of
+	// running off the bottom (see the scrolling arm below).
+	app.width, app.height = 120, 60
 	pressKey(t, app, "?")
 	if app.overlay == nil || app.overlay.Kind != dialog.KindHelp {
 		t.Fatal("? did not open the help overlay")
@@ -479,6 +484,28 @@ func TestDiffViewerHelpSheet(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("help sheet missing %q:\n%s", want, rendered)
 		}
+	}
+}
+
+// A shortcut sheet longer than the terminal windows and says so, the way the
+// stats panel does — it used to run off the bottom of the screen with no
+// key that could move it.
+func TestDiffViewerHelpSheetScrollsWhenItDoesNotFit(t *testing.T) {
+	app := openDiff(t, diffFixture())
+	app.width, app.height = 120, 24
+	pressKey(t, app, "?")
+
+	panel, _ := app.overlayPanel()
+	first := ansi.Strip(panel)
+	for _, want := range []string{"scroll", "more", "close esc"} {
+		if !strings.Contains(first, want) {
+			t.Fatalf("a windowed help sheet should hint %q:\n%s", want, first)
+		}
+	}
+	driveCmd(t, app, app.handleOverlayKey("down"))
+	panel, _ = app.overlayPanel()
+	if ansi.Strip(panel) == first {
+		t.Fatal("down should move a windowed help sheet")
 	}
 }
 

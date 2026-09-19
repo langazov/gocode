@@ -677,7 +677,7 @@ func (s *Shell) Panel() (string, *Hits) {
 		hits.ButtonRow = row
 		hits.Buttons = spans
 		hits.EscRow = 0
-		hits.EscStart, hits.EscEnd = escHintRange(s.theme, 2, s.Title, "esc", s.panelWidth())
+		hits.EscStart, hits.EscEnd = escHintRange(s.theme, s.Title, "esc", s.panelWidth())
 	case KindConfirm:
 		var row int
 		var spans []Span
@@ -685,7 +685,7 @@ func (s *Shell) Panel() (string, *Hits) {
 		hits.ButtonRow = row
 		hits.Buttons = spans
 		hits.EscRow = 0
-		hits.EscStart, hits.EscEnd = escHintRange(s.theme, 2, s.Title, "esc", s.panelWidth())
+		hits.EscStart, hits.EscEnd = escHintRange(s.theme, s.Title, "esc", s.panelWidth())
 	default:
 		var lines []string
 		lines, hits = s.list.layout()
@@ -766,16 +766,11 @@ func (s *Shell) Key(key string) tea.Cmd {
 		return s.resolve(s.onCancel)
 	}
 	switch s.Kind {
-	case KindHelp, KindStatus:
-		// DialogHelp binds return and escape; every dialog also closes on
-		// escape/ctrl+c from the Dialog container. `q` was this port's own
-		// invention.
-		if key == "esc" || key == "enter" {
-			return cmdClose
-		}
-		return nil
-	case KindStats:
-		// esc/enter close; up/down/j/k scroll the content when it overflows.
+	case KindHelp, KindStatus, KindStats:
+		// The three read-only panels answer to one keymap: esc/enter close,
+		// and the scroll keys move the body when it overflows. Only the
+		// stats panel used to scroll, so the keys the other two printed in
+		// their own footers did nothing.
 		switch key {
 		case "esc", "enter":
 			return cmdClose

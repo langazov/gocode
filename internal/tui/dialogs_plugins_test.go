@@ -151,7 +151,7 @@ func TestPluginsDialogDrillDown(t *testing.T) {
 		t.Fatalf("detail = %q, want rag-plugin", app.pluginDialog.detail)
 	}
 	view := ansi.Strip(app.View())
-	for _, want := range []string{"spec", "/work/rag-plugin", "process", "running", "tools", "rag_index", "rag_search", "back"} {
+	for _, want := range []string{"spec", "/work/rag-plugin", "process", "running", "TOOLS", "rag_index", "rag_search", "back"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("detail view missing %q, got:\n%s", want, view)
 		}

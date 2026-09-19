@@ -145,13 +145,13 @@ func TestChildrenOverlayGroupsByBatch(t *testing.T) {
 		t.Fatal("expected the children overlay to open")
 	}
 	view := ansi.Strip(app.View())
-	for _, want := range []string{"Batch 1", "Batch 2", "alpha", "beta", "gamma"} {
+	for _, want := range []string{"BATCH 1", "BATCH 2", "alpha", "beta", "gamma"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("overlay missing %q:\n%s", want, view)
 		}
 	}
 	// alpha and beta share Batch 1's header; gamma is alone in Batch 2.
-	if strings.Count(view, "Batch 1") != 1 || strings.Count(view, "Batch 2") != 1 {
+	if strings.Count(view, "BATCH 1") != 1 || strings.Count(view, "BATCH 2") != 1 {
 		t.Fatalf("each batch header should render once:\n%s", view)
 	}
 }

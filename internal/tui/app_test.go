@@ -939,7 +939,7 @@ func TestCommandPalette(t *testing.T) {
 	// model.list is always suggested, and with nothing connected
 	// provider.connect joins it under the Suggested header. Hidden commands
 	// (session.interrupt) never list.
-	if !strings.Contains(view, "Suggested") || !strings.Contains(view, "Connect provider") {
+	if !strings.Contains(view, "SUGGESTED") || !strings.Contains(view, "Connect provider") {
 		t.Fatalf("palette should lead with suggested commands, got %q", view)
 	}
 	if strings.Contains(view, "Interrupt session") {

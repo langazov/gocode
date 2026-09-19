@@ -117,7 +117,7 @@ func TestProviderDialogRenders(t *testing.T) {
 	app.overlay.SetSize(dialogLarge)
 
 	frame, _ := app.overlayPanel()
-	for _, want := range []string{"Connect a provider", "Popular", "Providers", "Other", "✓"} {
+	for _, want := range []string{"Connect a provider", "POPULAR", "PROVIDERS", "Other", "✓"} {
 		if !strings.Contains(frame, want) {
 			t.Errorf("rendered dialog is missing %q:\n%s", want, frame)
 		}

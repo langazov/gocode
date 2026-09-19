@@ -397,7 +397,7 @@ func TestStatsOverlayNamesScrollKeys(t *testing.T) {
 
 	panel, _ := app.overlayPanel()
 	short := ansi.Strip(panel)
-	for _, want := range []string{"scroll", "page", "esc close"} {
+	for _, want := range []string{"scroll", "page", "close esc"} {
 		if !strings.Contains(short, want) {
 			t.Fatalf("scrollable stats panel should hint %q:\n%s", want, short)
 		}
@@ -411,7 +411,7 @@ func TestStatsOverlayNamesScrollKeys(t *testing.T) {
 	if strings.Contains(tall, "scroll") {
 		t.Fatalf("a panel with nothing to scroll should not hint scrolling:\n%s", tall)
 	}
-	if !strings.Contains(tall, "esc close") {
+	if !strings.Contains(tall, "close esc") {
 		t.Fatalf("the close hint should always show:\n%s", tall)
 	}
 }

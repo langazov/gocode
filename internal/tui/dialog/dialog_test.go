@@ -44,7 +44,7 @@ func TestListFieldRendersInsideHuhForm(t *testing.T) {
 	if !strings.Contains(plain, "alpha") || !strings.Contains(plain, "beta") {
 		t.Fatalf("rows missing: %q", plain)
 	}
-	if !strings.Contains(plain, "Group") {
+	if !strings.Contains(plain, "GROUP") {
 		t.Fatalf("category header missing: %q", plain)
 	}
 	// The embedded form is live and holds the field, and it is wired to the

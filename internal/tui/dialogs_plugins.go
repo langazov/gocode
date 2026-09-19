@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"sort"
-	"strings"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -226,8 +225,9 @@ func (a *App) drillPlugin(item overlayItem) {
 
 // pluginDetailItems is the drill-in body: identity and state as label/value
 // rows, then what the plugin registered, grouped under its own heading. The
-// field names are padded to a common width so the values line up — listRow
-// lays a row out as title, one space, hint, with no column of its own.
+// field names carry no padding of their own — listRow aligns every hint in
+// the dialog at one column, so hand-counting the gap here would only fight
+// it (§9.7: never hand-count the padding per row).
 func pluginDetailItems(row clientPluginRow, enabled bool) []overlayItem {
 	var items []overlayItem
 	field := func(name, value string) {
@@ -236,9 +236,7 @@ func pluginDetailItems(row clientPluginRow, enabled bool) []overlayItem {
 		if value == "" {
 			return
 		}
-		items = append(items, overlayItem{
-			Label: name + strings.Repeat(" ", 8-len(name)), Hint: value, Value: name,
-		})
+		items = append(items, overlayItem{Label: name, Hint: value, Value: name})
 	}
 	yesNo := "no"
 	if enabled {

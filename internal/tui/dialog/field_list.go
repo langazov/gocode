@@ -328,34 +328,32 @@ func (l *listField) layout() ([]string, *Hits) {
 	hits := NewHits()
 	p := l.r.theme
 
-	lines := []string{header(p, 4, l.title, "esc", w)}
-	hits.RowItem = append(hits.RowItem, -1)
+	// header / rule / body / rule / footer — the frame every dialog kind
+	// shares (§9.1). The rule under the header is what tells the eye where
+	// the panel's chrome ends and its content begins, on a surface that has
+	// no border to say so.
+	lines := []string{header(p, l.title, "esc", w), rule(p, w)}
+	hits.RowItem = append(hits.RowItem, -1, -1)
 	hits.EscRow = 0
-	hits.EscStart, hits.EscEnd = escHintRange(p, 4, l.title, "esc", w)
-	// The filter input sits under the title inside the same padded header
-	// box (paddingTop 1), then the parent's gap separates it from the list.
+	hits.EscStart, hits.EscEnd = escHintRange(p, l.title, "esc", w)
 	if !l.hideFilter {
-		lines = append(lines, "", l.filterRow())
-		hits.RowItem = append(hits.RowItem, -1, -1)
+		lines = append(lines, l.filterRow())
+		hits.RowItem = append(hits.RowItem, -1)
 	}
 	lines = append(lines, "")
 	hits.RowItem = append(hits.RowItem, -1)
 	if len(l.items) == 0 {
-		lines = append(lines, "")
-		hits.RowItem = append(hits.RowItem, -1)
 		for _, line := range l.emptyView() {
 			lines = append(lines, line)
 			hits.RowItem = append(hits.RowItem, -1)
 		}
 	} else {
-		// The scrollbox spans the full panel width; its own paddingLeft/Right
-		// of 1 is taken inside body.
 		bodyLines, bodyHits := l.body()
 		lines = append(lines, bodyLines...)
 		hits.RowItem = append(hits.RowItem, bodyHits...)
 	}
 	if len(l.actions) > 0 {
-		lines = append(lines, "")
+		lines = append(lines, rule(p, w))
 		hits.RowItem = append(hits.RowItem, -1)
 		actionLine, spans := l.actionRow(w)
 		hits.ActionRow = len(lines)
@@ -368,41 +366,51 @@ func (l *listField) layout() ([]string, *Hits) {
 	return lines, hits
 }
 
-// filterRow renders DialogSelect's filter input: the typed text in muted
-// text with a primary-colored block cursor after it, or the placeholder with
-// the cursor resting on its first cell while the field is empty.
+// filterRow renders the filter input. It is not a focusable field (§9.3):
+// what you type goes into it directly, so it shows what it is — a ⌕ in the
+// row's gutter lane and the text starting in the same column as every row
+// title below it — rather than pretending to be a form control.
 func (l *listField) filterRow() string {
 	p := l.r.theme
-	indent := strings.Repeat(" ", 4)
+	icon := onPanel(p, mix(p.TextMuted, p.BackgroundPanel, 0.3), false).Render("⌕")
 	cursor := lipgloss.NewStyle().Foreground(p.BackgroundPanel).Background(p.Primary)
+	lead := pad(p, PadX) + icon + pad(p, rowTextCol-PadX-1)
 	if l.filter != "" {
-		return indent + onPanel(p, p.TextMuted, false).Render(l.filter) + cursor.Render(" ")
+		// The typed text is content, not annotation: it carries the Text
+		// color, and the placeholder below keeps the muted one.
+		return lead + onPanel(p, p.Text, false).Render(l.filter) + cursor.Render(" ")
 	}
 	placeholder := l.placeholder
 	if placeholder == "" {
 		placeholder = "Search"
 	}
 	runes := []rune(placeholder)
-	return indent + cursor.Render(string(runes[0])) +
+	return lead + cursor.Render(string(runes[0])) +
 		onPanel(p, p.TextMuted, false).Render(string(runes[1:]))
 }
 
-// emptyView renders the list's empty state: DialogSelect's "No results found"
-// fallback, or the emptyView a caller supplied instead (dialog-skill.tsx uses
-// one to report a failed load in place of the list).
+// emptyView renders the list's empty state: the "No results found" fallback,
+// or the emptyView a caller supplied instead.
+//
+// The title is red only when the list is locked — the state §9.5 reserves
+// for a load that failed. "No memories" is not an error, and coloring it
+// like one told the user something untrue about their own machine.
 func (l *listField) emptyView() []string {
 	p := l.r.theme
 	w := l.r.width
-	indent := strings.Repeat(" ", 4)
 	if l.emptyTitle == "" && l.emptyBody == "" {
-		return []string{indent + onPanel(p, p.TextMuted, false).Render("No results found")}
+		return []string{pad(p, PadX) + onPanel(p, p.TextMuted, false).Render("No results found")}
+	}
+	titleFg := p.Text
+	if l.locked {
+		titleFg = p.Error
 	}
 	var lines []string
 	if l.emptyTitle != "" {
-		lines = append(lines, indent+onPanel(p, p.Error, true).Render(l.emptyTitle))
+		lines = append(lines, pad(p, PadX)+onPanel(p, titleFg, true).Render(l.emptyTitle), "")
 	}
-	for _, line := range WrapWords(l.emptyBody, w-8) {
-		lines = append(lines, indent+onPanel(p, p.TextMuted, false).Render(line))
+	for _, line := range WrapWords(l.emptyBody, w-2*PadX) {
+		lines = append(lines, pad(p, PadX)+onPanel(p, p.TextMuted, false).Render(line))
 	}
 	return lines
 }
@@ -410,38 +418,34 @@ func (l *listField) emptyView() []string {
 // body renders the grouped option rows, windowed like the scrollbox capped
 // at terminal height/2 - 6, alongside a parallel itemIndex-per-line slice
 // (-1 for separators/category headers) for mouse hit-testing.
+//
+// Every row is composed to exactly w-rowPad cells so the scrollbar column
+// appended to it lands in the same place on every line — including the
+// category headers and the gaps between groups, which is what makes the bar
+// read as one continuous track rather than a dotted one.
 func (l *listField) body() ([]string, []int) {
 	p := l.r.theme
 	width := l.r.width
+	inner := width - 2*rowPad
+	labelCol := l.hintColumn(inner - gutterSpan - rowPadRight)
 	type row struct {
 		text      string
 		selected  bool
 		itemIndex int
 	}
-	// The scrollbox pads 1 on each side, outside the row boxes — so the
-	// highlight stops one column short of the panel edge, and a category
-	// header's own paddingLeft={3} lands at column 4.
-	const scrollPad = 1
-	inner := width - 2*scrollPad
-	indent := strings.Repeat(" ", scrollPad)
-	panel := lipgloss.NewStyle().Background(p.BackgroundPanel)
 
 	var rows []row
 	category := ""
 	for i, item := range l.items {
 		if item.Category != "" && item.Category != category {
 			if category != "" {
-				rows = append(rows, row{itemIndex: -1})
+				rows = append(rows, row{text: pad(p, width-rowPad), itemIndex: -1})
 			}
-			rows = append(rows, row{
-				text: indent + strings.Repeat(" ", 3) +
-					onPanel(p, p.Accent, true).Render(item.Category),
-				itemIndex: -1,
-			})
+			rows = append(rows, row{text: l.categoryRow(item.Category), itemIndex: -1})
 		}
 		category = item.Category
 		rows = append(rows, row{
-			text:      indent + l.listRow(item, i, inner) + panel.Render(indent),
+			text:      pad(p, rowPad) + l.listRow(item, i, inner, labelCol),
 			selected:  i == l.selected,
 			itemIndex: i,
 		})
@@ -488,31 +492,69 @@ func (l *listField) body() ([]string, []int) {
 	} else {
 		l.scrollTop = 0
 	}
+	bars := scrollbar(p, len(window), len(rows), l.scrollTop)
 	texts := make([]string, len(window))
 	indexes := make([]int, len(window))
 	for i, r := range window {
-		texts[i] = r.text
+		texts[i] = r.text + bars[i] + pad(p, rowPad-1)
 		indexes[i] = r.itemIndex
 	}
 	return texts, indexes
 }
 
+// categoryRow renders a group header. It is uppercased and set in the
+// accent color so it reads as a label for the rows beneath it rather than
+// as another row, and it sits in the gutter lane — one step left of the
+// titles it groups.
+func (l *listField) categoryRow(name string) string {
+	p := l.r.theme
+	span := l.r.width - rowPad - PadX
+	label := TruncateRunes(strings.ToUpper(name), max(1, span))
+	return pad(p, PadX) + onPanel(p, p.Accent, true).Render(label) +
+		pad(p, span-lipgloss.Width(label))
+}
+
+// hintColumn is the column every row's description starts at. Descriptions
+// used to begin one space after their own title, so a group of rows ended
+// up with its hints scattered across the panel; aligning them turns the
+// hints into a second column the eye can scan. The column is capped at half
+// the row so one long title cannot push every description off the panel.
+func (l *listField) hintColumn(budget int) int {
+	longest, hinted := 0, false
+	for _, item := range l.items {
+		if item.Hint == "" {
+			continue
+		}
+		hinted = true
+		if w := lipgloss.Width(TruncateEllipsis(item.Label, titleWidth)); w > longest {
+			longest = w
+		}
+	}
+	if !hinted {
+		return 0
+	}
+	return min(longest, max(0, budget/2))
+}
+
 // titleWidth is DialogSelectOption's `titleWidth ?? 61`.
 const titleWidth = 61
 
-// listRow renders one DialogSelect option row.
-//
-// The geometry is worth spelling out, because this port had it wrong by three
-// columns. The row box is `paddingLeft={current||gutter ? 1 : 3}
-// paddingRight={3} gap={1}`, and inside it the *title text has its own
-// `paddingLeft={3}`*. So a current row spends its first three cells on
-// "␣●␣" (pad, bullet, gap) and a plain row on three pad cells, and in both
-// cases the title starts at column 6 — the bullet occupies the gutter without
-// shifting the title.
+// Row geometry inside the row box: one cell of padding, the ● / ✓ gutter,
+// one cell of gap, then the title — so the glyph lands in the same column
+// as the header's title and the category labels (PadX), and the row titles
+// clear it by two.
+const (
+	gutterSpan   = rowTextCol - rowPad
+	rowPadRight  = 2
+	hintSeparate = " · "
+)
+
+// listRow renders one option row.
 //
 // The background belongs to the row *box*, so a highlighted row is filled
-// edge to edge including both paddings.
-func (l *listField) listRow(item Item, index, width int) string {
+// edge to edge including both paddings; the scrollbar column body() appends
+// sits outside it.
+func (l *listField) listRow(item Item, index, width, labelCol int) string {
 	p := l.r.theme
 	active := index == l.selected
 	armed := l.armValue != "" && l.armValue == item.Value
@@ -561,6 +603,12 @@ func (l *listField) listRow(item Item, index, width int) string {
 	if active && !muted {
 		secondaryFg = p.SelectedListItemText
 	}
+	// The separator is a notch fainter than the description it introduces,
+	// so it reads as punctuation instead of as content.
+	separatorFg := mix(p.TextMuted, p.BackgroundPanel, 0.45)
+	if active {
+		separatorFg = secondaryFg
+	}
 
 	label := item.Label
 	if armed {
@@ -570,8 +618,7 @@ func (l *listField) listRow(item Item, index, width int) string {
 	// long title carries its ellipsis even in a dialog wide enough to hold it.
 	label = TruncateEllipsis(label, titleWidth)
 
-	const gutter, padRight = 6, 3
-	budget := width - gutter - padRight
+	budget := width - gutterSpan - rowPadRight
 	if item.Footer != "" {
 		// gap={1} to the flexShrink={0} footer box.
 		budget -= 1 + lipgloss.Width(item.Footer)
@@ -580,8 +627,8 @@ func (l *listField) listRow(item Item, index, width int) string {
 		budget = 0
 	}
 
-	// The title and its description live in one `overflow="hidden"` text, so
-	// they are clipped together rather than the description being dropped.
+	// The title and its description live in one clipped span, so they are
+	// truncated together rather than the description being dropped.
 	var body strings.Builder
 	used := 0
 	if lipgloss.Width(label) > budget {
@@ -589,22 +636,30 @@ func (l *listField) listRow(item Item, index, width int) string {
 	}
 	body.WriteString(segment(titleFg, active && !muted, label))
 	used += lipgloss.Width(label)
-	if item.Hint != "" && used+1 < budget {
-		hint := " " + item.Hint
-		if lipgloss.Width(hint) > budget-used {
-			hint = TruncateRunes(hint, budget-used)
+	if item.Hint != "" && !armed {
+		lead := 0
+		if labelCol > used {
+			lead = labelCol - used
 		}
-		body.WriteString(segment(secondaryFg, false, hint))
-		used += lipgloss.Width(hint)
+		separator := strings.Repeat(" ", lead) + hintSeparate
+		if used+lipgloss.Width(separator) < budget {
+			body.WriteString(segment(separatorFg, false, separator))
+			used += lipgloss.Width(separator)
+			hint := item.Hint
+			if lipgloss.Width(hint) > budget-used {
+				hint = TruncateRunes(hint, budget-used)
+			}
+			body.WriteString(segment(secondaryFg, false, hint))
+			used += lipgloss.Width(hint)
+		}
 	}
 
 	var b strings.Builder
 	switch {
 	case current:
-		// paddingLeft 1, the bullet gutter, then the row's gap={1}.
 		b.WriteString(fill(1))
 		b.WriteString(segment(titleFg, false, "●"))
-		b.WriteString(fill(1))
+		b.WriteString(fill(gutterSpan - 2))
 	case item.Gutter != "":
 		gutterFg := titleFg
 		if item.GutterOK {
@@ -612,48 +667,44 @@ func (l *listField) listRow(item Item, index, width int) string {
 		}
 		b.WriteString(fill(1))
 		b.WriteString(segment(gutterFg, false, item.Gutter))
-		b.WriteString(fill(1))
+		b.WriteString(fill(gutterSpan - 2))
 	default:
-		b.WriteString(fill(3))
+		b.WriteString(fill(gutterSpan))
 	}
-	b.WriteString(fill(3)) // the title text's own paddingLeft
 	b.WriteString(body.String())
 	b.WriteString(fill(budget - used))
 	if item.Footer != "" {
 		b.WriteString(fill(1))
 		b.WriteString(segment(secondaryFg, false, item.Footer))
 	}
-	b.WriteString(fill(padRight))
+	b.WriteString(fill(rowPadRight))
 	return b.String()
 }
 
-// actionRow renders DialogSelect's footer action bar:
+// actionRow renders the footer action bar: the left-aligned group, then the
+// right-aligned one, inside the shared content column.
 //
-//	<box paddingRight={2} paddingLeft={4} justifyContent="space-between">
-//	  <box gap={2}> …left actions… </box>
-//	  <box gap={2}> …right actions… </box>
-//	</box>
-//
-// Each action is its own box, so a focused one is filled with the primary
-// color across its whole "title label" span. It also reports the column span
-// each action occupies, so a click resolves back to an action index.
+// Every action carries a cell of padding on each side whether or not it is
+// focused, so the primary fill a focused action wears has room to breathe
+// and nothing shifts when focus moves. It also reports the column span each
+// action occupies, so a click resolves back to an action index.
 func (l *listField) actionRow(w int) (string, []Span) {
 	p := l.r.theme
-	const padLeft, padRight = 4, 2
+	// The actions' own padding cell means their text still starts at PadX.
+	const edge = PadX - 1
 	spans := make([]Span, 0, len(l.actions))
 
 	render := func(index int, action Action, col int) (string, int) {
-		focused := index == l.focusedAction
-		titleStyle := onPanel(p, p.Text, false)
-		keyStyle := onPanel(p, p.TextMuted, false)
-		if focused {
-			titleStyle = lipgloss.NewStyle().
-				Foreground(p.SelectedListItemText).Background(p.Primary).Bold(true)
-			keyStyle = lipgloss.NewStyle().
+		width := 2 + hintWidth(action.Title, action.Keys)
+		var text string
+		if index == l.focusedAction {
+			fill := lipgloss.NewStyle().
 				Foreground(p.SelectedListItemText).Background(p.Primary)
+			text = fill.Bold(true).Render(" "+action.Title) +
+				fill.Render(keySuffix(action.Keys)+" ")
+		} else {
+			text = pad(p, 1) + keyHint(p, action.Title, action.Keys) + pad(p, 1)
 		}
-		text := titleStyle.Render(action.Title) + keyStyle.Render(" "+action.Keys)
-		width := lipgloss.Width(action.Title) + 1 + lipgloss.Width(action.Keys)
 		spans = append(spans, Span{Start: col, End: col + width, Index: index})
 		return text, width
 	}
@@ -663,9 +714,9 @@ func (l *listField) actionRow(w int) (string, []Span) {
 		used := 0
 		for n, index := range indexes {
 			if n > 0 {
-				out.WriteString(onPanel(p, p.TextMuted, false).Render("  ")) // gap={2}
-				used += 2
-				col += 2
+				out.WriteString(pad(p, 1))
+				used++
+				col++
 			}
 			text, width := render(index, l.actions[index], col)
 			out.WriteString(text)
@@ -684,21 +735,30 @@ func (l *listField) actionRow(w int) (string, []Span) {
 		}
 	}
 
-	left, leftWidth := group(leftIdx, padLeft)
+	left, leftWidth := group(leftIdx, edge)
 	rightWidth := 0
 	for n, index := range rightIdx {
 		if n > 0 {
-			rightWidth += 2
+			rightWidth++
 		}
-		rightWidth += lipgloss.Width(l.actions[index].Title) + 1 + lipgloss.Width(l.actions[index].Keys)
+		rightWidth += 2 + hintWidth(l.actions[index].Title, l.actions[index].Keys)
 	}
-	gap := w - padLeft - padRight - leftWidth - rightWidth
+	gap := w - 2*edge - leftWidth - rightWidth
 	if gap < 0 {
 		gap = 0
 	}
-	right, _ := group(rightIdx, padLeft+leftWidth+gap)
+	right, _ := group(rightIdx, edge+leftWidth+gap)
 
-	return strings.Repeat(" ", padLeft) + left + strings.Repeat(" ", gap) + right, spans
+	return pad(p, edge) + left + pad(p, gap) + right + pad(p, edge), spans
+}
+
+// keySuffix is the " keys" tail of an action label, empty for an action
+// that has no keybind of its own.
+func keySuffix(keys string) string {
+	if keys == "" {
+		return ""
+	}
+	return " " + keys
 }
 
 // --- shared chrome helpers ----------------------------------------------------
@@ -714,34 +774,38 @@ func onPanel(p Palette, fg color.Color, bold bool) lipgloss.Style {
 }
 
 // header is the shared title row: bold title left, muted keybind hint right.
-// Select dialogs pad 4; prompt/help/status dialogs pad 2.
-func header(p Palette, pad int, title, hint string, w int) string {
-	styled := onPanel(p, p.Text, true).Render(title)
+// Every kind pads by PadX — a list header used to start at column 4 and an
+// alert header at column 2, which made two dialogs opened seconds apart look
+// like two different programs.
+func header(p Palette, title, hint string, w int) string {
+	styled := onPanel(p, p.Text, true).Render(TruncateEllipsis(title, max(1, w-2*PadX-lipgloss.Width(hint)-1)))
 	esc := onPanel(p, p.TextMuted, false).Render(hint)
-	return strings.Repeat(" ", pad) + splitRow(w-2*pad, styled, esc, 1)
+	return pad(p, PadX) + splitRowOn(p, w-2*PadX, styled, esc, 1)
 }
 
 // escHintRange mirrors header's own layout math to report the column span its
 // right-aligned hint occupies, so a mouse click there can be recognized as
 // the TS "esc" label's onMouseUp (dialog-select.tsx / dialog.tsx).
-func escHintRange(p Palette, pad int, title, hint string, w int) (start, end int) {
-	styled := onPanel(p, p.Text, true).Render(title)
-	esc := onPanel(p, p.TextMuted, false).Render(hint)
-	gap := w - 2*pad - lipgloss.Width(styled) - lipgloss.Width(esc)
+func escHintRange(p Palette, title, hint string, w int) (start, end int) {
+	styled := TruncateEllipsis(title, max(1, w-2*PadX-lipgloss.Width(hint)-1))
+	gap := w - 2*PadX - lipgloss.Width(styled) - lipgloss.Width(hint)
 	if gap < 1 {
 		gap = 1
 	}
-	start = pad + lipgloss.Width(styled) + gap
-	return start, start + lipgloss.Width(esc)
+	start = PadX + lipgloss.Width(styled) + gap
+	return start, start + lipgloss.Width(hint)
 }
 
-// splitRow is the space-between row: left, minimum gap, right.
-func splitRow(width int, left, right string, minWidthGap int) string {
+// splitRowOn is the space-between row — left, minimum gap, right — with the
+// gap painted in the panel background: both halves are styled spans, so a
+// run of bare spaces between them would reset the tint across the middle of
+// the row.
+func splitRowOn(p Palette, width int, left, right string, minWidthGap int) string {
 	gap := width - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < minWidthGap {
 		gap = minWidthGap
 	}
-	return left + strings.Repeat(" ", gap) + right
+	return left + pad(p, gap) + right
 }
 
 // WrapWords wraps text to width on spaces so continuation lines keep their

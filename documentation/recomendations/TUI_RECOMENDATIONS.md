@@ -301,24 +301,36 @@ Notes that are easy to get wrong:
 | Panel chrome | `PaddingTop(1)`, `BackgroundPanel`, **no border** |
 | Vertical extent (any growing dialog) | **≤ `a.height − 2·(a.height/4)` rows**, so the margin below equals the `height/4` offset above |
 | List viewport | `max(3, a.height/2 − 6)` rows |
-| Read-only scroll panel body | `max(1, min(height − 2·(height/4) − chrome, height − (height/4) − chrome))` rows |
-| Header pad | `4` for select dialogs; `2` for prompt/help/status/stats/alert/confirm |
-| Row gutter | `6` columns before the title; `3` columns right padding |
+| Read-only panel body | `max(1, min(height − 2·(height/4) − chrome, height − (height/4) − chrome))` rows, `chrome = 7` |
+| **Content inset** | **`dialog.PadX = 3`, every kind, both sides** — header, rules, category labels, body text, footer |
+| Rules | `─` across `w − 2·PadX`, in `TextMuted` mixed `0.68` toward `BackgroundPanel` |
+| Row box | spans `[2, w−2)`; gutter glyph at `PadX`, title at `PadX + 2`, right pad `2` |
+| Scrollbar column | `w − 2`: thumb `▐` in `TextMuted`, track `│` mixed `0.74` toward the panel |
 | Title truncation | `61` runes (`dialogTitleWidth`), applied **before** layout |
-| Action row | `padLeft 4`, `padRight 2`, `gap 2` between actions |
+| Action row | actions inset to `PadX`, each padded `1` for its focus fill, `gap 1` between them |
+| Buttons | one padding for every kind: `dialog.buttonPad = 2`, `gap 1` between a pair |
+
+**One inset, one frame.** A list header used to start at column 4 and an
+alert header at column 2; an alert padded its button by 3 and a confirm its
+pair by 1; a list footer read `close esc` and the stats footer `esc close`.
+None of those differences expressed anything, so they read as sloppiness.
+Every kind now composes from `internal/tui/dialog/chrome.go`.
 
 #### Balance
 
 Every dialog is anchored at `top = height/4`. What happens below that depends on
 whether the panel grows:
 
-- **Growing dialogs** (lists, read-only scroll panels) must cap their growth so
+- **Growing dialogs** (lists, read-only panels) must cap their growth so
   the margin below matches the offset above. The list viewport cap already does
   this exactly: `height/2 − 6` body rows plus 8 rows of chrome lands the panel at
   precisely `height/2` rows, leaving `height/4` above and `height/4` below.
   Measured at width 120: h=24 → 6 above / 6 below, h=40 → 10/10, h=60 → 15/15,
-  h=80 → 20/20. A read-only scroll panel computes the same bound explicitly.
-- **Fixed-size dialogs** (alert, confirm, input, help — 8 rows) stay at
+  h=80 → 20/20. A read-only panel computes the same bound explicitly, over its
+  own 7 rows of chrome (paddingTop, header, rule, gap, rule, hints, blank).
+  The two rules cost the list nothing: they replaced the two blank rows the
+  old layout spent in the same places, so the chrome is 8 rows either way.
+- **Fixed-size dialogs** (alert, confirm, input — 9 rows) stay at
   `height/4` and simply sit high, with the rest of the gap below them. That is
   deliberate optical centering: a small panel placed at true vertical centre
   reads as sagging. **Do not vertically centre them.**
@@ -339,6 +351,10 @@ Use these; do not introduce synonyms. All are single-cell except where noted.
 | `╹` | Prompt box bottom-left corner (home only) | home prompt |
 | `▀` | Prompt shadow rule (home) | home prompt |
 | `●` | Current/selected item marker | list dialogs, in-progress todo |
+| `⌕` | Filter input | list dialogs |
+| `─` | Rule under a dialog header / above its footer | every dialog |
+| `·` | Separator between a row's title and its description | list dialogs |
+| `▐` / `│` | Scrollbar thumb / track | list dialogs, read-only panels |
 | `○` / `●` | Unticked / ticked multi-select option | question banner |
 | `✓` | Enabled / completed | plugin & provider gutters, completed todo, completed task tool |
 | `•` | Status dot (colored by state) | MCP, LSP, plugins, version line |
@@ -853,6 +869,22 @@ dimmed frame**, at `top = height/4`, sized so it sits balanced between that
 offset and a matching margin below (§4.5). It owns the keyboard completely while
 open.
 
+Every kind wears the same three-part frame, so a dialog is recognizable as
+one before a word of its content is read:
+
+```
+    header    bold title, right-aligned esc hint, inset PadX
+    ─────     rule
+    body      the kind's own content, inset PadX
+    ─────     rule
+    footer    the action bar, or the hint row naming the live keys
+```
+
+There is no border to say where the panel ends, so the **rules are what tell
+the eye where chrome stops and content begins**. They are drawn faint — the
+muted token mixed toward the panel background, not `BackgroundElement`, which
+on a light theme is one shade off the panel and would vanish.
+
 Every dialog is a **`huh.Form` embedded in a `dialog.Shell`** (package
 `internal/tui/dialog`, built on `charm.land/huh/v2`). The Shell owns the panel
 chrome (header with the esc hint, footer action bar), the keyboard contract and
@@ -894,46 +926,57 @@ argument.
 ```
         ← w = 60 / 88 / 116, clamped to a.width−2 →
 ┌──────────────────────────────────────────────────────────┐  ← PaddingTop(1)
-│    Select model                                     esc  │  header: pad 4, title bold
+│   Select model                                     esc   │  header: PadX, title bold
+│   ────────────────────────────────────────────────────   │  rule
+│   ⌕ Search models…▏                                      │  filter: ⌕ at PadX, block cursor
 │                                                          │
-│    Search▏                                               │  filter: pad 4, block cursor
+│   FAVORITES                                              │  category: Accent bold, uppercase, PadX
+│   ● Claude Sonnet 4.5   · fast, balanced        $3/$15 ▐ │  current row + scrollbar thumb
+│     Claude Opus 4.1     · most capable         $15/$75 ▐ │
 │                                                          │
-│                                                          │
-│       Favorites                                          │  category: Accent bold, col 4
-│    ●  Claude Sonnet 4.5  fast, balanced          $3/$15  │  current row
-│       Claude Opus 4.1    most capable            $15/$75 │
-│                                                          │
-│       Anthropic                                          │
-│ ▓▓▓▓▓▓ Claude Haiku 4.5  cheapest                 $1/$5 ▓│  selected row (Primary fill)
-│    ✓  GPT-5              connected                       │  gutter row
-│                                                          │
-│    connect ctrl+n  refresh ctrl+r          close esc     │  actions: pad 4/2, gap 2
-│                                                          │
+│   ANTHROPIC                                              │
+│  ▓▓ Claude Haiku 4.5    · cheapest               $1/$5 │ │  selected row (Primary fill)
+│   ✓ GPT-5               · connected                    │ │  gutter row
+│   ────────────────────────────────────────────────────   │  rule
+│   connect ctrl+n  refresh ctrl+r            close esc    │  footer: actions at PadX
 └──────────────────────────────────────────────────────────┘
 ```
 
 **Row geometry** (`listField.listRow`) — this is exact and has been wrong before:
 
 ```
-col: 0  1  2  3  4  5  6 ................................ w-3  w
-     ┌──┬──┬──┬─────┬───────────────────────────┬────────┬─────┐
-     │pad│●│gap│ title paddingLeft 3            │ footer │ pad │
-     └──┴──┴──┴─────┴───────────────────────────┴────────┴─────┘
-      1  1  1      3                              1+wid     3
+col: 0  1  2  3  4  5 .......................... w-4  w-2  w
+     ┌─────┬──┬──┬──┬────────────────────┬──────┬────┬────┐
+     │ pad │pd│ ●│gp│ title · hint       │footer│ pd │ ▐  │
+     └─────┴──┴──┴──┴────────────────────┴──────┴────┴────┘
+        2    1  1  1                              2    1
 ```
 
-- A current row spends its first three cells on `␣●␣`; a plain row on three pad
-  cells. **The title starts at column 6 either way** — the bullet occupies the
-  gutter without shifting the title.
+- The row box spans `[2, w−2)`. Inside it a current row spends its first
+  three cells on `␣●␣` and a plain row on three pad cells, so **the title
+  starts at column `PadX + 2` either way** — the bullet occupies the gutter
+  without shifting the title.
+- The **gutter glyph lands in the `PadX` lane**, the same column the header
+  title and the category labels sit in. That single shared left edge is what
+  makes the panel read as one object.
 - The **background belongs to the row box**: a highlighted row is filled edge to
   edge including both paddings. Use the `fill(n)` helper, never bare spaces.
-- The scrollbox itself pads 1 on each side *outside* the row box, so the
-  highlight stops one column short of the panel edge and category headers land
-  at column 4.
+- The **scrollbar column sits outside the row box**, at `w−2`, and every
+  windowed line carries a cell of it — category headers and group gaps
+  included, or the bar reads as dotted instead of continuous. It appears only
+  while there is something to scroll.
+- **Descriptions align at one column.** `hintColumn` is the widest label in
+  the filtered set, capped at half the row; every hint starts there, behind a
+  faint ` · `. A description that begins one space after its own title leaves
+  a group of rows with its hints scattered across the panel — and it is what
+  made callers hand-pad their labels to fake a column (see the plugin detail
+  view, which no longer does).
 - Title and hint live in one clipped span — they are truncated *together*, the
   hint is never simply dropped.
 - Title is `truncateEllipsis(label, 61)` **before** any layout, so a long title
   carries its ellipsis even in a wide dialog.
+- Category labels are **uppercased**. They label the rows beneath them; a
+  category set like a row reads as one.
 
 **Row colors:**
 
@@ -959,7 +1002,11 @@ there is no way to move focus to it and no cursor to place. Consequences:
 - `dialog.TypedText(key)` is the only way to turn a key name into a character —
   it handles `"space"` and multi-byte runes, which naive `len(key) == 1` drops.
 - Cursor is a `Primary` block after the text, or resting on the placeholder's
-  first character when empty.
+  first character when empty — the same block the input dialog uses, so the
+  interface has one caret.
+- A `⌕` sits in the gutter lane at `PadX` and the text starts at `PadX + 2`,
+  in line with the row titles below it. Typed text carries `Text`; only the
+  placeholder is muted. What you typed is content, not annotation.
 - Suppress it with `hideFilter` only for lists that are never long.
 
 ### 9.4 Footer actions
@@ -967,7 +1014,11 @@ there is no way to move focus to it and no cursor to place. Consequences:
 `dialog.Action{Title, Keys, Right, Standalone, OnTrigger}`.
 
 - Rendered as `Title` in `Text` + `keys` in `TextMuted`; focused actions invert
-  to a `Primary` fill.
+  to a `Primary` fill. **Title first, key second, everywhere** — "close esc",
+  never "esc close". The read-only panels' footers read the same way round.
+- Every action carries a cell of padding on each side whether or not it is
+  focused, so the fill has room and nothing shifts when focus moves. The
+  text still starts at `PadX`.
 - `tab`/`shift+tab` cycle focus; while an action is focused the selected row
   dims and `enter` triggers the action instead of the item.
 - `standalone: true` for actions that do not operate on the selected row (a
@@ -981,8 +1032,15 @@ there is no way to move focus to it and no cursor to place. Consequences:
 |---|---|---|
 | Loading | items empty, no error | set `emptyTitle`/`emptyBody` to say so |
 | Failed | `emptyTitle` + `emptyBody`, `locked: true` | error title + muted body, no interaction but `esc` |
+
 | Genuinely empty | `emptyTitle`/`emptyBody` | explain what would fill it |
 | Default | — | `No results found` |
+
+**Rule: only a failure is red.** The `Error` color on an empty view is
+reserved for `locked: true` — the load that failed. A list that is genuinely
+empty gets a bold `Text` title. Coloring "No memories" like an error tells
+the user something untrue about their own machine. The stats panel draws the
+same line across its three empty reasons.
 
 **Rule:** a dialog opens **synchronously from cache** and refreshes in the
 background. Fetching first and opening after reads as the dialog lagging the
@@ -990,38 +1048,55 @@ keypress (measured at 140 ms+ for the model dialog).
 
 ### 9.6 Input / alert / confirm
 
-- **Input**: header (pad 2) + blank + value rows with a block cursor at the end
-  + filler to a minimum of 4 rows + `enter submit  shift+enter newline`. Render
-  the value **line by line** — a raw newline spliced into a composited row tears
-  the panel.
-- **Alert**: header + muted wrapped message + right-aligned `   ok   ` on a
-  `Primary` fill (pad 3). `esc` and `enter` both resolve.
-- **Confirm**: same, with `Cancel` and `Confirm` (pad 1), `left`/`right` to move,
+All three wear the frame of §9.1: header, rule, body, rule, footer.
+
+- **Input**: header + rule + blank + value rows with a block cursor at the end
+  + filler to a minimum of 3 rows + rule + `submit enter  newline shift+enter`
+  ⟨`cancel esc`⟩. Render the value **line by line** — a raw newline spliced
+  into a composited row tears the panel.
+- **Alert**: the message muted and wrapped, then a right-aligned `Ok` on a
+  `Primary` fill. `esc` and `enter` both resolve.
+- **Confirm**: the same, with `Cancel` and `Confirm`, `left`/`right` to move,
   `Confirm` active initially. `esc` runs neither branch.
+
+**One button shape.** `buttonPad = 2` on both sides for every button, a cell
+between a pair, and the group right-aligned to `PadX`. An **inactive button
+is filled with `BackgroundElement`**, not left as bare muted text — an
+unfilled label reads as a caption, not as the other thing you can press.
 
 **Rule:** use `openConfirm` for anything irreversible reached from the command
 palette. Inside a list, prefer the **two-press arm** (`armValue`/`armKeys`,
 which turns the row `Error`-red and relabels it `Press <keys> again to confirm`)
 — it keeps the user in place.
 
+---
+
 ### 9.7 Read-only panels (help, status, stats)
 
-These have no list and no selection, so they follow a reduced contract:
+These have no list and no selection, so they follow a reduced contract — but
+it is the *same frame*, and the three of them are one surface with three
+bodies. Help, status and stats share a keymap, a footer and a scroll budget;
+they must not drift apart again.
 
-- Header pad 2; `esc` hint in the header; content in `onPanel`-styled rows.
+- Header, rule, a blank, the body, rule, hint row — all inset to `PadX`.
 - Section headings in **`Text` bold**, a blank row under each — the sidebar's
-  idiom, not the list dialog's `Accent` category headers.
+  idiom, not the list dialog's `Accent` category headers. A section that is
+  *empty* answers on the next line instead of spending a blank on one line of
+  "none", so three empty sections do not cost eleven rows.
 - Key/value rows go through **one row control** with a fixed label column, so
   values align. Never hand-count the padding per row.
 - Every value is truncated to the panel's content column. An overlong line does
   not wrap — it overflows the panel width and tears the row `spliceAt`
   composites it into.
-- If the content can overflow, **only the body scrolls**: the header and the
-  hint row are fixed, `scrollTop` is clamped to `len(body) − rows` during the
-  render (as `listBody` does), and a `↑ N more` / `↓ N more` indicator says what
-  is hidden.
-- A hint row names the keys that are actually live — scroll keys only while
-  there is something to scroll, `esc close` always.
+- **Every panel takes the scroll budget**, not just the one that happened to
+  need it first. A status panel with a dozen plugins and a shortcut sheet
+  longer than the terminal both used to run off the bottom of the screen,
+  with keys in the footer that did nothing. Only the body scrolls: the header
+  and the hint row are fixed, `scrollTop` is clamped during the render, and
+  the body carries the same **scrollbar column** a list does.
+- The footer says what the window is hiding (`↑ N more` / `↓ N more`) and
+  names only the keys that are live — scroll keys while there is something to
+  scroll, `close esc` always.
 - **Ordering is part of the spec, and it is visible.** Every repeated section
   states its sort key in a named function, breaks ties deterministically (map
   iteration order is not an order), and shows the value it sorts on — a list
@@ -1030,7 +1105,12 @@ These have no list and no selection, so they follow a reduced contract:
   a usage breakdown by usage, a session list by recency.
 - The three empty reasons (nothing yet / still loading / the server reported
   nothing) get three different messages, in the list dialog's `emptyView`
-  colors.
+  colors — and only the third is red (§9.5).
+- **No button that is not wired.** The help panel carried a right-aligned
+  `ok` for a while that was never in the hit map: a button that could not be
+  clicked. The footer names the key instead.
+
+---
 
 ### 9.8 Building a new dialog
 
@@ -1091,18 +1171,20 @@ Reuse these; do not re-implement them.
 | **Panel** | `lipgloss` + `splitBorder()` | `┃` left in a semantic color, `BackgroundPanel`, `PaddingTop/Bottom 1`, `PaddingLeft 2`, `Width(withLeftBorder(…))` |
 | **Panel text** | `a.onPanel(fg, bold)` | Any text on a dialog/sidebar panel. Never a bare `lipgloss.NewStyle().Foreground(…)` on a panel — the fill drops. |
 | **List row** | `listRow` | See §9.2 |
-| **Filter input** | `filterRow` | Muted text + `Primary` block cursor; placeholder with cursor on its first cell |
-| **Text input** | `inputOverlay` | Value in `Text` + inverted block cursor; `shift+enter` for a newline |
-| **Button (dialog)** | `a.button(label, active)` | pad 1; active = `Primary` fill + `SelectedListItemText`; inactive = panel + `TextMuted` |
-| **Button (ok)** | `alertOverlay` / `helpOverlay` | pad 3, `Primary` fill, right-aligned |
+| **Filter input** | `filterRow` | `⌕` at `PadX`, text at `PadX + 2` in `Text`, `Primary` block cursor; placeholder muted with the cursor on its first cell |
+| **Text input** | `inputField` | Value in `Text` + the same `Primary` block cursor; `shift+enter` for a newline |
+| **Button (dialog)** | `button(label, active)` | `buttonPad = 2` both sides, for every kind; active = `Primary` fill + bold `SelectedListItemText`; inactive = `BackgroundElement` + `TextMuted` |
 | **Button (banner)** | inline in `permissionBanner`/`questionBanner` | ` label ` — selected: `Warning`/`Primary` fill on `Background` text; unselected: `BackgroundElement` + `TextMuted` |
-| **Action / tab** | `actionRow` | `Title` + muted `keys`; focused inverts to `Primary` |
+| **Action / tab** | `actionRow` | `Title` + muted `keys`, title first; a cell of padding each side; focused inverts to `Primary` |
+| **Rule** | `rule(p, w)` | `─` across `w − 2·PadX`, `TextMuted` mixed `0.68` toward the panel |
+| **Scrollbar** | `scrollbar(p, rows, total, top)` | Column at `w − 2`: thumb `▐` in `TextMuted`, track `│` mixed `0.74` |
+| **Panel footer** | `hintRow` / `PanelHints` | Left group of `keyHint`s, right group ending at `PadX`, always naming the way out |
 | **Toggle** | `gutter: "✓"` + `gutterOK: true` | `✓` in `Success` in the bullet gutter; the hint repeats the word so the filter can find it |
 | **Status dot** | `mcpDotColor` / `pluginDotColor` | `•` — `Error` failed, `Success` connected, `TextMuted` otherwise |
 | **Badge** | inline | ` LABEL ` on a semantic fill (`QUEUED`, ` File `, ` Directory `) |
 | **Pill row** | `wrapPills` | Packs items one space apart, never splitting one across lines |
 | **Usage meter** | `footerUsage.String()` | `159.6K (16%) · $0.34`, muted; the percentage is dropped when the catalog has no context limit for the model |
-| **Key hint** | inline | `Text.Render(key) + " " + Muted.Render(label)`, pairs joined by two spaces |
+| **Key hint** | `keyHint(p, label, keys)` | `Text.Render(label) + " " + Muted.Render(keys)` — inside a dialog, what it does then the key; pairs joined by two spaces. (The chat footer, §8.2, reads key-first: it annotates a live state, not an affordance you can focus.) |
 | **Inline spinner** | `a.spinnerGlyph()` | Braille, 80 ms |
 | **Scanner spinner** | `a.scannerSpinner(fg, bg)` | 8 cells, 40 ms, `Primary` (or `Warning` when waiting on the network) |
 | **Link** | `renderLink(href, text, style)` | OSC 8 hyperlink; must also record a `linkHit` for the click |
@@ -1357,6 +1439,12 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | Sidebar rows that wrap | Panel taller than its column, whole layout misaligns |
 | A fixed `maxHeight` with no floor for short terminals | Buttons unreachable at 14 rows |
 | Reporting loading / failed / empty identically | A fresh install looks hung |
+| Coloring an empty state with `Error` | Says the machine is broken when nothing is wrong |
+| A per-kind inset, footer idiom or button padding | Two dialogs opened seconds apart look like two programs |
+| Hand-padding a label to fake a column | The dialog already aligns hints; the two fight |
+| A button that is not in the hit map | Pixels that look pressable and are not |
+| A panel that grows without a scroll budget | Runs off the bottom of the screen; its footer names keys that do nothing |
+| `BackgroundElement` as a rule or divider color | One shade off the panel on a light theme — invisible |
 | Summing every message's tokens for "context used" | Grows without bound; the number means nothing |
 | Colouring an interruption as an error | It is a user action, not a failure |
 | Clickable region computed separately from its render | Hit test drifts from what is on screen |
@@ -1380,6 +1468,8 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 - [ ] Loading / failed / empty states distinguished; `locked` on failure.
 - [ ] Registered in `commandsRegistry()` with slash name, aliases, hint, category, footer key.
 - [ ] Sits balanced: the panel's bottom margin matches its `height/4` top offset, and it never reaches the last screen row.
+- [ ] Nothing is inset, padded or labelled by hand: the chrome comes from `dialog.PadX`, `rule`, `keyHint`, `hintRow`, `button`, `scrollbar`.
+- [ ] Every rendered row is exactly the panel width (`TestEveryDialogRowIsExactlyPanelWide` covers the kinds; a new kind joins it).
 - [ ] Layout test added.
 
 ### 19.2 New read-only panel
@@ -1392,6 +1482,8 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 - [ ] Hint row names the live keys.
 - [ ] Loading / unavailable / empty told apart.
 - [ ] Bottom margin matches the `height/4` top offset.
+- [ ] Takes the scroll budget, so it windows instead of running off the screen.
+- [ ] Footer names only the live keys, title-first (`close esc`), and says what the window hides.
 
 ### 19.3 New timeline block
 
@@ -1453,6 +1545,7 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | `markdown.go` | Glamour renderers, normal and dimmed, plus the chroma code theme |
 | `highlight.go` | File body renderers (code, markdown, wrapped) |
 | `dialog/` | The dialog engine on charm.land/huh/v2: `Shell` (chrome, keyboard, embedded `huh.Form`), the `listField` (DialogSelect) and `noteField`/`inputField` (read-only panels, DialogPrompt), `Item`/`Action`, hit maps, the `Palette` bridge |
+| `dialog/chrome.go` | The frame every kind shares: `PadX`, `rule`, `pad`, `mix`, `keyHint`/`hintRow`, `scrollbar`, `buttonPad`. A dialog that insets, divides, hints or scrolls by hand is a bug |
 | `dialogs.go` | App-side dialog wiring: shell builders, close/cmd adapters (`wrapDialogCmd`, `CloseThenMsg`), compositing entry points, command registry |
 | `dialogs_confirm.go` | The read-only panels' content (help, status, stats body/hints/budget) |
 | `dialogs_{model,provider,plugins,memory,skill}.go` | Individual dialog content |

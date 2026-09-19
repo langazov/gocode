@@ -127,8 +127,8 @@ func TestInputDialogHeightStableForSingleLine(t *testing.T) {
 	app.overlay.SetInputValue("one\ntwo\nthree\nfour\nfive")
 	taller := len(strings.Split(inputContent(t, app), "\n"))
 
-	if single != 8 {
-		t.Errorf("single-line panel is %d rows, want the original 8", single)
+	if single != 9 {
+		t.Errorf("single-line panel is %d rows, want 9", single)
 	}
 	if taller <= single {
 		t.Errorf("a 5-line entry rendered %d rows, not more than the %d of one line", taller, single)

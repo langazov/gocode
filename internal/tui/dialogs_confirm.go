@@ -16,57 +16,84 @@ import (
 // from TUI_RECOMENDATIONS §9.7.
 
 // statsChrome is every panel row that is not body: overlayPanel's
-// PaddingTop, the header and its blank, the blank above the footer, the
-// hint row, and the trailing blank.
-const statsChrome = 6
+// PaddingTop, the header, the rule under it and the gap under that, the
+// rule above the footer, the hint row, and the trailing blank. What the
+// scroll window hides is reported by the footer, not by a row of its own,
+// so the budget the panel is handed is the budget its body fills.
+const statsChrome = 7
 
 // openHelpDialog opens the help panel, optionally with caller-supplied rows
 // (the diff viewer's shortcut sheet) in place of the default paragraph.
+//
+// It takes the same scroll budget the stats panel does: a shortcut sheet is
+// as capable of outgrowing the terminal as a usage report, and a panel that
+// outgrows it runs off the bottom of the screen instead of windowing.
 func (a *App) openHelpDialog(title string, helpLines []string) {
-	a.mount(dialog.NewNote(dialog.KindHelp, nil, nil, nil).WithHelpLines(title, helpLines))
+	a.mount(dialog.NewNote(dialog.KindHelp, nil, a.statsBudget, nil).WithHelpLines(title, helpLines))
 }
 
 // openStatusDialog opens the MCP/formatter/plugin status panel.
 func (a *App) openStatusDialog() {
-	a.mount(dialog.NewNote(dialog.KindStatus, a.statusBody, nil, nil))
+	a.mount(dialog.NewNote(dialog.KindStatus, a.statusBody, a.statsBudget, nil))
 }
 
-// statusBody ports component/dialog-status.tsx: MCP servers, then the
-// formatter and plugin sections with their empty-state fallbacks.
+// statusBody is the MCP / formatter / plugin panel.
+//
+// It is built from the same row controls the stats panel uses — a bold
+// section heading, a blank under it, entries and muted notes in one column —
+// because they are the same kind of surface and the reader should not have
+// to learn two layouts. It used to mix its own idioms instead, heading one
+// section "No MCP Servers", another "No Formatters" and a third "0 Plugins":
+// three phrasings for one state, none of them a heading.
 func (a *App) statusBody(p dialog.Palette, w int) []string {
-	pad := strings.Repeat(" ", 2)
-	onPanel := func(fg color.Color, bold bool) lipgloss.Style {
-		style := lipgloss.NewStyle().Foreground(fg).Background(p.BackgroundPanel)
-		if bold {
-			style = style.Bold(true)
+	inner := max(8, w-2*statsPad)
+	entry := func(dot color.Color, name, detail string) string {
+		marker := lipgloss.NewStyle().Foreground(dot).Background(p.BackgroundPanel).Render("•")
+		label := truncateRunes(name, max(1, inner-statsIndent))
+		row := strings.Repeat(" ", statsPad) + marker + " " +
+			lipgloss.NewStyle().Foreground(p.Text).Background(p.BackgroundPanel).Bold(true).Render(label)
+		if detail != "" {
+			room := inner - statsIndent - lipgloss.Width(label) - 1
+			if room > 0 {
+				row += " " + lipgloss.NewStyle().Foreground(p.TextMuted).
+					Background(p.BackgroundPanel).Render(truncateRunes(detail, room))
+			}
 		}
-		return style
+		return row
 	}
-	text := func(s string) string { return onPanel(p.Text, false).Render(s) }
-	bold := func(s string) string { return onPanel(p.Text, true).Render(s) }
-	muted := func(s string) string { return onPanel(p.TextMuted, false).Render(s) }
 
-	lines := []string{""}
-	if len(a.mcpServers) > 0 {
-		lines = append(lines, pad+text(fmt.Sprintf("%d MCP Servers", len(a.mcpServers))))
-		for _, server := range a.mcpServers {
-			dot := lipgloss.NewStyle().Foreground(mcpDotColor(a.theme, server.Status)).Render("•")
-			lines = append(lines, pad+dot+" "+bold(server.Name)+" "+muted(mcpStatusLabel(server)))
+	// A section with entries gets the blank row under its heading that
+	// §9.7 asks for; an empty one answers on the next line instead, so
+	// three empty sections do not cost eleven rows of a panel that has to
+	// fit on screen.
+	var lines []string
+	section := func(title, empty string, rows []string) {
+		if len(lines) > 0 {
+			lines = append(lines, "")
 		}
-	} else {
-		lines = append(lines, pad+text("No MCP Servers"))
+		lines = append(lines, a.statsHeading(p, inner, title))
+		if len(rows) == 0 {
+			lines = append(lines, a.statsDetail(p, inner, empty))
+			return
+		}
+		lines = append(lines, "")
+		lines = append(lines, rows...)
 	}
-	lines = append(lines,
-		"",
-		pad+text("No Formatters"),
-		"",
-		pad+text(fmt.Sprintf("%d Plugins", len(a.plugins))),
-	)
+
+	servers := make([]string, 0, len(a.mcpServers))
+	for _, server := range a.mcpServers {
+		servers = append(servers, entry(mcpDotColor(a.theme, server.Status), server.Name, mcpStatusLabel(server)))
+	}
+	section("MCP Servers", "None connected.", servers)
+
+	section("Formatters", "None configured.", nil)
+
+	plugins := make([]string, 0, len(a.plugins))
 	for _, plugin := range a.plugins {
-		dot := lipgloss.NewStyle().Foreground(pluginDotColor(a.theme, plugin.State)).Render("•")
-		lines = append(lines, pad+dot+" "+bold(plugin.ID)+" "+muted(plugin.Source+" · "+plugin.State))
+		plugins = append(plugins, entry(pluginDotColor(a.theme, plugin.State), plugin.ID,
+			plugin.Source+" · "+plugin.State))
 	}
-	lines = append(lines, "")
+	section("Plugins", "None loaded.", plugins)
 	return lines
 }
 
@@ -76,11 +103,11 @@ func (a *App) statusBody(p dialog.Palette, w int) []string {
 // allStatsMsg arrives — the "open synchronously from cache, refresh in the
 // background" rule every other dialog follows.
 func (a *App) openStatsOverlay() tea.Msg {
-	a.mount(dialog.NewNote(dialog.KindStats, a.statsBody, a.statsBudget, a.statsHints))
+	a.mount(dialog.NewNote(dialog.KindStats, a.statsBody, a.statsBudget, nil))
 	return a.loadAllStats()
 }
 
-// statsBudget ports the stats panel's row arithmetic: the balanced margin
+// statsBudget is every read-only panel's row arithmetic: the balanced margin
 // (height - 2*height/4) is the preference, the hard fit (height - height/4)
 // the bound, and the margin gives way first on a short terminal.
 func (a *App) statsBudget(height int) int {
@@ -133,12 +160,18 @@ func (a *App) statsNote(p dialog.Palette, inner int, text string) string {
 }
 
 // statsEmptyView is the panel's empty state, distinguishing the three reasons
-// there is nothing to report. An error title reuses the list dialog's
-// emptyView colors (Error for the title, muted for the body).
-func (a *App) statsEmptyView(p dialog.Palette, inner int, title, body string) []string {
+// there is nothing to report. Only the third is a failure, and only it wears
+// the Error color — the list dialog's emptyView draws the same line. Telling
+// a user that having started no sessions yet is an error is telling them
+// something untrue about their own machine.
+func (a *App) statsEmptyView(p dialog.Palette, inner int, failed bool, title, body string) []string {
+	titleFg := p.Text
+	if failed {
+		titleFg = p.Error
+	}
 	lines := []string{strings.Repeat(" ", statsPad) +
-		lipgloss.NewStyle().Foreground(p.Error).Background(p.BackgroundPanel).Bold(true).
-			Render(truncateRunes(title, inner))}
+		lipgloss.NewStyle().Foreground(titleFg).Background(p.BackgroundPanel).Bold(true).
+			Render(truncateRunes(title, inner)), ""}
 	for _, line := range wrapWords(body, inner) {
 		lines = append(lines, strings.Repeat(" ", statsPad)+
 			lipgloss.NewStyle().Foreground(p.TextMuted).Background(p.BackgroundPanel).Render(line))
@@ -158,13 +191,13 @@ func (a *App) statsBody(p dialog.Palette, w int) []string {
 	// indistinguishable from a fresh install with no history.
 	switch {
 	case agg.sessionCount == 0:
-		return a.statsEmptyView(p, inner, "No sessions",
+		return a.statsEmptyView(p, inner, false, "No sessions",
 			"Usage is reported per session. Start one and its tokens, cost and cache hit rate will appear here.")
 	case agg.loaded == 0 && agg.pending > 0:
-		return a.statsEmptyView(p, inner, "Loading usage",
+		return a.statsEmptyView(p, inner, false, "Loading usage",
 			fmt.Sprintf("Fetching stats for %s.", plural(agg.pending, "session")))
 	case agg.loaded == 0:
-		return a.statsEmptyView(p, inner, "No usage reported",
+		return a.statsEmptyView(p, inner, true, "No usage reported",
 			"The server returned no stats for any session. It may not implement the stats endpoint.")
 	}
 
@@ -266,20 +299,4 @@ func (a *App) statsBody(p dialog.Palette, w int) []string {
 		}
 	}
 	return lines
-}
-
-// statsHints is the panel's key hint row: every affordance names its key, and
-// the scroll keys appear only while there is something to scroll.
-func (a *App) statsHints(p dialog.Palette, w int, scrollable bool) string {
-	hint := func(key, label string) string {
-		return lipgloss.NewStyle().Foreground(p.Text).Background(p.BackgroundPanel).Render(key) + " " +
-			lipgloss.NewStyle().Foreground(p.TextMuted).Background(p.BackgroundPanel).Render(label)
-	}
-	parts := []string{}
-	if scrollable {
-		parts = append(parts, hint("↑↓", "scroll"), hint("pgup/pgdn", "page"))
-	}
-	parts = append(parts, hint("esc", "close"))
-	return strings.Repeat(" ", statsPad) +
-		truncateRunes(strings.Join(parts, "  "), max(1, w-2*statsPad))
 }

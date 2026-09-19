@@ -12,14 +12,17 @@ import (
 	"sort"
 
 	"github.com/langazov/gocode-go/internal/tui/client"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 )
 
-// Panel geometry. statsPad is the left inset shared with statusOverlay and
-// helpOverlay (dialogHeader's `pad` argument for a non-select dialog);
-// statsLabelWidth is the key column every statsRow aligns its value against,
-// sized to the longest label below ("Total Messages").
+// Panel geometry. statsPad is the left inset every read-only panel body
+// indents to — the same one the dialog chrome uses for its header, rules and
+// footer, so a section heading lines up with the panel's title rather than
+// sitting a column inside it. statsLabelWidth is the key column every
+// statsRow aligns its value against, sized to the longest label below
+// ("Total Messages").
 const (
-	statsPad        = 2
+	statsPad        = dialog.PadX
 	statsLabelWidth = 16
 	statsIndent     = 2
 )

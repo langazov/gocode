@@ -39,6 +39,11 @@ type noteField struct {
 	scrollTop int
 	locked    bool
 
+	// total/above/below are what the last render measured: the full row
+	// count and how many rows the window hides on each side, which the
+	// scrollbar and the footer's "N more" counts both read.
+	total, above, below int
+
 	r renderer
 }
 
@@ -59,31 +64,75 @@ func (n *noteField) layout() ([]string, *Hits) {
 	p := n.r.theme
 	w := n.r.width
 	hits := NewHits()
-	var body []string
-	scrollable := false
-	switch n.kind {
-	case KindHelp:
-		body = n.helpBody(p, w)
-	case KindStatus:
-		body = n.statusBody(p, w)
-	default:
-		body, scrollable = n.scrollableBody(p, w)
-	}
-	lines := []string{header(p, 2, n.title(), "esc", w), ""}
-	hits.RowItem = append(hits.RowItem, -1, -1)
+	body, scrollable := n.window(p, w)
+
+	// The gap under the rule is the one every kind takes between its header
+	// and its content (a list spends it between the filter and the rows).
+	lines := []string{header(p, n.title(), "esc", w), rule(p, w), ""}
+	hits.RowItem = append(hits.RowItem, -1, -1, -1)
 	hits.EscRow = 0
-	hits.EscStart, hits.EscEnd = escHintRange(p, 2, n.title(), "esc", w)
-	lines = append(lines, body...)
-	for range body {
+	hits.EscStart, hits.EscEnd = escHintRange(p, n.title(), "esc", w)
+
+	// A read-only panel scrolls the same way a list does, so it gets the
+	// same scrollbar column rather than a second idiom of its own.
+	bars := scrollbar(p, len(body), n.total, n.scrollTop)
+	for i, line := range body {
+		lines = append(lines, bodyRow(p, w, line, bars[i]))
 		hits.RowItem = append(hits.RowItem, -1)
 	}
-	// The stats panel's hint row names the keys that are actually live —
-	// scroll keys only while there is something to scroll, esc always.
+	lines = append(lines, rule(p, w))
+	hits.RowItem = append(hits.RowItem, -1)
 	if n.hints != nil {
 		lines = append(lines, n.hints(p, w, scrollable))
-		hits.RowItem = append(hits.RowItem, -1)
+	} else {
+		above, below := n.hidden()
+		lines = append(lines, PanelHints(p, w, scrollable, above, below))
 	}
+	hits.RowItem = append(hits.RowItem, -1)
+	lines = append(lines, "")
+	hits.RowItem = append(hits.RowItem, -1)
 	return lines, hits
+}
+
+// hidden reports how many body rows are above and below the window, for the
+// footer's "N more" counts.
+func (n *noteField) hidden() (above, below int) {
+	return n.above, n.below
+}
+
+// bodyRow pads a caller-supplied content line out to the scrollbar column
+// and appends it. A line already wider than the column keeps its own width
+// — truncating a pre-styled string here would cut an escape sequence in
+// half — and simply goes without the bar on that row.
+func bodyRow(p Palette, w int, line, bar string) string {
+	span := w - rowPad
+	used := lipgloss.Width(line)
+	if used > span {
+		return line
+	}
+	return line + pad(p, span-used) + bar + pad(p, rowPad-1)
+}
+
+// PanelHints is the read-only panels' footer: the scroll keys only while
+// there is something to scroll, what the window is hiding, and the way out.
+// It is the one hint row help, status and stats all use, so the three read
+// identically.
+func PanelHints(p Palette, w int, scrollable bool, above, below int) string {
+	var left []string
+	if scrollable {
+		left = append(left, keyHint(p, "scroll", "↑↓"), keyHint(p, "page", "pgup/pgdn"))
+		var more []string
+		if above > 0 {
+			more = append(more, "↑ "+itoa(above)+" more")
+		}
+		if below > 0 {
+			more = append(more, "↓ "+itoa(below)+" more")
+		}
+		if len(more) > 0 {
+			left = append(left, onPanel(p, p.TextMuted, false).Render(strings.Join(more, " ")))
+		}
+	}
+	return hintRow(p, w, left, []string{keyHint(p, "close", "esc")})
 }
 
 // title names the panel for the header row.
@@ -117,54 +166,8 @@ func (n *noteField) ScrollDown(rows int) { n.scrollTop += rows }
 // same trick handleOverlayKey's "end" arm used.
 func (n *noteField) ScrollEnd() { n.scrollTop = 1 << 30 }
 
-// scrollableBody renders a scrollable panel body (stats), windowing the
-// callback's lines to the budget and clamping scrollTop at the true maximum.
-func (n *noteField) scrollableBody(p Palette, w int) ([]string, bool) {
-	if n.body == nil {
-		return nil, false
-	}
-	all := n.body(p, w)
-	rows := len(all)
-	budget := len(all)
-	if n.scrollBudget != nil {
-		budget = n.scrollBudget(n.r.height)
-	}
-	scrollable := rows > budget
-	if scrollable {
-		// The "more lines" indicator costs a row.
-		budget = max(1, budget-1)
-		scrollable = rows > budget
-	}
-	start := 0
-	if scrollable {
-		start = min(max(n.scrollTop, 0), rows-budget)
-	}
-	n.scrollTop = start
-	if !scrollable {
-		return append(append([]string(nil), all...), ""), false
-	}
-	out := append([]string(nil), all[start:start+budget]...)
-	// The blank row separates the footer from the body the same way it
-	// separates every section above it.
-	out = append(out, "", n.moreIndicator(p, w, start, budget, rows))
-	return out, true
-}
-
-// moreIndicator reports what the window is hiding, in the timeline's own
-// "↑ N more lines" wording.
-func (n *noteField) moreIndicator(p Palette, inner, start, rows, total int) string {
-	var parts []string
-	if start > 0 {
-		parts = append(parts, "↑ "+itoa(start)+" more")
-	}
-	if end := start + rows; end < total {
-		parts = append(parts, "↓ "+itoa(total-end)+" more")
-	}
-	return strings.Repeat(" ", 2) +
-		onPanel(p, p.TextMuted, false).Render(
-			TruncateRunes(strings.Join(parts, "   "), inner))
-}
-
+// itoa renders a small non-negative count without pulling strconv into the
+// renderer's hot path.
 func itoa(v int) string {
 	if v == 0 {
 		return "0"
@@ -177,44 +180,62 @@ func itoa(v int) string {
 	return string(digits)
 }
 
-// helpBody mirrors ui/dialog-help.tsx: a short paragraph and a right
-// aligned ok button in the primary color. helpLines replaces the paragraph
-// with pre-rendered rows (the diff viewer's shortcut sheet).
-func (n *noteField) helpBody(p Palette, w int) []string {
-	pad := strings.Repeat(" ", 2)
-	ok := lipgloss.NewStyle().
-		Foreground(p.Text).
-		Background(p.Primary).
-		Render("   ok   ")
-	lines := []string{}
-	if len(n.helpLines) > 0 {
-		for _, row := range n.helpLines {
-			lines = append(lines, pad+onPanel(p, p.TextMuted, false).Render(
-				truncateToWidth(row, max(4, w-4))))
-		}
-	} else {
-		for _, line := range WrapWords(
-			"Press ctrl+p to see all available actions and commands in any context.", w-4) {
-			lines = append(lines, pad+onPanel(p, p.TextMuted, false).Render(line))
-		}
+// content is the panel's full body, before any windowing: the help
+// paragraph, or the lines the App's callback renders.
+func (n *noteField) content(p Palette, w int) []string {
+	if n.kind == KindHelp {
+		return n.helpBody(p, w)
 	}
-	// The message box's paddingBottom and the parent box's gap are two
-	// separate rows between the paragraph and the button.
-	return append(lines,
-		"",
-		"",
-		pad+lipgloss.PlaceHorizontal(w-4, lipgloss.Right, ok),
-		"",
-	)
-}
-
-// statusBody mirrors component/dialog-status.tsx: MCP servers, then the
-// formatter and plugin sections with their empty-state fallbacks.
-func (n *noteField) statusBody(p Palette, w int) []string {
 	if n.body == nil {
 		return nil
 	}
 	return n.body(p, w)
+}
+
+// window renders the body and clamps it to the panel's scroll budget.
+//
+// Help, status and stats all go through it. They used to differ — only the
+// stats panel could scroll, so a status panel with a dozen plugins or a
+// shortcut sheet longer than the terminal simply ran off the bottom of the
+// screen, and the keys that would have moved it did nothing.
+func (n *noteField) window(p Palette, w int) ([]string, bool) {
+	all := n.content(p, w)
+	rows := len(all)
+	budget := rows
+	if n.scrollBudget != nil {
+		budget = max(1, n.scrollBudget(n.r.height))
+	}
+	n.total = rows
+	if rows <= budget {
+		n.scrollTop, n.above, n.below = 0, 0, 0
+		return all, false
+	}
+	start := min(max(n.scrollTop, 0), rows-budget)
+	n.scrollTop = start
+	n.above, n.below = start, rows-start-budget
+	return all[start : start+budget], true
+}
+
+// helpBody is the help panel's paragraph, or the pre-rendered rows a caller
+// supplied instead (the diff viewer's shortcut sheet).
+//
+// It carries no ok button any more. The one it had was never wired into the
+// hit map, so it was a button that could not be clicked; the panel's footer
+// names the key that does close it, the way every other dialog does.
+func (n *noteField) helpBody(p Palette, w int) []string {
+	lines := []string{}
+	if len(n.helpLines) > 0 {
+		for _, row := range n.helpLines {
+			lines = append(lines, pad(p, PadX)+onPanel(p, p.TextMuted, false).Render(
+				truncateToWidth(row, max(4, w-2*PadX))))
+		}
+	} else {
+		for _, line := range WrapWords(
+			"Press ctrl+p to see all available actions and commands in any context.", w-2*PadX) {
+			lines = append(lines, pad(p, PadX)+onPanel(p, p.TextMuted, false).Render(line))
+		}
+	}
+	return lines
 }
 
 // truncateToWidth keeps a caller-supplied row inside the panel's content
@@ -265,92 +286,98 @@ func (n *noteField) WithPosition(p huh.FieldPosition) huh.Field { return n }
 
 // --- alert / confirm ----------------------------------------------------------
 
-// buttonPad is the horizontal padding inside a dialog button. DialogAlert and
-// DialogHelp pad their single ok button by 3; DialogConfirm pads its pair by 1.
-const (
-	alertButtonPad   = 3
-	confirmButtonPad = 1
-)
-
-// button renders one dialog button: padded label text on the primary fill when
-// active, or on the panel in muted text when not (dialog-confirm.tsx).
+// button renders one dialog button: a padded label on the primary fill when
+// it is the active one, on BackgroundElement when it is not.
+//
+// Both kinds of button are the same shape now. An alert's single ok used to
+// pad by 3 and a confirm's pair by 1, so the two dialogs presented buttons
+// of visibly different sizes for the same job; and an inactive button was
+// bare muted text, which read as a label rather than as the other thing you
+// could press.
 func button(p Palette, label string, active bool) string {
-	padded := strings.Repeat(" ", confirmButtonPad) + label + strings.Repeat(" ", confirmButtonPad)
+	padded := strings.Repeat(" ", buttonPad) + label + strings.Repeat(" ", buttonPad)
 	if active {
 		return lipgloss.NewStyle().
 			Foreground(p.SelectedListItemText).
 			Background(p.Primary).
+			Bold(true).
 			Render(padded)
 	}
-	return onPanel(p, p.TextMuted, false).Render(padded)
+	return lipgloss.NewStyle().
+		Foreground(p.TextMuted).
+		Background(p.BackgroundElement).
+		Render(padded)
 }
 
-// buttonRow right-aligns rendered buttons inside a panel padded by pad on both
-// sides (justifyContent="flex-end"), and reports the column span each one
-// occupies so a click can be routed back to it.
-func buttonRow(p Palette, pad, w int, buttons []string) (string, []Span) {
+// buttonRow right-aligns rendered buttons inside the shared content column,
+// with a cell between them, and reports the column span each one occupies
+// so a click can be routed back to it.
+func buttonRow(p Palette, w int, buttons []string) (string, []Span) {
 	total := 0
-	for _, b := range buttons {
+	for i, b := range buttons {
+		if i > 0 {
+			total++
+		}
 		total += lipgloss.Width(b)
 	}
-	align := w - 2*pad - total
+	align := w - 2*PadX - total
 	if align < 0 {
 		align = 0
 	}
-	col := pad + align
+	col := PadX + align
 	spans := make([]Span, 0, len(buttons))
 	var row strings.Builder
-	row.WriteString(strings.Repeat(" ", col))
+	row.WriteString(pad(p, col))
 	for i, b := range buttons {
+		if i > 0 {
+			row.WriteString(pad(p, 1))
+			col++
+		}
 		width := lipgloss.Width(b)
 		spans = append(spans, Span{Start: col, End: col + width, Index: i})
 		col += width
 		row.WriteString(b)
 	}
+	row.WriteString(pad(p, max(0, w-col)))
 	return row.String(), spans
 }
 
-// messageBlock renders a dialog's body paragraph: muted, wrapped to the panel
-// width, followed by the box's own paddingBottom row.
-func messageBlock(p Palette, pad, w int, message string) []string {
-	indent := strings.Repeat(" ", pad)
+// messageBlock renders a dialog's body paragraph: muted, wrapped to the
+// shared content column.
+func messageBlock(p Palette, w int, message string) []string {
 	var lines []string
-	for _, line := range WrapWords(message, w-2*pad) {
-		lines = append(lines, indent+onPanel(p, p.TextMuted, false).Render(line))
+	for _, line := range WrapWords(message, w-2*PadX) {
+		lines = append(lines, pad(p, PadX)+onPanel(p, p.TextMuted, false).Render(line))
 	}
 	if len(lines) == 0 {
 		lines = append(lines, "")
 	}
-	return append(lines, "")
+	return lines
 }
 
-// alertBody mirrors ui/dialog-alert.tsx: a bold title with an esc hint, a
-// muted message, and a single right-aligned ok button on the primary fill.
+// alertBody is the one-button acknowledgement: the shared header and rules
+// around a muted message, with a single right-aligned Ok.
 func alertBody(p Palette, title, message string, w int) (content string, buttonRowIdx int, spans []Span) {
-	lines := []string{header(p, 2, title, "esc", w), ""}
-	lines = append(lines, messageBlock(p, 2, w, message)...)
-	lines = append(lines, "")
-	ok := lipgloss.NewStyle().
-		Foreground(p.SelectedListItemText).
-		Background(p.Primary).
-		Render(strings.Repeat(" ", alertButtonPad) + "ok" + strings.Repeat(" ", alertButtonPad))
-	row, spans := buttonRow(p, 2, w, []string{ok})
+	lines := []string{header(p, title, "esc", w), rule(p, w), ""}
+	lines = append(lines, messageBlock(p, w, message)...)
+	lines = append(lines, "", rule(p, w))
+	row, spans := buttonRow(p, w, []string{button(p, "Ok", true)})
 	buttonRowIdx = len(lines)
 	lines = append(lines, row, "")
 	return strings.Join(lines, "\n"), buttonRowIdx, spans
 }
 
-// confirmBody mirrors ui/dialog-confirm.tsx: the alert layout with a Cancel
-// and a Confirm button, the active one filled with the primary color. Buttons
-// render in cancel-then-confirm order, and left/right move between them.
+// confirmBody is the alert layout with a Cancel and a Confirm button, the
+// active one filled with the primary color. Buttons render in
+// cancel-then-confirm order, and left/right move between them.
 func confirmBody(p Palette, title, message, cancelLabel string, confirmActive bool, w int) (content string, buttonRowIdx int, spans []Span) {
-	lines := []string{header(p, 2, title, "esc", w), ""}
-	lines = append(lines, messageBlock(p, 2, w, message)...)
-	lines = append(lines, "")
+	lines := []string{header(p, title, "esc", w), rule(p, w), ""}
+	lines = append(lines, messageBlock(p, w, message)...)
+	lines = append(lines, "", rule(p, w))
 	if cancelLabel == "" {
 		cancelLabel = "cancel"
 	}
-	row, spans := buttonRow(p, 2, w, []string{
+	row, spans := buttonRow(p, w, []string{
 		button(p, titlecaseLabel(cancelLabel), !confirmActive),
 		button(p, titlecaseLabel("confirm"), confirmActive),
 	})
@@ -402,37 +429,43 @@ func (f *inputField) View() string {
 func (f *inputField) layout() ([]string, *Hits) {
 	p := f.r.theme
 	w := f.r.width
-	pad := strings.Repeat(" ", 2)
 	cursor := lipgloss.NewStyle().
 		Foreground(p.BackgroundPanel).
-		Background(p.Text).
+		Background(p.Primary).
 		Render(" ")
 
 	// The value is rendered a line at a time so a multi-line entry does not
 	// smuggle a raw newline into the middle of a composited row. The cursor
-	// sits after the last line.
-	entry := strings.Split(f.value, "\n")
-	value := make([]string, 0, len(entry))
-	for i, line := range entry {
-		rendered := pad + onPanel(p, p.Text, false).Render(line)
-		if i == len(entry)-1 {
-			rendered += cursor
+	// sits after the last line, and carries the same Primary block the list
+	// dialog's filter uses — one caret for the whole interface.
+	var value []string
+	if f.value == "" && f.placeholder != "" {
+		value = append(value, pad(p, PadX)+cursor+
+			onPanel(p, p.TextMuted, false).Render(
+				TruncateRunes(f.placeholder, max(1, w-2*PadX-1))))
+	} else {
+		entry := strings.Split(f.value, "\n")
+		for i, line := range entry {
+			rendered := pad(p, PadX) + onPanel(p, p.Text, false).Render(line)
+			if i == len(entry)-1 {
+				rendered += cursor
+			}
+			value = append(value, rendered)
 		}
-		value = append(value, rendered)
 	}
 
-	lines := []string{header(p, 2, f.title, "esc", w), ""}
+	lines := []string{header(p, f.title, "esc", w), rule(p, w), ""}
 	lines = append(lines, value...)
-	// Three filler rows keep a single-line dialog the height it has always
-	// been; a taller entry eats into them before the panel grows.
-	for i := len(value); i < 4; i++ {
+	// Filler rows keep a single-line dialog the height it has always been;
+	// a taller entry eats into them before the panel grows.
+	for i := len(value); i < 3; i++ {
 		lines = append(lines, "")
 	}
 	lines = append(lines,
-		pad+onPanel(p, p.Text, false).Render("enter")+" "+
-			onPanel(p, p.TextMuted, false).Render("submit")+"  "+
-			onPanel(p, p.Text, false).Render("shift+enter")+" "+
-			onPanel(p, p.TextMuted, false).Render("newline"),
+		rule(p, w),
+		hintRow(p, w,
+			[]string{keyHint(p, "submit", "enter"), keyHint(p, "newline", "shift+enter")},
+			[]string{keyHint(p, "cancel", "esc")}),
 		"",
 	)
 	hits := NewHits()
@@ -441,7 +474,7 @@ func (f *inputField) layout() ([]string, *Hits) {
 		hits.RowItem[i] = -1
 	}
 	hits.EscRow = 0
-	hits.EscStart, hits.EscEnd = escHintRange(p, 2, f.title, "esc", w)
+	hits.EscStart, hits.EscEnd = escHintRange(p, f.title, "esc", w)
 	return lines, hits
 }
 
