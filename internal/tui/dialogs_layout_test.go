@@ -438,7 +438,7 @@ func TestEveryDialogRowIsExactlyPanelWide(t *testing.T) {
 			a.overlay.Move(20)
 		},
 		"list empty": func(a *App) { a.openList("Memories", nil) },
-		"input":      func(a *App) { a.openInput("Rename session", long, nil) },
+		"input":      func(a *App) { a.openInput("Rename session", long, "", nil) },
 		"alert":      func(a *App) { a.openAlert("Retry error", long, nil) },
 		"confirm":    func(a *App) { a.openConfirm("Delete session", long, "Keep", nil, nil) },
 		"help":       func(a *App) { a.openHelpDialog("Shortcuts", []string{"ctrl+x n  new session", long}) },

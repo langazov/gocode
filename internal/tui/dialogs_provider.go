@@ -135,7 +135,7 @@ func providerLabel(entry client.Provider) string {
 // promptCustomProvider ports promptCustomProviderID(): ask for an id, validate
 // it, then collect a key for it.
 func (a *App) promptCustomProvider() tea.Msg {
-	a.openInput("Other", "Provider id", func(value string) tea.Msg {
+	a.openInput("Other", "", "Provider id", func(value string) tea.Msg {
 		id := strings.TrimPrefix(strings.TrimSpace(value), "@ai-sdk/")
 		if !customProviderID.MatchString(id) {
 			return statusMsg{
@@ -187,7 +187,7 @@ func (a *App) beginProviderLogin(providerID, name string) tea.Msg {
 
 // promptAPIKey collects a key and stores it, the port of ApiMethod.
 func (a *App) promptAPIKey(providerID, name string) tea.Msg {
-	a.openInput("API key for "+name, "Paste your API key", func(value string) tea.Msg {
+	a.openInput("API key for "+name, "", "Paste your API key", func(value string) tea.Msg {
 		key := strings.TrimSpace(value)
 		if key == "" {
 			return statusMsg{text: "API key is required", isErr: true}
@@ -233,7 +233,7 @@ func (a *App) runOAuthMethod(providerID, name string, method client.AuthMethod, 
 		if len(prompt.Options) > 0 {
 			label += " (" + strings.Join(prompt.Options, "/") + ")"
 		}
-		a.openInput(label, "", func(value string) tea.Msg {
+		a.openInput(label, "", "", func(value string) tea.Msg {
 			answers[prompt.Key] = strings.TrimSpace(value)
 			return a.runOAuthMethod(providerID, name, method, answers, index+1)
 		})

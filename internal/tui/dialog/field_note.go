@@ -429,10 +429,10 @@ func (f *inputField) View() string {
 func (f *inputField) layout() ([]string, *Hits) {
 	p := f.r.theme
 	w := f.r.width
-	cursor := lipgloss.NewStyle().
+	cursorStyle := lipgloss.NewStyle().
 		Foreground(p.BackgroundPanel).
-		Background(p.Primary).
-		Render(" ")
+		Background(p.Primary)
+	cursor := cursorStyle.Render(" ")
 
 	// The value is rendered a line at a time so a multi-line entry does not
 	// smuggle a raw newline into the middle of a composited row. The cursor
@@ -440,9 +440,14 @@ func (f *inputField) layout() ([]string, *Hits) {
 	// dialog's filter uses — one caret for the whole interface.
 	var value []string
 	if f.value == "" && f.placeholder != "" {
-		value = append(value, pad(p, PadX)+cursor+
-			onPanel(p, p.TextMuted, false).Render(
-				TruncateRunes(f.placeholder, max(1, w-2*PadX-1))))
+		// The cursor rests *on* the placeholder's first cell, as the list
+		// dialog's filter does — placing it before the text would indent
+		// the placeholder one column further than the value that replaces
+		// it, so the line jumps left on the first keystroke.
+		hint := []rune(TruncateRunes(f.placeholder, max(1, w-2*PadX)))
+		value = append(value, pad(p, PadX)+
+			cursorStyle.Render(string(hint[0]))+
+			onPanel(p, p.TextMuted, false).Render(string(hint[1:])))
 	} else {
 		entry := strings.Split(f.value, "\n")
 		for i, line := range entry {
@@ -481,6 +486,17 @@ func (f *inputField) layout() ([]string, *Hits) {
 // Type appends a literal character (typedText's contract: a key name that is
 // one rune, or "space").
 func (f *inputField) Type(text string) { f.value += text }
+
+// Paste inserts a pasted block at the cursor.
+//
+// Trailing newlines are dropped: copying a value from a terminal or a web
+// page usually takes the line ending with it, and a secret submitted with a
+// trailing newline is a secret the server rejects for no visible reason.
+// Interior newlines survive — enter submits, so a multi-line entry is
+// something the user can only get by pasting one.
+func (f *inputField) Paste(text string) {
+	f.value += strings.TrimRight(text, "\r\n")
+}
 
 // Backspace drops the last rune.
 func (f *inputField) Backspace() {

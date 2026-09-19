@@ -1,9 +1,12 @@
 package tui
 
 import (
-	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/langazov/gocode-go/internal/tui/dialog"
 )
 
 // What reaches handleOverlayKey is a key *name* from tea.KeyMsg.String(), not
@@ -161,4 +164,91 @@ func inputContent(t *testing.T, app *App) string {
 	t.Helper()
 	_, _ = app.overlay.Panel()
 	return app.overlay.InputContent()
+}
+
+// --- paste --------------------------------------------------------------------
+
+// The API key field opens empty, with its prompt as a muted placeholder.
+// It used to open pre-filled with the literal string "Paste your API key",
+// which had to be deleted before a key could be typed — and was submitted as
+// the key by anyone who pressed enter without looking.
+func TestAPIKeyInputOpensEmptyWithAPlaceholder(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	drive(t, app, app.promptAPIKey("anthropic", "Anthropic"))
+
+	if app.overlay == nil || app.overlay.Kind != dialog.KindInput {
+		t.Fatal("promptAPIKey did not open an input dialog")
+	}
+	if got := app.overlay.InputValue(); got != "" {
+		t.Fatalf("the key field opened holding %q, want it empty", got)
+	}
+	panel, _ := app.overlayPanel()
+	if !strings.Contains(ansi.Strip(panel), "Paste your API key") {
+		t.Fatalf("the prompt should show as a placeholder:\n%s", ansi.Strip(panel))
+	}
+	// And it is a placeholder, not the value: typing replaces it.
+	app.handleOverlayKey("s")
+	if got := app.overlay.InputValue(); got != "s" {
+		t.Fatalf("after one keystroke the value is %q, want %q", got, "s")
+	}
+}
+
+// Bracketed paste reaches the open dialog. It used to be routed to the prompt
+// editor and dropped whenever a dialog was open, which made the one field
+// most likely to be pasted into — an API key — typeable only by hand.
+func TestBracketedPasteReachesTheInputDialog(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	drive(t, app, app.promptAPIKey("anthropic", "Anthropic"))
+
+	drive(t, app, tea.PasteMsg{Content: "sk-ant-secret-key\n"})
+	if got := app.overlay.InputValue(); got != "sk-ant-secret-key" {
+		t.Fatalf("pasted value = %q, want the key with its trailing newline trimmed", got)
+	}
+	// A second paste appends rather than replacing.
+	drive(t, app, tea.PasteMsg{Content: "-tail"})
+	if got := app.overlay.InputValue(); got != "sk-ant-secret-key-tail" {
+		t.Fatalf("a second paste gave %q", got)
+	}
+}
+
+// A CRLF paste is normalized before it reaches the field, so a key copied on
+// Windows does not arrive with a carriage return in it.
+func TestPasteIntoInputNormalizesLineEndings(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	drive(t, app, app.promptAPIKey("anthropic", "Anthropic"))
+
+	drive(t, app, tea.PasteMsg{Content: "sk-key\r\n"})
+	if got := app.overlay.InputValue(); got != "sk-key" {
+		t.Fatalf("pasted value = %q, want %q", got, "sk-key")
+	}
+}
+
+// A list dialog takes a paste into its filter, with any line structure
+// collapsed — the filter is one row, and a newline in it would tear the row
+// the compositor splices.
+func TestPasteIntoListFiltersIt(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.openList("Commands", []overlayItem{
+		{Label: "New session", Value: "session.new"},
+		{Label: "Select model", Value: "model.select"},
+	})
+
+	drive(t, app, tea.PasteMsg{Content: "select\nmodel"})
+	if got := app.overlay.Filter(); got != "select model" {
+		t.Fatalf("filter = %q, want the paste with its newline collapsed", got)
+	}
+}
+
+// A dialog with nothing to type into says so rather than swallowing the
+// paste: an affordance that silently does nothing looks broken.
+func TestPasteIntoAPanelReportsThereIsNowhereToPutIt(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.openStatusDialog()
+
+	// Update, not drive: the command it returns is the toast's own expiry
+	// tick, and running it here would clear what is being asserted.
+	app.Update(tea.PasteMsg{Content: "anything"})
+	if app.toast == nil {
+		t.Fatal("pasting into a read-only panel should report that it went nowhere")
+	}
 }

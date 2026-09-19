@@ -1744,6 +1744,12 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		// Bracketed paste. Without this case the message falls through the
 		// switch and the pasted text is silently dropped.
 		//
+		// A dialog owns the keyboard while it is open, and that has to
+		// include the paste: routing every paste to the prompt meant the
+		// provider dialog's API key field silently ignored one.
+		if a.overlay != nil {
+			return a.pasteIntoOverlay(msg.Content)
+		}
 		// Gated on the prompt being mounted: an unmounted textarea has no
 		// paste target (upstream's pasteInputText runs inside the Prompt
 		// component's key handling).
@@ -1775,6 +1781,12 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 	}
 	// A dialog owns the keyboard while open (modal mode in the original).
 	if a.overlay != nil {
+		// ctrl+v ahead of the dialog's own keymap, for the terminals that
+		// do not send a bracketed paste: the shell would otherwise read it
+		// as an unknown chord and drop it.
+		if msg.String() == "ctrl+v" {
+			return a.pasteFromClipboard()
+		}
 		return a.handleOverlayKey(msg.String())
 	}
 	// The diff viewer route owns the keyboard while open, the same way a
@@ -1882,7 +1894,7 @@ func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
 			return staticMsg(statusMsg{text: "open a session first"})
 		}
 		current := sessionTitleOf(*a.active)
-		a.openInput("Rename Session", current, func(value string) tea.Msg {
+		a.openInput("Rename Session", current, "", func(value string) tea.Msg {
 			if err := a.client.Rename(a.ctx, a.active.ID, value); err != nil {
 				return statusMsg{text: "rename failed: " + err.Error()}
 			}

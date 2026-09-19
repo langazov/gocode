@@ -70,11 +70,17 @@ func (a *App) openList(title string, items []overlayItem) {
 	a.mount(dialog.NewList(title, items))
 }
 
-func (a *App) openInput(title, placeholder string, onSubmit func(string) tea.Msg) {
-	// placeholder is the *initial value* in the old openInput's signature
-	// (DialogSessionRename prefills the current title) — the name survived
-	// the port. NewInput takes it as the prefilled value.
-	s := a.mount(dialog.NewInput(title, "", placeholder))
+// openInput opens a prompt dialog. value is what the field starts out
+// holding, placeholder the muted text shown while it is empty — two
+// different things, spelled differently at every call site.
+//
+// They used to share one argument named "placeholder" that was in fact the
+// initial value, and the provider dialog took the name at its word: the API
+// key field opened pre-filled with the literal string "Paste your API key",
+// which had to be deleted before a key could be typed and was submitted as
+// the key by anyone who just pressed enter.
+func (a *App) openInput(title, value, placeholder string, onSubmit func(string) tea.Msg) {
+	s := a.mount(dialog.NewInput(title, placeholder, value))
 	s.OnInputSubmit(onSubmit)
 }
 
@@ -437,7 +443,7 @@ func (a *App) renameSessionAction(item overlayItem) tea.Cmd {
 			title = sessionTitleOf(session)
 		}
 	}
-	a.openInput("Rename Session", title, func(value string) tea.Msg {
+	a.openInput("Rename Session", title, "", func(value string) tea.Msg {
 		if err := a.client.Rename(a.ctx, sessionID, value); err != nil {
 			return statusMsg{text: "rename failed: " + err.Error()}
 		}

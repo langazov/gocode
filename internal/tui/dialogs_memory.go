@@ -132,7 +132,7 @@ func (a *App) newMemoryAction(overlayItem) tea.Cmd {
 	// openInput closes the manager before running this callback, so the
 	// refresh has to put it back — otherwise saving a memory makes the list
 	// the user was working in disappear.
-	a.openInput("New Memory", "", func(value string) tea.Msg {
+	a.openInput("New Memory", "", "What should be remembered?", func(value string) tea.Msg {
 		saved, err := a.client.CreateMemory(a.ctx, value, "project")
 		if err != nil {
 			return statusMsg{text: "could not save memory: " + err.Error()}
@@ -150,7 +150,7 @@ func (a *App) editMemoryAction(item overlayItem) tea.Cmd {
 	id := existing.ID
 	// As with a new memory, the input dialog has replaced the manager by the
 	// time this runs, so the refresh reopens it.
-	a.openInput("Edit Memory", existing.Content, func(value string) tea.Msg {
+	a.openInput("Edit Memory", existing.Content, "", func(value string) tea.Msg {
 		if _, err := a.client.UpdateMemory(a.ctx, id, client.MemoryPatch{Content: &value}); err != nil {
 			return statusMsg{text: "edit failed: " + err.Error()}
 		}

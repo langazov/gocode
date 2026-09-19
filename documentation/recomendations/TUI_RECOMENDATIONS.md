@@ -1054,6 +1054,13 @@ All three wear the frame of §9.1: header, rule, body, rule, footer.
   + filler to a minimum of 3 rows + rule + `submit enter  newline shift+enter`
   ⟨`cancel esc`⟩. Render the value **line by line** — a raw newline spliced
   into a composited row tears the panel.
+  **The initial value and the placeholder are two arguments, not one.**
+  `openInput(title, value, placeholder, onSubmit)`: the value is what the
+  field starts out holding, the placeholder the muted text shown while it is
+  empty, with the cursor resting on its first cell (the filter row's idiom,
+  so the line does not jump on the first keystroke). Collapsing them into one
+  argument is how the API key field came to open pre-filled with the words
+  "Paste your API key".
 - **Alert**: the message muted and wrapped, then a right-aligned `Ok` on a
   `Primary` fill. `esc` and `enter` both resolve.
 - **Confirm**: the same, with `Cancel` and `Confirm`, `left`/`right` to move,
@@ -1290,6 +1297,16 @@ own command table, and none of the global chords apply.)
 | `up`/`down` | Two-stage history recall at the input boundary |
 
 `home`/`end` deliberately stay with the input, not the timeline.
+
+**Paste is part of keyboard ownership.** A `tea.PasteMsg` while a dialog is
+open belongs to the dialog — `Shell.Paste` puts it in the input's value or
+the list's filter — and `ctrl+v` is intercepted ahead of the dialog's keymap
+for the terminals that do not send a bracketed paste. Routing every paste to
+the prompt editor left the interface's most paste-prone field, the provider
+dialog's API key, typeable only by hand. A dialog with nowhere to put it
+toasts rather than swallowing it. Trailing newlines are trimmed (a copied
+line usually brings its ending); a filter collapses line structure to spaces,
+since a newline in a composited row tears it.
 
 ### 12.3 `esc` semantics
 

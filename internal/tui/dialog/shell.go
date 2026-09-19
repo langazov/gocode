@@ -645,6 +645,35 @@ func (s *Shell) SetInputValue(value string) {
 	}
 }
 
+// Paste inserts pasted text into whatever the open dialog is editing: an
+// input dialog's value, or a list dialog's filter. It reports whether the
+// dialog took it.
+//
+// Without this a dialog was simply unpasteable. Bracketed paste arrives as a
+// tea.PasteMsg, which the App routed to the prompt editor and dropped
+// whenever a dialog was open — so the one field in the interface most likely
+// to receive a paste, the provider dialog's API key, could only be typed by
+// hand.
+func (s *Shell) Paste(text string) bool {
+	switch {
+	case s.input != nil:
+		s.input.Paste(text)
+		return true
+	case s.list != nil && !s.list.locked && !s.list.hideFilter:
+		// A filter is one line: a pasted block collapses to spaces rather
+		// than smuggling a newline into a row the compositor splices.
+		s.list.filter += collapseLines(text)
+		s.list.ApplyFilter()
+		return true
+	}
+	return false
+}
+
+// collapseLines folds any line structure in pasted text into single spaces.
+func collapseLines(text string) string {
+	return strings.Join(strings.Fields(strings.ReplaceAll(text, "\n", " ")), " ")
+}
+
 // InputValue returns the input dialog's entry.
 func (s *Shell) InputValue() string {
 	if s.input == nil {
