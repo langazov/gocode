@@ -166,8 +166,15 @@ func TestToolCalledPreservesStreamOrder(t *testing.T) {
 	}
 }
 
-// TestToolConcurrencyIsBounded verifies the semaphore: with a cap of one, the
-// second tool must not start until the first has settled.
+// TestToolConcurrencyIsBounded verifies the semaphore: with a cap of one,
+// only one of the two dispatched tools may be running at a time — the other
+// must stay parked until the running one settles.
+//
+// Which goroutine reaches the semaphore first is not decided by stream order:
+// settleTool spawns both with go, and the scheduler is free to run the second
+// before the first (a spawned goroutine often lands in the runnext slot, and
+// under GOMAXPROCS=1 the inversion is near-certain). So the test waits for
+// either tool to start, proves the other has not, then hands the slot over.
 func TestToolConcurrencyIsBounded(t *testing.T) {
 	a, b := newGateTool("alpha"), newGateTool("beta")
 	tools := tool.NewRegistry()
@@ -189,15 +196,22 @@ func TestToolConcurrencyIsBounded(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- runner.Run(context.Background(), RunInput{SessionID: "ses_1"}) }()
 
-	mustStart(t, a, 5*time.Second)
+	running, parked := a, b
 	select {
+	case <-a.started:
 	case <-b.started:
-		t.Fatal("beta started while the concurrency cap of 1 was held by alpha")
+		running, parked = b, a
+	case <-time.After(5 * time.Second):
+		t.Fatal("neither tool started: nothing is running")
+	}
+	select {
+	case <-parked.started:
+		t.Fatalf("%s started while the concurrency cap of 1 was held by %s", parked.name, running.name)
 	case <-time.After(100 * time.Millisecond):
 	}
-	close(a.release)
-	mustStart(t, b, 5*time.Second)
-	close(b.release)
+	close(running.release)
+	mustStart(t, parked, 5*time.Second)
+	close(parked.release)
 
 	select {
 	case err := <-done:
