@@ -66,6 +66,12 @@ func TestFadeAnimSyncRevealedOrDisabledSnapsWithoutAnimating(t *testing.T) {
 // easing (progress*progress*(3-2*progress)).
 func TestFadeAnimAnimatesOnFirstReveal(t *testing.T) {
 	f := newFadeAnim(false)
+	// Freeze the clock: the assertions below pin exact eased values against a
+	// back-dated start, which the live clock shifts by however long the test
+	// itself takes to run (on a loaded CI runner that exceeds the tolerance).
+	clock := time.Now()
+	f.now = func() time.Time { return clock }
+
 	cmd := f.Sync(true, true)
 	if cmd == nil {
 		t.Fatalf("Sync(true, true) on first reveal returned nil, want a tick Cmd")
@@ -78,17 +84,17 @@ func TestFadeAnimAnimatesOnFirstReveal(t *testing.T) {
 	}
 
 	// Halfway through the 160ms window: smoothstep(0.5) == 0.5 exactly.
-	f.start = time.Now().Add(-fadeAnimDuration / 2)
+	f.start = clock.Add(-fadeAnimDuration / 2)
 	cmd = f.Advance(fadeTickMsg{anim: f, gen: f.gen})
 	if cmd == nil {
 		t.Fatalf("Advance at the halfway point returned nil, want a Cmd for the next tick")
 	}
-	if diff := f.Alpha() - 0.5; diff > 1e-3 || diff < -1e-3 {
-		t.Fatalf("Alpha() at progress=0.5 = %v, want ~0.5", f.Alpha())
+	if got := f.Alpha(); got < 0.499 || got > 0.501 {
+		t.Fatalf("Alpha() at progress=0.5 = %v, want ~0.5", got)
 	}
 
 	// Past the window: clamps to 1 and stops (clearInterval).
-	f.start = time.Now().Add(-2 * fadeAnimDuration)
+	f.start = clock.Add(-2 * fadeAnimDuration)
 	cmd = f.Advance(fadeTickMsg{anim: f, gen: f.gen})
 	if cmd != nil {
 		t.Fatalf("Advance past the animation window returned a Cmd, want nil")
@@ -109,7 +115,9 @@ func TestFadeAnimAdvanceIgnoresStaleGeneration(t *testing.T) {
 	f := newFadeAnim(false)
 	f.Sync(true, true)
 	staleGen := f.gen
-	f.start = time.Now().Add(-fadeAnimDuration / 2)
+	clock := time.Now()
+	f.now = func() time.Time { return clock }
+	f.start = clock.Add(-fadeAnimDuration / 2)
 
 	// Hidden before the stale tick arrives: bumps the generation and resets
 	// alpha to 0.
@@ -128,7 +136,9 @@ func TestFadeAnimAdvanceIgnoresWrongTarget(t *testing.T) {
 	a := newFadeAnim(false)
 	b := newFadeAnim(false)
 	a.Sync(true, true)
-	a.start = time.Now().Add(-fadeAnimDuration / 2)
+	clock := time.Now()
+	a.now = func() time.Time { return clock }
+	a.start = clock.Add(-fadeAnimDuration / 2)
 
 	if cmd := b.Advance(fadeTickMsg{anim: a, gen: a.gen}); cmd != nil {
 		t.Fatalf("b.Advance(a's tick) returned a Cmd, want nil")
