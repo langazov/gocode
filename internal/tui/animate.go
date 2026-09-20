@@ -32,11 +32,16 @@ type fadeAnim struct {
 	animating bool
 	start     time.Time
 	gen       int
+	// now is the clock the animation reads, a seam for tests: progress is
+	// wall-clock derived, and a runner that pauses between a test's start
+	// back-date and its Advance shifts the eased alpha. Same pattern as
+	// nowFunc in internal/session/permission_saved.go.
+	now func() time.Time
 }
 
 // newFadeAnim mirrors `useSignal(show() ? 1 : 0)` plus `let revealed = show()`.
 func newFadeAnim(show bool) *fadeAnim {
-	f := &fadeAnim{revealed: show}
+	f := &fadeAnim{revealed: show, now: time.Now}
 	if show {
 		f.alpha = 1
 	}
@@ -72,7 +77,7 @@ func (f *fadeAnim) Sync(show, enabled bool) tea.Cmd {
 	}
 	f.revealed = true
 	f.alpha = 0
-	f.start = time.Now()
+	f.start = f.now()
 	f.animating = true
 	f.gen++
 	return f.tick(f.gen)
@@ -84,6 +89,10 @@ func (f *fadeAnim) tick(gen int) tea.Cmd {
 	})
 }
 
+// elapsed returns how far into the animation window we are, reading the
+// injected clock.
+func (f *fadeAnim) elapsed() time.Duration { return f.now().Sub(f.start) }
+
 // Advance applies one fadeTickMsg, mirroring the setInterval body: it is a
 // no-op if a newer Sync superseded this animation. Returns a Cmd to schedule
 // the next tick, or nil once progress reaches 1 (clearInterval).
@@ -91,7 +100,7 @@ func (f *fadeAnim) Advance(msg fadeTickMsg) tea.Cmd {
 	if msg.anim != f || msg.gen != f.gen || !f.animating {
 		return nil
 	}
-	progress := float64(time.Since(f.start)) / float64(fadeAnimDuration)
+	progress := float64(f.elapsed()) / float64(fadeAnimDuration)
 	if progress >= 1 {
 		progress = 1
 		f.animating = false
