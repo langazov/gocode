@@ -267,6 +267,18 @@ func TestRagPluginIndexAsyncThenPollToCompletion(t *testing.T) {
 	tc := plugin.ToolContext{SessionID: "s1", Directory: root, Worktree: root}
 
 	indexTool := findTool(t, instance, "rag_index")
+
+	// Warm the runtime before timing: the first tool call on a fresh plugin
+	// process pays a one-time build (store open, embeddings provider
+	// resolution, LSP service construction) that has nothing to do with how
+	// long wait:false blocks, and under -race on a loaded runner that fixed
+	// cost alone can push past half the fake embedding delay. An empty-query
+	// rag_search runs the same ensureRuntime path the index tool will and
+	// then fails fast on validation, without a network round trip.
+	if _, err := findTool(t, instance, "rag_search").Execute(context.Background(), map[string]any{"query": ""}, tc); err == nil {
+		t.Fatal("empty-query rag_search should fail fast; it is only a warm-up")
+	}
+
 	start := time.Now()
 	result, err := indexTool.Execute(context.Background(), map[string]any{"wait": false}, tc)
 	if err != nil {
