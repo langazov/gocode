@@ -712,3 +712,92 @@ func TestLastStepProviderExecutedToolDoesNotContinue(t *testing.T) {
 		}
 	}
 }
+
+// A provider that streams a degenerate tool call — no ID, no name — used to
+// have it recorded, settled as `unknown tool ""`, and then replayed with
+// tool_call_id "" on every later turn. The adapter's omitempty dropped the
+// field and the endpoint answered every retry with a 400 ("tool_call_id must
+// be provided for tool messages"), bricking the session. Replay now
+// synthesizes a stable ID for such a call, so the follow-up turn carries a
+// well-formed pair instead of the poison.
+//
+// Reproduces ses_f3c9b48f6ffee5Vu3fhxloXzaP: a call to bash fails mid-answer
+// (its grep exits 1), the next response carries the degenerate call, and the
+// user then says "try again" — which used to fail with the 400.
+func TestDegenerateToolCallDoesNotPoisonLaterTurns(t *testing.T) {
+	degenerate := &llm.ToolCall{ID: "", Name: "", Input: map[string]any{"command": "ls"}}
+	provider := &fakeProvider{turns: [][]llm.StreamEvent{
+		// Step 1: a normal call (its grep exits 1 in the real session; the
+		// fake tool succeeding is immaterial here — the replay shape is the
+		// subject, not the failure).
+		{{Type: llm.EventTextDelta, Text: "checking"},
+			{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{ID: "call_ok", Name: "bash", Input: map[string]any{"command": "grep x y"}}},
+			{Type: llm.EventFinish, Finish: "tool_calls"}},
+		// Step 2: the degenerate call. Settling it as `unknown tool ""` is
+		// what used to be recorded with an empty callID.
+		{{Type: llm.EventToolCall, ToolCall: degenerate},
+			{Type: llm.EventFinish, Finish: "tool_calls"}},
+		// Step 3: the model finishes its answer, ending the first run.
+		{{Type: llm.EventTextDelta, Text: "done"},
+			{Type: llm.EventFinish, Finish: "end_turn"}},
+		// The user's "try again": a fresh run whose request replays the
+		// poisoned rows. It must be well-formed.
+		{{Type: llm.EventTextDelta, Text: "recovered"},
+			{Type: llm.EventFinish, Finish: "end_turn"}},
+	}}
+	registry := tool.NewRegistry()
+	registry.Register(&fakeTool{name: "bash", output: ""})
+	runner, bus := newRunnerFixture(t, provider, registry)
+	// Run the first prompt, then steer again the way the user's "try again"
+	// did in the original session.
+	admitPrompt(t, bus, runner, "deploy")
+	if err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Admit(context.Background(), bus, runner.DB, AdmitInput{
+		ID:        "msg_user_2",
+		SessionID: "ses_1",
+		Prompt:    Prompt{Text: "try again"},
+		Delivery:  DeliverySteer,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if provider.callCount() != 4 {
+		t.Fatalf("expected four provider steps (three in the first run, one on the retry), got %d", provider.callCount())
+	}
+
+	// The history the last turn replayed must pair every call with a result,
+	// and no ID may be empty — the shape the endpoint rejected outright.
+	third := provider.requests[3]
+	var sawEmpty bool
+	for _, message := range third.Messages {
+		for _, part := range message.Content {
+			switch part.Type {
+			case llm.PartToolCall, llm.PartToolResult:
+				if part.ToolCallID == "" {
+					sawEmpty = true
+				}
+			}
+		}
+	}
+	if sawEmpty {
+		t.Fatal("the replayed history still carries a tool part with an empty ID")
+	}
+	calls, results := 0, 0
+	for _, message := range third.Messages {
+		for _, part := range message.Content {
+			switch part.Type {
+			case llm.PartToolCall:
+				calls++
+			case llm.PartToolResult:
+				results++
+			}
+		}
+	}
+	if calls != results {
+		t.Fatalf("every replayed call needs a result: %d calls, %d results", calls, results)
+	}
+}

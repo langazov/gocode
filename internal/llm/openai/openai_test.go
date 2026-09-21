@@ -306,6 +306,21 @@ func TestToolMessageConversion(t *testing.T) {
 	}
 }
 
+// A tool result with no call ID has no call to answer. ToolCallID carries
+// omitempty, so sending it would drop the field rather than ship "" — and the
+// endpoint rejects a tool message without a tool_call_id with a 400 on every
+// request carrying it. The adapter skips the orphan instead of failing the
+// turn it appears in.
+func TestToolMessageWithoutCallIDIsSkipped(t *testing.T) {
+	converted, err := convertMessage(llm.ToolResultMessage("", "", "bash", "output text", false), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(converted) != 0 {
+		t.Fatalf("an id-less tool result must be dropped, got %+v", converted)
+	}
+}
+
 func TestAssistantToolCallConversion(t *testing.T) {
 	message := llm.Message{
 		Role: llm.RoleAssistant,
@@ -481,5 +496,51 @@ func Test429WithoutHintCarriesNoKnownWait(t *testing.T) {
 	}
 	if limited.RetryAfterKnown {
 		t.Fatalf("a hint-less 429 must not carry a known retry time: %+v", limited)
+	}
+}
+
+// A stream that ends with a tool_calls accumulator that never received a
+// name or an id — a truncated tail, or a gateway that emitted an empty call —
+// must not flush that accumulator. Flushing it forwarded a tool call with an
+// empty ID and name: the registry failed it as `unknown tool ""`, and the
+// empty callID it settled under became a tool_call_id-less result that the
+// endpoint rejected on every later replay ("tool_call_id must be provided
+// for tool messages"), bricking the session.
+//
+// The regression stream reproduces the shape observed in a real session: an
+// empty-name call arrives first, its arguments stream in, and a well-formed
+// call follows under a different index.
+func TestStreamDropsDegenerateToolCalls(t *testing.T) {
+	const stream = `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"","function":{"name":"","arguments":"{\"command\":\"ls\"}"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_1","function":{"name":"bash","arguments":"{\"command\":\"pwd\"}"}}]}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]`
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(stream))
+	})
+	var events []llm.StreamEvent
+	err := client.Stream(context.Background(), llm.Request{
+		ProviderID: "openai",
+		ModelID:    "gpt-5",
+		Messages:   []llm.Message{llm.UserText("m1", "run pwd")},
+	}, func(event llm.StreamEvent) {
+		events = append(events, event)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []*llm.ToolCall
+	for _, event := range events {
+		if event.Type == llm.EventToolCall {
+			calls = append(calls, event.ToolCall)
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("only the well-formed call may flush, got %d calls: %+v", len(calls), calls)
+	}
+	if calls[0].ID != "call_1" || calls[0].Name != "bash" {
+		t.Fatalf("unexpected surviving call: %+v", calls[0])
 	}
 }

@@ -349,6 +349,97 @@ func TestToLLMReportsMalformedRecords(t *testing.T) {
 	}
 }
 
+// A provider once streamed a tool call with an empty ID — recorded, settled
+// as `unknown tool ""`, and then replayed with tool_call_id "" on every later
+// turn. The openai adapter's omitempty dropped the field, and the endpoint
+// answered "tool_call_id must be provided for tool messages" with a 400 —
+// on every retry, forever: the malformed history replays each turn, so the
+// session was bricked. Replay now synthesizes a stable positional ID so the
+// call and its result stay paired and the request stays well-formed.
+//
+// This is the exact shape of the poisoned row from that session.
+func TestToLLMSynthesizesIDForDegenerateToolCall(t *testing.T) {
+	out := convert(t,
+		stored(t, "msg_user", TypeUser, UserMessage{Text: "deploy"}),
+		stored(t, "msg_bad", TypeAssistant, AssistantMessage{
+			Model: testModel,
+			Content: []AssistantContent{{
+				Type: "tool", ID: "", Name: "",
+				State: &ToolState{Status: ToolError, Error: `tool: unknown tool ""`, Input: map[string]any{"command": "ls"}},
+			}},
+		}),
+	)
+
+	var assistantMsg, toolMsg *llm.Message
+	for i := range out {
+		switch out[i].Role {
+		case llm.RoleAssistant:
+			assistantMsg = &out[i]
+		case llm.RoleTool:
+			toolMsg = &out[i]
+		}
+	}
+	if assistantMsg == nil || toolMsg == nil {
+		t.Fatalf("the degenerate call must survive replay as a paired call+result, got %+v", out)
+	}
+
+	// The call carries a synthesized, non-empty ID...
+	var call *llm.ContentPart
+	for i := range assistantMsg.Content {
+		if assistantMsg.Content[i].Type == llm.PartToolCall {
+			call = &assistantMsg.Content[i]
+		}
+	}
+	if call == nil {
+		t.Fatalf("no tool call in the assistant message: %+v", assistantMsg)
+	}
+	if call.ToolCallID == "" {
+		t.Fatal("a degenerate call must replay with a synthesized ID, not the empty one it was recorded with")
+	}
+	if !strings.Contains(call.ToolCallID, "msg_bad") {
+		t.Errorf("the synthesized ID should be traceable to its message, got %q", call.ToolCallID)
+	}
+
+	// ...and its result carries the same one, which is what pairs them.
+	if got := toolMsg.Content[0].ToolCallID; got != call.ToolCallID {
+		t.Fatalf("call id %q and result id %q must agree", call.ToolCallID, got)
+	}
+	if !toolMsg.Content[0].IsError {
+		t.Error("the recorded failure must replay as an error result")
+	}
+}
+
+// The synthesized ID is positional within the assistant message, so it is
+// stable across replays: history assembly is a pure function of stored
+// records, and a later turn must not see a different pairing than an earlier
+// one did. An unstable ID would send the provider a call and a result that
+// no longer matched.
+func TestToLLMSynthesizedToolIDIsStableAcrossReplays(t *testing.T) {
+	message := stored(t, "msg_bad", TypeAssistant, AssistantMessage{
+		Model: testModel,
+		Content: []AssistantContent{
+			{Type: "text", ID: "t", Text: "checking"},
+			{Type: "tool", ID: "", Name: "", State: &ToolState{Status: ToolError, Error: "no such tool"}},
+		},
+	})
+	first, err := ToLLMMessages([]StoredMessage{message}, testModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := ToLLMMessages([]StoredMessage{message}, testModel)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range first {
+		for j := range first[i].Content {
+			if first[i].Content[j].ToolCallID != second[i].Content[j].ToolCallID {
+				t.Fatalf("replay changed a tool pairing: %q vs %q",
+					first[i].Content[j].ToolCallID, second[i].Content[j].ToolCallID)
+			}
+		}
+	}
+}
+
 // The 4-chars-per-token heuristic compaction budgets against, ported from
 // upstream's util.token.estimate cases.
 func TestEstimateTokens(t *testing.T) {
