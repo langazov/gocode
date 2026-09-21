@@ -160,8 +160,8 @@ func authFetcher(mode oauthMode, port int, redirectURL string, onAuthURL func(st
 		select {
 		case res := <-ch:
 			return &sdkauth.AuthorizationResult{Code: res.code, State: res.state, Iss: res.iss}, nil
-		case <-time.After(5 * time.Minute):
-			return nil, errors.New("mcp: authorization timed out after 5 minutes")
+		case <-time.After(interactiveAuthTimeout):
+			return nil, fmt.Errorf("mcp: authorization timed out after %s", interactiveAuthTimeout)
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
