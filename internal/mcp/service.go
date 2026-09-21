@@ -20,10 +20,37 @@ import (
 	"github.com/langazov/gocode-go/internal/tool"
 )
 
-// defaultTimeout mirrors DEFAULT_TIMEOUT in mcp/index.ts — the code
-// constant actually used when a server has no configured timeout (the
-// TS CLI's own docstrings claim 5000ms, but the code uses 30s).
-const defaultTimeout = 30 * time.Second
+// defaultTimeout is the connect timeout when a server has no configured
+// timeout. Deliberate divergence from DEFAULT_TIMEOUT in mcp/index.ts (30s,
+// despite its docstrings claiming 5000ms): here 60s, because a remote
+// connect is not one request — OAuth discovery, (dynamic) client
+// registration and token exchange all run inside this budget, and 30s cut
+// real flows short (`mcp auth stripe` died mid-browser-flow with
+// "context deadline exceeded"). A dead server still fails fast: the
+// streamable attempt usually errors in single-digit seconds, and only a
+// server that accepts the connection then stalls burns the full budget.
+const defaultTimeout = 60 * time.Second
+
+// defaultToolTimeout is what one MCP tool call may take when the server has
+// no configured timeout. Deliberate divergence from the TS port: there the
+// per-call timeout falls through to the TS SDK's DEFAULT_REQUEST_TIMEOUT_MSEC
+// (60s), here it is 5 minutes — remote MCP servers regularly host slow tools
+// (code search over a monorepo, batch database queries) and a 60s ceiling
+// reports those as failures mid-run instead of letting them finish. A
+// per-server `mcp.<name>.timeout` (ms) still overrides this, as it does the
+// 60s connect budget above.
+const defaultToolTimeout = 300 * time.Second
+
+// interactiveAuthTimeout is how long `gocode mcp auth <name>` waits for the
+// user to finish the browser consent round-trip, enforced by oauth.go's
+// authFetcher. The connect deadline is widened by this much while an
+// interactive flow is in flight (see connect), so OAuth discovery, dynamic
+// client registration and the final token exchange don't eat into the user's
+// browser time and the authFetcher's own deadline — with its clearer
+// "authorization timed out" error — is what fires, not the connect one.
+// TS's authenticate() waits for the callback unboundedly; a hard ceiling
+// keeps a forgotten browser tab from parking the CLI forever.
+const interactiveAuthTimeout = 300 * time.Second
 
 // Status mirrors the TS connection Status union: "connected" | "disabled" |
 // "failed" | "needs_auth" | "needs_client_registration".
@@ -177,6 +204,17 @@ func (s *Service) connect(ctx context.Context, name string, cfg ServerConfig, mo
 	}
 
 	timeout := time.Duration(cfg.TimeoutOr(int(defaultTimeout/time.Millisecond))) * time.Millisecond
+	// An interactive auth (`mcp auth <name>`) runs the browser consent flow
+	// inside this same deadline, and the plain connect budget is far too
+	// small to hold a human round-trip: extend it by the authFetcher's own
+	// wait (see oauth.go) plus headroom for the OAuth discovery and token
+	// exchange on either side of it, so the deadline that fires is the
+	// authFetcher's — whose error names the real problem ("authorization
+	// timed out") — instead of a bare "context deadline exceeded" pointing
+	// at the MCP endpoint URL.
+	if mode == modeInteractive {
+		timeout += interactiveAuthTimeout + time.Minute
+	}
 	connectCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -301,7 +339,7 @@ func (s *Service) registerConnTools(conn *connection) {
 	if registry == nil {
 		return
 	}
-	timeout := time.Duration(conn.config.TimeoutOr(int(defaultTimeout/time.Millisecond))) * time.Millisecond
+	timeout := time.Duration(conn.config.TimeoutOr(int(defaultToolTimeout/time.Millisecond))) * time.Millisecond
 	for _, def := range conn.tools {
 		registry.Register(&mcpTool{clientName: conn.name, def: def, session: conn.session, timeout: timeout})
 	}
@@ -514,7 +552,7 @@ func (s *Service) RegisterTools(registry *tool.Registry) {
 	}
 	s.mu.RUnlock()
 	for _, conn := range conns {
-		timeout := time.Duration(conn.config.TimeoutOr(int(defaultTimeout/time.Millisecond))) * time.Millisecond
+		timeout := time.Duration(conn.config.TimeoutOr(int(defaultToolTimeout/time.Millisecond))) * time.Millisecond
 		for _, def := range conn.tools {
 			registry.Register(&mcpTool{clientName: conn.name, def: def, session: conn.session, timeout: timeout})
 		}

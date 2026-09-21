@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -105,4 +106,46 @@ func TestServiceDisabledServerNeverConnects(t *testing.T) {
 	}
 }
 
+// connectTimeoutFor returns the deadline connect() would apply for the given
+// mode and config — the logic from service.go's connect, mirrored here so a
+// regression in the interactive widening (the authFetcher's browser wait
+// running inside a deadline too small to hold it) can't slip through tests
+// unnoticed.
+func connectTimeoutFor(mode oauthMode, cfg ServerConfig) time.Duration {
+	timeout := time.Duration(cfg.TimeoutOr(int(defaultTimeout/time.Millisecond))) * time.Millisecond
+	if mode == modeInteractive {
+		timeout += interactiveAuthTimeout + time.Minute
+	}
+	return timeout
+}
+
+func TestConnectTimeoutInteractiveAuthWidened(t *testing.T) {
+	passive := connectTimeoutFor(modePassive, ServerConfig{})
+	interactive := connectTimeoutFor(modeInteractive, ServerConfig{})
+	if interactive != passive+interactiveAuthTimeout+time.Minute {
+		t.Fatalf("interactive = %v, want passive(%v) + %v + 1m", interactive, passive, interactiveAuthTimeout)
+	}
+	// The widened budget must comfortably contain the authFetcher's browser
+	// wait, or that wait is dead code killed by the connect deadline first —
+	// the exact failure mode `mcp auth` hit before (30s connect deadline,
+	// 5min browser wait).
+	if interactive < interactiveAuthTimeout+defaultTimeout {
+		t.Fatalf("interactive connect budget %v does not contain browser wait %v", interactive, interactiveAuthTimeout)
+	}
+	if interactiveAuthTimeout != 300*time.Second {
+		t.Fatalf("interactiveAuthTimeout = %v, want 5 minutes", interactiveAuthTimeout)
+	}
+}
+
+func TestConnectTimeoutExplicitConfigStillWidened(t *testing.T) {
+	// A user-configured per-server timeout is the base for interactive auth
+	// too — the widening is additive, never a ceiling.
+	cfg := ServerConfig{Timeout: intPtr(10_000)}
+	if got := connectTimeoutFor(modeInteractive, cfg); got != 10*time.Second+interactiveAuthTimeout+time.Minute {
+		t.Fatalf("interactive with configured timeout = %v", got)
+	}
+}
+
 func boolPtr(b bool) *bool { return &b }
+
+func intPtr(i int) *int { return &i }

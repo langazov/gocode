@@ -276,6 +276,13 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 					}
 				}
 				if p.FunctionCall != nil {
+					// Gemini pairs a function call to its response by name —
+					// there is no separate id — so a call without one cannot
+					// be paired and is dropped rather than emitted (see the
+					// openai adapter's flushTools guard).
+					if p.FunctionCall.Name == "" {
+						continue
+					}
 					emit(llm.StreamEvent{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{
 						ID:    p.FunctionCall.Name,
 						Name:  p.FunctionCall.Name,

@@ -38,7 +38,9 @@ func (t *mcpTool) InputSchema() map[string]any {
 func (t *mcpTool) Execute(ctx context.Context, input map[string]any) (string, error) {
 	timeout := t.timeout
 	if timeout <= 0 {
-		timeout = defaultTimeout
+		// Fallback for a tool registered with no timeout at all (e.g. a
+		// test-built mcpTool): same default the registration paths use.
+		timeout = defaultToolTimeout
 	}
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

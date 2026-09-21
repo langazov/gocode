@@ -260,6 +260,14 @@ func convertMessage(message llm.Message) []inputItem {
 			if part.Type != llm.PartToolResult {
 				continue
 			}
+			// The Responses API pairs a function_call_output to its call by
+			// call_id and rejects the request without one. A result with no
+			// ID has no call to answer; skipping it keeps the request
+			// well-formed rather than failing the turn (see the openai
+			// adapter's matching guard).
+			if part.ToolCallID == "" {
+				continue
+			}
 			out = append(out, inputItem{Type: "function_call_output", CallID: part.ToolCallID, Output: part.Result})
 		}
 		return out
@@ -367,13 +375,22 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 			if event.Item == nil || event.Item.Type != "function_call" {
 				continue
 			}
-			hasFunctionCall = true
 			acc, ok := tools[event.Item.ID]
 			if !ok {
 				acc = &toolAccumulator{callID: event.Item.CallID, name: event.Item.Name}
 			}
 			if event.Item.Arguments != nil {
 				acc.arguments = *event.Item.Arguments
+			}
+			// A function_call item that arrived without a call_id or a name —
+			// a malformed item, or a gateway that emitted an empty call — is
+			// dropped rather than emitted. Emitting one forwarded a call with
+			// an empty ID downstream, which the registry fails as `unknown
+			// tool ""` and whose empty callID then poisons every later replay
+			// (see the openai adapter's flushTools guard).
+			if acc.callID == "" || acc.name == "" {
+				hasFunctionCall = true
+				continue
 			}
 			var input map[string]any
 			if acc.arguments != "" {
@@ -383,6 +400,7 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 			if id == "" {
 				id = event.Item.CallID
 			}
+			hasFunctionCall = true
 			emit(llm.StreamEvent{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{ID: id, Name: acc.name, Input: input}})
 		case "response.completed", "response.incomplete":
 			finish := "stop"

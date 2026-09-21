@@ -179,6 +179,23 @@ provider-specific settings survive a round trip.
 }
 ```
 
+Each server also takes a `timeout` in milliseconds, applied to both connecting
+and each tool call. Defaults: **60s** to connect (the OAuth discovery,
+registration and token exchange run inside that budget), **5 minutes** per
+tool call — a remote server's slow tools (monorepo code search, batch
+queries) should finish rather than fail mid-run.
+
+Interactive authentication (`gocode mcp auth <name>`) waits **5 minutes** for
+the browser consent round-trip — independent of the per-server `timeout` —
+then reports `authorization timed out` rather than a bare
+`context deadline exceeded`.
+
+```jsonc
+"mcp": {
+  "stripe": { "type": "remote", "url": "https://mcp.stripe.com", "timeout": 120000 }
+}
+```
+
 ### `plugin`
 
 An ordered array. Each entry is either a bare reference or a

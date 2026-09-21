@@ -116,9 +116,22 @@ func assistantToLLM(messageID string, assistant AssistantMessage, model ModelRef
 			if item.State == nil {
 				continue
 			}
+			// A provider once streamed a call with an empty ID (and an empty
+			// name). Replay sent it with tool_call_id "" — which the adapter's
+			// omitempty dropped — and the endpoint rejected every later
+			// request with "tool_call_id must be provided for tool messages",
+			// bricking the session: the malformed history replays on every
+			// turn, so no number of retries got past it. The call and its
+			// result below share this ID, and the synthesis is positional and
+			// deterministic, so both sides of the pair stay stable across
+			// replays.
+			callID := item.ID
+			if callID == "" {
+				callID = fmt.Sprintf("%s-tool-%d", messageID, len(parts))
+			}
 			parts = append(parts, llm.ContentPart{
 				Type:       llm.PartToolCall,
-				ToolCallID: item.ID,
+				ToolCallID: callID,
 				ToolName:   item.Name,
 				Input:      item.State.Input,
 			})
@@ -127,7 +140,7 @@ func assistantToLLM(messageID string, assistant AssistantMessage, model ModelRef
 				continue
 			}
 			result, isError := toolResultPart(item)
-			results = append(results, llm.ToolResultMessage("", item.ID, item.Name, result, isError))
+			results = append(results, llm.ToolResultMessage("", callID, item.Name, result, isError))
 		}
 	}
 	var out []llm.Message

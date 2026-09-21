@@ -278,6 +278,16 @@ func convertMessage(message llm.Message, cacheControlBlocks bool) ([]chatMessage
 			if part.Type != llm.PartToolResult {
 				continue
 			}
+			// Chat Completions pairs a tool result to its call by ID and
+			// rejects a tool message without one ("tool_call_id must be
+			// provided for tool messages"). ToolCallID carries omitempty,
+			// so an empty one is dropped rather than sent as "" — turning
+			// one malformed history row into a 400 on every later request.
+			// A result with no ID has no call to answer; skipping it keeps
+			// the request well-formed.
+			if part.ToolCallID == "" {
+				continue
+			}
 			out = append(out, chatMessage{
 				Role:       "tool",
 				ToolCallID: part.ToolCallID,
@@ -374,6 +384,18 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 	flushTools := func() {
 		for _, index := range sortedKeys(tools) {
 			acc := tools[index]
+			// A malformed tail can leave an accumulator with no name, no
+			// id, or neither — a tool_calls delta whose function never
+			// arrived, or a gateway that emitted an empty call. Flushing
+			// one forwarded a call with an empty ID and name downstream:
+			// the registry failed it as `unknown tool ""`, and the empty
+			// callID it settled under then poisoned every later request
+			// (see assistantToLLM). Dropping it here keeps a glitch from
+			// becoming a malformed message the provider will reject on
+			// replay.
+			if acc.name == "" || acc.id == "" {
+				continue
+			}
 			var input map[string]any
 			if acc.arguments.Len() > 0 {
 				json.Unmarshal([]byte(acc.arguments.String()), &input)

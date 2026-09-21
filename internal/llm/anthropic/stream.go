@@ -22,6 +22,14 @@ func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.
 			emit(llm.StreamEvent{Type: llm.EventReasoningDelta, Text: thinking})
 		},
 		OnToolUse: func(id, name string, input json.RawMessage) {
+			// A tool_use block without an id or a name — a malformed block
+			// from a compatible endpoint — is dropped rather than emitted:
+			// its empty id would settle as `unknown tool ""` and poison
+			// every later replay with a call the API cannot pair (see the
+			// openai adapter's flushTools guard).
+			if id == "" || name == "" {
+				return
+			}
 			var parsed map[string]any
 			if len(input) > 0 {
 				json.Unmarshal(input, &parsed)
@@ -217,6 +225,13 @@ func convertMessage(message llm.Message, breakpoints *llm.Breakpoints) []Message
 				// there, and a hint can only reach this part by hand.
 				blocks = append(blocks, ContentBlock{Type: "thinking", Thinking: part.Text})
 			case llm.PartToolCall:
+				// Anthropic requires tool_use ids to be non-empty, and pairs
+				// results to them; a call without one is dropped here rather
+				// than failing the request (see the openai adapter's matching
+				// guard on results).
+				if part.ToolCallID == "" {
+					continue
+				}
 				input, err := json.Marshal(part.Input)
 				if err == nil {
 					blocks = append(blocks, ContentBlock{
@@ -234,6 +249,11 @@ func convertMessage(message llm.Message, breakpoints *llm.Breakpoints) []Message
 		blocks := make([]ContentBlock, 0, len(message.Content))
 		for _, part := range message.Content {
 			if part.Type != llm.PartToolResult {
+				continue
+			}
+			// A result with no id has no tool_use to answer; Anthropic rejects
+			// the whole request over one, so it is dropped rather than sent.
+			if part.ToolCallID == "" {
 				continue
 			}
 			blocks = append(blocks, ContentBlock{
