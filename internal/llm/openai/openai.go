@@ -384,16 +384,15 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 	flushTools := func() {
 		for _, index := range sortedKeys(tools) {
 			acc := tools[index]
-			// A malformed tail can leave an accumulator with no name, no
-			// id, or neither — a tool_calls delta whose function never
-			// arrived, or a gateway that emitted an empty call. Flushing
-			// one forwarded a call with an empty ID and name downstream:
-			// the registry failed it as `unknown tool ""`, and the empty
-			// callID it settled under then poisoned every later request
-			// (see assistantToLLM). Dropping it here keeps a glitch from
-			// becoming a malformed message the provider will reject on
-			// replay.
-			if acc.name == "" || acc.id == "" {
+			// A malformed tail can leave an accumulator with no name — a
+			// tool_calls delta whose function never arrived, or a gateway
+			// that emitted an empty call. Flushing one forwarded a call the
+			// registry failed as `unknown tool ""`, so it is dropped here.
+			// A named call without an id is different: several
+			// openai-compatible backends stream real calls that way, and
+			// dropping them ended the turn with nothing dispatched. Those
+			// get a synthesized id instead (see llm.ToolCallID).
+			if acc.name == "" {
 				continue
 			}
 			var input map[string]any
@@ -401,7 +400,7 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 				json.Unmarshal([]byte(acc.arguments.String()), &input)
 			}
 			emit(llm.StreamEvent{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{
-				ID:    acc.id,
+				ID:    llm.ToolCallID(acc.id),
 				Name:  acc.name,
 				Input: input,
 			}})

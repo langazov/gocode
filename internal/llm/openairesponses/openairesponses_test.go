@@ -340,3 +340,63 @@ func Test429CarriesRetryHint(t *testing.T) {
 		t.Fatalf("provider = %q, want openai-responses", limited.Provider)
 	}
 }
+
+// A named function_call without a call_id is a real call and must be emitted
+// under a fallback id; a nameless one has nothing to dispatch and must not
+// turn the finish into "tool-calls", since no call was emitted for it.
+func TestStreamFunctionCallIDFallbacks(t *testing.T) {
+	stream := `data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_1","name":"bash","arguments":"{\"command\":\"ls\"}"}}
+
+data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}
+
+`
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(stream))
+	})
+	var calls []*llm.ToolCall
+	var finish string
+	err := client.Stream(context.Background(), llm.Request{ModelID: "gpt-5"}, func(e llm.StreamEvent) {
+		switch e.Type {
+		case llm.EventToolCall:
+			calls = append(calls, e.ToolCall)
+		case llm.EventFinish:
+			finish = e.Finish
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].ID != "fc_1" || calls[0].Name != "bash" {
+		t.Fatalf("a named call without call_id must fall back to the item id, got %+v", calls)
+	}
+	if finish != "tool-calls" {
+		t.Fatalf("finish = %q, want tool-calls", finish)
+	}
+
+	nameless := `data: {"type":"response.output_item.done","item":{"type":"function_call","id":"fc_2","call_id":"call_2","name":""}}
+
+data: {"type":"response.completed","response":{"usage":{"input_tokens":1,"output_tokens":1}}}
+
+`
+	client = newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(nameless))
+	})
+	calls, finish = nil, ""
+	err = client.Stream(context.Background(), llm.Request{ModelID: "gpt-5"}, func(e llm.StreamEvent) {
+		switch e.Type {
+		case llm.EventToolCall:
+			calls = append(calls, e.ToolCall)
+		case llm.EventFinish:
+			finish = e.Finish
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("a nameless call must be dropped, got %+v", calls)
+	}
+	if finish != "stop" {
+		t.Fatalf("a dropped call must not report tool-calls, finish = %q", finish)
+	}
+}
