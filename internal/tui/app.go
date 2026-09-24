@@ -366,6 +366,10 @@ type App struct {
 	// A drag-selection is held inside whichever of the two it started in —
 	// see selectionColumnBounds.
 	chatColumnEnd int
+	// shownFrame is the frame View() last put on screen, before the
+	// selection highlight: the text a drag-selection is copied from. See
+	// selectedText for why it cannot be re-rendered at copy time.
+	shownFrame string
 
 	// agents is the agent roster, cached so agent_cycle (tab) can step
 	// through it without a fetch.
@@ -2549,6 +2553,7 @@ func (a *App) View() string {
 		return "loading…"
 	}
 	content := a.currentFrame()
+	a.shownFrame = content
 	if a.selection.hasRange() {
 		content = a.applySelectionHighlight(content)
 	}

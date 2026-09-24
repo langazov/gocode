@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -133,5 +134,39 @@ func TestReleaseCopiesAndClears(t *testing.T) {
 	}
 	if app.toast == nil || !strings.Contains(app.toast.text, "Copied") {
 		t.Fatalf("expected the copied toast, got %+v", app.toast)
+	}
+}
+
+// A drag is copied inside Update, where the prompt editor is inflated to its
+// maximum height (expandPromptForInput). Re-rendering there lifted the chat
+// column by the extra prompt rows, so dragging over a message copied what was
+// below it — the prompt box's ┃ border, or nothing. The copy has to come from
+// the frame the user was actually looking at.
+func TestSelectionCopiesTheFrameOnScreenNotAnInflatedRerender(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.width, app.height = 100, 30
+	app.view = viewChat
+	app.active = &client.Session{ID: "ses_1", Directory: "/tmp"}
+	app.timeline = []client.Message{
+		{ID: "u1", Type: "user", TimeCreated: 1, Data: json.RawMessage(`{"text":"the quick brown fox"}`)},
+		settledAssistant(t, "m1", "OK"),
+	}
+	app.syncPromptSize()
+
+	row, col := -1, -1
+	for i, line := range strings.Split(app.View(), "\n") {
+		if at := strings.Index(ansi.Strip(line), "quick"); at >= 0 {
+			row, col = i, ansi.StringWidth(ansi.Strip(line)[:at])
+		}
+	}
+	if row < 0 {
+		t.Fatal("the target text did not render")
+	}
+
+	app.handleMouse(tea.MouseClickMsg{X: col, Y: row, Button: tea.MouseLeft})
+	app.handleMouse(tea.MouseMotionMsg{X: col + len("quick brown") - 1, Y: row, Button: tea.MouseLeft})
+	app.expandPromptForInput() // the state Update is in when the release copies
+	if got := app.selectedText(); got != "quick brown" {
+		t.Fatalf("selected %q, want %q", got, "quick brown")
 	}
 }
