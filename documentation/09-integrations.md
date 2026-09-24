@@ -388,7 +388,9 @@ on demand by the `skill` tool rather than sitting in the system prompt.
 ```
 
 Discovered by `skill.Discover` and also exposed as slash commands — a skill
-without a name collision becomes `/deploy`. Keeping them out of the system
+without a name collision becomes `/deploy`, which asks the model to load the
+skill through the `skill` tool rather than pasting its body as the prompt, so
+the timeline shows the compact skill-tool row. Keeping them out of the system
 prompt is what makes many skills affordable: they cost tokens only when used.
 
 A small set of skills is **compiled into the binary** (embedded under

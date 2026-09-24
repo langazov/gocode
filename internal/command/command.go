@@ -116,14 +116,24 @@ func Load(cfg *config.Config, workdir string, skills *skill.Registry, configDirs
 	return registry
 }
 
-// skillTemplate ports the skill branch: the body, plus a note about where its
-// relative paths resolve from.
+// skillTemplate ports the skill branch. A skill command does not paste the
+// skill's body into the prompt — it asks the model to load it through the
+// skill tool, the same on-demand path the model itself takes when it decides
+// a task matches a skill. The prompt therefore stays one line in the user's
+// message block while the skill's 100+ lines reach the conversation as a
+// tool result, where the timeline renders the compact tool row instead of
+// echoing the body back as the user's own words.
+//
+// The base-directory note still ships for skills that live on disk, so their
+// relative paths keep resolving — the tool result carries it too, but the
+// directive is what the user's turn says and a skill referencing scripts/
+// needs it to act.
 func skillTemplate(item skill.Info) string {
 	if item.Location == "" || item.Location == "<built-in>" {
-		return item.Content
+		return "Load the " + item.Name + " skill with the skill tool, then follow it."
 	}
 	return strings.Join([]string{
-		item.Content,
+		"Load the " + item.Name + " skill with the skill tool, then follow it.",
 		"",
 		"Base directory for this skill: " + item.Dir(),
 		"Relative paths in this skill (e.g., scripts/, references/) are relative to this base directory.",

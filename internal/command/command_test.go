@@ -140,8 +140,15 @@ func TestSkillsBecomeCommands(t *testing.T) {
 	if brainstorm.Source != SourceSkill {
 		t.Errorf("source = %q, want %q", brainstorm.Source, SourceSkill)
 	}
-	if !strings.Contains(brainstorm.Template, "Brainstorm about the topic.") {
-		t.Errorf("template = %q", brainstorm.Template)
+	// The template directs the model to load the skill through the skill tool
+	// rather than pasting the body as the prompt — the body arrives as the
+	// tool result, so the timeline shows the compact skill-tool row instead
+	// of a hundred-line user block.
+	if !strings.Contains(brainstorm.Template, "Load the brainstorm skill") {
+		t.Errorf("template = %q, want the skill-tool load directive", brainstorm.Template)
+	}
+	if strings.Contains(brainstorm.Template, "Brainstorm about the topic.") {
+		t.Errorf("template must not paste the skill body: %q", brainstorm.Template)
 	}
 	// The base-directory note lets relative paths in the skill resolve.
 	if wantDir := filepath.Dir(location); !strings.Contains(brainstorm.Template, wantDir) {
@@ -172,5 +179,31 @@ func TestNilRegistryIsSafe(t *testing.T) {
 	}
 	if got := registry.List(); got != nil {
 		t.Errorf("List = %v, want nil", got)
+	}
+}
+
+// TestSkillCommandDoesNotPasteTheBody is the regression for "/configure-gocode
+// dumps the whole skill into the prompt": the slash command used to expand to
+// the skill's markdown body (6.7k chars, 177 lines for configure-gocode),
+// rendered in full as the user's own message. It now asks the model to load
+// the skill through the skill tool, so the body arrives as a tool result and
+// the timeline shows the compact tool row instead.
+func TestSkillCommandDoesNotPasteTheBody(t *testing.T) {
+	registry := Load(nil, "/work", skill.Discover(), nil)
+
+	entry, ok := registry.Get("configure-gocode")
+	if !ok {
+		t.Fatal("the built-in configure-gocode skill is missing as a command")
+	}
+	if strings.Contains(entry.Template, "# Configuring gocode") {
+		t.Fatalf("the skill body leaked into the prompt template:\n%.200s", entry.Template)
+	}
+	want := "Load the configure-gocode skill with the skill tool, then follow it."
+	if entry.Template != want {
+		t.Fatalf("template = %q, want %q", entry.Template, want)
+	}
+	// One line in the user's message block, not 177.
+	if n := strings.Count(entry.Template, "\n"); n != 0 {
+		t.Fatalf("built-in directive should be a single line, got %d newlines", n)
 	}
 }

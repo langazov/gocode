@@ -71,7 +71,7 @@ Everything the agent does becomes a durable event in SQLite before visible state
 
 ### Runner loop
 
-`Runner.Run()` in `internal/session/runner.go` drains eligible durable work for one session. `Coordinator[string]` serializes execution per session ID while allowing different sessions to run concurrently. `Execution` routes session-ID keyed execution to a process-local runner.
+`Runner.Run()` in `internal/session/runner.go` drains eligible durable work for one session. `Coordinator[string]` serializes execution per session ID while allowing different sessions to run concurrently. `Execution` routes session-ID keyed execution to a process-local runner. The runner also assembles each turn's system prompt: the agent's own prompt, then the `<available_skills>` block (`Runner.Skills` — without it the model cannot discover a skill by name), then the plugin `system.transform` hook.
 
 ### SQLite and concurrency
 
@@ -90,7 +90,7 @@ Last-match-wins evaluation across merged rulesets. `permission.Defaults()` retur
 
 ### Skills and commands
 
-Skills are markdown files with frontmatter discovered from `.gocode/` (project) and `~/.config/gocode/` (global). A skill marked `slash: true` also appears as a slash command. Commands are assembled from: config entries, markdown definitions, and skills. A few skills are compiled into the binary (`internal/skill/builtin/`) and available by default in every install; user skills override them by name, and `gocode debug skill` lists all of them with their origin.
+Skills are markdown files with frontmatter discovered from `.gocode/` (project) and `~/.config/gocode/` (global). A skill marked `slash: true` also appears as a slash command; a skill slash command directs the model to load the skill via the `skill` tool rather than pasting its body into the prompt. Commands are assembled from: config entries, markdown definitions, and skills. A few skills are compiled into the binary (`internal/skill/builtin/`) and available by default in every install; user skills override them by name, and `gocode debug skill` lists all of them with their origin.
 
 ### Agent definitions
 
