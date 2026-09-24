@@ -294,3 +294,85 @@ func assertLastAssistantText(t *testing.T, runner *Runner, want string) {
 	}
 	t.Fatalf("no text part on the assistant message: %v", assistant)
 }
+
+// The ses_f2ce6867e shape: a step that finishes "tool_calls" and bills output
+// tokens but delivers no call and no text — the upstream's tool parser
+// swallowed it. Only a dispatched call asks for another step, so settling it
+// silently ended the session mid-task. It must be retried like an empty one.
+func TestToolCallFinishWithoutCallIsRetried(t *testing.T) {
+	shortEmptyRetries(t)
+	provider := &fakeProvider{turns: [][]llm.StreamEvent{
+		{{Type: llm.EventFinish, Finish: "tool_calls", Usage: llm.Usage{Output: 80}}},
+		{{Type: llm.EventTextDelta, Text: "answered"}, {Type: llm.EventFinish, Finish: "stop", Usage: llm.Usage{Output: 1}}},
+	}}
+	runner, bus := newRunnerFixture(t, provider, tool.NewRegistry())
+	admitPrompt(t, bus, runner, "explore the project")
+
+	if err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if provider.callCount() != 2 {
+		t.Fatalf("expected the lost-call attempt and one retry, got %d requests", provider.callCount())
+	}
+	assertLastAssistantText(t, runner, "answered")
+}
+
+// Text announcing a call that never arrives ("Let me check…") is a preamble,
+// not an answer: the step is retried, and the discarded attempt leaves no
+// second assistant message behind.
+func TestToolCallFinishWithTextButNoCallIsRetried(t *testing.T) {
+	shortEmptyRetries(t)
+	provider := &fakeProvider{turns: [][]llm.StreamEvent{
+		{
+			{Type: llm.EventTextDelta, Text: "Let me look at the runner."},
+			{Type: llm.EventFinish, Finish: "tool_calls", Usage: llm.Usage{Output: 40}},
+		},
+		{{Type: llm.EventTextDelta, Text: "answered"}, {Type: llm.EventFinish, Finish: "stop", Usage: llm.Usage{Output: 1}}},
+	}}
+	runner, bus := newRunnerFixture(t, provider, tool.NewRegistry())
+	admitPrompt(t, bus, runner, "explore the project")
+
+	if err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"}); err != nil {
+		t.Fatal(err)
+	}
+	if provider.callCount() != 2 {
+		t.Fatalf("expected the lost-call attempt and one retry, got %d requests", provider.callCount())
+	}
+	messages, err := NewMessageStore(runner.DB).List(context.Background(), "ses_1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assistants := 0
+	for _, message := range messages {
+		if message.Type == TypeAssistant {
+			assistants++
+		}
+	}
+	if assistants != 1 {
+		t.Fatalf("the discarded attempt must not leave a message behind: %d assistant messages", assistants)
+	}
+	assertLastAssistantText(t, runner, "answered")
+}
+
+// A provider that keeps announcing calls it never sends settles visibly once
+// retries run out, with an error that names what went wrong.
+func TestPersistentLostToolCallSettlesTheStep(t *testing.T) {
+	shortEmptyRetries(t)
+	lost := []llm.StreamEvent{{Type: llm.EventFinish, Finish: "tool_calls", Usage: llm.Usage{Output: 80}}}
+	var turns [][]llm.StreamEvent
+	for range emptyRetryAttempts + 1 {
+		turns = append(turns, lost)
+	}
+	provider := &fakeProvider{turns: turns}
+	runner, bus := newRunnerFixture(t, provider, tool.NewRegistry())
+	admitPrompt(t, bus, runner, "explore the project")
+
+	err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"})
+	if err == nil || !strings.Contains(err.Error(), "announced a tool call but sent none") {
+		t.Fatalf("expected the lost-tool-call error, got %v", err)
+	}
+	if want := emptyRetryAttempts + 1; provider.callCount() != want {
+		t.Fatalf("expected %d attempts before settling, got %d", want, provider.callCount())
+	}
+	assertSettledWith(t, runner, "announced a tool call but sent none")
+}
