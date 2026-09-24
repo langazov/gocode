@@ -57,6 +57,21 @@ type Options struct {
 	// package knowing anything about provider ids.
 	CacheControlBlocks bool
 
+	// DropMaxOutputTokens suppresses the Responses-API `max_output_tokens`
+	// request field entirely. The ChatGPT subscription backend
+	// (chatgpt.com/backend-api/codex) rejects the parameter outright — every
+	// request carrying it fails 400 "Unsupported parameter:
+	// max_output_tokens" — while api.openai.com's Responses endpoint accepts
+	// it, so the default is off and the transform that routes to the codex
+	// backend opts in (see internal/provider/transform_openai.go). The cap is
+	// a client-side budget the runner derives from the catalog; dropping it
+	// lets the backend enforce its own limit instead.
+	//
+	// A field rather than a method for the same reason as
+	// CacheControlBlocks: transforms set it, transports honor it, and the llm
+	// package stays ignorant of provider ids.
+	DropMaxOutputTokens bool
+
 	// Transport wraps the HTTP round tripper, and is this port's equivalent of
 	// the per-provider `fetch` override the TypeScript plugins install (see
 	// cortexFetch in plugin/provider/snowflake-cortex.ts). It is the hook for

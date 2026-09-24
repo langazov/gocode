@@ -13,6 +13,7 @@ import (
 	"github.com/langazov/gocode-go/internal/llm/anthropic"
 	"github.com/langazov/gocode-go/internal/llm/gemini"
 	"github.com/langazov/gocode-go/internal/llm/openai"
+	"github.com/langazov/gocode-go/internal/llm/openairesponses"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
@@ -201,6 +202,16 @@ func (r *Resolved) defaultClient() (llm.StreamClient, error) {
 			client.BaseURL = r.BaseURL
 		} else if envBase := os.Getenv("GEMINI_BASE_URL"); envBase != "" {
 			client.BaseURL = envBase
+		}
+		return client, nil
+	case ProtocolOpenAIResponses:
+		// The ChatGPT subscription backend (and OpenAI's Responses API
+		// generally): the transform that sets this protocol also sets the
+		// base URL, so there is no env fallback to honor here.
+		client := openairesponses.New(r.APIKey)
+		client.Options = r.Options
+		if r.BaseURL != "" {
+			client.BaseURL = r.BaseURL
 		}
 		return client, nil
 	default:

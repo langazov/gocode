@@ -151,9 +151,14 @@ func TestOpenAIAuthMethodsAddChatGPT(t *testing.T) {
 	}
 }
 
-// TestOpenAITransformLeavesRequestsAlone: adding a login method must not
-// change how an API-key user's requests are formed.
-func TestOpenAITransformLeavesRequestsAlone(t *testing.T) {
+// TestOpenAITransformLeavesAPIKeyRequestsAlone: the subscription routing must
+// not change how an API-key user's requests are formed. The store is isolated
+// empty so Apply sees no credential — without that, Apply would read the
+// developer's own real auth.json on this machine.
+func TestOpenAITransformLeavesAPIKeyRequestsAlone(t *testing.T) {
+	writeAuth(t, map[string]any{})
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("OPENAI_BASE_URL", "")
 	r := &Resolved{ID: "openai", Protocol: ProtocolOpenAI, BaseURL: "https://api.openai.com/v1", APIKey: "sk-test"}
 	if err := applyTransforms(t.Context(), r); err != nil {
 		t.Fatal(err)
