@@ -436,6 +436,7 @@ func TestRunnerAgentResolution(t *testing.T) {
 
 func TestRunnerSessionModelOverridesAgent(t *testing.T) {
 	provider := &fakeProvider{turns: [][]llm.StreamEvent{{
+		{Type: llm.EventTextDelta, Text: "done"},
 		{Type: llm.EventFinish, Finish: "end_turn"},
 	}}}
 	runner, bus := newRunnerFixture(t, provider, tool.NewRegistry())

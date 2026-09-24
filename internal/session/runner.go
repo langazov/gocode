@@ -13,6 +13,7 @@ import (
 	"github.com/langazov/gocode-go/internal/db"
 	"github.com/langazov/gocode-go/internal/diff"
 	"github.com/langazov/gocode-go/internal/event"
+	"github.com/langazov/gocode-go/internal/global"
 	"github.com/langazov/gocode-go/internal/id"
 	"github.com/langazov/gocode-go/internal/llm"
 	"github.com/langazov/gocode-go/internal/permission"
@@ -306,6 +307,34 @@ func (r *Runner) runTurn(runCtx context.Context, sessionID string, promotion Del
 				return turnResult{}, err
 			}
 			return turnResult{}, settleWith
+		}
+		var empty *emptyCompletionError
+		if errors.As(err, &empty) {
+			hold.emptyRetries++
+			// The wire looked like success, so nothing else records this:
+			// without the line, the only evidence is the upstream's own logs.
+			global.LogBackground("session %s: empty completion from %s (finish %q, %d input tokens), attempt %d of %d",
+				sessionID, empty.model, empty.finish, empty.inputTokens, hold.emptyRetries, emptyRetryAttempts+1)
+			if hold.emptyRetries <= emptyRetryAttempts {
+				if err := r.discardStep(ctx, sessionID, empty.assistantMessageID); err != nil {
+					return turnResult{}, err
+				}
+				r.publishWaiting(ctx, sessionID, empty, emptyRetryDelay)
+				if err := sleepCtx(runCtx, emptyRetryDelay); err != nil {
+					// The run ended mid-wait: settle what stopped it.
+					if err := r.failTurn(ctx, runCtx, sessionID, empty.assistantMessageID, err); err != nil {
+						return turnResult{}, err
+					}
+					return turnResult{}, err
+				}
+				continue
+			}
+			// Persistent emptiness is a provider fault the user can act
+			// on — settle it visibly rather than leaving a silent hole.
+			if err := r.failTurn(ctx, runCtx, sessionID, empty.assistantMessageID, empty); err != nil {
+				return turnResult{}, err
+			}
+			return turnResult{}, empty
 		}
 		return result, err
 	}
@@ -821,6 +850,35 @@ turnLoop:
 	if providerErr != nil && seq == 0 {
 		if limited, ok := asRateLimited(providerErr); ok {
 			return turnResult{}, &rateLimitedError{cause: limited, assistantMessageID: assistantMessageID}
+		}
+	}
+
+	// A stream that closed without an error but also without saying
+	// anything — no text, no reasoning, no tool call, not a single output
+	// token — is not a completed answer, whatever its finish reason claims.
+	// Free-tier upstreams (observed: nvidia :free routes through
+	// OpenRouter, and once a zai-glm-5-3 stream) return HTTP 200 with an
+	// SSE body that ends before a single content delta arrives. Settling
+	// that as a normal end-of-turn made the session look finished to the
+	// user — spinner gone, no message, no error — the "silently ends"
+	// report. Nothing was dispatched (seq == 0, and with no content there
+	// is nothing to keep), so re-running costs only the request itself.
+	// The finish reason rides along for the message when retries run out.
+	//
+	// The zero-output-token guard is what spares a legitimate empty turn: a
+	// model that has nothing to add after tool results still bills the
+	// tokens of its stop sequence, so only a stream that produced nothing at
+	// all is re-run.
+	//
+	// Divergence: upstream retries only a stream that failed
+	// (session/processor.ts, SessionRetry.policy); a clean empty stream
+	// settles there as a normal finish, which is the silent end this fixes.
+	if providerErr == nil && seq == 0 && text.Len() == 0 && reasoning.Len() == 0 && usage.Output == 0 {
+		return turnResult{}, &emptyCompletionError{
+			finish:             finish,
+			assistantMessageID: assistantMessageID,
+			model:              resolved.Model.ProviderID + "/" + resolved.Model.ID,
+			inputTokens:        usage.Input,
 		}
 	}
 

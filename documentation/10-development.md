@@ -129,6 +129,7 @@ Known deliberate divergences:
 | Diff viewer does not read `diff_style: "stacked"` | the Go config schema has no such key; the viewer's split/unified toggle persists in its own state file like every other viewer preference |
 | Dialogs run on charm.land/huh/v2, not hand-rolled rendering | the port's dialogs keep the TS layout and keyboard contract exactly (see the recommendations' §9) but the engine is a huh form embedded in the `dialog.Shell` wrapper; stock huh fields are used where the contract allows and two custom fields supply the DialogSelect/readonly rendering huh cannot express |
 | MCP tool-call default timeout is 300s, not the TS SDK's 60s | remote MCP servers regularly host slow tools (monorepo code search, batch queries); a 60s ceiling fails them mid-run |
+| An empty completion is retried, then settled as a failed step | upstream's `SessionRetry.policy` only sees streams that *fail*; a clean HTTP 200 whose stream ends with no text, reasoning, tool call or output token (free-tier OpenRouter upstreams do this) settles there as a normal finish and the session silently stops. Here it is retried 3× (500ms apart; safe because nothing was dispatched), then settled as `step.failed` so the user sees why the turn ended |
 | MCP connect default timeout is 60s, not TS's 30s | a remote connect hosts the whole OAuth bootstrap (discovery, dynamic client registration, token exchange) — 30s cut real flows short (`mcp auth` dying mid-browser-flow); `mcp.<name>.timeout` (ms) overrides both defaults |
 
 ## CI
