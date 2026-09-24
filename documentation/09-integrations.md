@@ -393,6 +393,14 @@ skill through the `skill` tool rather than pasting its body as the prompt, so
 the timeline shows the compact skill-tool row. Keeping them out of the system
 prompt is what makes many skills affordable: they cost tokens only when used.
 
+What happens after the load depends on how the skill was invoked. A skill the
+user asked for by name — `/deploy` — is loaded and nothing more: the command's
+template tells the model to stop after loading and wait for the user's next
+prompt before executing the skill's workflow. A skill the model loads itself,
+because the task matched one in the `<available_skills>` block, has the
+opposite rule, stated in that block's footer: continue inference and follow
+the skill as part of the current task.
+
 A small set of skills is **compiled into the binary** (embedded under
 `internal/skill/builtin/`, loaded by `skill.Builtins`), so they are available
 by default in every install — archive, bare binary, `go install` or Homebrew —

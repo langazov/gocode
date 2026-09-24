@@ -143,7 +143,7 @@ func SkillPrompt(registry *skill.Registry) string {
 		lines = append(lines, "- "+info.Name)
 	}
 	lines = append(lines, "</available_skills>",
-		"Use the skill tool to load one of these when the task matches.")
+		"Use the skill tool to load one of these when the task matches. When a skill is loaded automatically because the task matches, continue inference and follow the skill as part of the current task.")
 	return strings.Join(lines, "\n")
 }
 

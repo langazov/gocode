@@ -124,16 +124,24 @@ func Load(cfg *config.Config, workdir string, skills *skill.Registry, configDirs
 // tool result, where the timeline renders the compact tool row instead of
 // echoing the body back as the user's own words.
 //
+// The load directive carries the explicit-invocation half of the skill
+// loading contract (the automatic half lives in the available-skills block,
+// Builtins.SkillPrompt): a skill the user asked for by name is loaded and
+// nothing more — the user invoked /name to put the skill on the table, not
+// to run it. The model stops after loading and waits for the next prompt
+// before acting on what the skill says. A skill the model loads itself,
+// because the task matched, has the opposite rule: keep going.
+//
 // The base-directory note still ships for skills that live on disk, so their
 // relative paths keep resolving — the tool result carries it too, but the
 // directive is what the user's turn says and a skill referencing scripts/
 // needs it to act.
 func skillTemplate(item skill.Info) string {
 	if item.Location == "" || item.Location == "<built-in>" {
-		return "Load the " + item.Name + " skill with the skill tool, then follow it."
+		return "Load the " + item.Name + " skill with the skill tool, then stop — only load it; do not start executing the skill's workflow. Wait for the user's next prompt before acting on it."
 	}
 	return strings.Join([]string{
-		"Load the " + item.Name + " skill with the skill tool, then follow it.",
+		"Load the " + item.Name + " skill with the skill tool, then stop — only load it; do not start executing the skill's workflow. Wait for the user's next prompt before acting on it.",
 		"",
 		"Base directory for this skill: " + item.Dir(),
 		"Relative paths in this skill (e.g., scripts/, references/) are relative to this base directory.",

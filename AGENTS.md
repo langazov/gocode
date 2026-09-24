@@ -90,7 +90,9 @@ Last-match-wins evaluation across merged rulesets. `permission.Defaults()` retur
 
 ### Skills and commands
 
-Skills are markdown files with frontmatter discovered from `.gocode/` (project) and `~/.config/gocode/` (global). A skill marked `slash: true` also appears as a slash command; a skill slash command directs the model to load the skill via the `skill` tool rather than pasting its body into the prompt. Commands are assembled from: config entries, markdown definitions, and skills. A few skills are compiled into the binary (`internal/skill/builtin/`) and available by default in every install; user skills override them by name, and `gocode debug skill` lists all of them with their origin.
+Skills are markdown files with frontmatter discovered from `.gocode/` (project) and `~/.config/gocode/` (global). A skill marked `slash: true` also appears as a slash command. Commands are assembled from: config entries, markdown definitions, and skills. A few skills are compiled into the binary (`internal/skill/builtin/`) and available by default in every install; user skills override them by name, and `gocode debug skill` lists all of them with their origin.
+
+Skill loading has a two-part contract. A skill loaded via an explicit user command (`/configure-gocode`) is loaded and nothing more: the slash command's template tells the model to stop after loading and wait for the user's next prompt before executing the skill's workflow. A skill loaded automatically — the model pulling one in because the task matched — has the opposite rule, stated in the `<available_skills>` footer: continue inference and follow the skill as part of the current task.
 
 ### Agent definitions
 
