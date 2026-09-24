@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -113,10 +114,40 @@ func TestListIsSorted(t *testing.T) {
 		writeSkill(t, filepath.Join(root, "skill", name, "SKILL.md"), "---\nname: "+name+"\n---\nx\n")
 	}
 	names := Discover(root).Names()
-	want := []string{"alpha", "mango", "zebra"}
-	for i := range want {
-		if names[i] != want[i] {
-			t.Fatalf("names = %v, want %v", names, want)
+	// Discover adds the skills compiled into the binary at the precedence
+	// floor, so the list is the three on-disk ones plus those. Sortedness of
+	// the whole list is the contract; membership is checked loosely.
+	if !sort.StringsAreSorted(names) {
+		t.Fatalf("names not sorted: %v", names)
+	}
+	found := map[string]bool{}
+	for _, name := range names {
+		found[name] = true
+	}
+	for _, want := range []string{"alpha", "mango", "zebra", "configure-gocode"} {
+		if !found[want] {
+			t.Fatalf("names %v missing %q", names, want)
 		}
+	}
+}
+
+// TestDiscoverBuiltInsArePrecedenceFloor pins the override rule: a skill on
+// disk — project or global — replaces the same-named built-in, and an
+// unrelated built-in survives alongside on-disk skills.
+func TestDiscoverBuiltInsArePrecedenceFloor(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "skill", "configure-gocode", "SKILL.md"),
+		"---\nname: configure-gocode\ndescription: My own version\n---\nMine.\n")
+
+	registry := Discover(root)
+	info, ok := registry.Get("configure-gocode")
+	if !ok {
+		t.Fatal("configure-gocode missing")
+	}
+	if info.Content != "Mine.\n" {
+		t.Fatalf("on-disk skill must shadow the built-in, got %q", info.Content)
+	}
+	if IsBuiltin(info.Location) {
+		t.Fatalf("expected an on-disk location, got %q", info.Location)
 	}
 }

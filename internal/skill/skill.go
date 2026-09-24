@@ -14,8 +14,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/langazov/gocode-go/internal/markdown"
 )
 
 // Info is one discovered skill.
@@ -115,29 +113,20 @@ func Load(location string) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
-	doc, err := markdown.Parse(string(raw))
+	// A bare <name>.md directly in a scanned directory takes its name from
+	// the filename; a SKILL.md must declare one.
+	base := filepath.Base(location)
+	if strings.EqualFold(base, "SKILL.md") {
+		base = ""
+	} else {
+		base = strings.TrimSuffix(base, filepath.Ext(base))
+	}
+	info, err := parseSkill(string(raw), base)
 	if err != nil {
 		return Info{}, fmt.Errorf("skill %s: %w", location, err)
 	}
-	name := doc.String("name")
-	if name == "" {
-		// A bare <name>.md directly in a scanned directory takes its name from
-		// the filename; a SKILL.md must declare one.
-		base := filepath.Base(location)
-		if !strings.EqualFold(base, "SKILL.md") {
-			name = strings.TrimSuffix(base, filepath.Ext(base))
-		}
-	}
-	if name == "" {
-		return Info{}, fmt.Errorf("skill %s: frontmatter has no name", location)
-	}
-	return Info{
-		Name:        name,
-		Description: doc.String("description"),
-		Slash:       doc.Bool("slash"),
-		Location:    location,
-		Content:     doc.Content,
-	}, nil
+	info.Location = location
+	return info, nil
 }
 
 // Scan discovers skills under root, following the layout gocode uses:
@@ -201,7 +190,9 @@ func Scan(root string) []Info {
 
 // Discover scans every root in order and returns a populated registry.
 // Earlier roots win on a name collision, so project skills override global
-// ones.
+// ones. Skills compiled into the binary sit at the bottom of that order:
+// they are the default everyone starts from, and anything a user writes on
+// disk — project or global — replaces them for that name.
 func Discover(roots ...string) *Registry {
 	registry := NewRegistry()
 	for _, root := range roots {
@@ -211,6 +202,11 @@ func Discover(roots ...string) *Registry {
 		for _, info := range Scan(root) {
 			registry.Add(info)
 		}
+	}
+	// Built-ins register last, so the first-writer-wins rule makes them the
+	// floor of the precedence order rather than a participant in it.
+	for _, info := range Builtins() {
+		registry.Add(info)
 	}
 	return registry
 }

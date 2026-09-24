@@ -113,13 +113,14 @@ class Gocode < Formula
     # A general LSP server, not a gocode internal: editors are pointed at it
     # directly, and gocode's own registry finds it by name on PATH.
     bin.install "mdlsp"
-    # The plugin stays out of PATH — it is not a command anyone runs — but
-    # keeps its directory layout, since the loader resolves a plugin by
+    # The plugins stay out of PATH — neither is a command anyone runs — but
+    # keep their directory layout, since the loader resolves a plugin by
     # reading gocode-plugin.json next to the binary.
     libexec.install "rag-plugin"
+    libexec.install "library-plugin"
   end
 
-  # Wire both extras into the user's global config. Homebrew runs this as the
+  # Wire the extras into the user's global config. Homebrew runs this as the
   # user, so it reaches ~/.config/gocode; the edits are idempotent, preserve
   # every other key, and refuse to rewrite a config carrying comments.
   #
@@ -145,6 +146,8 @@ class Gocode < Formula
       ["plugin", "disable", (opt_libexec/"rag-plugin").to_s, "--global"],
       ["plugin", "enable", "rag-plugin",
        "--global", "--options", '{"embeddingProvider":"openai"}'],
+      ["plugin", "disable", (opt_libexec/"library-plugin").to_s, "--global"],
+      ["plugin", "enable", "library-plugin", "--global"],
     ].each do |args|
       system bin/"gocode", *args
     rescue StandardError => e
@@ -155,29 +158,38 @@ class Gocode < Formula
 
   def caveats
     <<~EOS
-      Two extras were installed alongside gocode and wired into
+      Three extras were installed alongside gocode and wired into
       ~/.config/gocode:
 
-        mdlsp       markdown language server, started for .md files
-        rag-plugin  semantic code search (rag_index / rag_search tools)
+        mdlsp           markdown language server, started for .md files
+        rag-plugin      semantic code search (rag_index / rag_search tools)
+        library-plugin  search over your gocoder.org Library
+                        (library_search / library_list / library_get /
+                        library_upload tools)
 
       rag-plugin embeds through an OpenAI-compatible endpoint, so it needs a
       credential before its tools will work:
 
         gocode auth login
 
-      To turn either off again (the files stay installed):
+      library-plugin talks to gocoder.org, so it needs an account first:
+
+        gocode login
+
+      To turn any of them off again (the files stay installed):
 
         gocode lsp disable mdlsp
         gocode plugin disable rag-plugin
+        gocode plugin disable library-plugin
     EOS
   end
 
   test do
     assert_match version.to_s, shell_output("#{bin}/gocode --version")
     assert_match "mdlsp", shell_output("#{bin}/mdlsp --version")
-    # The manifest is what makes the directory loadable as a plugin.
+    # The manifest is what makes a directory loadable as a plugin.
     assert_predicate libexec/"rag-plugin/gocode-plugin.json", :exist?
+    assert_predicate libexec/"library-plugin/gocode-plugin.json", :exist?
   end
 end
 EOF

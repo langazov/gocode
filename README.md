@@ -86,22 +86,25 @@ silicon, `/usr/local/bin` on Intel macOS, and
 gocode --version
 ```
 
-The formula installs two optional extras alongside the agent and wires both
-into `~/.config/gocode`, because installing something is not the same as
+The formula installs three optional extras alongside the agent and wires all
+three into `~/.config/gocode`, because installing something is not the same as
 enabling it — a plugin runs only when the config's `plugin` array names it:
 
 | Installed | What it does |
 |---|---|
 | `mdlsp` (on `PATH`) | markdown language server: diagnostics for broken links and anchors, heading outline, rename. gocode starts it for `.md` files, and any LSP-speaking editor can point at it too |
 | `rag-plugin` (in `libexec`) | semantic code search, adding the `rag_index` and `rag_search` tools |
+| `library-plugin` (in `libexec`) | search over your gocoder.org Library, adding the `library_search`, `library_list`, `library_get` and `library_upload` tools |
 
 `rag-plugin` embeds through an OpenAI-compatible endpoint, so run
-`gocode auth login` before its tools will work. Either extra can be switched
-off without uninstalling anything:
+`gocode auth login` before its tools will work. `library-plugin` talks to
+gocoder.org, so it needs an account first: `gocode login`. Any extra can be
+switched off without uninstalling anything:
 
 ```sh
 gocode lsp disable mdlsp
-gocode plugin disable "$(brew --prefix gocode)/libexec/rag-plugin"
+gocode plugin disable rag-plugin
+gocode plugin disable library-plugin
 ```
 
 Homebrew does not quarantine what a *formula* downloads, so the

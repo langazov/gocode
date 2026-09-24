@@ -259,6 +259,13 @@ jobs:
           test -f ./library-plugin/gocode-plugin.json \
             || { echo "::error::library-plugin/gocode-plugin.json is missing; the plugin cannot load without its manifest"; exit 1; }
 
+          # The built-in skill ships inside the binary rather than as a file,
+          # so this is the check that it survived the build: an archive whose
+          # gocode cannot name its own configure-gocode skill is broken.
+          "./gocode${ext}" debug skill | grep -q "configure-gocode" \
+            || { echo "::error::built-in skill configure-gocode missing from the shipped binary"; exit 1; }
+          echo "built-in skill: present"
+
           # Both process plugins speak the plugin protocol on stdin and have
           # no --version. Empty stdin is a clean handshake-free start: each
           # must reach EOF and exit 0 rather than crash on a missing
