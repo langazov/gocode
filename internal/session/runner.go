@@ -873,9 +873,21 @@ turnLoop:
 	// Divergence: upstream retries only a stream that failed
 	// (session/processor.ts, SessionRetry.policy); a clean empty stream
 	// settles there as a normal finish, which is the silent end this fixes.
-	if providerErr == nil && seq == 0 && text.Len() == 0 && reasoning.Len() == 0 && usage.Output == 0 {
+	//
+	// A step whose finish reason says it stopped to call tools, yet not one
+	// call arrived, is the same fault in a different shape — and settling it
+	// ends the turn just as silently, since only a dispatched call asks for
+	// another step. Observed on zai-glm-5-3 (ses_f2ce6867e): finish
+	// "tool_calls", 80 billed output tokens, no text and no call — the
+	// upstream's tool parser swallowed the call. Billed tokens do not make
+	// that a finished answer, and text alongside it ("Let me check…") is a
+	// preamble to a call that never came, not an answer either. Nothing was
+	// dispatched, so re-running discards only the partial text.
+	lostToolCall := seq == 0 && toolCallFinish(finish)
+	if providerErr == nil && seq == 0 && (lostToolCall || text.Len() == 0 && reasoning.Len() == 0 && usage.Output == 0) {
 		return turnResult{}, &emptyCompletionError{
 			finish:             finish,
+			lostToolCall:       lostToolCall,
 			assistantMessageID: assistantMessageID,
 			model:              resolved.Model.ProviderID + "/" + resolved.Model.ID,
 			inputTokens:        usage.Input,

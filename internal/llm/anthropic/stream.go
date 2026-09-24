@@ -22,14 +22,15 @@ func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.
 			emit(llm.StreamEvent{Type: llm.EventReasoningDelta, Text: thinking})
 		},
 		OnToolUse: func(id, name string, input json.RawMessage) {
-			// A tool_use block without an id or a name — a malformed block
-			// from a compatible endpoint — is dropped rather than emitted:
-			// its empty id would settle as `unknown tool ""` and poison
-			// every later replay with a call the API cannot pair (see the
-			// openai adapter's flushTools guard).
-			if id == "" || name == "" {
+			// A tool_use block without a name — a malformed block from a
+			// compatible endpoint — has nothing to dispatch and is dropped:
+			// it would only settle as `unknown tool ""`. A named block
+			// missing its id is a real call and gets a synthesized one (see
+			// llm.ToolCallID), so it still runs and the turn continues.
+			if name == "" {
 				return
 			}
+			id = llm.ToolCallID(id)
 			var parsed map[string]any
 			if len(input) > 0 {
 				json.Unmarshal(input, &parsed)

@@ -544,3 +544,42 @@ data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]`
 		t.Fatalf("unexpected surviving call: %+v", calls[0])
 	}
 }
+
+// A named tool call streamed without an id is a real call — several
+// openai-compatible backends omit it — and must still flush, under a
+// synthesized id. Dropping it left the step with nothing to dispatch, so the
+// runner settled the turn as finished right after the model announced the
+// call: the "session ends prematurely" regression.
+func TestStreamKeepsNamedToolCallWithoutID(t *testing.T) {
+	const stream = `data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"bash","arguments":"{\"command\":\"ls\"}"}}]}}]}
+
+data: {"choices":[{"delta":{"tool_calls":[{"index":1,"function":{"name":"bash","arguments":"{\"command\":\"pwd\"}"}}]}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}`
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.Write([]byte(stream))
+	})
+	var calls []*llm.ToolCall
+	err := client.Stream(context.Background(), llm.Request{
+		ProviderID: "openai",
+		ModelID:    "gpt-5",
+		Messages:   []llm.Message{llm.UserText("m1", "run ls")},
+	}, func(event llm.StreamEvent) {
+		if event.Type == llm.EventToolCall {
+			calls = append(calls, event.ToolCall)
+		}
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 2 {
+		t.Fatalf("both named calls must flush, got %d: %+v", len(calls), calls)
+	}
+	if calls[0].ID == "" || calls[1].ID == "" || calls[0].ID == calls[1].ID {
+		t.Fatalf("id-less calls need distinct synthesized ids, got %q and %q", calls[0].ID, calls[1].ID)
+	}
+	if calls[0].Name != "bash" || calls[0].Input["command"] != "ls" {
+		t.Fatalf("unexpected call: %+v", calls[0])
+	}
+}

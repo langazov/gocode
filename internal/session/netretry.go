@@ -94,19 +94,39 @@ func (e *rateLimitedError) Unwrap() error { return e.cause }
 // Unlike the errors above, this one is settled as itself rather than as a
 // provider cause, so its text is what the user reads on the failed step: no
 // package prefix, and a hint at what to do about it.
+//
+// lostToolCall marks the other shape it covers: a finish reason claiming tool
+// calls with none delivered (see toolCallFinish). That step may carry text and
+// billed tokens, so "empty" would misdescribe it.
 type emptyCompletionError struct {
 	finish             string
+	lostToolCall       bool
 	assistantMessageID string
 	model              string
 	inputTokens        int
 }
 
 func (e *emptyCompletionError) Error() string {
+	if e.lostToolCall {
+		return "provider announced a tool call but sent none (finish: " + e.finish + ") — try again or switch models"
+	}
 	detail := "no content, no tool calls"
 	if e.finish != "" {
 		detail = "finish: " + e.finish + ", " + detail
 	}
 	return "provider returned an empty response (" + detail + ") — try again or switch models"
+}
+
+// toolCallFinish reports whether a finish reason says the step stopped to
+// call tools, in any provider's spelling: "tool_calls" (Chat Completions),
+// "tool-calls" (the Responses adapter), "tool_use" (Anthropic), and the
+// legacy "function_call".
+func toolCallFinish(finish string) bool {
+	switch finish {
+	case "tool_calls", "tool-calls", "tool_use", "function_call":
+		return true
+	}
+	return false
 }
 
 // emptyRetryBounds govern the re-attempts an empty completion gets. Unlike an
