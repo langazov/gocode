@@ -90,7 +90,7 @@ Last-match-wins evaluation across merged rulesets. `permission.Defaults()` retur
 
 ### Skills and commands
 
-Skills are markdown files with frontmatter discovered from `.gocode/` (project) and `~/.config/gocode/` (global). A skill marked `slash: true` also appears as a slash command. Commands are assembled from: config entries, markdown definitions, and skills.
+Skills are markdown files with frontmatter discovered from `.gocode/` (project) and `~/.config/gocode/` (global). A skill marked `slash: true` also appears as a slash command. Commands are assembled from: config entries, markdown definitions, and skills. A few skills are compiled into the binary (`internal/skill/builtin/`) and available by default in every install; user skills override them by name, and `gocode debug skill` lists all of them with their origin.
 
 ### Agent definitions
 

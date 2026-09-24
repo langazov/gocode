@@ -52,6 +52,26 @@ func TestSkillToolLoadsContent(t *testing.T) {
 	}
 }
 
+// TestSkillToolBuiltinSkipsFileListing pins the built-in path: no base
+// directory line (which would otherwise resolve to "."), no file sampling.
+func TestSkillToolBuiltinSkipsFileListing(t *testing.T) {
+	// A registry holding only the built-ins: Discover with no roots.
+	registry := skill.Discover()
+	tool := NewSkillTool(registry)
+	out, err := tool.Execute(context.Background(), map[string]any{"name": "configure-gocode"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, `# Skill: configure-gocode`) || !strings.Contains(out, "compiled into the gocode binary") {
+		t.Fatalf("unexpected built-in output:\n%s", out)
+	}
+	for _, banned := range []string{"<skill_files>", "Base directory", "filepath"} {
+		if strings.Contains(out, banned) {
+			t.Fatalf("built-in output must not contain %q:\n%s", banned, out)
+		}
+	}
+}
+
 func TestSkillToolUnknownSkill(t *testing.T) {
 	tool, _, _ := newSkillFixture(t)
 	_, err := tool.Execute(context.Background(), map[string]any{"name": "ghost"})

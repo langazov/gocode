@@ -64,6 +64,22 @@ func (t *SkillTool) Execute(ctx context.Context, input map[string]any) (string, 
 		return "", err
 	}
 
+	// A built-in skill has no directory: its whole content is the embedded
+	// markdown, and there are no supporting files to list. Walking "." —
+	// what Dir() would yield for the sentinel location — would sample the
+	// process working tree instead, so built-ins take a separate path.
+	if skill.IsBuiltin(info.Location) {
+		return strings.Join([]string{
+			fmt.Sprintf("<skill_content name=%q>", info.Name),
+			"# Skill: " + info.Name,
+			"",
+			strings.TrimSpace(info.Content),
+			"",
+			"This skill is compiled into the gocode binary; there is no base directory.",
+			"</skill_content>",
+		}, "\n"), nil
+	}
+
 	dir := info.Dir()
 	lines := []string{
 		fmt.Sprintf("<skill_content name=%q>", info.Name),

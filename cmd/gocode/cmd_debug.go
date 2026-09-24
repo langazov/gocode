@@ -190,12 +190,6 @@ func debugSnapshotCommand() *clix.Command {
 	}
 }
 
-func debugSkillCommand() *clix.Command {
-	return &clix.Command{Name: "skill", Describe: "list all available skills", Run: func(a *clix.Args) error {
-		return notImplemented("gocode debug skill")
-	}}
-}
-
 func debugScrapCommand() *clix.Command {
 	return &clix.Command{Name: "scrap", Describe: "list all known projects", Run: func(a *clix.Args) error {
 		ctx := context.Background()

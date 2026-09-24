@@ -391,6 +391,16 @@ Discovered by `skill.Discover` and also exposed as slash commands — a skill
 without a name collision becomes `/deploy`. Keeping them out of the system
 prompt is what makes many skills affordable: they cost tokens only when used.
 
+A small set of skills is **compiled into the binary** (embedded under
+`internal/skill/builtin/`, loaded by `skill.Builtins`), so they are available
+by default in every install — archive, bare binary, `go install` or Homebrew —
+with no installer wiring. `configure-gocode` is one: the agent's own
+configuration reference, loadable with the `skill` tool or as
+`/configure-gocode`. They sit at the **bottom of the precedence order**: a
+user skill of the same name — project or global — replaces the built-in
+outright. `gocode debug skill` lists every skill the session would see and
+where each came from.
+
 ---
 
 [← HTTP API](08-http-api.md) · [Index](README.md) · [Next: Development →](10-development.md)
