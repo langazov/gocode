@@ -14,6 +14,11 @@ const (
 	ProtocolAnthropic = "anthropic"
 	ProtocolGemini    = "gemini"
 	ProtocolOpenAI    = "openai"
+	// ProtocolOpenAIResponses is OpenAI's Responses API ({base}/responses):
+	// the wire format the ChatGPT subscription backend speaks. Separate from
+	// ProtocolOpenAI (Chat Completions) because requests and events differ —
+	// internal/llm/openairesponses implements it.
+	ProtocolOpenAIResponses = "openai-responses"
 )
 
 // Resolved is a provider's fully-materialized configuration, built from the

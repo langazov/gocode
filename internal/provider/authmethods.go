@@ -45,6 +45,11 @@ type Credential struct {
 	Access  string
 	Refresh string
 	Expires int64
+	// AccountID is the provider account a subscription token belongs to
+	// (OpenAI's ChatGPT plans): the backend the token unlocks requires it as
+	// a header on every request, so the login flow must capture it here the
+	// moment the tokens first arrive.
+	AccountID string
 	// Metadata carries login-time details a transform needs on every
 	// resolution (e.g. opencode/Zen stores the account's org id here, which
 	// its catalog overlay and inference requests both require).

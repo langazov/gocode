@@ -67,7 +67,7 @@ Implemented transforms:
 | File | Handles |
 |---|---|
 | `transform_anthropic.go` | Anthropic direct + OAuth |
-| `transform_openai.go` | OpenAI and OpenAI-compatible endpoints |
+| `transform_openai.go` | OpenAI and OpenAI-compatible endpoints; routes ChatGPT subscriptions to the codex backend |
 | `transform_azure.go` | Azure deployment-name URL shape |
 | `transform_copilot.go` | GitHub Copilot — device flow, live model list |
 | `transform_snowflake.go` | Snowflake Cortex |
@@ -76,6 +76,34 @@ Implemented transforms:
 `ApplyOverlays` composes them: a provider can rewrite base URLs, inject
 headers, add models, or hide models it can't serve — without the generic client
 knowing any provider names.
+
+### The ChatGPT subscription path
+
+A ChatGPT Pro/Plus login is **not** an API-key-equivalent credential. Its
+token authorizes only `chatgpt.com/backend-api/codex` — posted to
+`api.openai.com` as a plain bearer it fails with
+`401 Missing scopes: api.responses.write`, indistinguishable from a bad key.
+`transform_openai.go` therefore does three things when (and only when) the
+stored OAuth credential is the one in use — an env or configured API key is
+an explicit API-billing choice and wins the resolution untouched:
+
+1. rewrites the endpoint to the codex backend and switches the wire protocol
+   to Responses (`internal/llm/openairesponses`; the backend requires
+   `store:false`, which that client already sends);
+2. adds the `chatgpt-account-id` header from the credential — captured at
+   login, or recovered from the access token's JWT claims for logins stored
+   by older builds, so nobody has to re-login;
+3. sets `Options.DropMaxOutputTokens`, because the codex backend rejects the
+   Responses-API `max_output_tokens` parameter outright — every request
+   carrying it fails `400 {"detail":"Unsupported parameter:
+   max_output_tokens"}` while api.openai.com accepts it, so the client-side
+   cap the runner derives from the catalog goes unsent and the backend
+   enforces its own limit;
+4. gates the model list (`ModelSource`) to the families the plan can run,
+   and strips per-model endpoint overrides that would route around the
+   rewrite.
+
+The upstream bug this mirrors: opencode V2 issue #34765, fixed in PR #34843.
 
 ### A caching lesson worth keeping
 

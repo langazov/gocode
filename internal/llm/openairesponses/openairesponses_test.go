@@ -66,6 +66,67 @@ func TestRequestShape(t *testing.T) {
 	}
 }
 
+// TestDropMaxOutputTokensOmitsTheField: the ChatGPT subscription backend
+// rejects the parameter outright — 400 {"detail":"Unsupported parameter:
+// max_output_tokens"} — so when the transform opts in via Options, the field
+// must be absent from the wire body entirely, not sent as zero.
+func TestDropMaxOutputTokensOmitsTheField(t *testing.T) {
+	var sawField bool
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Errorf("invalid request body: %v", err)
+		}
+		_, sawField = raw["max_output_tokens"]
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	client.Options.DropMaxOutputTokens = true
+	err := client.Stream(context.Background(), llm.Request{
+		ProviderID: "openai",
+		ModelID:    "gpt-5.5",
+		// The runner always fills a budget; the option must override it.
+		MaxTokens: 65536,
+		Messages:  []llm.Message{llm.UserText("m1", "hello")},
+	}, func(event llm.StreamEvent) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sawField {
+		t.Fatal("max_output_tokens reached the wire despite DropMaxOutputTokens")
+	}
+}
+
+// TestMaxOutputTokensSentByDefault: without the option the budget must still
+// be sent — api.openai.com's Responses endpoint accepts and honors it, and
+// the runner relies on it to keep steps bounded.
+func TestMaxOutputTokensSentByDefault(t *testing.T) {
+	var got int
+	client := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		var raw map[string]any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			t.Errorf("invalid request body: %v", err)
+		}
+		if value, ok := raw["max_output_tokens"].(float64); ok {
+			got = int(value)
+		}
+		w.Write([]byte("data: [DONE]\n\n"))
+	})
+	err := client.Stream(context.Background(), llm.Request{
+		ProviderID: "openai",
+		ModelID:    "gpt-5.5",
+		MaxTokens:  65536,
+		Messages:   []llm.Message{llm.UserText("m1", "hello")},
+	}, func(event llm.StreamEvent) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != 65536 {
+		t.Fatalf("max_output_tokens = %d, want 65536", got)
+	}
+}
+
 // responsesStream is a realistic (if trimmed) event sequence: text, then a
 // function call streamed via output_item.added + arguments.delta +
 // output_item.done, then response.completed with usage. Matches the shapes

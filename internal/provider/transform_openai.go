@@ -9,8 +9,12 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"strings"
 
 	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/llm/openai"
+	"github.com/langazov/gocode-go/internal/modelsdev"
 )
 
 func init() {
@@ -23,14 +27,113 @@ const (
 	chatgptIssuer       = "https://auth.openai.com"
 	chatgptCallbackPort = 1455
 	chatgptScope        = "openid profile email offline_access"
+	// chatgptCodexBaseURL is the backend a ChatGPT-plan subscription token
+	// actually authorizes. The token's scopes do not transfer to
+	// api.openai.com — posting it there as a plain bearer returns
+	// 401 "Missing scopes: api.responses.write" even though the login itself
+	// succeeded. The codex backend speaks OpenAI's Responses API
+	// ({base}/responses), which is why Apply switches the wire protocol too.
+	chatgptCodexBaseURL = "https://chatgpt.com/backend-api/codex"
 )
 
 // openaiTransform adds the ChatGPT Pro/Plus subscription login to the openai
-// provider. It contributes no request changes — an API-key user is unaffected
-// — only the OAuth method and the refresh that credential needs.
+// provider and routes subscription-authenticated requests to the backend that
+// token unlocks. An API-key user is unaffected: Apply only rewrites the
+// request when the stored credential is an OAuth one.
 type openaiTransform struct{ byID }
 
-func (openaiTransform) Apply(_ context.Context, _ *Resolved) error { return nil }
+// Apply routes a ChatGPT subscription credential to the codex backend.
+//
+// A subscription token is not an API-key-equivalent credential: it authorizes
+// chatgpt.com/backend-api/codex only, and every request must also carry the
+// chatgpt-account-id header naming the plan the token belongs to. Sending it
+// to api.openai.com instead — as this port did before, by its own doc
+// comment's admission "contributing no request changes" — surfaces as a bare
+// 401 with nothing pointing at the real cause. This mirrors the fix upstream
+// opencode shipped for the identical bug (V2 issue #34765, PR #34843).
+func (openaiTransform) Apply(ctx context.Context, r *Resolved) error {
+	info, err := chatgptCredentialInUse(ctx, r)
+	if err != nil || info == nil {
+		return err
+	}
+	// An explicitly configured endpoint (a relay, a self-hosted proxy) is a
+	// deliberate choice by the user; the subscription rewrite only applies to
+	// the default public API endpoint.
+	if r.BaseURL != "" && r.BaseURL != openai.DefaultBaseURL {
+		return nil
+	}
+
+	r.APIKey = info.Access
+
+	// Credentials stored by a build before the account id was captured at
+	// login can still be recovered here: the id rides in the access token's
+	// own claims, so nobody has to re-login to pick it up.
+	accountID := info.AccountID
+	if accountID == "" {
+		accountID = chatgptAccountIDFromToken(info.Access)
+	}
+	if accountID == "" {
+		return fmt.Errorf(
+			"openai: ChatGPT login is missing its account id — run `gocode providers login openai` again to refresh it")
+	}
+
+	r.BaseURL = chatgptCodexBaseURL
+	r.Header("chatgpt-account-id", accountID)
+	r.Protocol = ProtocolOpenAIResponses
+	// The codex backend rejects the Responses-API max_output_tokens parameter
+	// outright — every request carrying it dies 400 "Unsupported parameter:
+	// max_output_tokens" (ses_f2c025586ffe5, 2026-09-24, among others that
+	// day). The runner derives that cap from the catalog as a client-side
+	// budget; the backend enforces its own, so the field goes.
+	r.Options.DropMaxOutputTokens = true
+
+	// A per-model override carries its own endpoint, and modelRoutedClient
+	// would honor it — routing a model right back to api.openai.com and
+	// around this rewrite. Under a subscription credential the codex backend
+	// is the only endpoint any model has, so the overrides go.
+	clearModelOverrides(r)
+	return nil
+}
+
+// chatgptCredentialInUse returns the stored ChatGPT subscription credential
+// only when it is the credential actually authenticating this provider.
+//
+// An env key or a configured apiKey is an explicit API-billing choice, and
+// it wins the resolution (ResolveAPIKey checks env before the store). With
+// one in play, rewriting to the codex backend would post an API key to an
+// endpoint that only accepts subscription tokens — so neither the routing
+// nor the model gate applies. This transform is registered for "openai"
+// only, whose env list is exactly OPENAI_API_KEY.
+func chatgptCredentialInUse(ctx context.Context, r *Resolved) (*auth.Info, error) {
+	envNames := r.Entry.Env
+	if len(envNames) == 0 {
+		envNames = []string{"OPENAI_API_KEY"}
+	}
+	for _, name := range envNames {
+		if os.Getenv(name) != "" {
+			return nil, nil
+		}
+	}
+	if r.Config != nil && r.Config.Options.APIKey != "" {
+		return nil, nil
+	}
+	info, err := ResolveCredential(ctx, r.ID, r.Entry)
+	if err != nil || info == nil || info.Type != "oauth" {
+		return nil, err
+	}
+	return info, nil
+}
+
+// clearModelOverrides strips the per-model provider overrides that would
+// otherwise re-route individual models away from the rewritten endpoint.
+func clearModelOverrides(r *Resolved) {
+	for id, model := range r.Models {
+		if model.Provider != nil {
+			model.Provider = nil
+			r.Models[id] = model
+		}
+	}
+}
 
 func (openaiTransform) AuthMethods() []Method {
 	return []Method{{
@@ -133,10 +236,11 @@ func chatgptLogin(ctx context.Context, _ map[string]string) (Credential, error) 
 		return Credential{}, err
 	}
 	return Credential{
-		Type:    "oauth",
-		Access:  tokens.AccessToken,
-		Refresh: tokens.RefreshToken,
-		Expires: tokens.ExpiresAt(),
+		Type:      "oauth",
+		Access:    tokens.AccessToken,
+		Refresh:   tokens.RefreshToken,
+		Expires:   tokens.ExpiresAt(),
+		AccountID: chatgptAccountID(tokens),
 	}, nil
 }
 
@@ -186,6 +290,63 @@ func chatgptAccountID(tokens *auth.TokenResponse) string {
 		}
 	}
 	return ""
+}
+
+// chatgptAccountIDFromToken recovers the account id from a bare access token
+// — the fallback path for credentials stored by a build that predates the
+// login flow capturing it (chatgptAccountID above), so an existing login
+// keeps working without a re-login.
+func chatgptAccountIDFromToken(accessToken string) string {
+	if id := auth.JWTClaim(accessToken, "chatgpt_account_id"); id != "" {
+		return id
+	}
+	return auth.JWTClaim(accessToken, "https://api.openai.com/auth", "chatgpt_account_id")
+}
+
+// chatgptModelEligible reports whether a model id is usable through the
+// ChatGPT subscription backend. The public catalog lists the whole OpenAI
+// range, but a subscription token only opens the codex models: without this
+// filter the picker offers gpt-4o et al, which then fail at request time
+// with an error indistinguishable from an outage. Ports the ALLOWED_MODELS
+// gate in packages/opencode/src/plugin/openai/codex.ts, as a prefix/exact
+// match rather than a list that ages.
+func chatgptModelEligible(id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, prefix := range []string{"gpt-5", "codex-", "o3", "o4-mini", "gpt-4.1"} {
+		if strings.HasPrefix(id, prefix) {
+			return true
+		}
+	}
+	// Exact ids that share no prefix with the families above.
+	switch id {
+	case "codex-mini", "gpt-4o-codex", "chatgpt-4o-latest":
+		return true
+	}
+	return false
+}
+
+// FetchModels implements ModelSource, gating the catalog's model list to the
+// models a ChatGPT subscription actually unlocks. A non-OAuth credential
+// (or none) keeps the full public list: the gate only applies to a logged-in
+// subscription. Purely offline — a filter, not a fetch — so it needs neither
+// the modelCache plumbing nor invalidation on login/logout.
+func (openaiTransform) FetchModels(ctx context.Context, r *Resolved) (map[string]modelsdev.Model, error) {
+	info, err := chatgptCredentialInUse(ctx, r)
+	if err != nil || info == nil {
+		// Not a subscription login in use: the caller falls back to the
+		// catalog list (see Resolved.LiveModels), which is exactly what an
+		// API key is entitled to.
+		return nil, nil
+	}
+	out := make(map[string]modelsdev.Model, len(r.Models))
+	for id, model := range r.Models {
+		if chatgptModelEligible(id) {
+			out[id] = model
+		}
+	}
+	return out, nil
 }
 
 // generatePKCE ports generatePKCE(): a 43-character verifier drawn from the

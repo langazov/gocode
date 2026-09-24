@@ -49,6 +49,13 @@ func New(apiKey string) *Client {
 // Stream implements llm.StreamClient for the Responses API.
 func (c *Client) Stream(ctx context.Context, request llm.Request, emit func(llm.StreamEvent)) error {
 	request.ModelID = c.Options.Model(request.ModelID)
+	// The codex backend rejects max_output_tokens outright (see
+	// Options.DropMaxOutputTokens); zeroing the budget drops the field via
+	// convertRequest's `> 0` guard, which is the same path an unset budget
+	// takes.
+	if c.Options.DropMaxOutputTokens {
+		request.MaxTokens = 0
+	}
 	body := convertRequest(request)
 	payload, err := json.Marshal(body)
 	if err != nil {
