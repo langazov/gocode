@@ -82,6 +82,62 @@ func (e *rateLimitedError) Error() string {
 }
 func (e *rateLimitedError) Unwrap() error { return e.cause }
 
+// emptyCompletionError marks a step whose stream closed cleanly having said
+// nothing at all: no text, no reasoning, no tool call, zero output tokens —
+// an HTTP 200 whose SSE body ended before the first content delta. Free-tier
+// upstreams behind OpenRouter do this intermittently; the wire cannot tell it
+// from success, so the runner classifies it here instead. The finish reason
+// the upstream stated (often "stop", sometimes nothing) rides along for the
+// error message when retries run out; the model and billed input tokens ride
+// along for the diagnostic log line.
+//
+// Unlike the errors above, this one is settled as itself rather than as a
+// provider cause, so its text is what the user reads on the failed step: no
+// package prefix, and a hint at what to do about it.
+type emptyCompletionError struct {
+	finish             string
+	assistantMessageID string
+	model              string
+	inputTokens        int
+}
+
+func (e *emptyCompletionError) Error() string {
+	detail := "no content, no tool calls"
+	if e.finish != "" {
+		detail = "finish: " + e.finish + ", " + detail
+	}
+	return "provider returned an empty response (" + detail + ") — try again or switch models"
+}
+
+// emptyRetryBounds govern the re-attempts an empty completion gets. Unlike an
+// outage there is no link to wait for and no stated delay to serve: the
+// provider answered, badly. The retries are few and quick because the likeliest
+// cause is a transient upstream glitch (a cold provider instance, a dropped
+// worker), and a model that consistently returns nothing is broken in a way
+// that waiting longer will not fix — the user should see the error and pick a
+// different model. Each attempt re-sends the whole history, so the budget is
+// also a cost bound: a long session re-bills its full input on every retry.
+// Variables rather than constants only so a test can run the loop without
+// spending real seconds in it.
+var (
+	emptyRetryAttempts = 3
+	emptyRetryDelay    = 500 * time.Millisecond
+)
+
+// sleepCtx pauses for delay or until ctx ends. The empty-completion retry
+// uses it instead of waitBeforeRetry: there is no outage to watch the link
+// for, only a short breather before asking again.
+func sleepCtx(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // rateLimitRetryCap bounds the single wait a provider's Retry-After can buy.
 // Real hints are seconds to minutes; hours mean a quota that waiting will not
 // fix (daily limits, a billing cap), where handing the wait to the user is
@@ -188,6 +244,10 @@ const (
 type networkHold struct {
 	deadline time.Time
 	delay    time.Duration
+	// emptyRetries counts the empty-completion re-attempts this turn has
+	// spent, so a run of empties exhausts one bounded budget instead of
+	// retrying forever.
+	emptyRetries int
 }
 
 // awaitNetwork holds a turn whose step could not reach the provider, and

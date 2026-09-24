@@ -118,7 +118,7 @@ func TestToolCalledPreservesStreamOrder(t *testing.T) {
 			{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{ID: "call_b", Name: "beta", Input: map[string]any{}}},
 			{Type: llm.EventFinish, Finish: "tool_calls"},
 		},
-		{{Type: llm.EventFinish, Finish: "end_turn"}},
+		{{Type: llm.EventTextDelta, Text: "done"}, {Type: llm.EventFinish, Finish: "end_turn"}},
 	}}
 	runner, bus := newRunnerFixture(t, provider, tools)
 
@@ -187,7 +187,7 @@ func TestToolConcurrencyIsBounded(t *testing.T) {
 			{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{ID: "call_b", Name: "beta", Input: map[string]any{}}},
 			{Type: llm.EventFinish, Finish: "tool_calls"},
 		},
-		{{Type: llm.EventFinish, Finish: "end_turn"}},
+		{{Type: llm.EventTextDelta, Text: "done"}, {Type: llm.EventFinish, Finish: "end_turn"}},
 	}}
 	runner, bus := newRunnerFixture(t, provider, tools)
 	runner.ToolConcurrency = 1
@@ -239,7 +239,7 @@ func TestProviderExecutedToolIsNotDispatched(t *testing.T) {
 			}},
 			{Type: llm.EventFinish, Finish: "tool_calls"},
 		},
-		{{Type: llm.EventFinish, Finish: "end_turn"}},
+		{{Type: llm.EventTextDelta, Text: "done"}, {Type: llm.EventFinish, Finish: "end_turn"}},
 	}}
 	runner, bus := newRunnerFixture(t, provider, tools)
 	admitPrompt(t, bus, runner, "search")
