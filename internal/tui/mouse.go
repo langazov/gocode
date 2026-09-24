@@ -334,12 +334,25 @@ func (a *App) applySelectionHighlight(content string) string {
 // selectedText extracts the plain (ANSI-stripped) text under the current
 // selection from what's on screen right now, mirroring opentui's
 // Selection.copy reading the renderer's selection buffer.
+//
+// "On screen" is the frame View() last drew, not a fresh currentFrame():
+// selectedText runs inside Update, where the prompt editor is inflated to its
+// maximum height (see expandPromptForInput). A frame rendered there has a
+// prompt box up to a third of the screen taller than the one displayed, which
+// lifts the whole chat column by that many rows — so a drag over a message
+// copied the rows below it instead: the footer, the prompt box's ┃ border, or
+// nothing. The fresh render is only a fallback for callers (tests) that never
+// went through View().
 func (a *App) selectedText() string {
 	if !a.selection.hasRange() {
 		return ""
 	}
+	frame := a.shownFrame
+	if frame == "" {
+		frame = a.currentFrame()
+	}
 	minCol, maxCol := a.selectionColumnBounds()
-	return extractSelection(a.currentFrame(), a.selection, minCol, maxCol)
+	return extractSelection(frame, a.selection, minCol, maxCol)
 }
 
 // selectionColumnBounds keeps a drag inside the column it started in.
