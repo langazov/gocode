@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/langazov/gocode-go/internal/browser"
 	"github.com/langazov/gocode-go/internal/clix"
 	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/global"
@@ -203,7 +204,8 @@ func runMCPAuth(a *clix.Args) error {
 	defer service.Close()
 	_, err = service.Authenticate(context.Background(), name, cfg, func(url string) {
 		fmt.Println("Authorize in your browser:")
-		fmt.Println(url)
+		fmt.Println(browser.Link(url))
+		_ = browser.Open(url)
 		fmt.Println("Waiting for authorization...")
 	})
 	if err != nil {

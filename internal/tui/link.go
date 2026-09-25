@@ -1,12 +1,11 @@
 package tui
 
 import (
-	"os/exec"
 	"regexp"
-	"runtime"
 
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/langazov/gocode-go/internal/browser"
 )
 
 // urlPattern finds a bare http(s) URL in plain text, used to linkify a
@@ -62,12 +61,5 @@ func (a *App) linkAt(row, col int) string {
 // not a func, so tests can substitute it rather than actually launching a
 // browser.
 var openURL = func(href string) error {
-	switch runtime.GOOS {
-	case "darwin":
-		return exec.Command("open", href).Start()
-	case "windows":
-		return exec.Command("rundll32", "url.dll,FileProtocolHandler", href).Start()
-	default:
-		return exec.Command("xdg-open", href).Start()
-	}
+	return browser.Open(href)
 }

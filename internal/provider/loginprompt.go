@@ -3,6 +3,9 @@ package provider
 import (
 	"context"
 	"fmt"
+	"strings"
+
+	"github.com/langazov/gocode-go/internal/browser"
 )
 
 // LoginPrompt is what a login flow needs to put in front of the user: a URL
@@ -28,11 +31,18 @@ func WithLoginPrompt(ctx context.Context, fn func(LoginPrompt)) context.Context 
 }
 
 // promptLogin delivers a prompt to the context's sink, falling back to
-// stdout for the CLI.
+// stdout for the CLI. The fallback prints the URL as a clickable OSC8
+// hyperlink (terminals without support show the plain URL) and opens it in
+// the browser — a CLI login is a hands-on-keyboard moment, and the TS
+// original's users expect the consent page to appear without a copy-paste
+// round-trip. Both are best effort; the URL text is always right there.
 func promptLogin(ctx context.Context, prompt LoginPrompt) {
 	if fn, ok := ctx.Value(loginPromptKey{}).(func(LoginPrompt)); ok && fn != nil {
 		fn(prompt)
 		return
 	}
-	fmt.Print("\n" + prompt.Message + "\n")
+	if prompt.URL != "" {
+		_ = browser.Open(prompt.URL)
+	}
+	fmt.Print("\n" + strings.Replace(prompt.Message, prompt.URL, browser.Link(prompt.URL), 1) + "\n")
 }

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/langazov/gocode-go/internal/browser"
 	"github.com/langazov/gocode-go/internal/tui/client"
 )
 
@@ -252,10 +253,14 @@ func (a *App) runOAuthMethod(providerID, name string, method client.AuthMethod, 
 }
 
 // showOAuthWait puts the verification URL and code on screen while the flow
-// completes, the port of AutoMethod/CodeMethod's waiting panel.
+// completes, the port of AutoMethod/CodeMethod's waiting panel. The URL is
+// also opened in the browser — the dialog's plain text cannot carry an OSC8
+// hyperlink (WrapWords would chunk through the escape on a long URL), so
+// opening it is what makes the consent page one step away.
 func (a *App) showOAuthWait(name string, attempt *client.OAuthAttempt) {
 	var body strings.Builder
 	if attempt.URL != "" {
+		_ = browser.Open(attempt.URL)
 		body.WriteString("Open this URL to continue:\n\n")
 		body.WriteString(attempt.URL)
 	}
