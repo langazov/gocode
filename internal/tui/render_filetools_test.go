@@ -483,3 +483,17 @@ func TestMarkdownRendererCachesPerWidth(t *testing.T) {
 		t.Error("a theme change should rebuild the renderer")
 	}
 }
+
+// The skill tool has no dedicated renderer, so its row falls to toolLabel's
+// generic branch: the ⚙ icon plus the name and JSON-encoded input. That is
+// the label a skill slash command shows in the timeline — the whole point of
+// routing /name through the skill tool rather than pasting the body.
+func TestSkillToolLabelIsTheCompactGenericRow(t *testing.T) {
+	icon, label := toolLabel("skill", map[string]any{"name": "configure-gocode"}, nil)
+	if icon != "⚙" {
+		t.Fatalf("skill icon = %q, want the generic ⚙", icon)
+	}
+	if label != `skill {"name":"configure-gocode"}` {
+		t.Fatalf("skill label = %q, want the name + input JSON", label)
+	}
+}

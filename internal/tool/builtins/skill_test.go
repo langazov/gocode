@@ -103,3 +103,18 @@ func TestSkillPromptListsSkills(t *testing.T) {
 		t.Fatal("a nil registry should render no prompt block")
 	}
 }
+
+// TestSkillPromptAutomaticLoadContinues pins the automatic half of the skill
+// loading contract. The footer of the available-skills block — the block the
+// runner appends to every turn's system prompt — is the only place the model
+// learns what to do after loading a skill it picked itself: keep working the
+// current task under the skill's guidance. The explicit half (a user-run
+// /name command) is the opposite rule, load-and-stop, and lives in
+// command.skillTemplate.
+func TestSkillPromptAutomaticLoadContinues(t *testing.T) {
+	_, registry, _ := newSkillFixture(t)
+	prompt := SkillPrompt(registry)
+	if !strings.Contains(prompt, "continue inference and follow the skill as part of the current task") {
+		t.Fatalf("the automatic-load footer is missing from the prompt block:\n%s", prompt)
+	}
+}

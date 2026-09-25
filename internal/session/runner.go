@@ -18,7 +18,9 @@ import (
 	"github.com/langazov/gocode-go/internal/llm"
 	"github.com/langazov/gocode-go/internal/permission"
 	"github.com/langazov/gocode-go/internal/plugin"
+	"github.com/langazov/gocode-go/internal/skill"
 	"github.com/langazov/gocode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/tool/builtins"
 )
 
 // MaxStepsPrompt matches packages/core/src/session/runner/max-steps.ts.
@@ -58,6 +60,14 @@ type Runner struct {
 	// Agents, when set, drives agent/model/system-prompt resolution from the
 	// session's agent column, overriding the static fields above.
 	Agents *agent.Registry
+
+	// Skills, when set, appends the available-skills block to every turn's
+	// system prompt. The skill tool's contract is "load one of the skills
+	// listed in your system prompt" — without this block the model cannot
+	// discover a skill by name, so a registry that was never wired here makes
+	// every discovered skill (the built-in configure-gocode one included)
+	// unreachable.
+	Skills *skill.Registry
 
 	// Permissions, when set, gates every local tool execution.
 	Permissions PermissionGate
@@ -519,6 +529,14 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, step i
 	system := []string{}
 	if resolved.System != "" {
 		system = append(system, resolved.System)
+	}
+	// The available-skills block rides last in the base prompt, before the
+	// plugin transform: skills are per-boot facts about the environment, not
+	// part of any agent's charter, and the transform hook owns the final
+	// ordering. Builtins.SkillPrompt renders nothing for a nil or empty
+	// registry, so a skills-free boot is unchanged.
+	if block := builtins.SkillPrompt(r.Skills); block != "" {
+		system = append(system, block)
 	}
 	system = r.applySystemTransform(ctx, sessionID, resolved, system)
 	request := llm.Request{

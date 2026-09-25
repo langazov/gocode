@@ -500,13 +500,18 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 	}, nil)
 
 	runner := &session.Runner{
-		DB:                   database,
-		Bus:                  bus,
-		Messages:             session.NewMessageStore(database),
-		Provider:             streamClient,
-		Tools:                tools,
-		Agents:               agents,
-		Agent:                "build",
+		DB:       database,
+		Bus:      bus,
+		Messages: session.NewMessageStore(database),
+		Provider: streamClient,
+		Tools:    tools,
+		Agents:   agents,
+		Agent:    "build",
+		// Skills reach the model through the available-skills prompt block;
+		// without this the registry backs the tool and the slash commands but
+		// the model never learns a skill's name, so none can be loaded on
+		// demand (the built-in configure-gocode one included).
+		Skills:               skills,
 		Model:                session.ModelRef{ProviderID: providerID, ID: modelID, Variant: lastUsed.Variant},
 		Permissions:          &session.EnginePermissionGate{Engine: permissionEngine},
 		Plugins:              plugins,

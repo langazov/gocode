@@ -4,10 +4,12 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/langazov/gocode-go/internal/modelstate"
 	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/tool/builtins"
 )
 
 // TestBootStackDiscoversAgentsSkills covers .agents/skills, the convention
@@ -53,6 +55,30 @@ func TestBootStackDiscoversAgentsSkills(t *testing.T) {
 	}
 	if !found["global-skill"] {
 		t.Error("expected the global ~/.agents/skills entry to be discovered")
+	}
+}
+
+// TestBootStackSkillsReachRunner is the regression for "model is not loading
+// configure-gocode when asked to configure gocode": bootStack discovered the
+// skills and registered the skill tool, but never handed the registry to the
+// runner, so the available-skills block the tool's contract promises ("load
+// one of the skills listed in your system prompt") never existed. The built-in
+// configure-gocode skill is in every registry Discover builds, so its presence
+// in the block is the assertion.
+func TestBootStackSkillsReachRunner(t *testing.T) {
+	testCatalog(t)
+	stack := bootStackT(t, context.Background(), "")
+	if stack.Runner.Skills == nil {
+		t.Fatal("bootStack did not wire the skills registry into the runner")
+	}
+	block := builtins.SkillPrompt(stack.Runner.Skills)
+	if !strings.Contains(block, "configure-gocode") {
+		t.Fatalf("the built-in configure-gocode skill is missing from the prompt block:\n%s", block)
+	}
+	// The tool itself must be registered too — the block advertises what the
+	// tool can load, so a registry without the tool would be a teaser.
+	if _, ok := stack.Runner.Tools.Get("skill"); !ok {
+		t.Fatal("the skill tool is not registered")
 	}
 }
 

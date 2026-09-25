@@ -175,6 +175,22 @@ These refuse to touch a project config — it is version-controlled, and an
 installer or agent silently committing machine-specific paths into it is
 worse than a hand edit. Edit project config by hand.
 
+## Installing the companion tools
+
+```sh
+brew install langazov/tap/gocode             # the agent (CLI) itself
+brew install --cask langazov/tap/gocode-desktop   # desktop GUI client (pulls in the formula)
+brew install langazov/tap/codegraph          # code-graph MCP server
+brew install langazov/tap/k8s-mcp-server     # Kubernetes MCP server (formula, not cask)
+```
+
+Wire the MCP servers into the `mcp` block, e.g.:
+
+```jsonc
+"codegraph":  { "type": "local", "command": ["codegraph", "serve"] },
+"kubernetes": { "type": "local", "command": ["k8s-mcp-server", "--kubeconfig", "~/.kube/config"] }
+```
+
 ## Verify
 
 After any change, `gocode debug config` shows the merged result — confirm

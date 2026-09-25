@@ -71,7 +71,7 @@ Everything the agent does becomes a durable event in SQLite before visible state
 
 ### Runner loop
 
-`Runner.Run()` in `internal/session/runner.go` drains eligible durable work for one session. `Coordinator[string]` serializes execution per session ID while allowing different sessions to run concurrently. `Execution` routes session-ID keyed execution to a process-local runner.
+`Runner.Run()` in `internal/session/runner.go` drains eligible durable work for one session. `Coordinator[string]` serializes execution per session ID while allowing different sessions to run concurrently. `Execution` routes session-ID keyed execution to a process-local runner. The runner also assembles each turn's system prompt: the agent's own prompt, then the `<available_skills>` block (`Runner.Skills` — without it the model cannot discover a skill by name), then the plugin `system.transform` hook.
 
 ### SQLite and concurrency
 
@@ -91,6 +91,8 @@ Last-match-wins evaluation across merged rulesets. `permission.Defaults()` retur
 ### Skills and commands
 
 Skills are markdown files with frontmatter discovered from `.gocode/` (project) and `~/.config/gocode/` (global). A skill marked `slash: true` also appears as a slash command. Commands are assembled from: config entries, markdown definitions, and skills. A few skills are compiled into the binary (`internal/skill/builtin/`) and available by default in every install; user skills override them by name, and `gocode debug skill` lists all of them with their origin.
+
+Skill loading has a two-part contract. A skill loaded via an explicit user command (`/configure-gocode`) is loaded and nothing more: the slash command's template tells the model to stop after loading and wait for the user's next prompt before executing the skill's workflow. A skill loaded automatically — the model pulling one in because the task matched — has the opposite rule, stated in the `<available_skills>` footer: continue inference and follow the skill as part of the current task.
 
 ### Agent definitions
 

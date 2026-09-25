@@ -11,6 +11,7 @@ import (
 	"github.com/langazov/gocode-go/internal/event"
 	"github.com/langazov/gocode-go/internal/llm"
 	"github.com/langazov/gocode-go/internal/permission"
+	"github.com/langazov/gocode-go/internal/skill"
 	"github.com/langazov/gocode-go/internal/tool"
 )
 
@@ -431,6 +432,67 @@ func TestRunnerAgentResolution(t *testing.T) {
 	}
 	if assistant.Agent != "plan" || assistant.Model.ProviderID != "openai" || assistant.Model.ID != "gpt-5" {
 		t.Fatalf("expected projected agent/model, got %+v", assistant)
+	}
+}
+
+// TestRunnerSkillsReachSystemPrompt is the regression for "the model never
+// loads configure-gocode": the skill tool advertises "load one of the skills
+// listed in your system prompt", but nothing assembled that list, so every
+// discovered skill — the built-in configure-gocode one included — was
+// undiscoverable by name. The runner owns system-prompt assembly, so it owns
+// the block too.
+func TestRunnerSkillsReachSystemPrompt(t *testing.T) {
+	provider := &fakeProvider{turns: [][]llm.StreamEvent{{
+		{Type: llm.EventTextDelta, Text: "hi"},
+		{Type: llm.EventFinish, Finish: "end_turn"},
+	}}}
+	runner, bus := newRunnerFixture(t, provider, tool.NewRegistry())
+	runner.Skills = skill.NewRegistry()
+	runner.Skills.Add(skill.Info{Name: "deploy", Description: "Ships it"})
+	admitPrompt(t, bus, runner, "hello")
+
+	if err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"}); err != nil {
+		t.Fatal(err)
+	}
+	request := provider.requests[0]
+	if len(request.System) != 2 {
+		t.Fatalf("expected agent prompt + skills block, got %d blocks: %q", len(request.System), request.System)
+	}
+	if !strings.Contains(request.System[1], "<available_skills>") ||
+		!strings.Contains(request.System[1], "- deploy: Ships it") {
+		t.Fatalf("skills block missing or malformed: %q", request.System[1])
+	}
+	// The agent's own prompt must survive; the block is an addition.
+	if request.System[0] != "You are gocode." {
+		t.Fatalf("agent system prompt lost: %q", request.System[0])
+	}
+}
+
+// TestRunnerSkillsBlockOmittedWithoutSkills pins the no-skills contract: a
+// nil or empty registry must not grow the prompt, so existing behavior (and
+// every prompt-size-sensitive test) is unchanged.
+func TestRunnerSkillsBlockOmittedWithoutSkills(t *testing.T) {
+	for name, registry := range map[string]*skill.Registry{
+		"nil registry":   nil,
+		"empty registry": skill.NewRegistry(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			provider := &fakeProvider{turns: [][]llm.StreamEvent{{
+				{Type: llm.EventTextDelta, Text: "hi"},
+				{Type: llm.EventFinish, Finish: "end_turn"},
+			}}}
+			runner, bus := newRunnerFixture(t, provider, tool.NewRegistry())
+			runner.Skills = registry
+			admitPrompt(t, bus, runner, "hello")
+
+			if err := runner.Run(context.Background(), RunInput{SessionID: "ses_1"}); err != nil {
+				t.Fatal(err)
+			}
+			request := provider.requests[0]
+			if len(request.System) != 1 || request.System[0] != "You are gocode." {
+				t.Fatalf("expected the skills-free prompt unchanged, got %q", request.System)
+			}
+		})
 	}
 }
 

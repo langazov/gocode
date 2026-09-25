@@ -388,8 +388,18 @@ on demand by the `skill` tool rather than sitting in the system prompt.
 ```
 
 Discovered by `skill.Discover` and also exposed as slash commands — a skill
-without a name collision becomes `/deploy`. Keeping them out of the system
+without a name collision becomes `/deploy`, which asks the model to load the
+skill through the `skill` tool rather than pasting its body as the prompt, so
+the timeline shows the compact skill-tool row. Keeping them out of the system
 prompt is what makes many skills affordable: they cost tokens only when used.
+
+What happens after the load depends on how the skill was invoked. A skill the
+user asked for by name — `/deploy` — is loaded and nothing more: the command's
+template tells the model to stop after loading and wait for the user's next
+prompt before executing the skill's workflow. A skill the model loads itself,
+because the task matched one in the `<available_skills>` block, has the
+opposite rule, stated in that block's footer: continue inference and follow
+the skill as part of the current task.
 
 A small set of skills is **compiled into the binary** (embedded under
 `internal/skill/builtin/`, loaded by `skill.Builtins`), so they are available
