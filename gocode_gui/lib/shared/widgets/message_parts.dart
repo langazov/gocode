@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
@@ -235,6 +238,44 @@ class _DisclosureState extends State<_Disclosure> {
   bool _expanded = false;
   bool _hovered = false;
 
+  // A plain click anywhere on the open body collapses it. The body is
+  // mostly selectable text, which claims taps for itself, so this watches
+  // raw pointers instead: a drag is a selection, a second click within the
+  // double-tap window of the last one is a word/line selection — only a
+  // lone, still click collapses, once that window has passed.
+  Offset? _downAt;
+  Duration? _lastUpAt;
+  Timer? _pendingCollapse;
+
+  @override
+  void dispose() {
+    _pendingCollapse?.cancel();
+    super.dispose();
+  }
+
+  void _bodyPointerDown(PointerDownEvent event) {
+    final lastUp = _lastUpAt;
+    if (lastUp != null && event.timeStamp - lastUp < kDoubleTapTimeout) {
+      // Part of a double/triple click: leave it to text selection.
+      _pendingCollapse?.cancel();
+      _downAt = null;
+      return;
+    }
+    _downAt = event.buttons == kPrimaryButton ? event.position : null;
+  }
+
+  void _bodyPointerUp(PointerUpEvent event) {
+    _lastUpAt = event.timeStamp;
+    final downAt = _downAt;
+    _downAt = null;
+    if (downAt == null) return;
+    if ((event.position - downAt).distance > kTouchSlop) return;
+    _pendingCollapse?.cancel();
+    _pendingCollapse = Timer(kDoubleTapTimeout, () {
+      if (mounted) setState(() => _expanded = false);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     Widget leading = SizedBox.square(
@@ -302,14 +343,24 @@ class _DisclosureState extends State<_Disclosure> {
             alignment: Alignment.topLeft,
             child: !_expanded
                 ? const SizedBox.shrink()
-                : Container(
-                    width: double.infinity,
-                    margin: const EdgeInsets.only(left: 12, top: 2, bottom: 6),
-                    padding: const EdgeInsets.only(left: 13, top: 2),
-                    decoration: const BoxDecoration(
-                      border: Border(left: BorderSide(color: GC.border)),
+                : Listener(
+                    behavior: HitTestBehavior.translucent,
+                    onPointerDown: _bodyPointerDown,
+                    onPointerUp: _bodyPointerUp,
+                    onPointerCancel: (_) => _downAt = null,
+                    child: Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(
+                        left: 12,
+                        top: 2,
+                        bottom: 6,
+                      ),
+                      padding: const EdgeInsets.only(left: 13, top: 2),
+                      decoration: const BoxDecoration(
+                        border: Border(left: BorderSide(color: GC.border)),
+                      ),
+                      child: widget.body(context),
                     ),
-                    child: widget.body(context),
                   ),
           ),
         ],
