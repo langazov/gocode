@@ -1,11 +1,10 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
 import '../../app/theme.dart';
 import '../../core/api/models.dart';
 import 'glass.dart';
+import 'tool_view.dart';
 
 /// Streams assistant text with a settled-prefix-fast renderer.
 ///
@@ -133,12 +132,14 @@ class ToolCallCard extends StatelessWidget {
 
     final title = state?.title ?? state?.metadata?['description'] as String?;
     final input = state?.input;
-    final inputPreview = <String>[
-      ?title,
-      if (title == null && input != null)
-        for (final entry in input.entries.take(3))
-          '${entry.key}: ${_shorten(entry.value)}',
-    ].join('  ·  ');
+    final inputPreview =
+        title ??
+        toolSummary(part.name, input) ??
+        [
+          if (input != null)
+            for (final entry in input.entries.take(3))
+              '${entry.key}: ${_shorten(entry.value)}',
+        ].join('  ·  ');
 
     return _Disclosure(
       tooltip: switch (status) {
@@ -179,22 +180,15 @@ class ToolCallCard extends StatelessWidget {
       body: (_) => Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          if (input != null && input.isNotEmpty) ...[
-            const _BodyLabel('input'),
-            CodeBlock(
-              const JsonEncoder.withIndent('  ').convert(input),
-              maxHeight: 240,
-            ),
-            const SizedBox(height: 8),
-          ],
           if (state?.error case final err? when err.isNotEmpty) ...[
             ErrorPanel(message: err),
             const SizedBox(height: 8),
           ],
-          if (state?.output case final output? when output.isNotEmpty) ...[
-            const _BodyLabel('output'),
-            CodeBlock(output, maxHeight: 280),
-          ],
+          ToolDetails(
+            name: part.name,
+            input: input ?? const {},
+            output: state?.output,
+          ),
         ],
       ),
     );
@@ -213,29 +207,6 @@ const _rowMeta = TextStyle(
   height: 1.2,
   color: GC.textFaint,
 );
-
-class _BodyLabel extends StatelessWidget {
-  const _BodyLabel(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 4),
-      child: Text(
-        text.toUpperCase(),
-        style: const TextStyle(
-          fontFamily: GC.sans,
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
-          letterSpacing: 0.8,
-          color: GC.textFaint,
-        ),
-      ),
-    );
-  }
-}
 
 /// A 26px clickable line that reveals [body] beneath it, indented behind a
 /// hairline guide. Built lazily: [body] runs only while expanded.

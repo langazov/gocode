@@ -116,6 +116,15 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     await _run(() => controller.setModel(model.providerID, model.id));
   }
 
+  Future<void> _setVariant(Session session, String? variant) async {
+    final model = session.model;
+    final controller = _controller;
+    if (model == null || controller == null) return;
+    await _run(
+      () => controller.setModel(model.providerID, model.id, variant: variant),
+    );
+  }
+
   Future<void> _run(Future<void> Function() action) async {
     try {
       await action();
@@ -168,6 +177,10 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                 onPickModel: () =>
                     unawaited(_chooseModel(models, state.session)),
                 onPickAgent: (agent) => unawaited(_setAgent(agent)),
+                variants: _variantsOf(state.session.model, models),
+                variant: _currentVariant(state.session.model, models),
+                onPickVariant: (variant) =>
+                    unawaited(_setVariant(state.session, variant)),
               ),
             ),
       // Empty until the enter transition ends (see _routeSettled), then the
@@ -438,6 +451,24 @@ String _modelName(ModelRef? ref, List<ModelEntry> models) {
   return ref.id;
 }
 
+/// The selected model's thinking levels, in the server's cycle order.
+List<String> _variantsOf(ModelRef? ref, List<ModelEntry> models) {
+  if (ref == null) return const [];
+  for (final m in models) {
+    if (m.key == ref.key) return m.variants;
+  }
+  return const [];
+}
+
+/// The level in effect — but only while it is still one of the model's
+/// levels; one left behind by a model switch reads as the default, like the
+/// TUI's variantCurrent (internal/tui/app.go).
+String? _currentVariant(ModelRef? ref, List<ModelEntry> models) {
+  final variant = ref?.variant;
+  if (variant == null || variant.isEmpty) return null;
+  return _variantsOf(ref, models).contains(variant) ? variant : null;
+}
+
 class _HeaderTitle extends StatelessWidget {
   const _HeaderTitle({required this.session, required this.models});
 
@@ -664,6 +695,9 @@ class _Composer extends StatefulWidget {
     required this.onInterrupt,
     required this.onPickModel,
     required this.onPickAgent,
+    this.variants = const [],
+    this.variant,
+    this.onPickVariant,
   });
 
   final TextEditingController controller;
@@ -675,6 +709,16 @@ class _Composer extends StatefulWidget {
   final VoidCallback onInterrupt;
   final VoidCallback onPickModel;
   final ValueChanged<String> onPickAgent;
+
+  /// The selected model's thinking levels (reasoning variants); empty hides
+  /// the level pill.
+  final List<String> variants;
+
+  /// The level in effect, or null for the model's default.
+  final String? variant;
+
+  /// Picks a level; null goes back to the default.
+  final ValueChanged<String?>? onPickVariant;
 
   @override
   State<_Composer> createState() => _ComposerState();
@@ -847,6 +891,12 @@ class _ComposerState extends State<_Composer> {
                               label: widget.modelLabel,
                               onTap: widget.onPickModel,
                             ),
+                            if (widget.variants.isNotEmpty)
+                              _VariantPill(
+                                variants: widget.variants,
+                                selected: widget.variant,
+                                onSelected: widget.onPickVariant,
+                              ),
                           ],
                         ),
                       ),
@@ -881,12 +931,77 @@ class _ComposerState extends State<_Composer> {
   }
 }
 
+/// The thinking-level pill beside the model: the variant in effect (or
+/// "default"), opening a menu of the model's levels.
+class _VariantPill extends StatelessWidget {
+  const _VariantPill({
+    required this.variants,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final List<String> variants;
+  final String? selected;
+  final ValueChanged<String?>? onSelected;
+
+  // Menu value for the model's default; the server reads it as "no variant".
+  static const _default = 'default';
+
+  @override
+  Widget build(BuildContext context) {
+    PopupMenuItem<String> item(String value) {
+      final current = (selected ?? _default) == value;
+      return PopupMenuItem<String>(
+        value: value,
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 15,
+              child: current
+                  ? const Icon(
+                      Icons.check_rounded,
+                      size: 14,
+                      color: GC.accentText,
+                    )
+                  : null,
+            ),
+            const SizedBox(width: 8),
+            Text(value == _default ? 'Default' : value),
+          ],
+        ),
+      );
+    }
+
+    return PopupMenuButton<String>(
+      tooltip: 'Thinking level',
+      enabled: onSelected != null,
+      onSelected: (value) => onSelected?.call(value == _default ? null : value),
+      itemBuilder: (_) => [item(_default), for (final v in variants) item(v)],
+      child: _Chip(
+        icon: Icons.psychology_outlined,
+        label: selected ?? _default,
+        accent: selected != null,
+      ),
+    );
+  }
+}
+
 class _Chip extends StatelessWidget {
-  const _Chip({required this.icon, required this.label, this.onTap});
+  const _Chip({
+    required this.icon,
+    required this.label,
+    this.onTap,
+    this.accent = false,
+  });
 
   final IconData icon;
   final String label;
   final VoidCallback? onTap;
+
+  /// Tints the label, e.g. while a non-default setting is in effect.
+  final bool accent;
 
   @override
   Widget build(BuildContext context) {
@@ -909,7 +1024,8 @@ class _Chip extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelMedium,
+              style: Theme.of(context).textTheme.labelMedium
+                  ?.copyWith(color: accent ? GC.accentText : null),
             ),
           ),
           const SizedBox(width: 2),
