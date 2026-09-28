@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 
 /// Design tokens after gocoder.org: a neutral near-black ground, one orange
 /// accent, and translucent "liquid glass" surfaces. The site is dark-only,
@@ -64,6 +65,14 @@ abstract final class GC {
     fontFamily: mono,
     fontSize: 12.5,
     height: 1.5,
+    color: textBody,
+  );
+
+  /// Conversation text: replies, your messages, and the prompt you type.
+  static const reading = TextStyle(
+    fontFamily: sans,
+    fontSize: 13.5,
+    height: 1.6,
     color: textBody,
   );
 
@@ -174,6 +183,14 @@ class AppTheme {
       letterSpacing: 0.2,
       color: GC.textDim,
     ),
+  );
+
+  static TextStyle _heading(double size) => TextStyle(
+    fontFamily: GC.sans,
+    fontSize: size,
+    fontWeight: FontWeight.w600,
+    height: 1.35,
+    color: GC.textHi,
   );
 
   static WidgetStateProperty<Color?> _resolve(
@@ -501,6 +518,30 @@ class AppTheme {
         selectionColor: Color(0x59E8862D),
         selectionHandleColor: GC.accent,
       ),
+      // Reply markdown: headings a step or two above body text rather than
+      // the display sizes, links in the accent.
+      extensions: [
+        GptMarkdownThemeData(
+          brightness: Brightness.dark,
+          h1: _heading(18),
+          h2: _heading(16),
+          h3: _heading(14.5),
+          h4: _heading(13.5),
+          h5: _heading(13.5),
+          h6: _heading(13.5),
+          hrLineColor: GC.borderStrong,
+          linkColor: GC.accentText,
+          linkHoverColor: GC.accentHover,
+          autoAddDividerLineAfterH1: false,
+          inlineCode: const InlineCodeStyle(
+            fontFamily: GC.mono,
+            fontSizeFactor: 0.9,
+            color: GC.accentText,
+            backgroundColor: Color(0x14FFFFFF),
+            borderColor: Colors.transparent,
+          ),
+        ),
+      ],
       scrollbarTheme: const ScrollbarThemeData(
         thumbColor: WidgetStatePropertyAll(Color(0x33FFF0E0)),
         radius: Radius.circular(8),

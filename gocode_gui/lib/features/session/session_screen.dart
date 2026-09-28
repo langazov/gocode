@@ -298,9 +298,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                     if (item.text.isNotEmpty)
                       SelectableText(
                         item.text,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: GC.textHi,
-                        ),
+                        style: GC.reading.copyWith(color: GC.textHi),
                       ),
                     for (final f in item.files)
                       if (f.name != null)
@@ -842,10 +840,9 @@ class _ComposerState extends State<_Composer> {
                         autofocus: true,
                         minLines: 1,
                         maxLines: 8,
-                        style: theme.textTheme.bodyLarge?.copyWith(
-                          color: GC.textHi,
-                        ),
+                        style: GC.reading.copyWith(color: GC.textHi),
                         decoration: InputDecoration(
+                          hintStyle: GC.reading.copyWith(color: GC.textFaint),
                           hintText: busy
                               ? 'Queue a follow-up…'
                               : 'Ask gocode to build, fix, or explain…',

@@ -32,8 +32,7 @@ class StreamedMarkdown extends StatelessWidget {
     }
     return GptMarkdown(
       text,
-      style: Theme.of(context).textTheme.bodyLarge
-          ?.copyWith(color: const Color(0xE6F4EFE9)),
+      style: GC.reading.copyWith(color: const Color(0xE6F4EFE9)),
       isStreaming: isStreaming,
       onLinkTap: (url, title) => onLinkTap?.call(Uri.parse(url)),
     );
