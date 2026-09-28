@@ -829,8 +829,10 @@ func (a *App) loadCatalogCmd() tea.Cmd {
 // loadLSPCmd refreshes the language-server status. Re-run on the tick, like
 // MCP: servers start lazily as files are read, so the list grows during a
 // session rather than being fixed at boot.
-// loadCommandsCmd fetches the slash commands. Run once at Init: the set only
-// changes when config or skill files change, which needs a restart anyway.
+// loadCommandsCmd fetches the slash commands. Run at Init and on the
+// reconciliation tick: skills are commands too, and the skill set changes
+// during a session — a skill rescan after library-plugin loads one, or the
+// gocoder.org Library skills it registers once the server is up.
 func (a *App) loadCommandsCmd() tea.Cmd {
 	c := a.client
 	return func() tea.Msg {
@@ -1297,7 +1299,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		// and height both depend on the new dimensions.
 		return nil
 	case tickMsg:
-		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd(), a.loadLSPCmd()}
+		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadCommandsCmd()}
 		if a.active != nil {
 			cmds = append(cmds, a.loadPermissions(a.active.ID), a.loadQuestions(a.active.ID))
 			cmds = append(cmds, a.loadStats(a.active.ID), a.loadRunStatus(a.active.ID), a.loadQueue(a.active.ID))

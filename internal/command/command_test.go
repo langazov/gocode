@@ -216,3 +216,31 @@ func TestSkillCommandDoesNotPasteTheBody(t *testing.T) {
 		t.Fatalf("built-in directive should be a single line, got %d newlines", n)
 	}
 }
+
+// Skills are read live: one registered or rescanned after Load is a slash
+// command at once, and one removed stops being one.
+func TestSkillCommandsTrackTheRegistryLive(t *testing.T) {
+	skills := skill.Discover(t.TempDir())
+	registry := Load(nil, t.TempDir(), skills, nil)
+	if _, ok := registry.Get("go-dev"); ok {
+		t.Fatal("go-dev present before registration")
+	}
+
+	skills.SetExternal("library-plugin", []skill.Info{{Name: "go-dev", Description: "Go work", Location: "gocoder.org library: .skills/go-dev"}})
+	info, ok := registry.Get("go-dev")
+	if !ok || info.Source != SourceSkill || strings.Contains(info.Template, "Base directory") {
+		t.Fatalf("go-dev = %+v, %v", info, ok)
+	}
+	found := false
+	for _, item := range registry.List() {
+		found = found || item.Name == "go-dev"
+	}
+	if !found {
+		t.Fatal("go-dev missing from List")
+	}
+
+	skills.SetExternal("library-plugin", nil)
+	if _, ok := registry.Get("go-dev"); ok {
+		t.Fatal("go-dev still a command after it was unregistered")
+	}
+}

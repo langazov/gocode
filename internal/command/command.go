@@ -59,6 +59,12 @@ var reviewTemplate string
 // Registry holds the commands available in a session.
 type Registry struct {
 	byName map[string]Info
+	// skills is read live on every Get/List rather than copied at Load, so
+	// a skill that appears after boot — a Rescan after library-plugin
+	// writes one, or an external skill a plugin registers — is a slash
+	// command as soon as it is a skill. Any other command still claims its
+	// name first.
+	skills *skill.Registry
 }
 
 // Load assembles the registry from every source, in the same precedence order
@@ -100,19 +106,7 @@ func Load(cfg *config.Config, workdir string, skills *skill.Registry, configDirs
 		}
 	}
 
-	if skills != nil {
-		for _, item := range skills.List() {
-			if _, taken := registry.byName[item.Name]; taken {
-				continue
-			}
-			registry.add(Info{
-				Name:        item.Name,
-				Description: item.Description,
-				Source:      SourceSkill,
-				Template:    skillTemplate(item),
-			})
-		}
-	}
+	registry.skills = skills
 	return registry
 }
 
@@ -137,7 +131,7 @@ func Load(cfg *config.Config, workdir string, skills *skill.Registry, configDirs
 // directive is what the user's turn says and a skill referencing scripts/
 // needs it to act.
 func skillTemplate(item skill.Info) string {
-	if item.Location == "" || item.Location == "<built-in>" {
+	if item.Location == "" || skill.IsBuiltin(item.Location) || item.IsExternal() {
 		return "Load the " + item.Name + " skill with the skill tool, then stop — only load it; do not start executing the skill's workflow. Wait for the user's next prompt before acting on it."
 	}
 	return strings.Join([]string{
@@ -153,13 +147,32 @@ func (r *Registry) add(info Info) {
 	r.byName[info.Name] = info
 }
 
+// skillCommand is the command a skill contributes.
+func skillCommand(item skill.Info) Info {
+	info := Info{
+		Name:        item.Name,
+		Description: item.Description,
+		Source:      SourceSkill,
+		Template:    skillTemplate(item),
+	}
+	info.Hints = Hints(info.Template)
+	return info
+}
+
 // Get returns a command by name.
 func (r *Registry) Get(name string) (Info, bool) {
 	if r == nil {
 		return Info{}, false
 	}
-	info, ok := r.byName[name]
-	return info, ok
+	if info, ok := r.byName[name]; ok {
+		return info, true
+	}
+	if r.skills != nil {
+		if item, ok := r.skills.Get(name); ok {
+			return skillCommand(item), true
+		}
+	}
+	return Info{}, false
 }
 
 // List returns every command, ordered by name.
@@ -170,6 +183,13 @@ func (r *Registry) List() []Info {
 	out := make([]Info, 0, len(r.byName))
 	for _, info := range r.byName {
 		out = append(out, info)
+	}
+	if r.skills != nil {
+		for _, item := range r.skills.List() {
+			if _, taken := r.byName[item.Name]; !taken {
+				out = append(out, skillCommand(item))
+			}
+		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out

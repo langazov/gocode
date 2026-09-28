@@ -135,6 +135,50 @@ func DisablePlugin(ref string) (Result, error) {
 	})
 }
 
+// SetPluginOptions merges set into the options of every `plugin` entry
+// that refers to ref — the bare name, or a path whose last element is ref
+// ("./cmd/library-plugin", "/opt/.../library-plugin") — leaving its other
+// options alone. Unlike EnablePlugin, which replaces an entry's options
+// wholesale, this is for changing one setting of a plugin that is already
+// enabled; a plugin that is not enabled is reported as an error rather
+// than silently enabled.
+func SetPluginOptions(ref string, set map[string]any) (Result, error) {
+	return edit(manualPlugin(ref, set), func(root map[string]json.RawMessage) (bool, string, error) {
+		specs, err := readPlugins(root)
+		if err != nil {
+			return false, "", err
+		}
+		matched, changed := false, false
+		for i, spec := range specs {
+			if spec.Ref != ref && filepath.Base(filepath.FromSlash(spec.Ref)) != ref {
+				continue
+			}
+			matched = true
+			merged := map[string]any{}
+			for k, v := range spec.Options {
+				merged[k] = v
+			}
+			for k, v := range set {
+				merged[k] = v
+			}
+			if !sameOptions(spec.Options, merged) {
+				specs[i].Options = merged
+				changed = true
+			}
+		}
+		if !matched {
+			return false, "", fmt.Errorf("plugin %q is not enabled; enable it first with: gocode plugin enable %s", ref, ref)
+		}
+		if !changed {
+			return false, fmt.Sprintf("%q options already set", ref), nil
+		}
+		if err := writePlugins(root, specs); err != nil {
+			return false, "", err
+		}
+		return true, fmt.Sprintf("updated options for %q", ref), nil
+	})
+}
+
 // EnableLSP registers a language server under id in the `lsp` section.
 //
 // A server already on PATH and named in the built-in registry needs no config

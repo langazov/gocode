@@ -76,8 +76,13 @@ func runRootTui(a *clix.Args) error {
 		defer cancel()
 	}
 
-	stack, err := bootStack(context.Background(), model)
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
+		return err
+	}
+	stack, err := bootStackServing(context.Background(), model, listener)
+	if err != nil {
+		listener.Close()
 		return err
 	}
 	themeName := tui.ResolveStartupTheme(stack.Config.Theme, tui.ThemeStatePath())
@@ -86,10 +91,6 @@ func runRootTui(a *clix.Args) error {
 		stack.Runner.Agent = agentID
 	}
 
-	listener, err := net.Listen("tcp", addr)
-	if err != nil {
-		return err
-	}
 	go func() {
 		srv := stack.newServer()
 		server.ServeOn(listener, srv.Mux())

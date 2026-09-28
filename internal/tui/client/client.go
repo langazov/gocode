@@ -557,6 +557,10 @@ type Skill struct {
 	Description string `json:"description,omitempty"`
 	Slash       bool   `json:"slash,omitempty"`
 	Location    string `json:"location"`
+	// Source names the plugin that registered an external skill (e.g.
+	// library-plugin for gocoder.org Library skills); empty for skills on
+	// disk and built-ins.
+	Source string `json:"source,omitempty"`
 }
 
 // Skills lists the discovered skills.

@@ -118,3 +118,24 @@ func TestSkillPromptAutomaticLoadContinues(t *testing.T) {
 		t.Fatalf("the automatic-load footer is missing from the prompt block:\n%s", prompt)
 	}
 }
+
+func TestSkillToolLoadsExternalSkillWithoutBaseDirectory(t *testing.T) {
+	tool, registry, _ := newSkillFixture(t)
+	registry.SetExternal("library-plugin", []skill.Info{{
+		Name: "go-dev", Description: "Go work", Content: "Use NATS.\n\nFetch files with library_skill_show.",
+		Location: "gocoder.org library: .skills/go-dev",
+	}})
+	out, err := tool.Execute(context.Background(), map[string]any{"name": "go-dev"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "Use NATS.") || !strings.Contains(out, `source="library-plugin"`) {
+		t.Fatalf("output = %q", out)
+	}
+	if strings.Contains(out, "Base directory") {
+		t.Fatalf("an external skill has no base directory: %q", out)
+	}
+	if !strings.Contains(SkillPrompt(registry), "- go-dev: Go work") {
+		t.Fatal("external skill missing from <available_skills>")
+	}
+}

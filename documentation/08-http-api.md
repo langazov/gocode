@@ -206,6 +206,9 @@ offered: gocoder.org requires a signed-in browser session for them.
 | `GET` | `/api/agent` | configured agents |
 | `GET` | `/api/command` | slash commands |
 | `GET` | `/api/skill` | skills |
+| `POST` | `/api/skill/rescan` | re-run skill discovery on disk in place; returns `{added, removed, count}` |
+| `PUT` | `/api/skill/external/{source}` | replace the skills a plugin registers under `source` (`{skills:[{name, description, content, location}]}`); they rank below skills on disk |
+| `DELETE` | `/api/skill/external/{source}` | drop them |
 | `GET` | `/api/lsp` | language server status |
 | `GET` | `/api/mcp` | MCP server status |
 | `GET` | `/api/job` | background jobs |
