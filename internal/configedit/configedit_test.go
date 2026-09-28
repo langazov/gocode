@@ -381,3 +381,37 @@ func TestExistingConfigJSONIsPreferred(t *testing.T) {
 		t.Error("a second config file was created alongside the existing one")
 	}
 }
+
+func TestSetPluginOptionsMergesIntoExistingEntry(t *testing.T) {
+	root := withHome(t)
+	path := writeConfig(t, root, DefaultName, `{"plugin":[["./cmd/library-plugin",{"baseURL":"https://x"}],"other"]}`)
+
+	result, err := SetPluginOptions("library-plugin", map[string]any{"skillsAdvertise": false})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed || result.Path != path {
+		t.Fatalf("result = %+v", result)
+	}
+	plugins := readBack(t, path)["plugin"].([]any)
+	if len(plugins) != 2 || plugins[1] != "other" {
+		t.Fatalf("plugins = %#v", plugins)
+	}
+	opts := plugins[0].([]any)[1].(map[string]any)
+	if opts["baseURL"] != "https://x" || opts["skillsAdvertise"] != false {
+		t.Fatalf("options = %#v, want baseURL kept and skillsAdvertise added", opts)
+	}
+
+	again, err := SetPluginOptions("library-plugin", map[string]any{"skillsAdvertise": false})
+	if err != nil || again.Changed {
+		t.Fatalf("repeat = %+v, %v; want unchanged", again, err)
+	}
+}
+
+func TestSetPluginOptionsRefusesPluginThatIsNotEnabled(t *testing.T) {
+	root := withHome(t)
+	writeConfig(t, root, DefaultName, `{"plugin":["other"]}`)
+	if _, err := SetPluginOptions("library-plugin", map[string]any{"topK": 3}); err == nil {
+		t.Fatal("expected an error for a plugin that is not enabled")
+	}
+}

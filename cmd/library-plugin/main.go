@@ -1,7 +1,9 @@
 // Command library-plugin is a gocode process plugin (see
 // examples/plugin-echo for the protocol) that exposes the user's
 // gocoder.org Library — a personal, cross-machine collection of uploaded
-// md/txt/pdf documents, semantically searchable — as four tools:
+// md/txt/pdf documents, semantically searchable — as four document tools
+// plus the library_skill_* tools for gocode skills stored under .skills/
+// (skills.go):
 //
 //   - library_search — semantic search over the account's library, run
 //     server-side (gocoder.org embeds the query and does the vector search;
@@ -40,30 +42,20 @@ import (
 	"github.com/langazov/gocode-go/internal/gocoder"
 )
 
+// cliCommands are the manual-testing subcommands: the four document tools,
+// the skill tools (skills_cli.go), and skill-config.
+var cliCommands = map[string]func([]string) error{
+	"search": runCLISearch,
+	"list":   runCLIList,
+	"get":    runCLIGet,
+	"upload": runCLIUpload,
+}
+
 func main() {
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "search":
-			if err := runCLISearch(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "library-plugin search:", err)
-				os.Exit(1)
-			}
-			return
-		case "list":
-			if err := runCLIList(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "library-plugin list:", err)
-				os.Exit(1)
-			}
-			return
-		case "get":
-			if err := runCLIGet(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "library-plugin get:", err)
-				os.Exit(1)
-			}
-			return
-		case "upload":
-			if err := runCLIUpload(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "library-plugin upload:", err)
+		if run, ok := cliCommands[os.Args[1]]; ok {
+			if err := run(os.Args[2:]); err != nil {
+				fmt.Fprintf(os.Stderr, "library-plugin %s: %v\n", os.Args[1], err)
 				os.Exit(1)
 			}
 			return
@@ -104,9 +96,24 @@ type runtimeOptions struct {
 	Directory string
 	Worktree  string
 
+	// ServerURL/ServerHeaders reach the host's HTTP API (plugin.Input);
+	// empty when the host runs without a server. Used to ask the host to
+	// rescan skills after library_skill_load writes one (skills.go).
+	ServerURL     string
+	ServerHeaders map[string]string
+
 	BaseURL       string
 	TopK          int
 	UploadTimeout int
+
+	// Remote-skill advertising (the system.transform hook, skills.go) and
+	// library_skill_load's default scope. SkillsAdvertise has no zero-value
+	// default: callers set it explicitly (the handshake defaults it to true).
+	SkillsAdvertise         bool
+	SkillsAdvertiseLimit    int
+	SkillsAdvertiseMaxChars int
+	SkillsAdvertiseTTL      int // seconds
+	SkillsDefaultScope      string
 }
 
 func resolveDefaults(opts runtimeOptions) runtimeOptions {
@@ -115,6 +122,18 @@ func resolveDefaults(opts runtimeOptions) runtimeOptions {
 	}
 	if opts.UploadTimeout <= 0 {
 		opts.UploadTimeout = defaultUploadTimeout
+	}
+	if opts.SkillsAdvertiseLimit <= 0 {
+		opts.SkillsAdvertiseLimit = defaultAdvertiseLimit
+	}
+	if opts.SkillsAdvertiseMaxChars <= 0 {
+		opts.SkillsAdvertiseMaxChars = defaultAdvertiseMaxChars
+	}
+	if opts.SkillsAdvertiseTTL <= 0 {
+		opts.SkillsAdvertiseTTL = defaultAdvertiseTTL
+	}
+	if opts.SkillsDefaultScope == "" {
+		opts.SkillsDefaultScope = scopeProject
 	}
 	return opts
 }
@@ -695,9 +714,7 @@ func dispatch(message request) error {
 	case "initialize":
 		return handleInitialize(message)
 	case "hook":
-		// No hooks are declared in the manifest, so the host never sends
-		// one; answered defensively rather than left silently unhandled.
-		return reply(message.ID, map[string]any{}, nil)
+		return handleHook(message)
 	case "tool":
 		return handleTool(message)
 	default:
@@ -709,8 +726,10 @@ func handleInitialize(message request) error {
 	var params struct {
 		Protocol int `json:"protocol"`
 		Input    struct {
-			Directory string `json:"directory"`
-			Worktree  string `json:"worktree"`
+			Directory string            `json:"directory"`
+			Worktree  string            `json:"worktree"`
+			ServerURL string            `json:"serverURL"`
+			Headers   map[string]string `json:"headers"`
 		} `json:"input"`
 		Options map[string]any `json:"options"`
 	}
@@ -721,19 +740,35 @@ func handleInitialize(message request) error {
 	opts := runtimeOptions{
 		Directory:     params.Input.Directory,
 		Worktree:      params.Input.Worktree,
+		ServerURL:     params.Input.ServerURL,
+		ServerHeaders: params.Input.Headers,
 		BaseURL:       stringOpt(params.Options, "baseURL", ""),
 		TopK:          intOpt(params.Options, "topK", 0),
 		UploadTimeout: intOpt(params.Options, "uploadTimeout", 0),
+
+		SkillsAdvertise:         boolOpt(params.Options, "skillsAdvertise", true),
+		SkillsAdvertiseLimit:    intOpt(params.Options, "skillsAdvertiseLimit", 0),
+		SkillsAdvertiseMaxChars: intOpt(params.Options, "skillsAdvertiseMaxChars", 0),
+		SkillsAdvertiseTTL:      intOpt(params.Options, "skillsAdvertiseTTL", 0),
+		SkillsDefaultScope:      stringOpt(params.Options, "skillsDefaultScope", ""),
 	}
+	opts = resolveDefaults(opts)
 
 	rtMu.Lock()
 	pending = &opts
 	rtMu.Unlock()
 
+	// The hook is declared only when advertising is on, so a disabled
+	// plugin costs the host nothing per turn.
+	hooks := []string{}
+	if advertiseEnabled(opts) {
+		hooks = append(hooks, systemTransformHook)
+	}
+
 	return reply(message.ID, map[string]any{
 		"id":    "library-plugin",
-		"hooks": []string{},
-		"tools": []map[string]any{
+		"hooks": hooks,
+		"tools": append([]map[string]any{
 			{
 				"name": "library_search",
 				"description": "Search the user's personal gocoder.org Library by meaning — notes, uploaded docs and PDFs synced to their account across machines. Returns ranked path:line snippets with the complete matched chunk text, ready to cite. " +
@@ -783,8 +818,30 @@ func handleInitialize(message request) error {
 					"required": []string{"localPath", "path"},
 				},
 			},
-		},
+		}, skillToolSchemas()...),
 	}, nil)
+}
+
+// systemTransformHook is the host hook that assembles each turn's system
+// prompt (internal/plugin's SystemTransform).
+const systemTransformHook = "experimental.chat.system.transform"
+
+func handleHook(message request) error {
+	var params struct {
+		Name   string         `json:"name"`
+		Output map[string]any `json:"output"`
+	}
+	if err := json.Unmarshal(message.Params, &params); err != nil {
+		return err
+	}
+	if params.Output == nil {
+		params.Output = map[string]any{}
+	}
+	if params.Name == systemTransformHook {
+		return reply(message.ID, map[string]any{"output": handleSystemTransform(params.Output)}, nil)
+	}
+	// An undeclared hook: return the output unchanged, declining it.
+	return reply(message.ID, map[string]any{"output": params.Output}, nil)
 }
 
 func handleTool(message request) error {
@@ -832,7 +889,14 @@ func handleTool(message request) error {
 		return reply(message.ID, map[string]any{"title": "library_upload", "output": output}, nil)
 
 	default:
-		return reply(message.ID, nil, fmt.Errorf("unknown tool %q", params.Name))
+		output, handled, err := dispatchSkillTool(ctx, rt, params.Name, params.Args)
+		if !handled {
+			return reply(message.ID, nil, fmt.Errorf("unknown tool %q", params.Name))
+		}
+		if err != nil {
+			return reply(message.ID, nil, err)
+		}
+		return reply(message.ID, map[string]any{"title": params.Name, "output": output}, nil)
 	}
 }
 

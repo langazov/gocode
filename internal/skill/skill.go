@@ -49,6 +49,9 @@ func (e *NotFoundError) Error() string {
 type Registry struct {
 	mu     sync.RWMutex
 	skills map[string]Info
+	// roots are the directories Discover scanned, kept so Rescan can
+	// repeat the same discovery. Nil for a registry built by hand.
+	roots []string
 }
 
 func NewRegistry() *Registry {
@@ -194,6 +197,45 @@ func Scan(root string) []Info {
 // they are the default everyone starts from, and anything a user writes on
 // disk — project or global — replaces them for that name.
 func Discover(roots ...string) *Registry {
+	registry := discover(roots)
+	registry.roots = append([]string(nil), roots...)
+	return registry
+}
+
+// Rescan repeats the discovery this registry was built by and replaces its
+// contents in place, so every holder of the pointer — the available-skills
+// prompt, the skill tool, the HTTP API — sees a skill written to disk after
+// boot without a restart. It reports the names that appeared and
+// disappeared. A registry not built by Discover has nothing to rescan and
+// is left unchanged.
+func (r *Registry) Rescan() (added, removed []string) {
+	r.mu.RLock()
+	roots := r.roots
+	r.mu.RUnlock()
+	if roots == nil {
+		return nil, nil
+	}
+	fresh := discover(roots)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for name := range fresh.skills {
+		if _, ok := r.skills[name]; !ok {
+			added = append(added, name)
+		}
+	}
+	for name := range r.skills {
+		if _, ok := fresh.skills[name]; !ok {
+			removed = append(removed, name)
+		}
+	}
+	r.skills = fresh.skills
+	sort.Strings(added)
+	sort.Strings(removed)
+	return added, removed
+}
+
+func discover(roots []string) *Registry {
 	registry := NewRegistry()
 	for _, root := range roots {
 		if root == "" {

@@ -297,6 +297,11 @@ func (c *Client) doRaw(ctx context.Context, method, path, token string, body io.
 	return c.doRequest(req, token)
 }
 
+// maxResponseBytes bounds one response body. It must cover the largest
+// payload a route legitimately returns: a library file's raw bytes or
+// converted Markdown (the Library's 25MB upload cap, plus headroom).
+const maxResponseBytes = 32 << 20
+
 // doRequest sends an already-built request (its body and Content-Type set by
 // the caller — see UploadLibraryFile, which needs multipart's own boundary
 // header) and returns the raw response body, translating a non-2xx status
@@ -312,9 +317,14 @@ func (c *Client) doRequest(req *http.Request, token string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(data) > maxResponseBytes {
+		// Truncating would hand the caller corrupt bytes (a raw skill file,
+		// a converted document) that look complete; fail loudly instead.
+		return nil, fmt.Errorf("gocoder.org: response to %s %s exceeds %d bytes", req.Method, req.URL.Path, maxResponseBytes)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return nil, apiErrorFrom(resp.StatusCode, data)

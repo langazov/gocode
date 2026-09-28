@@ -94,7 +94,7 @@ enabling it — a plugin runs only when the config's `plugin` array names it:
 |---|---|
 | `mdlsp` (on `PATH`) | markdown language server: diagnostics for broken links and anchors, heading outline, rename. gocode starts it for `.md` files, and any LSP-speaking editor can point at it too |
 | `rag-plugin` (in `libexec`) | semantic code search, adding the `rag_index` and `rag_search` tools |
-| `library-plugin` (in `libexec`) | search over your gocoder.org Library, adding the `library_search`, `library_list`, `library_get` and `library_upload` tools |
+| `library-plugin` (in `libexec`) | search over your gocoder.org Library, adding the `library_search`, `library_list`, `library_get` and `library_upload` tools, plus `library_skill_*` tools to store, find, use and load gocode skills kept in the Library |
 
 `rag-plugin` embeds through an OpenAI-compatible endpoint, so run
 `gocode auth login` before its tools will work. `library-plugin` talks to

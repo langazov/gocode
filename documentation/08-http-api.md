@@ -206,6 +206,7 @@ offered: gocoder.org requires a signed-in browser session for them.
 | `GET` | `/api/agent` | configured agents |
 | `GET` | `/api/command` | slash commands |
 | `GET` | `/api/skill` | skills |
+| `POST` | `/api/skill/rescan` | re-run skill discovery in place; returns `{added, removed, count}` (slash commands are not refreshed) |
 | `GET` | `/api/lsp` | language server status |
 | `GET` | `/api/mcp` | MCP server status |
 | `GET` | `/api/job` | background jobs |

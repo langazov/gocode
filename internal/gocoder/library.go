@@ -3,12 +3,15 @@ package gocoder
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"time"
 )
@@ -48,6 +51,13 @@ type LibraryNode struct {
 
 	SourceKind string `json:"sourceKind,omitempty"`
 	SizeBytes  int64  `json:"sizeBytes,omitempty"`
+	// SHA256 is the hex digest of the original uploaded bytes — what a
+	// local file is compared against. Empty for nodes uploaded before
+	// gocoder.org recorded it.
+	SHA256 string `json:"sha256,omitempty"`
+	// Description is a skill SKILL.md's frontmatter description; empty
+	// for every other node.
+	Description string `json:"description,omitempty"`
 
 	Status       string `json:"status,omitempty"`
 	StatusDetail string `json:"statusDetail,omitempty"`
@@ -151,15 +161,35 @@ func (c *Client) CreateLibraryFolder(ctx context.Context, bearer, path string) e
 	return err
 }
 
-// UploadLibraryFile uploads data as filename at path (multipart/form-data,
-// matching POST /library/nodes' r.FormFile("file")/r.FormValue("path")).
+// UploadOptions tunes UploadLibraryFileWith.
+type UploadOptions struct {
+	// Overwrite replaces an existing file at path in place (same node ID,
+	// re-indexed) instead of the default: an ordinary document gets a
+	// disambiguated name ("report (1).pdf"), a skill file is rejected with
+	// 409.
+	Overwrite bool
+}
+
+// UploadLibraryFile uploads data as filename at path with default options.
+func (c *Client) UploadLibraryFile(ctx context.Context, bearer, path, filename string, data []byte) (*LibraryNode, error) {
+	return c.UploadLibraryFileWith(ctx, bearer, path, filename, data, UploadOptions{})
+}
+
+// UploadLibraryFileWith uploads data as filename at path
+// (multipart/form-data, matching POST /library/nodes'
+// r.FormFile("file")/r.FormValue("path")/r.FormValue("overwrite")).
 // Doesn't fit do's JSON-in/JSON-out shape, so it builds the request
 // directly and shares only doRequest's transport/error handling.
-func (c *Client) UploadLibraryFile(ctx context.Context, bearer, path, filename string, data []byte) (*LibraryNode, error) {
+func (c *Client) UploadLibraryFileWith(ctx context.Context, bearer, path, filename string, data []byte, opts UploadOptions) (*LibraryNode, error) {
 	var body bytes.Buffer
 	w := multipart.NewWriter(&body)
 	if err := w.WriteField("path", path); err != nil {
 		return nil, err
+	}
+	if opts.Overwrite {
+		if err := w.WriteField("overwrite", "true"); err != nil {
+			return nil, err
+		}
 	}
 	fw, err := w.CreateFormFile("file", filename)
 	if err != nil {
@@ -186,4 +216,181 @@ func (c *Client) UploadLibraryFile(ctx context.Context, bearer, path, filename s
 		return nil, fmt.Errorf("gocoder.org: unexpected response: %w", err)
 	}
 	return &n, nil
+}
+
+// DownloadLibraryRaw fetches a file node's original bytes, unconverted —
+// GetLibraryContent returns converted Markdown, which is wrong for a
+// script or an asset.
+func (c *Client) DownloadLibraryRaw(ctx context.Context, bearer, id string) ([]byte, error) {
+	return c.doRaw(ctx, http.MethodGet, "/library/nodes/"+url.PathEscape(id)+"/raw", bearer, nil, "")
+}
+
+// DeleteLibraryNode deletes a node — recursively for a folder — along with
+// its indexed chunks and vectors.
+func (c *Client) DeleteLibraryNode(ctx context.Context, bearer, id string) error {
+	_, err := c.doRaw(ctx, http.MethodDelete, "/library/nodes/"+url.PathEscape(id), bearer, nil, "")
+	return err
+}
+
+// ListLibraryTree lists every node under parentPath ("" = the whole
+// library) in one request, parentPath itself excluded.
+func (c *Client) ListLibraryTree(ctx context.Context, bearer, parentPath string) ([]LibraryNode, error) {
+	q := url.Values{}
+	q.Set("recursive", "true")
+	if parentPath != "" {
+		q.Set("parent", parentPath)
+	}
+	var out struct {
+		Nodes []LibraryNode `json:"nodes"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/library/nodes?"+q.Encode(), bearer, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Nodes, nil
+}
+
+// LibrarySkillFile is one file of a remote skill.
+type LibrarySkillFile struct {
+	Path      string    `json:"path"` // relative to the skill root
+	ID        string    `json:"id"`
+	SizeBytes int64     `json:"sizeBytes"`
+	SHA256    string    `json:"sha256,omitempty"`
+	Status    string    `json:"status,omitempty"`
+	UpdatedAt time.Time `json:"updatedAt"`
+}
+
+// LibrarySkill is one skill stored under the Library's .skills/ prefix
+// (GET /library/skills[/{name}]).
+type LibrarySkill struct {
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Files       []LibrarySkillFile `json:"files"`
+	FileCount   int                `json:"fileCount"`
+	SizeBytes   int64              `json:"sizeBytes"`
+	// ContentHash is SkillContentHash over Files.
+	ContentHash string    `json:"contentHash"`
+	UpdatedAt   time.Time `json:"updatedAt"`
+	// Status is "ready", "indexing" or "failed", aggregated over Files.
+	Status string `json:"status"`
+}
+
+// SkillContentHash hashes a skill's file set exactly as gocoder.org does
+// (website/backend/internal/library.SkillContentHash in gocode-infra):
+// sha256 over the files sorted by path, each contributing
+// "path\x00sha256\n". Equal hashes mean identical file sets and contents,
+// so a local skill folder can be compared with its remote copy without
+// per-file requests.
+func SkillContentHash(files []LibrarySkillFile) string {
+	sorted := append([]LibrarySkillFile(nil), files...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Path < sorted[j].Path })
+	h := sha256.New()
+	for _, f := range sorted {
+		h.Write([]byte(f.Path))
+		h.Write([]byte{0})
+		h.Write([]byte(f.SHA256))
+		h.Write([]byte{'\n'})
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// ListLibrarySkills lists every skill in the library, by name.
+func (c *Client) ListLibrarySkills(ctx context.Context, bearer string) ([]LibrarySkill, error) {
+	var out struct {
+		Skills []LibrarySkill `json:"skills"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/library/skills", bearer, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Skills, nil
+}
+
+// GetLibrarySkill fetches one skill's metadata. A skill that doesn't exist
+// returns (nil, nil) — "not in the library" is an answer, not a failure,
+// for every caller (store, diff, list).
+func (c *Client) GetLibrarySkill(ctx context.Context, bearer, name string) (*LibrarySkill, error) {
+	var s LibrarySkill
+	err := c.do(ctx, http.MethodGet, "/library/skills/"+url.PathEscape(name), bearer, nil, &s)
+	var apiErr *APIError
+	if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &s, nil
+}
+
+// Skill search modes.
+const (
+	SkillSearchDiscover = "discover"
+	SkillSearchContent  = "content"
+)
+
+// SkillSearchRequest is GET /library/skills/search's query.
+type SkillSearchRequest struct {
+	Query string
+	// Mode is SkillSearchDiscover (default: which skill fits a task) or
+	// SkillSearchContent (search inside skill files).
+	Mode string
+	// Skill and Role narrow content search to one skill / one role
+	// (skill_md, reference, script, asset).
+	Skill string
+	Role  string
+	// K is the number of skills returned; PerSkill caps chunks per skill
+	// in content mode.
+	K        int
+	PerSkill int
+}
+
+// LibrarySkillChunk is one matched chunk inside a content-mode result.
+type LibrarySkillChunk struct {
+	File        string   `json:"file"` // relative to the skill root
+	Path        string   `json:"path"` // full library path
+	Role        string   `json:"role"`
+	NodeID      string   `json:"nodeId"`
+	StartLine   int      `json:"startLine"`
+	EndLine     int      `json:"endLine"`
+	HeadingPath []string `json:"headingPath,omitempty"`
+	Content     string   `json:"content"`
+	Score       float32  `json:"score"`
+}
+
+// LibrarySkillHit is one skill in a skill search: its description, best
+// score, and — in content mode — its best-matching chunks.
+type LibrarySkillHit struct {
+	Skill       string              `json:"skill"`
+	Description string              `json:"description,omitempty"`
+	Score       float32             `json:"score"`
+	Chunks      []LibrarySkillChunk `json:"chunks,omitempty"`
+}
+
+// SearchLibrarySkills runs a server-side skill search. Content mode
+// always asks for grouped results (Qdrant group-by on skill), so K counts
+// skills, not chunks.
+func (c *Client) SearchLibrarySkills(ctx context.Context, bearer string, req SkillSearchRequest) ([]LibrarySkillHit, error) {
+	q := url.Values{}
+	q.Set("q", req.Query)
+	if req.Mode != "" {
+		q.Set("mode", req.Mode)
+	}
+	if req.Skill != "" {
+		q.Set("skill", req.Skill)
+	}
+	if req.Role != "" {
+		q.Set("role", req.Role)
+	}
+	if req.K > 0 {
+		q.Set("k", strconv.Itoa(req.K))
+	}
+	if req.PerSkill > 0 {
+		q.Set("per", strconv.Itoa(req.PerSkill))
+	}
+	q.Set("group", "true")
+	var out struct {
+		Results []LibrarySkillHit `json:"results"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/library/skills/search?"+q.Encode(), bearer, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Results, nil
 }

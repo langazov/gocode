@@ -151,3 +151,41 @@ func TestDiscoverBuiltInsArePrecedenceFloor(t *testing.T) {
 		t.Fatalf("expected an on-disk location, got %q", info.Location)
 	}
 }
+
+func TestRescanPicksUpSkillsWrittenAfterDiscovery(t *testing.T) {
+	root := t.TempDir()
+	writeSkill(t, filepath.Join(root, "skills/old/SKILL.md"), "---\nname: old\ndescription: d\n---\n")
+	registry := Discover(root)
+	if _, ok := registry.Get("old"); !ok {
+		t.Fatal("old skill not discovered")
+	}
+
+	writeSkill(t, filepath.Join(root, "skills/new/SKILL.md"), "---\nname: new\ndescription: d\n---\nbody\n")
+	if err := os.RemoveAll(filepath.Join(root, "skills/old")); err != nil {
+		t.Fatal(err)
+	}
+	added, removed := registry.Rescan()
+	if strings.Join(added, ",") != "new" || strings.Join(removed, ",") != "old" {
+		t.Fatalf("added=%v removed=%v", added, removed)
+	}
+	if info, ok := registry.Get("new"); !ok || info.Content != "body\n" {
+		t.Fatalf("new skill = %+v, %v", info, ok)
+	}
+	// Built-ins survive a rescan: they are part of discovery, not a root.
+	for _, builtin := range Builtins() {
+		if _, ok := registry.Get(builtin.Name); !ok {
+			t.Fatalf("built-in %q lost on rescan", builtin.Name)
+		}
+	}
+}
+
+func TestRescanLeavesHandBuiltRegistryAlone(t *testing.T) {
+	registry := NewRegistry()
+	registry.Add(Info{Name: "manual"})
+	if added, removed := registry.Rescan(); added != nil || removed != nil {
+		t.Fatalf("added=%v removed=%v", added, removed)
+	}
+	if _, ok := registry.Get("manual"); !ok {
+		t.Fatal("rescan dropped a hand-added skill")
+	}
+}

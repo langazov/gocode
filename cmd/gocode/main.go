@@ -236,6 +236,34 @@ func startSyncLoops(ctx context.Context) (context.CancelFunc, bool) {
 // agents, permissions), shared by serve and tui. Precedence for the default
 // model: explicit flag > config "model" > built-in default.
 func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
+	return bootStackFor(ctx, modelFlag, "")
+}
+
+// bootStackServing is bootStack for a command that serves the HTTP API on
+// listener. The listener is bound before boot so its URL can go into the
+// plugin handshake (plugin.Input.ServerURL): plugins are spawned during
+// boot, long before the server starts accepting, and a process plugin has
+// no other way to reach the API — library-plugin uses it to trigger
+// POST /api/skill/rescan after writing a skill to disk. Connections that
+// arrive before the server starts simply wait in the listen backlog.
+func bootStackServing(ctx context.Context, modelFlag string, listener net.Listener) (*stack, error) {
+	return bootStackFor(ctx, modelFlag, loopbackURL(listener))
+}
+
+// loopbackURL is the URL a process on this machine uses to reach listener:
+// a wildcard bind (0.0.0.0, ::) is dialed on loopback.
+func loopbackURL(listener net.Listener) string {
+	host, port, err := net.SplitHostPort(listener.Addr().String())
+	if err != nil {
+		return "http://" + listener.Addr().String()
+	}
+	if ip := net.ParseIP(host); ip == nil || ip.IsUnspecified() {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
+}
+
+func bootStackFor(ctx context.Context, modelFlag, serverURL string) (*stack, error) {
 	cfg, err := config.Load()
 	if err != nil {
 		return nil, err
@@ -283,6 +311,7 @@ func bootStack(ctx context.Context, modelFlag string) (*stack, error) {
 		Input: plugin.Input{
 			Directory: cwd,
 			Worktree:  cwd,
+			ServerURL: serverURL,
 			Version:   installation.Version,
 			// Native plugins run on this heap, so they get the live handles
 			// rather than a second connection to the same database. Never

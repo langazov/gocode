@@ -25,12 +25,12 @@ func runServeCommand(a *clix.Args) error {
 	if os.Getenv("GOCODE_SERVER_PASSWORD") == "" {
 		fmt.Println("Warning: GOCODE_SERVER_PASSWORD is not set; server is unsecured.")
 	}
-	addr := networkAddr(a)
-	stack, err := bootStack(context.Background(), a.String("model"))
+	listener := listenAddr(networkAddr(a))
+	stack, err := bootStackServing(context.Background(), a.String("model"), listener)
 	if err != nil {
+		listener.Close()
 		return err
 	}
-	listener := listenAddr(addr)
 	fmt.Printf("gocode server listening on http://%s\n", listener.Addr().String())
 	srv := stack.newServer()
 	return server.ServeOn(listener, srv.Mux())

@@ -124,6 +124,7 @@ func (s *Server) Mux() *http.ServeMux {
 	}
 	if s.Skills != nil {
 		mux.HandleFunc("GET /api/skill", s.listSkills)
+		mux.HandleFunc("POST /api/skill/rescan", s.rescanSkills)
 	}
 	mux.HandleFunc("GET /api/lsp", s.listLSP)
 	mux.HandleFunc("GET /api/command", s.listCommands)
@@ -848,4 +849,24 @@ func (s *Server) listSkills(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// rescanSkills re-runs skill discovery in place, so a skill written to disk
+// after boot — library-plugin's library_skill_load is the caller this
+// exists for — reaches the next turn's available-skills block and the
+// skill tool without a restart. Slash commands are assembled once at boot
+// and are not refreshed.
+func (s *Server) rescanSkills(w http.ResponseWriter, r *http.Request) {
+	added, removed := s.Skills.Rescan()
+	if added == nil {
+		added = []string{}
+	}
+	if removed == nil {
+		removed = []string{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"added":   added,
+		"removed": removed,
+		"count":   len(s.Skills.List()),
+	})
 }

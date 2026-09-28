@@ -71,6 +71,12 @@ type fakeLibraryServer struct {
 	uploadedID      string
 	polls           int
 	pollsUntilReady int
+
+	// Skill-route bookkeeping (skills_test.go): how many uploads replaced
+	// an existing node, and a switch that makes /library/skills fail.
+	overwrites int
+	skillsDown bool
+	skillLists int
 }
 
 func newFakeLibraryServer(pollsUntilReady int) *fakeLibraryServer {
@@ -140,11 +146,12 @@ func (s *fakeLibraryServer) handler() http.Handler {
 			return
 		}
 		parent := r.URL.Query().Get("parent")
+		recursive := r.URL.Query().Get("recursive") == "true"
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		var out []gocoder.LibraryNode
 		for _, n := range s.nodes {
-			if n.ParentPath == parent {
+			if n.ParentPath == parent || recursive && (parent == "" || strings.HasPrefix(n.Path, parent+"/")) {
 				out = append(out, n.LibraryNode)
 			}
 		}
@@ -229,10 +236,38 @@ func (s *fakeLibraryServer) handler() http.Handler {
 		defer file.Close()
 		data, _ := io.ReadAll(file)
 
+		// Skill files are "indexed" instantly, so library_skill_store's
+		// wait (which polls /library/skills, not /library/nodes/{id})
+		// terminates; ordinary documents keep the poll-driven pipeline.
+		status := gocoder.LibraryStatusConverting
+		if strings.HasPrefix(path, skillsRoot+"/") {
+			status = gocoder.LibraryStatusReady
+		}
+		if existing := s.nodeAt(path); existing != nil {
+			if r.FormValue("overwrite") != "true" {
+				w.WriteHeader(http.StatusConflict)
+				_, _ = w.Write([]byte(`{"error":{"code":"conflict","message":"a node already exists at that path"}}`))
+				return
+			}
+			s.mu.Lock()
+			existing.content = string(data)
+			existing.SizeBytes = int64(len(data))
+			existing.SHA256 = sha256Hex(data)
+			existing.Description = fakeDescription(path, data)
+			existing.Status = status
+			node := existing.LibraryNode
+			s.overwrites++
+			s.mu.Unlock()
+			w.WriteHeader(http.StatusAccepted)
+			_ = json.NewEncoder(w).Encode(node)
+			return
+		}
+
 		parent, name := splitLibraryPath(path)
 		fn := s.addNode(gocoder.LibraryNode{
 			Path: path, ParentPath: parent, Name: name, Type: gocoder.LibraryTypeFile,
-			SourceKind: "md", SizeBytes: int64(len(data)), Status: gocoder.LibraryStatusConverting,
+			SourceKind: "md", SizeBytes: int64(len(data)), Status: status,
+			SHA256: sha256Hex(data), Description: fakeDescription(path, data),
 		}, string(data))
 		s.mu.Lock()
 		s.uploadedID = fn.ID
@@ -243,6 +278,7 @@ func (s *fakeLibraryServer) handler() http.Handler {
 		_ = json.NewEncoder(w).Encode(fn.LibraryNode)
 	})
 
+	s.registerSkillRoutes(mux)
 	return mux
 }
 
@@ -545,8 +581,8 @@ func TestLibraryPluginSearchOverJSONRPC(t *testing.T) {
 	if instance.ID != "library-plugin" {
 		t.Errorf("ID = %q, want library-plugin", instance.ID)
 	}
-	if len(instance.Hooks.Tools) != 4 {
-		t.Fatalf("got %d tools, want 4: %+v", len(instance.Hooks.Tools), instance.Hooks.Tools)
+	if len(instance.Hooks.Tools) != 12 {
+		t.Fatalf("got %d tools, want 12 (4 document + 8 skill tools)", len(instance.Hooks.Tools))
 	}
 
 	searchTool := findTool(t, instance, "library_search")
