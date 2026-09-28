@@ -48,7 +48,8 @@ func (a *App) openSkillDialog(skills []client.Skill) {
 }
 
 // skillItems ports DialogSkill's option mapping: name and description only,
-// sorted by name for a stable, searchable list. Skills on disk and built-ins
+// grouped by category and sorted by name within each, for a stable,
+// searchable list. Skills on disk and built-ins
 // share the "Skills" category; skills a plugin registered (gocoder.org
 // Library skills, which are not installed locally) get their own "Library"
 // category so the difference is visible
@@ -56,8 +57,16 @@ func (a *App) openSkillDialog(skills []client.Skill) {
 // this port's filter does too; the unfiltered order just needs to be
 // deterministic).
 func (a *App) skillItems(skills []client.Skill) []overlayItem {
+	// The list draws a category header wherever the category changes, so
+	// items must be grouped: local skills first, then library skills, each
+	// by name.
 	sorted := append([]client.Skill(nil), skills...)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].Name < sorted[j].Name })
+	sort.Slice(sorted, func(i, j int) bool {
+		if li, lj := sorted[i].Source != "", sorted[j].Source != ""; li != lj {
+			return lj
+		}
+		return sorted[i].Name < sorted[j].Name
+	})
 
 	items := make([]overlayItem, 0, len(sorted))
 	for _, skill := range sorted {
