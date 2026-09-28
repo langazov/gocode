@@ -107,8 +107,8 @@ void main() {
       const AccountInfo(signedIn: false, site: 'https://gocoder.org'),
     );
 
-    expect(find.text('TODAY'), findsOneWidget);
-    expect(find.text('YESTERDAY'), findsOneWidget);
+    expect(find.text('Today'), findsOneWidget);
+    expect(find.text('Yesterday'), findsOneWidget);
     expect(find.text('Fix the login bug'), findsOneWidget);
     expect(find.text('Write release notes'), findsOneWidget);
     expect(find.text('Subagent: explore'), findsNothing);

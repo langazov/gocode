@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:gpt_markdown/gpt_markdown.dart';
 
 /// Design tokens after gocoder.org: a neutral near-black ground, one orange
 /// accent, and translucent "liquid glass" surfaces. The site is dark-only,
@@ -36,10 +37,10 @@ abstract final class GC {
   static const downText = Color(0xFFF08A76);
 
   // Radii.
-  static const rInput = 12.0;
-  static const rItem = 16.0;
-  static const rCard = 20.0;
-  static const rPanel = 26.0;
+  static const rInput = 8.0;
+  static const rItem = 10.0;
+  static const rCard = 14.0;
+  static const rPanel = 18.0;
 
   // Motion.
   static const dur = Duration(milliseconds: 180);
@@ -67,12 +68,20 @@ abstract final class GC {
     color: textBody,
   );
 
+  /// Conversation text: replies, your messages, and the prompt you type.
+  static const reading = TextStyle(
+    fontFamily: sans,
+    fontSize: 13.5,
+    height: 1.6,
+    color: textBody,
+  );
+
   /// Small uppercase section label (the site's `.caption`).
   static const caption = TextStyle(
     fontFamily: sans,
-    fontSize: 12,
-    fontWeight: FontWeight.w500,
-    letterSpacing: 1.2,
+    fontSize: 11,
+    fontWeight: FontWeight.w600,
+    letterSpacing: 0.9,
     color: textFaint,
   );
 }
@@ -80,8 +89,14 @@ abstract final class GC {
 class AppTheme {
   static const _buttonText = TextStyle(
     fontFamily: GC.sans,
-    fontSize: 15,
+    fontSize: 13.5,
     fontWeight: FontWeight.w600,
+  );
+
+  static const _menuText = TextStyle(
+    fontFamily: GC.sans,
+    fontSize: 13,
+    color: GC.textHi,
   );
 
   static const _text = TextTheme(
@@ -170,6 +185,14 @@ class AppTheme {
     ),
   );
 
+  static TextStyle _heading(double size) => TextStyle(
+    fontFamily: GC.sans,
+    fontSize: size,
+    fontWeight: FontWeight.w600,
+    height: 1.35,
+    color: GC.textHi,
+  );
+
   static WidgetStateProperty<Color?> _resolve(
     Color base, {
     Color? hovered,
@@ -245,9 +268,9 @@ class AppTheme {
       ),
       filledButtonTheme: FilledButtonThemeData(
         style: ButtonStyle(
-          minimumSize: const WidgetStatePropertyAll(Size(64, 44)),
+          minimumSize: const WidgetStatePropertyAll(Size(64, 34)),
           padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 26),
+            EdgeInsets.symmetric(horizontal: 16),
           ),
           shape: const WidgetStatePropertyAll(StadiumBorder()),
           elevation: const WidgetStatePropertyAll(0),
@@ -268,9 +291,9 @@ class AppTheme {
       ),
       outlinedButtonTheme: OutlinedButtonThemeData(
         style: ButtonStyle(
-          minimumSize: const WidgetStatePropertyAll(Size(64, 44)),
+          minimumSize: const WidgetStatePropertyAll(Size(64, 34)),
           padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 22),
+            EdgeInsets.symmetric(horizontal: 14),
           ),
           shape: const WidgetStatePropertyAll(StadiumBorder()),
           textStyle: const WidgetStatePropertyAll(_buttonText),
@@ -295,12 +318,12 @@ class AppTheme {
         style: ButtonStyle(
           shape: const WidgetStatePropertyAll(StadiumBorder()),
           padding: const WidgetStatePropertyAll(
-            EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+            EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           ),
           textStyle: const WidgetStatePropertyAll(
             TextStyle(
               fontFamily: GC.sans,
-              fontSize: 14,
+              fontSize: 13.5,
               fontWeight: FontWeight.w600,
             ),
           ),
@@ -314,6 +337,8 @@ class AppTheme {
       ),
       iconButtonTheme: IconButtonThemeData(
         style: ButtonStyle(
+          iconSize: const WidgetStatePropertyAll(19),
+          visualDensity: VisualDensity.compact,
           foregroundColor: _resolve(
             GC.textBody,
             hovered: GC.textHi,
@@ -346,10 +371,11 @@ class AppTheme {
           textStyle: const WidgetStatePropertyAll(
             TextStyle(
               fontFamily: GC.sans,
-              fontSize: 14,
+              fontSize: 13,
               fontWeight: FontWeight.w600,
             ),
           ),
+          visualDensity: VisualDensity.compact,
           overlayColor: const WidgetStatePropertyAll(Color(0x0AFFFFFF)),
         ),
       ),
@@ -358,12 +384,12 @@ class AppTheme {
         fillColor: const Color(0x0AFFFFFF),
         isDense: true,
         contentPadding: const EdgeInsets.symmetric(
-          horizontal: 14,
-          vertical: 13,
+          horizontal: 12,
+          vertical: 10,
         ),
         hintStyle: const TextStyle(
           fontFamily: GC.sans,
-          fontSize: 14,
+          fontSize: 13.5,
           color: GC.textFaint,
         ),
         labelStyle: const TextStyle(
@@ -391,11 +417,11 @@ class AppTheme {
         shape: StadiumBorder(),
         labelStyle: TextStyle(
           fontFamily: GC.sans,
-          fontSize: 13.5,
+          fontSize: 12.5,
           fontWeight: FontWeight.w500,
           color: GC.textBody,
         ),
-        padding: EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        padding: EdgeInsets.symmetric(horizontal: 6, vertical: 2),
         showCheckmark: false,
       ),
       dialogTheme: DialogThemeData(
@@ -413,14 +439,16 @@ class AppTheme {
         elevation: 8,
         shadowColor: Colors.black,
         surfaceTintColor: Colors.transparent,
+        menuPadding: const EdgeInsets.symmetric(vertical: 4),
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(GC.rItem),
+          borderRadius: BorderRadius.circular(8),
           side: const BorderSide(color: GC.borderStrong),
         ),
-        textStyle: const TextStyle(
-          fontFamily: GC.sans,
-          fontSize: 14,
-          color: GC.textHi,
+        textStyle: _menuText,
+        labelTextStyle: WidgetStateProperty.resolveWith(
+          (states) => states.contains(WidgetState.disabled)
+              ? _menuText.copyWith(color: GC.textFaint)
+              : _menuText,
         ),
       ),
       snackBarTheme: SnackBarThemeData(
@@ -453,14 +481,15 @@ class AppTheme {
         space: 1,
       ),
       tooltipTheme: TooltipThemeData(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
           color: GC.surface3,
-          borderRadius: BorderRadius.circular(8),
+          borderRadius: BorderRadius.circular(6),
           border: Border.all(color: GC.borderStrong),
         ),
         textStyle: const TextStyle(
           fontFamily: GC.sans,
-          fontSize: 12,
+          fontSize: 11.5,
           color: GC.textHi,
         ),
       ),
@@ -489,10 +518,34 @@ class AppTheme {
         selectionColor: Color(0x59E8862D),
         selectionHandleColor: GC.accent,
       ),
+      // Reply markdown: headings a step or two above body text rather than
+      // the display sizes, links in the accent.
+      extensions: [
+        GptMarkdownThemeData(
+          brightness: Brightness.dark,
+          h1: _heading(18),
+          h2: _heading(16),
+          h3: _heading(14.5),
+          h4: _heading(13.5),
+          h5: _heading(13.5),
+          h6: _heading(13.5),
+          hrLineColor: GC.borderStrong,
+          linkColor: GC.accentText,
+          linkHoverColor: GC.accentHover,
+          autoAddDividerLineAfterH1: false,
+          inlineCode: const InlineCodeStyle(
+            fontFamily: GC.mono,
+            fontSizeFactor: 0.9,
+            color: GC.accentText,
+            backgroundColor: Color(0x14FFFFFF),
+            borderColor: Colors.transparent,
+          ),
+        ),
+      ],
       scrollbarTheme: const ScrollbarThemeData(
         thumbColor: WidgetStatePropertyAll(Color(0x33FFF0E0)),
         radius: Radius.circular(8),
-        thickness: WidgetStatePropertyAll(6),
+        thickness: WidgetStatePropertyAll(4),
       ),
     );
   }

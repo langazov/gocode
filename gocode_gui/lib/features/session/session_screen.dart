@@ -116,6 +116,15 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     await _run(() => controller.setModel(model.providerID, model.id));
   }
 
+  Future<void> _setVariant(Session session, String? variant) async {
+    final model = session.model;
+    final controller = _controller;
+    if (model == null || controller == null) return;
+    await _run(
+      () => controller.setModel(model.providerID, model.id, variant: variant),
+    );
+  }
+
   Future<void> _run(Future<void> Function() action) async {
     try {
       await action();
@@ -168,6 +177,10 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                 onPickModel: () =>
                     unawaited(_chooseModel(models, state.session)),
                 onPickAgent: (agent) => unawaited(_setAgent(agent)),
+                variants: _variantsOf(state.session.model, models),
+                variant: _currentVariant(state.session.model, models),
+                onPickVariant: (variant) =>
+                    unawaited(_setVariant(state.session, variant)),
               ),
             ),
       // Empty until the enter transition ends (see _routeSettled), then the
@@ -285,9 +298,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                     if (item.text.isNotEmpty)
                       SelectableText(
                         item.text,
-                        style: theme.textTheme.bodyMedium?.copyWith(
-                          color: GC.textHi,
-                        ),
+                        style: GC.reading.copyWith(color: GC.textHi),
                       ),
                     for (final f in item.files)
                       if (f.name != null)
@@ -438,6 +449,24 @@ String _modelName(ModelRef? ref, List<ModelEntry> models) {
   return ref.id;
 }
 
+/// The selected model's thinking levels, in the server's cycle order.
+List<String> _variantsOf(ModelRef? ref, List<ModelEntry> models) {
+  if (ref == null) return const [];
+  for (final m in models) {
+    if (m.key == ref.key) return m.variants;
+  }
+  return const [];
+}
+
+/// The level in effect — but only while it is still one of the model's
+/// levels; one left behind by a model switch reads as the default, like the
+/// TUI's variantCurrent (internal/tui/app.go).
+String? _currentVariant(ModelRef? ref, List<ModelEntry> models) {
+  final variant = ref?.variant;
+  if (variant == null || variant.isEmpty) return null;
+  return _variantsOf(ref, models).contains(variant) ? variant : null;
+}
+
 class _HeaderTitle extends StatelessWidget {
   const _HeaderTitle({required this.session, required this.models});
 
@@ -518,73 +547,139 @@ class _AssistantTurnView extends StatelessWidget {
       if (turn.agent.isNotEmpty) turn.agent else 'assistant',
       if (turn.model.id.isNotEmpty) turn.model.id,
     ].join(' · ');
+    final metaStyle = theme.textTheme.labelSmall?.copyWith(color: GC.textFaint);
 
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 22),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.only(bottom: 6),
-            child: Row(
-              children: [
-                Container(
-                  width: 6,
-                  height: 6,
-                  decoration: const BoxDecoration(
-                    color: GC.accent,
-                    shape: BoxShape.circle,
-                  ),
+    // Inline pieces (who answered, thinking and tool rows, the interrupted
+    // note, tokens and cost) flow together on one line while they fit;
+    // text and error panels are blocks that break the flow.
+    final pieces = <(bool, Widget)>[
+      (
+        true,
+        _InlineMeta(
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 6,
+                height: 6,
+                decoration: const BoxDecoration(
+                  color: GC.accent,
+                  shape: BoxShape.circle,
                 ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    who,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: GC.textFaint,
-                    ),
-                  ),
+              ),
+              const SizedBox(width: 8),
+              Flexible(
+                child: Text(
+                  who,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: metaStyle,
                 ),
-              ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      for (final part in turn.parts)
+        switch (part.type) {
+          AssistantPart.textType => (
+            false,
+            StreamedMarkdown(text: turn.textFor(part), isStreaming: streaming),
+          ),
+          AssistantPart.reasoningType => (
+            true,
+            ReasoningBlock(
+              text: turn.textFor(part),
+              duration: part.time?.duration,
             ),
           ),
-          for (final part in turn.parts)
-            switch (part.type) {
-              AssistantPart.textType => StreamedMarkdown(
-                text: turn.textFor(part),
-                isStreaming: streaming,
+          AssistantPart.toolType => (true, ToolCallCard(part: part)),
+          _ => (
+            false,
+            Text(turn.textFor(part), style: theme.textTheme.bodySmall),
+          ),
+        },
+      if (streaming && turn.parts.isEmpty)
+        (false, const StreamedMarkdown(text: '', isStreaming: true)),
+      if (turn.error case final error?)
+        error.isAborted
+            ? (
+                true,
+                _InlineMeta(
+                  child: Text('interrupted', style: theme.textTheme.bodySmall),
+                ),
+              )
+            : (
+                false,
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: ErrorPanel(message: error.message ?? 'error'),
+                ),
               ),
-              AssistantPart.reasoningType => ReasoningBlock(
-                text: turn.textFor(part),
-                duration: part.time?.duration,
-              ),
-              AssistantPart.toolType => ToolCallCard(part: part),
-              _ => Text(turn.textFor(part), style: theme.textTheme.bodySmall),
-            },
-          if (streaming && turn.parts.isEmpty)
-            const StreamedMarkdown(text: '', isStreaming: true),
-          if (turn.error != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: turn.error!.isAborted
-                  ? Text('· interrupted', style: theme.textTheme.bodySmall)
-                  : ErrorPanel(message: turn.error!.message ?? 'error'),
+      if (turn.tokens != null)
+        (
+          true,
+          _InlineMeta(
+            child: Text(
+              '${turn.tokens!.total} tokens'
+              '${turn.cost != null ? ' · \$${turn.cost!.toStringAsFixed(4)}' : ''}',
+              style: GC.code.copyWith(fontSize: 11, color: GC.textFaint),
             ),
-          if (turn.tokens != null)
-            Padding(
-              padding: const EdgeInsets.only(top: 6),
-              child: Text(
-                '${turn.tokens!.total} tokens'
-                '${turn.cost != null ? ' · \$${turn.cost!.toStringAsFixed(4)}' : ''}',
-                style: GC.code.copyWith(fontSize: 11, color: GC.textFaint),
-              ),
-            ),
-        ],
+          ),
+        ),
+    ];
+
+    final children = <Widget>[];
+    var run = <Widget>[];
+    void flush() {
+      if (run.isEmpty) return;
+      children.add(
+        Wrap(
+          spacing: 8,
+          crossAxisAlignment: WrapCrossAlignment.center,
+          children: run,
+        ),
+      );
+      run = [];
+    }
+
+    for (final (inline, widget) in pieces) {
+      if (inline) {
+        run.add(widget);
+      } else {
+        flush();
+        children.add(
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 2),
+            child: widget,
+          ),
+        );
+      }
+    }
+    flush();
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 18),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: children,
       ),
     );
   }
+}
+
+/// A non-interactive inline piece of a turn's meta line, centred on the
+/// same 26px line height as the tool rows beside it.
+class _InlineMeta extends StatelessWidget {
+  const _InlineMeta({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => SizedBox(
+    height: 28,
+    child: Align(alignment: Alignment.centerLeft, widthFactor: 1, child: child),
+  );
 }
 
 class _Composer extends StatefulWidget {
@@ -598,6 +693,9 @@ class _Composer extends StatefulWidget {
     required this.onInterrupt,
     required this.onPickModel,
     required this.onPickAgent,
+    this.variants = const [],
+    this.variant,
+    this.onPickVariant,
   });
 
   final TextEditingController controller;
@@ -609,6 +707,16 @@ class _Composer extends StatefulWidget {
   final VoidCallback onInterrupt;
   final VoidCallback onPickModel;
   final ValueChanged<String> onPickAgent;
+
+  /// The selected model's thinking levels (reasoning variants); empty hides
+  /// the level pill.
+  final List<String> variants;
+
+  /// The level in effect, or null for the model's default.
+  final String? variant;
+
+  /// Picks a level; null goes back to the default.
+  final ValueChanged<String?>? onPickVariant;
 
   @override
   State<_Composer> createState() => _ComposerState();
@@ -732,10 +840,9 @@ class _ComposerState extends State<_Composer> {
                         autofocus: true,
                         minLines: 1,
                         maxLines: 8,
-                        style: theme.textTheme.bodyLarge?.copyWith(
-                          color: GC.textHi,
-                        ),
+                        style: GC.reading.copyWith(color: GC.textHi),
                         decoration: InputDecoration(
+                          hintStyle: GC.reading.copyWith(color: GC.textFaint),
                           hintText: busy
                               ? 'Queue a follow-up…'
                               : 'Ask gocode to build, fix, or explain…',
@@ -781,6 +888,12 @@ class _ComposerState extends State<_Composer> {
                               label: widget.modelLabel,
                               onTap: widget.onPickModel,
                             ),
+                            if (widget.variants.isNotEmpty)
+                              _VariantPill(
+                                variants: widget.variants,
+                                selected: widget.variant,
+                                onSelected: widget.onPickVariant,
+                              ),
                           ],
                         ),
                       ),
@@ -815,12 +928,77 @@ class _ComposerState extends State<_Composer> {
   }
 }
 
+/// The thinking-level pill beside the model: the variant in effect (or
+/// "default"), opening a menu of the model's levels.
+class _VariantPill extends StatelessWidget {
+  const _VariantPill({
+    required this.variants,
+    required this.selected,
+    required this.onSelected,
+  });
+
+  final List<String> variants;
+  final String? selected;
+  final ValueChanged<String?>? onSelected;
+
+  // Menu value for the model's default; the server reads it as "no variant".
+  static const _default = 'default';
+
+  @override
+  Widget build(BuildContext context) {
+    PopupMenuItem<String> item(String value) {
+      final current = (selected ?? _default) == value;
+      return PopupMenuItem<String>(
+        value: value,
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 15,
+              child: current
+                  ? const Icon(
+                      Icons.check_rounded,
+                      size: 14,
+                      color: GC.accentText,
+                    )
+                  : null,
+            ),
+            const SizedBox(width: 8),
+            Text(value == _default ? 'Default' : value),
+          ],
+        ),
+      );
+    }
+
+    return PopupMenuButton<String>(
+      tooltip: 'Thinking level',
+      enabled: onSelected != null,
+      onSelected: (value) => onSelected?.call(value == _default ? null : value),
+      itemBuilder: (_) => [item(_default), for (final v in variants) item(v)],
+      child: _Chip(
+        icon: Icons.psychology_outlined,
+        label: selected ?? _default,
+        accent: selected != null,
+      ),
+    );
+  }
+}
+
 class _Chip extends StatelessWidget {
-  const _Chip({required this.icon, required this.label, this.onTap});
+  const _Chip({
+    required this.icon,
+    required this.label,
+    this.onTap,
+    this.accent = false,
+  });
 
   final IconData icon;
   final String label;
   final VoidCallback? onTap;
+
+  /// Tints the label, e.g. while a non-default setting is in effect.
+  final bool accent;
 
   @override
   Widget build(BuildContext context) {
@@ -843,7 +1021,8 @@ class _Chip extends StatelessWidget {
               label,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: Theme.of(context).textTheme.labelMedium,
+              style: Theme.of(context).textTheme.labelMedium
+                  ?.copyWith(color: accent ? GC.accentText : null),
             ),
           ),
           const SizedBox(width: 2),

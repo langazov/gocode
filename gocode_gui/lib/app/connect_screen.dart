@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -43,13 +41,16 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
                 const Center(child: Eyebrow('AI coding assistant')),
                 const SizedBox(height: 28),
                 const Center(child: GocodeLogo(size: 56)),
-                const SizedBox(height: 14),
-                Text(
-                  'Pick a project to start a local server, or attach to one '
-                  'that is already running.',
-                  textAlign: TextAlign.center,
-                  style: theme.textTheme.bodyLarge,
-                ),
+                // The setup prompt; while booting, the spinner says enough.
+                if (!connecting) ...[
+                  const SizedBox(height: 14),
+                  Text(
+                    'Pick a project to start a local server, or attach to one '
+                    'that is already running.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodyLarge,
+                  ),
+                ],
                 const SizedBox(height: 32),
                 GlassSurface(
                   radius: GC.rPanel,
@@ -61,7 +62,6 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
                       if (connecting)
                         _Starting(
                           remote: settings.mode == ConnectionMode.remote,
-                          log: connection.stderr,
                         )
                       else if (!_expanded && !errored) ...[
                         FilledButton.icon(
@@ -128,34 +128,28 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
   }
 }
 
+/// The boot indicator. Deliberately general — no server wording, no log
+/// output: a failed start still surfaces the log in the error panel, and
+/// Settings keeps the full server output.
 class _Starting extends StatelessWidget {
-  const _Starting({required this.remote, required this.log});
+  const _Starting({required this.remote});
 
   final bool remote;
-  final List<String> log;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final tail = log.skip(math.max(0, log.length - 6)).join('\n');
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Row(
-          children: [
-            const SizedBox.square(
-              dimension: 18,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-            const SizedBox(width: 14),
-            Text(
-              remote ? 'Connecting to server…' : 'Starting gocode server…',
-              style: theme.textTheme.titleSmall,
-            ),
-          ],
+        const SizedBox.square(
+          dimension: 16,
+          child: CircularProgressIndicator(strokeWidth: 2),
         ),
-        if (tail.isNotEmpty) ...[const SizedBox(height: 16), CodeBlock(tail)],
+        const SizedBox(width: 12),
+        Text(
+          remote ? 'Connecting…' : 'Starting…',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
       ],
     );
   }
