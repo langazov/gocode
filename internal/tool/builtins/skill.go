@@ -80,6 +80,19 @@ func (t *SkillTool) Execute(ctx context.Context, input map[string]any) (string, 
 		}, "\n"), nil
 	}
 
+	// An external skill (registered by a plugin — library-plugin's
+	// gocoder.org Library skills) has no directory here either; its Content
+	// already says how to reach its files through the plugin's tools.
+	if info.IsExternal() {
+		return strings.Join([]string{
+			fmt.Sprintf("<skill_content name=%q source=%q>", info.Name, info.Source),
+			"# Skill: " + info.Name,
+			"",
+			strings.TrimSpace(info.Content),
+			"</skill_content>",
+		}, "\n"), nil
+	}
+
 	dir := info.Dir()
 	lines := []string{
 		fmt.Sprintf("<skill_content name=%q>", info.Name),

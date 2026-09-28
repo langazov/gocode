@@ -29,6 +29,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/url"
@@ -594,10 +595,15 @@ func handleSkillUse(ctx context.Context, rt *runtime, name string) (string, erro
 		return "", err
 	}
 
+	return fmt.Sprintf("<skill_content name=%q source=\"library\">\n# Skill: %s\n\n%s\n</skill_content>", s.Name, s.Name, skillBodyWithIndex(s, data)), nil
+}
+
+// skillBodyWithIndex is what reading a library skill yields: the SKILL.md
+// body, an index of the skill's other files, and how to reach them — the
+// content of library_skill_use, and of the skill registered with the host.
+func skillBodyWithIndex(s *gocoder.LibrarySkill, skillMD []byte) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "<skill_content name=%q source=\"library\">\n", s.Name)
-	fmt.Fprintf(&b, "# Skill: %s\n\n", s.Name)
-	b.WriteString(strings.TrimSpace(stripFrontmatter(string(data))))
+	b.WriteString(strings.TrimSpace(stripFrontmatter(string(skillMD))))
 	b.WriteString("\n\n")
 	if len(s.Files) > 1 {
 		b.WriteString("Skill files (relative links in the skill point at these):\n")
@@ -612,9 +618,8 @@ func handleSkillUse(ctx context.Context, rt *runtime, name string) (string, erro
 	}
 	fmt.Fprintf(&b, "This skill was read from the user's gocoder.org Library, not installed. Follow it for the current task. "+
 		"Fetch a referenced file with library_skill_show name=%q file=\"<path>\"; to run a script, library_skill_show with materialize=true returns a local path. "+
-		"Use library_skill_load only if the user wants the skill kept locally.\n", s.Name)
-	b.WriteString("</skill_content>")
-	return b.String(), nil
+		"Use library_skill_load only if the user wants the skill kept locally.", s.Name)
+	return b.String()
 }
 
 // ---- library_skill_show ----
@@ -866,31 +871,54 @@ func handleSkillLoad(ctx context.Context, rt *runtime, name, scope string, overw
 // only costs the "next session" fallback, never a failed load.
 const rescanTimeout = 5 * time.Second
 
-// requestHostRescan asks the host to re-run skill discovery
-// (POST /api/skill/rescan), so a skill just written to disk joins
-// <available_skills> without a restart. ok is false when the host has no
-// HTTP API or the request failed.
-func requestHostRescan(ctx context.Context, rt *runtime) (added []string, ok bool) {
+// hostRequest sends one request to the host's HTTP API (the handshake's
+// serverURL, with its headers), bounded by rescanTimeout. It fails when the
+// host runs without an API.
+func hostRequest(ctx context.Context, rt *runtime, method, path string, body any) (*http.Response, error) {
 	if rt.opts.ServerURL == "" {
-		return nil, false
+		return nil, errors.New("host has no HTTP API")
 	}
-	ctx, cancel := context.WithTimeout(ctx, rescanTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(rt.opts.ServerURL, "/")+"/api/skill/rescan", nil)
+	var reader io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		reader = bytes.NewReader(data)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(rt.opts.ServerURL, "/")+path, reader)
 	if err != nil {
-		return nil, false
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	for k, v := range rt.opts.ServerHeaders {
 		req.Header.Set(k, v)
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("host %s %s: status %d", method, path, resp.StatusCode)
+	}
+	return resp, nil
+}
+
+// requestHostRescan asks the host to re-run skill discovery
+// (POST /api/skill/rescan), so a skill just written to disk joins
+// <available_skills> without a restart. ok is false when the host has no
+// HTTP API or the request failed.
+func requestHostRescan(ctx context.Context, rt *runtime) (added []string, ok bool) {
+	ctx, cancel := context.WithTimeout(ctx, rescanTimeout)
+	defer cancel()
+	resp, err := hostRequest(ctx, rt, http.MethodPost, "/api/skill/rescan", nil)
+	if err != nil {
 		return nil, false
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, false
-	}
 	var body struct {
 		Added []string `json:"added"`
 	}
@@ -1187,6 +1215,7 @@ func handleSkillStore(ctx context.Context, rt *runtime, name, dir string, overwr
 		return "", err
 	}
 	advertised.invalidate()
+	requestHostSync()
 
 	if wait {
 		if timeoutSeconds <= 0 {
@@ -1273,6 +1302,7 @@ func handleSkillDelete(ctx context.Context, rt *runtime, name string, confirm bo
 		}
 	}
 	advertised.invalidate()
+	requestHostSync()
 	return fmt.Sprintf("deleted %s from the library (%d file(s)). Local copies, if any, are untouched.", s.Name, s.FileCount), nil
 }
 
@@ -1383,7 +1413,10 @@ func (rt *runtime) installedSkillNames() map[string]bool {
 // response) means the block is simply left out.
 func handleSystemTransform(output map[string]any) map[string]any {
 	opts := pendingOptions()
-	if opts == nil || !advertiseEnabled(*opts) {
+	if opts == nil || !advertiseEnabled(*opts) || hostSkills.isRegistered() {
+		// Registered with the host, the skills are already in
+		// <available_skills>; this block is the fallback for a host
+		// without an HTTP API.
 		return output
 	}
 	rt, err := ensureRuntime()
@@ -1407,6 +1440,161 @@ func pendingOptions() *runtimeOptions {
 	rtMu.Lock()
 	defer rtMu.Unlock()
 	return pending
+}
+
+// ---- registering library skills with the host ----
+
+// hostSkillSource is the source name library skills are registered under
+// (PUT /api/skill/external/{source}); it is what marks them "Library" in
+// the host's skill list.
+const hostSkillSource = "library-plugin"
+
+// hostWaitTimeout bounds how long the sync loop waits for the host's API
+// to come up: plugins are spawned during boot, before the server accepts.
+const hostWaitTimeout = 2 * time.Minute
+
+// hostRegistration tracks the library skills registered with the host.
+type hostRegistration struct {
+	mu         sync.Mutex
+	registered bool
+	// content caches each skill's rendered content by its SKILL.md
+	// sha256, so a periodic sync downloads only what changed.
+	content map[string]cachedContent
+	kick    chan struct{}
+}
+
+type cachedContent struct{ sha, text string }
+
+var hostSkills = &hostRegistration{content: map[string]cachedContent{}, kick: make(chan struct{}, 1)}
+
+func (h *hostRegistration) isRegistered() bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.registered
+}
+
+// requestHostSync asks the sync loop to re-register now (after a store,
+// load or delete changed what the library or the disk holds). Never blocks.
+func requestHostSync() {
+	select {
+	case hostSkills.kick <- struct{}{}:
+	default:
+	}
+}
+
+// startHostSync keeps the host's skill registry in step with the library:
+// once the host API answers, register the library skills, then again every
+// skillsAdvertiseTTL seconds or when kicked. Runs for the life of the
+// plugin process; every failure is silent and retried on the next round.
+func startHostSync(opts runtimeOptions) {
+	if opts.ServerURL == "" {
+		return
+	}
+	go func() {
+		probe := &runtime{opts: opts}
+		if !waitForHost(context.Background(), probe, hostWaitTimeout) {
+			return
+		}
+		for {
+			if rt, err := ensureRuntime(); err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+				_ = syncHostSkills(ctx, rt)
+				cancel()
+			}
+			select {
+			case <-time.After(time.Duration(opts.SkillsAdvertiseTTL) * time.Second):
+			case <-hostSkills.kick:
+			}
+		}
+	}()
+}
+
+// waitForHost polls the host's health route until it answers or timeout
+// passes.
+func waitForHost(ctx context.Context, rt *runtime, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		reqCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+		resp, err := hostRequest(reqCtx, rt, http.MethodGet, "/api/health", nil)
+		cancel()
+		if err == nil {
+			resp.Body.Close()
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-time.After(250 * time.Millisecond):
+		}
+	}
+	return false
+}
+
+// syncHostSkills registers the library's skills with the host (at most
+// skillsAdvertiseLimit of them), each with its SKILL.md content so the
+// host's skill tool can load it. Skills on the host's disk shadow these by
+// name, host-side, so an installed skill is never replaced by its remote
+// copy.
+func syncHostSkills(ctx context.Context, rt *runtime) error {
+	skills, err := rt.client.ListLibrarySkills(ctx, rt.bearer)
+	if err != nil {
+		return err
+	}
+	type entry struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Content     string `json:"content"`
+		Location    string `json:"location"`
+	}
+	entries := []entry{}
+	for i := range skills {
+		if len(entries) >= rt.opts.SkillsAdvertiseLimit {
+			break
+		}
+		s := &skills[i]
+		if s.Description == "" {
+			continue
+		}
+		content, err := hostSkillContent(ctx, rt, s)
+		if err != nil {
+			continue // one unreadable skill must not hide the rest
+		}
+		entries = append(entries, entry{
+			Name: s.Name, Description: s.Description, Content: content,
+			Location: "gocoder.org library: " + skillLibraryPath(s.Name, ""),
+		})
+	}
+	resp, err := hostRequest(ctx, rt, http.MethodPut, "/api/skill/external/"+hostSkillSource, map[string]any{"skills": entries})
+	if err != nil {
+		return err
+	}
+	resp.Body.Close()
+	hostSkills.mu.Lock()
+	hostSkills.registered = true
+	hostSkills.mu.Unlock()
+	return nil
+}
+
+func hostSkillContent(ctx context.Context, rt *runtime, s *gocoder.LibrarySkill) (string, error) {
+	md, ok := findRemoteFile(s, skillFileName)
+	if !ok {
+		return "", fmt.Errorf("no %s", skillFileName)
+	}
+	hostSkills.mu.Lock()
+	cached, hit := hostSkills.content[s.Name]
+	hostSkills.mu.Unlock()
+	if hit && md.SHA256 != "" && cached.sha == md.SHA256+s.ContentHash {
+		return cached.text, nil
+	}
+	data, err := downloadVerified(ctx, rt, md)
+	if err != nil {
+		return "", err
+	}
+	text := skillBodyWithIndex(s, data)
+	hostSkills.mu.Lock()
+	hostSkills.content[s.Name] = cachedContent{sha: md.SHA256 + s.ContentHash, text: text}
+	hostSkills.mu.Unlock()
+	return text, nil
 }
 
 // ---- tool manifest ----

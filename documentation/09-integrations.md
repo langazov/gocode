@@ -275,8 +275,9 @@ it) when the command serves the HTTP API — `gocode`, `serve`, `web`. That
 is a process plugin's only way back into the runtime: those commands bind
 their listener before boot so the URL exists when plugins are spawned. It is
 empty for commands that run without a server (non-interactive `run`,
-`attach`). library-plugin uses it to call `POST /api/skill/rescan` after
-writing a skill to disk.
+`attach`). library-plugin uses it to register its gocoder.org Library skills
+(`PUT /api/skill/external/library-plugin`) and to call
+`POST /api/skill/rescan` after writing a skill to disk.
 
 Auth and provider registrations are **native-only**. Every field on them is a
 function the host calls back into, and an OAuth flow is a conversation, not a

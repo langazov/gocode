@@ -88,6 +88,7 @@ func (s *fakeLibraryServer) registerSkillRoutes(mux *http.ServeMux) {
 		}
 		s.mu.Lock()
 		n, ok := s.nodes[r.PathValue("id")]
+		s.raws++
 		s.mu.Unlock()
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -215,6 +216,7 @@ func newSkillEnv(t *testing.T) *skillEnv {
 		t.Fatal(err)
 	}
 	advertised.invalidate()
+	resetHostSkills(t)
 	return &skillEnv{fake: fake, rt: rt, project: project, data: data}
 }
 
@@ -910,4 +912,116 @@ func TestSkillLoadFallsBackWithoutHost(t *testing.T) {
 			t.Fatalf("serverURL %q: output lacks the fallback note:\n%s", url, out)
 		}
 	}
+}
+
+// ---- registering library skills with the host ----
+
+func resetHostSkills(t *testing.T) {
+	t.Helper()
+	reset := func() {
+		hostSkills.mu.Lock()
+		hostSkills.registered = false
+		hostSkills.content = map[string]cachedContent{}
+		hostSkills.mu.Unlock()
+	}
+	reset()
+	t.Cleanup(reset)
+}
+
+// hostFor serves the real host skill routes over registry.
+func hostFor(t *testing.T, registry *skill.Registry) *httptest.Server {
+	t.Helper()
+	host := httptest.NewServer((&server.Server{Skills: registry}).Mux())
+	t.Cleanup(host.Close)
+	return host
+}
+
+func TestSyncRegistersLibrarySkillsWithHost(t *testing.T) {
+	e := newSkillEnv(t)
+	e.seedRemoteSkill("pdf-tools", pdfSkillFiles())
+	e.seedRemoteSkill("local-one", map[string]string{"SKILL.md": "---\nname: local-one\ndescription: remote copy\n---\nremote body\n"})
+	writeSkillFiles(t, filepath.Join(e.project, ".gocode", "skills", "local-one"), map[string]string{"SKILL.md": "---\nname: local-one\ndescription: local copy\n---\nlocal body\n"})
+
+	registry := skill.Discover(filepath.Join(e.project, ".gocode"))
+	e.rt.opts.ServerURL = hostFor(t, registry).URL
+
+	if err := syncHostSkills(context.Background(), e.rt); err != nil {
+		t.Fatal(err)
+	}
+	info, ok := registry.Get("pdf-tools")
+	if !ok || info.Source != hostSkillSource || !strings.Contains(info.Content, "# PDF tools") || !strings.Contains(info.Content, "library_skill_show") {
+		t.Fatalf("pdf-tools = %+v, %v", info, ok)
+	}
+	if local, _ := registry.Get("local-one"); local.Description != "local copy" {
+		t.Fatalf("the installed skill was shadowed by its library copy: %+v", local)
+	}
+
+	// Registered: the prompt hook defers to <available_skills>.
+	setPending(t, runtimeOptions{Directory: e.project, SkillsAdvertise: true})
+	if system := transformed(t); len(system) != 1 {
+		t.Fatalf("hook still injected a block after registration: %v", system)
+	}
+
+	// A second sync reuses cached content: no further SKILL.md downloads.
+	before := e.fake.raws
+	if err := syncHostSkills(context.Background(), e.rt); err != nil {
+		t.Fatal(err)
+	}
+	if e.fake.raws != before {
+		t.Fatalf("resync downloaded %d unchanged SKILL.md files", e.fake.raws-before)
+	}
+}
+
+func TestWaitForHostGivesUpOnUnreachableHost(t *testing.T) {
+	rt := &runtime{opts: runtimeOptions{ServerURL: "http://127.0.0.1:1"}}
+	start := time.Now()
+	if waitForHost(context.Background(), rt, 300*time.Millisecond) {
+		t.Fatal("unreachable host reported up")
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatal("waitForHost overran its timeout")
+	}
+}
+
+// TestPluginRegistersLibrarySkillsWithRealHost is the whole path: the real
+// plugin process, handed a real host's serverURL at handshake, registers
+// the library's skills into that host's skill registry by itself.
+func TestPluginRegistersLibrarySkillsWithRealHost(t *testing.T) {
+	fake := newFakeLibraryServer(1)
+	srv := httptest.NewServer(fake.handler())
+	defer srv.Close()
+	dataHome := t.TempDir()
+	withAccount(t, dataHome, srv.URL, "gk_test")
+	(&skillEnv{fake: fake}).seedRemoteSkill("pdf-tools", pdfSkillFiles())
+
+	dir := t.TempDir()
+	registry := skill.Discover(filepath.Join(dir, ".gocode"))
+	host := hostFor(t, registry)
+
+	instance, err := plugin.Spawn(context.Background(), "library-plugin", plugin.SpawnConfig{
+		Command: []string{os.Args[0], "-test.run=TestHelperPlugin"},
+		Dir:     dir,
+		Env: []string{
+			helperEnv + "=1", "XDG_DATA_HOME=" + dataHome,
+			"XDG_CONFIG_HOME=" + t.TempDir(), "GOCODE_TEST_HOME=" + t.TempDir(),
+		},
+	}, plugin.Input{Directory: dir, Worktree: dir, ServerURL: host.URL}, plugin.Options{"baseURL": srv.URL}, func(string) {})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	h := plugin.NewHost(func(string, string, error) {})
+	h.Add(instance)
+	t.Cleanup(func() { _ = h.Close(context.Background()) })
+
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if info, ok := registry.Get("pdf-tools"); ok {
+			if info.Source != hostSkillSource {
+				t.Fatalf("registered without its source: %+v", info)
+			}
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatal("the plugin never registered the library skill with the host")
 }

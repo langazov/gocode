@@ -77,6 +77,7 @@ type fakeLibraryServer struct {
 	overwrites int
 	skillsDown bool
 	skillLists int
+	raws       int // GET /library/nodes/{id}/raw requests served
 }
 
 func newFakeLibraryServer(pollsUntilReady int) *fakeLibraryServer {

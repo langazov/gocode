@@ -22,7 +22,9 @@ import (
 // dialog is never left staring at a stale "Loading" once the request lands.
 func (a *App) skillsOverlay() tea.Cmd {
 	a.openSkillDialog(a.skillList)
-	return a.loadSkillListCmd()
+	// Commands too: selecting a skill types "/<name>", which must resolve
+	// against a command list that includes skills registered after Init.
+	return tea.Batch(a.loadSkillListCmd(), a.loadCommandsCmd())
 }
 
 // openSkillDialog renders the picker from an unfiltered skill list.
@@ -46,7 +48,10 @@ func (a *App) openSkillDialog(skills []client.Skill) {
 }
 
 // skillItems ports DialogSkill's option mapping: name and description only,
-// one flat "Skills" category, sorted by name for a stable, searchable list
+// sorted by name for a stable, searchable list. Skills on disk and built-ins
+// share the "Skills" category; skills a plugin registered (gocoder.org
+// Library skills, which are not installed locally) get their own "Library"
+// category so the difference is visible
 // (the original relies on fuzzysort re-ordering as the user types, which
 // this port's filter does too; the unfiltered order just needs to be
 // deterministic).
@@ -57,11 +62,15 @@ func (a *App) skillItems(skills []client.Skill) []overlayItem {
 	items := make([]overlayItem, 0, len(sorted))
 	for _, skill := range sorted {
 		skill := skill
+		category := "Skills"
+		if skill.Source != "" {
+			category = "Library"
+		}
 		items = append(items, overlayItem{
 			Label:    skill.Name,
 			Hint:     strings.Join(strings.Fields(skill.Description), " "),
 			Value:    skill.Name,
-			Category: "Skills",
+			Category: category,
 			Action: func() tea.Msg {
 				a.input.SetValue("/" + skill.Name + " ")
 				a.input.MoveToEnd()

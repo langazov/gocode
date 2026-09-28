@@ -53,8 +53,8 @@ Plugin options (all optional):
 | `baseURL`                 | the stored account's site, else `https://gocoder.org` | override gocoder.org's base URL |
 | `topK`                    | `10`                             | default result count for `library_search` |
 | `uploadTimeout`           | `120`                            | seconds `library_upload` / `library_skill_store` wait for indexing |
-| `skillsAdvertise`         | `true`                           | list remote skills in each turn's system prompt ([advertising](#advertising-remote-skills)) |
-| `skillsAdvertiseLimit`    | `20`                             | max skills listed |
+| `skillsAdvertise`         | `true`                           | show library skills in gocode's skill list, or the system prompt as a fallback ([advertising](#advertising-remote-skills)) |
+| `skillsAdvertiseLimit`    | `20`                             | max library skills registered / listed |
 | `skillsAdvertiseMaxChars` | `2000`                           | size cap for the injected block |
 | `skillsAdvertiseTTL`      | `300`                            | seconds the list is cached between turns |
 | `skillsDefaultScope`      | `"project"`                      | default `scope` for `library_skill_load` |
@@ -160,21 +160,28 @@ recording the content hash both sides last agreed on; that is what lets
 `library_skill_list` tell `outdated` from `local changes`. It is never
 uploaded.
 
-**Registry visibility.** `library_skill_use` and `library_skill_load` return
-`SKILL.md` inline, so a skill is usable in the current turn right away. The
-plugin runs in its own process and cannot touch gocode's skill registry
-directly, so after writing files `library_skill_load` asks the host to
-rescan (`POST /api/skill/rescan` on the `serverURL` from the handshake): the
-skill then joins `<available_skills>` from the next turn and the `skill` tool
-can load it immediately. Without a reachable host API (non-interactive
-`gocode run`) it falls back to "from the next session". A skill marked
-`slash: true` becomes a slash command only after a restart — commands are
-assembled once at boot.
+**In gocode's skill list.** Once gocode's HTTP API is up (the plugin gets
+its URL at handshake), the plugin registers the library's skills with it
+(`PUT /api/skill/external/library-plugin`) — name, description, and the
+`SKILL.md` content with its file index. They then appear everywhere a local
+skill does: the `/skills` dialog (under **Library**), `<available_skills>`,
+the `skill` tool, and as `/<name>` slash commands. A skill installed on disk
+under the same name always wins over its library copy. The registration is
+refreshed every `skillsAdvertiseTTL` seconds (downloading only `SKILL.md`s
+that changed) and right after `library_skill_store` / `library_skill_delete`.
+
+`library_skill_load` writes the files and asks gocode to rescan
+(`POST /api/skill/rescan`), so the local copy takes over immediately. Without
+a reachable host API (non-interactive `gocode run`) nothing is registered;
+remote skills are then advertised through the system-prompt block below, and
+a loaded skill appears from the next session.
 
 ### Advertising remote skills
 
-The plugin declares the `experimental.chat.system.transform` hook and
-appends a short `<library_skills>` block — name and description of each
+`skillsAdvertise` controls both mechanisms: registering with the host
+(above), and — the fallback when there is no host API to register with —
+the `experimental.chat.system.transform` hook, which appends a short
+`<library_skills>` block — name and description of each
 remote skill — to every turn's system prompt, so remote skills are
 discoverable the way `<available_skills>` entries are. Skills already
 installed locally (or built into gocode) are left out. The list is cached

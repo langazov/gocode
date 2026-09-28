@@ -125,6 +125,8 @@ func (s *Server) Mux() *http.ServeMux {
 	if s.Skills != nil {
 		mux.HandleFunc("GET /api/skill", s.listSkills)
 		mux.HandleFunc("POST /api/skill/rescan", s.rescanSkills)
+		mux.HandleFunc("PUT /api/skill/external/{source}", s.setExternalSkills)
+		mux.HandleFunc("DELETE /api/skill/external/{source}", s.clearExternalSkills)
 	}
 	mux.HandleFunc("GET /api/lsp", s.listLSP)
 	mux.HandleFunc("GET /api/command", s.listCommands)
@@ -846,6 +848,7 @@ func (s *Server) listSkills(w http.ResponseWriter, r *http.Request) {
 			"description": info.Description,
 			"slash":       info.Slash,
 			"location":    info.Location,
+			"source":      info.Source,
 		})
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -869,4 +872,42 @@ func (s *Server) rescanSkills(w http.ResponseWriter, r *http.Request) {
 		"removed": removed,
 		"count":   len(s.Skills.List()),
 	})
+}
+
+// externalSkill is one skill in a PUT /api/skill/external/{source} body.
+type externalSkill struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	Content     string `json:"content"`
+	Location    string `json:"location"`
+}
+
+// setExternalSkills replaces the skills a plugin registers under source —
+// library-plugin's gocoder.org Library skills, which live on no local
+// disk. They join the skill list, <available_skills>, the skill tool and
+// slash commands, ranked below any skill on disk of the same name.
+func (s *Server) setExternalSkills(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Skills []externalSkill `json:"skills"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid body: "+err.Error())
+		return
+	}
+	infos := make([]skill.Info, 0, len(body.Skills))
+	for _, item := range body.Skills {
+		if strings.TrimSpace(item.Name) == "" {
+			writeError(w, http.StatusBadRequest, "every skill needs a name")
+			return
+		}
+		infos = append(infos, skill.Info{Name: item.Name, Description: item.Description, Content: item.Content, Location: item.Location})
+	}
+	source := r.PathValue("source")
+	s.Skills.SetExternal(source, infos)
+	writeJSON(w, http.StatusOK, map[string]any{"source": source, "registered": len(infos)})
+}
+
+func (s *Server) clearExternalSkills(w http.ResponseWriter, r *http.Request) {
+	s.Skills.SetExternal(r.PathValue("source"), nil)
+	w.WriteHeader(http.StatusNoContent)
 }

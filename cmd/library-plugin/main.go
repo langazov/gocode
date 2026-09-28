@@ -763,6 +763,9 @@ func handleInitialize(message request) error {
 	hooks := []string{}
 	if advertiseEnabled(opts) {
 		hooks = append(hooks, systemTransformHook)
+		// With a host API, library skills are registered straight into
+		// gocode's skill list (skills.go); the hook stays as the fallback.
+		startHostSync(opts)
 	}
 
 	return reply(message.ID, map[string]any{
