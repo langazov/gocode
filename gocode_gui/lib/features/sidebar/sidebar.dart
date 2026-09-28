@@ -17,7 +17,7 @@ import 'project_grouping.dart';
 import 'projects.dart';
 
 /// Width of the docked sidebar (and the drawer on narrow windows).
-const sidebarWidth = 284.0;
+const sidebarWidth = 256.0;
 
 /// Keys tests reach sidebar controls by.
 abstract final class SidebarKeys {
@@ -54,22 +54,18 @@ class Sidebar extends ConsumerStatefulWidget {
   ConsumerState<Sidebar> createState() => _SidebarState();
 }
 
-class _SidebarState extends ConsumerState<Sidebar>
-    with SingleTickerProviderStateMixin {
+class _SidebarState extends ConsumerState<Sidebar> {
   final _search = TextEditingController();
   String _query = '';
-  late final _tabs = TabController(
-    length: 2,
-    vsync: this,
-    // Most installs start with no projects yet; defaulting here means a
-    // returning user's existing chats are never hidden behind an empty tab.
-    initialIndex: 1,
-  );
+
+  // 0 = Projects, 1 = Chats. Most installs start with no projects yet;
+  // defaulting to Chats means a returning user's existing chats are never
+  // hidden behind an empty tab.
+  int _tab = 1;
 
   @override
   void dispose() {
     _search.dispose();
-    _tabs.dispose();
     super.dispose();
   }
 
@@ -196,113 +192,346 @@ class _SidebarState extends ConsumerState<Sidebar>
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
-              padding: const EdgeInsets.fromLTRB(18, 14, 6, 10),
+              padding: const EdgeInsets.fromLTRB(16, 12, 8, 10),
               child: Row(
                 children: [
-                  const GocodeLogo(size: 20),
+                  const GocodeLogo(size: 16),
                   const Spacer(),
-                  IconButton(
+                  SidebarIconButton(
                     tooltip: 'Refresh',
-                    visualDensity: VisualDensity.compact,
-                    icon: const Icon(Icons.refresh_rounded, size: 18),
-                    onPressed: () => ref.invalidate(sessionsProvider),
+                    icon: Icons.refresh_rounded,
+                    onTap: () => ref.invalidate(sessionsProvider),
                   ),
                   if (widget.onHide != null)
-                    IconButton(
+                    SidebarIconButton(
                       tooltip: 'Hide sidebar',
-                      visualDensity: VisualDensity.compact,
-                      icon: const Icon(
-                        Icons.keyboard_double_arrow_left_rounded,
-                        size: 18,
-                      ),
-                      onPressed: widget.onHide,
+                      icon: Icons.keyboard_double_arrow_left_rounded,
+                      onTap: widget.onHide!,
+                    ),
+                ],
+              ),
+            ),
+            // Actions: new session and search share one row style, so
+            // their icons and labels line up.
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  SidebarRow(
+                    key: SidebarKeys.newSession,
+                    onTap: () => _go('/new'),
+                    builder: (_) => const Row(
+                      children: [
+                        SizedBox(
+                          width: 16,
+                          child: Icon(
+                            Icons.add_rounded,
+                            size: 16,
+                            color: GC.accentText,
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Text('New session', style: _navStyle),
+                      ],
+                    ),
+                  ),
+                  _SearchField(
+                    controller: _search,
+                    onChanged: (v) =>
+                        setState(() => _query = v.trim().toLowerCase()),
+                  ),
+                  if (selectedProject != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: _SelectedProjectChip(project: selectedProject),
                     ),
                 ],
               ),
             ),
             Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: FilledButton.icon(
-                key: SidebarKeys.newSession,
-                onPressed: () => _go('/new'),
-                icon: const Icon(Icons.add_rounded, size: 18),
-                label: const Text('New session'),
+              padding: const EdgeInsets.fromLTRB(16, 14, 11, 0),
+              child: _TabSwitch(
+                index: _tab,
+                onChanged: (i) => setState(() => _tab = i),
+                trailing: _tab == 0
+                    ? SidebarIconButton(
+                        key: SidebarKeys.newProject,
+                        tooltip: 'New project',
+                        icon: Icons.create_new_folder_outlined,
+                        onTap: () => showDialog<void>(
+                          context: context,
+                          builder: (_) => const _NewProjectDialog(),
+                        ),
+                      )
+                    : null,
               ),
-            ),
-            if (selectedProject != null)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(12, 8, 12, 0),
-                child: _SelectedProjectChip(project: selectedProject),
-              ),
-            const SizedBox(height: 10),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: TextField(
-                controller: _search,
-                onChanged: (v) =>
-                    setState(() => _query = v.trim().toLowerCase()),
-                style: const TextStyle(
-                  fontFamily: GC.sans,
-                  fontSize: 13.5,
-                  color: GC.textHi,
-                ),
-                decoration: const InputDecoration(
-                  hintText: 'Search',
-                  prefixIcon: Icon(Icons.search, size: 16),
-                  contentPadding: EdgeInsets.symmetric(
-                    horizontal: 12,
-                    vertical: 10,
-                  ),
-                ),
-              ),
-            ),
-            const SizedBox(height: 4),
-            TabBar(
-              controller: _tabs,
-              tabs: [
-                Tab(key: SidebarKeys.projectsTab, text: 'Projects'),
-                Tab(key: SidebarKeys.chatsTab, text: 'Chats'),
-              ],
-              labelColor: GC.accentText,
-              unselectedLabelColor: GC.textDim,
-              indicatorColor: GC.accent,
-              indicatorSize: TabBarIndicatorSize.label,
-              labelStyle: const TextStyle(
-                fontFamily: GC.sans,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-              ),
-              unselectedLabelStyle: const TextStyle(
-                fontFamily: GC.sans,
-                fontSize: 13,
-                fontWeight: FontWeight.w500,
-              ),
-              dividerColor: GC.border,
             ),
             Expanded(
-              child: TabBarView(
-                controller: _tabs,
-                children: [
-                  _ProjectsTab(
-                    query: _query,
-                    activeSessionID: _activeSessionID,
-                    onOpenSession: (session) => _go('/session/${session.id}'),
-                    onSessionAction: _act,
-                    onNewSessionHere: () => _go('/new'),
-                  ),
-                  _ChatsTab(
-                    query: _query,
-                    activeSessionID: _activeSessionID,
-                    onOpenSession: (session) => _go('/session/${session.id}'),
-                    onSessionAction: _act,
-                  ),
-                ],
-              ),
+              child: _tab == 0
+                  ? _ProjectsTab(
+                      query: _query,
+                      activeSessionID: _activeSessionID,
+                      onOpenSession: (session) => _go('/session/${session.id}'),
+                      onSessionAction: _act,
+                      onNewSessionHere: () => _go('/new'),
+                    )
+                  : _ChatsTab(
+                      query: _query,
+                      activeSessionID: _activeSessionID,
+                      onOpenSession: (session) => _go('/session/${session.id}'),
+                      onSessionAction: _act,
+                    ),
             ),
             const Divider(),
             _AccountButton(onNavigate: _go),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// A compact square icon control for the sidebar's dense rows.
+class SidebarIconButton extends StatelessWidget {
+  const SidebarIconButton({
+    super.key,
+    required this.icon,
+    required this.tooltip,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: tooltip,
+      waitDuration: const Duration(milliseconds: 400),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(5),
+        onTap: onTap,
+        child: SizedBox.square(
+          dimension: _actionSize,
+          child: Icon(icon, size: 15, color: GC.textDim),
+        ),
+      ),
+    );
+  }
+}
+
+/// Side of a row-level action (icon button, overflow menu).
+const _actionSize = 22.0;
+
+/// Height of every list row in the sidebar.
+const _rowHeight = 28.0;
+
+/// One dense, hoverable sidebar row. [builder] gets whether the pointer is
+/// over the row, so trailing actions can stay hidden until they're wanted.
+class SidebarRow extends StatefulWidget {
+  const SidebarRow({
+    super.key,
+    required this.onTap,
+    required this.builder,
+    this.selected = false,
+    this.tooltip,
+  });
+
+  final VoidCallback onTap;
+  final Widget Function(bool hovered) builder;
+  final bool selected;
+
+  /// Shown after a long hover, e.g. the row's working directory.
+  final String? tooltip;
+
+  @override
+  State<SidebarRow> createState() => _SidebarRowState();
+}
+
+class _SidebarRowState extends State<SidebarRow> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget row = MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: InkWell(
+        onTap: widget.onTap,
+        borderRadius: BorderRadius.circular(6),
+        child: Ink(
+          height: _rowHeight,
+          padding: const EdgeInsets.only(left: 8, right: 3),
+          decoration: BoxDecoration(
+            color: widget.selected ? const Color(0x14FFFFFF) : null,
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: widget.builder(_hovered),
+        ),
+      ),
+    );
+    if (widget.tooltip != null) {
+      row = Tooltip(
+        message: widget.tooltip!,
+        waitDuration: const Duration(milliseconds: 900),
+        child: row,
+      );
+    }
+    return row;
+  }
+}
+
+/// The overflow (⋯) menu at the end of a row.
+class _RowMenu extends StatelessWidget {
+  const _RowMenu({
+    required this.tooltip,
+    required this.items,
+    required this.onSelected,
+  });
+
+  final String tooltip;
+  final List<(String, String)> items;
+  final ValueChanged<String> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return PopupMenuButton<String>(
+      tooltip: tooltip,
+      padding: EdgeInsets.zero,
+      onSelected: onSelected,
+      itemBuilder: (_) => [
+        for (final (value, label) in items) compactMenuItem(value, label),
+      ],
+      child: const SizedBox.square(
+        dimension: _actionSize,
+        child: Icon(Icons.more_horiz_rounded, size: 15, color: GC.textDim),
+      ),
+    );
+  }
+}
+
+/// A small group label inside the lists (Today, Yesterday, …).
+class _GroupLabel extends StatelessWidget {
+  const _GroupLabel(this.text);
+
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(
+      text,
+      style: const TextStyle(
+        fontFamily: GC.sans,
+        fontSize: 11.5,
+        fontWeight: FontWeight.w500,
+        color: GC.textFaint,
+      ),
+    );
+  }
+}
+
+/// Search, styled as a sidebar row: no box until focused.
+class _SearchField extends StatelessWidget {
+  const _SearchField({required this.controller, required this.onChanged});
+
+  final TextEditingController controller;
+  final ValueChanged<String> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    OutlineInputBorder border(Color color) => OutlineInputBorder(
+      borderRadius: BorderRadius.circular(6),
+      borderSide: BorderSide(color: color),
+    );
+    return SizedBox(
+      height: _rowHeight,
+      child: TextField(
+        controller: controller,
+        onChanged: onChanged,
+        textAlignVertical: TextAlignVertical.center,
+        style: _navStyle.copyWith(fontWeight: FontWeight.w400),
+        decoration: InputDecoration(
+          hintText: 'Search',
+          hintStyle: _navStyle.copyWith(color: GC.textDim),
+          prefixIcon: const Padding(
+            padding: EdgeInsets.only(left: 8, right: 4),
+            child: SizedBox(
+              width: 16,
+              child: Icon(Icons.search_rounded, size: 15, color: GC.textDim),
+            ),
+          ),
+          prefixIconConstraints: const BoxConstraints(),
+          contentPadding: const EdgeInsets.only(right: 8),
+          filled: true,
+          fillColor: Colors.transparent,
+          hoverColor: const Color(0x0AFFFFFF),
+          border: border(Colors.transparent),
+          enabledBorder: border(Colors.transparent),
+          focusedBorder: border(GC.borderStrong),
+        ),
+      ),
+    );
+  }
+}
+
+/// Label style for the action rows at the top.
+const _navStyle = TextStyle(
+  fontFamily: GC.sans,
+  fontSize: 13,
+  fontWeight: FontWeight.w500,
+  color: GC.textHi,
+);
+
+/// Projects / Chats as two quiet text tabs, with an optional action at the
+/// far end of the row.
+class _TabSwitch extends StatelessWidget {
+  const _TabSwitch({
+    required this.index,
+    required this.onChanged,
+    this.trailing,
+  });
+
+  final int index;
+  final ValueChanged<int> onChanged;
+  final Widget? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    Widget tab(Key key, int i, String label) {
+      final selected = index == i;
+      return InkWell(
+        key: key,
+        borderRadius: BorderRadius.circular(4),
+        onTap: () => onChanged(i),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(vertical: 4),
+          child: AnimatedDefaultTextStyle(
+            duration: GC.dur,
+            curve: GC.ease,
+            style: TextStyle(
+              fontFamily: GC.sans,
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: selected ? GC.textHi : GC.textFaint,
+            ),
+            child: Text(label),
+          ),
+        ),
+      );
+    }
+
+    return SizedBox(
+      height: 24,
+      child: Row(
+        children: [
+          tab(SidebarKeys.projectsTab, 0, 'Projects'),
+          const SizedBox(width: 14),
+          tab(SidebarKeys.chatsTab, 1, 'Chats'),
+          const Spacer(),
+          ?trailing,
+        ],
       ),
     );
   }
@@ -318,35 +547,35 @@ class _SelectedProjectChip extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(10, 6, 6, 6),
+      height: 24,
+      padding: const EdgeInsets.only(left: 10, right: 2),
       decoration: BoxDecoration(
-        color: const Color(0x1FE8862D),
-        borderRadius: BorderRadius.circular(999),
-        border: Border.all(color: GC.borderAccent),
+        color: const Color(0x14E8862D),
+        borderRadius: BorderRadius.circular(6),
       ),
       child: Row(
         children: [
-          const Icon(Icons.folder_rounded, size: 13, color: GC.accentText),
+          const Icon(Icons.folder_rounded, size: 12, color: GC.accentText),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              'New chats → ${project.name}',
+              'New chats in ${project.name}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: const TextStyle(
                 fontFamily: GC.sans,
                 fontSize: 11.5,
-                fontWeight: FontWeight.w600,
+                fontWeight: FontWeight.w500,
                 color: GC.accentText,
               ),
             ),
           ),
           InkWell(
-            borderRadius: BorderRadius.circular(999),
+            borderRadius: BorderRadius.circular(4),
             onTap: () => ref.read(selectedProjectProvider.notifier).clear(),
-            child: const Padding(
-              padding: EdgeInsets.all(3),
-              child: Icon(Icons.close_rounded, size: 13, color: GC.accentText),
+            child: const SizedBox.square(
+              dimension: 20,
+              child: Icon(Icons.close_rounded, size: 12, color: GC.accentText),
             ),
           ),
         ],
@@ -379,27 +608,6 @@ class _ProjectsTab extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(12, 8, 8, 4),
-          child: Row(
-            children: [
-              const Expanded(child: Caption('Work folders')),
-              TextButton.icon(
-                key: SidebarKeys.newProject,
-                onPressed: () => showDialog<void>(
-                  context: context,
-                  builder: (_) => const _NewProjectDialog(),
-                ),
-                style: TextButton.styleFrom(
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  visualDensity: VisualDensity.compact,
-                ),
-                icon: const Icon(Icons.create_new_folder_outlined, size: 15),
-                label: const Text('New'),
-              ),
-            ],
-          ),
-        ),
         Expanded(
           child: sessionsAsync.when(
             loading: () => const Center(
@@ -447,7 +655,7 @@ class _ProjectsTab extends ConsumerWidget {
                 );
               }
               return ListView(
-                padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
+                padding: const EdgeInsets.fromLTRB(8, 8, 8, 8),
                 children: [
                   for (final group in visible)
                     _ProjectTile(
@@ -563,138 +771,84 @@ class _ProjectTile extends ConsumerWidget {
               )
               .toList();
 
+    final count = group.sessions.length;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        Tooltip(
-          message: project.directory,
-          waitDuration: const Duration(milliseconds: 700),
-          child: Material(
-            type: MaterialType.transparency,
-            child: InkWell(
-              borderRadius: BorderRadius.circular(10),
-              onTap: () {
-                final notifier = ref.read(selectedProjectProvider.notifier);
-                if (selected) {
-                  notifier.clear();
-                } else {
-                  notifier.select(project.id);
-                }
-              },
-              child: Ink(
-                decoration: BoxDecoration(
-                  color: selected ? const Color(0x17FFFFFF) : null,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                padding: const EdgeInsets.fromLTRB(8, 8, 2, 8),
-                child: Row(
-                  children: [
-                    Icon(
-                      selected
-                          ? Icons.folder_open_rounded
-                          : Icons.folder_outlined,
-                      size: 17,
-                      color: selected ? GC.accentText : GC.textDim,
-                    ),
-                    const SizedBox(width: 8),
-                    if (busy) ...[
-                      const LiveDot(busy: true, size: 6),
-                      const SizedBox(width: 7),
-                    ],
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            project.name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontFamily: GC.sans,
-                              fontSize: 13.5,
-                              fontWeight: selected
-                                  ? FontWeight.w600
-                                  : FontWeight.w500,
-                              color: selected ? GC.textHi : GC.textBody,
-                            ),
-                          ),
-                          Text(
-                            group.sessions.isEmpty
-                                ? 'no chats'
-                                : '${group.sessions.length} chat'
-                                      '${group.sessions.length == 1 ? '' : 's'}',
-                            style: const TextStyle(
-                              fontFamily: GC.sans,
-                              fontSize: 11,
-                              color: GC.textFaint,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    Tooltip(
-                      message: 'New chat in ${project.name}',
-                      child: InkWell(
-                        borderRadius: BorderRadius.circular(999),
-                        onTap: () {
-                          ref
-                              .read(selectedProjectProvider.notifier)
-                              .select(project.id);
-                          onNewSessionHere();
-                        },
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 6,
-                          ),
-                          child: Icon(
-                            Icons.add_circle_outline_rounded,
-                            size: 16,
-                            color: GC.textDim,
-                          ),
-                        ),
-                      ),
-                    ),
-                    PopupMenuButton<String>(
-                      tooltip: 'Project actions',
-                      onSelected: (action) => switch (action) {
-                        'rename' => _rename(context, ref),
-                        'delete' => _delete(context, ref),
-                        _ => null,
-                      },
-                      itemBuilder: (_) => const [
-                        PopupMenuItem(value: 'rename', child: Text('Rename')),
-                        PopupMenuItem(value: 'delete', child: Text('Remove')),
-                      ],
-                      child: const Padding(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 6,
-                        ),
-                        child: Icon(
-                          Icons.more_horiz_rounded,
-                          size: 16,
-                          color: GC.textDim,
-                        ),
-                      ),
-                    ),
-                    AnimatedRotation(
-                      turns: selected ? 0.5 : 0,
-                      duration: GC.dur,
-                      curve: GC.ease,
-                      child: const Padding(
-                        padding: EdgeInsets.only(right: 6),
-                        child: Icon(
-                          Icons.expand_more_rounded,
-                          size: 18,
-                          color: GC.textDim,
-                        ),
-                      ),
-                    ),
-                  ],
+        SidebarRow(
+          tooltip: project.directory,
+          selected: selected,
+          onTap: () {
+            final notifier = ref.read(selectedProjectProvider.notifier);
+            if (selected) {
+              notifier.clear();
+            } else {
+              notifier.select(project.id);
+            }
+          },
+          builder: (hovered) => Row(
+            children: [
+              AnimatedRotation(
+                turns: selected ? 0.25 : 0,
+                duration: GC.dur,
+                curve: GC.ease,
+                child: const Icon(
+                  Icons.chevron_right_rounded,
+                  size: 14,
+                  color: GC.textFaint,
                 ),
               ),
-            ),
+              const SizedBox(width: 4),
+              Icon(
+                selected ? Icons.folder_open_rounded : Icons.folder_outlined,
+                size: 14,
+                color: selected ? GC.accentText : GC.textDim,
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  project.name,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontFamily: GC.sans,
+                    fontSize: 13,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+                    color: selected ? GC.textHi : GC.textBody,
+                  ),
+                ),
+              ),
+              if (busy) ...[
+                const LiveDot(busy: true, size: 6),
+                const SizedBox(width: 6),
+              ],
+              if (hovered) ...[
+                SidebarIconButton(
+                  tooltip: 'New chat in ${project.name}',
+                  icon: Icons.add_rounded,
+                  onTap: () {
+                    ref
+                        .read(selectedProjectProvider.notifier)
+                        .select(project.id);
+                    onNewSessionHere();
+                  },
+                ),
+                _RowMenu(
+                  tooltip: 'Project actions',
+                  items: const [('rename', 'Rename'), ('delete', 'Remove')],
+                  onSelected: (action) => switch (action) {
+                    'rename' => _rename(context, ref),
+                    'delete' => _delete(context, ref),
+                    _ => null,
+                  },
+                ),
+              ] else if (count > 0)
+                Padding(
+                  padding: const EdgeInsets.only(right: 6),
+                  child: Text('$count', style: _metaStyle),
+                ),
+            ],
           ),
         ),
         AnimatedCrossFade(
@@ -704,17 +858,21 @@ class _ProjectTile extends ConsumerWidget {
               ? CrossFadeState.showSecond
               : CrossFadeState.showFirst,
           firstChild: const SizedBox(width: double.infinity),
-          secondChild: Padding(
-            padding: const EdgeInsets.only(left: 12, bottom: 6),
+          secondChild: Container(
+            margin: const EdgeInsets.only(left: 15, top: 2, bottom: 6),
+            padding: const EdgeInsets.only(left: 6),
+            decoration: const BoxDecoration(
+              border: Border(left: BorderSide(color: GC.border)),
+            ),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 if (sessions.isEmpty)
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(10, 4, 10, 6),
+                    padding: const EdgeInsets.fromLTRB(8, 4, 8, 4),
                     child: Text(
                       query.isEmpty ? 'No chats yet.' : 'No chats match.',
-                      style: Theme.of(context).textTheme.bodySmall,
+                      style: _metaStyle,
                     ),
                   )
                 else
@@ -927,12 +1085,12 @@ class _History extends StatelessWidget {
       );
     }
     return ListView(
-      padding: const EdgeInsets.fromLTRB(8, 6, 8, 8),
+      padding: const EdgeInsets.fromLTRB(8, 0, 8, 8),
       children: [
         for (final group in groupSessions(visible, now)) ...[
           Padding(
-            padding: const EdgeInsets.fromLTRB(10, 14, 10, 6),
-            child: Caption(group.label),
+            padding: const EdgeInsets.fromLTRB(8, 14, 8, 4),
+            child: _GroupLabel(group.label),
           ),
           for (final session in group.sessions)
             _SessionItem(
@@ -948,7 +1106,14 @@ class _History extends StatelessWidget {
   }
 }
 
-class _SessionItem extends ConsumerStatefulWidget {
+/// Faint trailing metadata: ages, counts, empty-list notes.
+const _metaStyle = TextStyle(
+  fontFamily: GC.sans,
+  fontSize: 11,
+  color: GC.textFaint,
+);
+
+class _SessionItem extends ConsumerWidget {
   const _SessionItem({
     required this.session,
     required this.active,
@@ -964,115 +1129,58 @@ class _SessionItem extends ConsumerStatefulWidget {
   final ValueChanged<String> onAction;
 
   @override
-  ConsumerState<_SessionItem> createState() => _SessionItemState();
-}
-
-class _SessionItemState extends ConsumerState<_SessionItem> {
-  bool _hovered = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final active = widget.active;
-    final title = widget.session.title.isEmpty
-        ? 'Untitled'
-        : widget.session.title;
+  Widget build(BuildContext context, WidgetRef ref) {
+    final title = session.title.isEmpty ? 'Untitled' : session.title;
     final activity =
-        ref.watch(sessionActivityProvider)[widget.session.id] ??
-        SessionActivity.idle;
+        ref.watch(sessionActivityProvider)[session.id] ?? SessionActivity.idle;
     final showLiveStatus = activity.busy || activity.justFinished;
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() => _hovered = false),
-      child: Tooltip(
-        message: widget.session.directory,
-        waitDuration: const Duration(milliseconds: 700),
-        child: Material(
-          type: MaterialType.transparency,
-          child: InkWell(
-            onTap: widget.onOpen,
-            borderRadius: BorderRadius.circular(10),
-            child: Ink(
-              decoration: BoxDecoration(
-                color: active ? const Color(0x17FFFFFF) : null,
-                borderRadius: BorderRadius.circular(10),
-              ),
-              padding: const EdgeInsets.fromLTRB(10, 0, 2, 0),
-              child: SizedBox(
-                height: 36,
-                child: Row(
-                  children: [
-                    if (active)
-                      Container(
-                        width: 3,
-                        height: 14,
-                        margin: const EdgeInsets.only(right: 8),
-                        decoration: BoxDecoration(
-                          color: GC.accent,
-                          borderRadius: BorderRadius.circular(2),
-                        ),
-                      ),
-                    if (showLiveStatus) ...[
-                      LiveDot(
-                        busy: activity.busy,
-                        justFinished: activity.justFinished,
-                        size: 6,
-                      ),
-                      const SizedBox(width: 8),
-                    ],
-                    Expanded(
-                      child: Text(
-                        title,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontFamily: GC.sans,
-                          fontSize: 13.5,
-                          fontWeight: active
-                              ? FontWeight.w600
-                              : FontWeight.w400,
-                          color: active ? GC.textHi : GC.textBody,
-                        ),
-                      ),
-                    ),
-                    if (_hovered || active)
-                      PopupMenuButton<String>(
-                        tooltip: 'Session actions',
-                        onSelected: widget.onAction,
-                        itemBuilder: (_) => const [
-                          PopupMenuItem(value: 'rename', child: Text('Rename')),
-                          PopupMenuItem(value: 'fork', child: Text('Fork')),
-                          PopupMenuItem(value: 'delete', child: Text('Delete')),
-                        ],
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 8,
-                            vertical: 6,
-                          ),
-                          child: Icon(
-                            Icons.more_horiz_rounded,
-                            size: 16,
-                            color: GC.textDim,
-                          ),
-                        ),
-                      )
-                    else
-                      Padding(
-                        padding: const EdgeInsets.only(right: 10),
-                        child: Text(
-                          widget.age,
-                          style: const TextStyle(
-                            fontFamily: GC.sans,
-                            fontSize: 11.5,
-                            color: GC.textFaint,
-                          ),
-                        ),
-                      ),
-                  ],
-                ),
+    return SidebarRow(
+      tooltip: session.directory,
+      selected: active,
+      onTap: onOpen,
+      builder: (hovered) => Row(
+        children: [
+          Expanded(
+            child: Text(
+              title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontFamily: GC.sans,
+                fontSize: 13,
+                fontWeight: active ? FontWeight.w500 : FontWeight.w400,
+                color: active ? GC.textHi : GC.textBody,
               ),
             ),
           ),
-        ),
+          if (hovered || active)
+            _RowMenu(
+              tooltip: 'Session actions',
+              items: const [
+                ('rename', 'Rename'),
+                ('fork', 'Fork'),
+                ('delete', 'Delete'),
+              ],
+              onSelected: onAction,
+            )
+          // Trailing, so titles stay aligned: live status beats age.
+          else if (showLiveStatus)
+            SizedBox.square(
+              dimension: _actionSize,
+              child: Center(
+                child: LiveDot(
+                  busy: activity.busy,
+                  justFinished: activity.justFinished,
+                  size: 6,
+                ),
+              ),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(left: 6, right: 5),
+              child: Text(age, style: _metaStyle),
+            ),
+        ],
       ),
     );
   }
@@ -1126,35 +1234,22 @@ class _AccountButton extends ConsumerWidget {
     final expired = info?.expired ?? false;
 
     PopupMenuItem<String> item(String value, IconData icon, String label) =>
-        PopupMenuItem<String>(
-          value: value,
-          height: 40,
-          child: Row(
-            children: [
-              Icon(icon, size: 18, color: GC.textDim),
-              const SizedBox(width: 12),
-              Text(label),
-            ],
-          ),
-        );
+        compactMenuItem(value, label, icon: icon);
 
     final String title;
-    final String subtitle;
     if (signedIn) {
       title = info!.name;
-      subtitle = expired ? 'Sign in again' : info.email;
     } else {
       title = account.isLoading ? '…' : 'Not signed in';
-      subtitle = 'Sign in to gocoder.org';
     }
 
     return Padding(
-      padding: const EdgeInsets.all(8),
+      padding: const EdgeInsets.all(6),
       child: PopupMenuButton<String>(
         key: SidebarKeys.accountMenu,
         tooltip: 'Account and settings',
         position: PopupMenuPosition.over,
-        constraints: const BoxConstraints(minWidth: sidebarWidth - 16),
+        constraints: const BoxConstraints(minWidth: sidebarWidth - 12),
         onSelected: (value) {
           if (value == 'signout') {
             _signOut(context, ref);
@@ -1166,8 +1261,11 @@ class _AccountButton extends ConsumerWidget {
           if (signedIn)
             PopupMenuItem<String>(
               enabled: false,
-              height: 34,
-              child: Text(info!.email, style: theme.textTheme.bodySmall),
+              height: 28,
+              child: Text(
+                expired ? '${info!.email} · session expired' : info!.email,
+                style: theme.textTheme.bodySmall?.copyWith(fontSize: 11.5),
+              ),
             ),
           item('/account/profile', Icons.person_outline_rounded, 'Profile'),
           item(
@@ -1188,40 +1286,49 @@ class _AccountButton extends ConsumerWidget {
           else
             item('/account/profile', Icons.login_rounded, 'Sign in'),
         ],
-        child: Padding(
-          padding: const EdgeInsets.all(8),
+        child: SizedBox(
+          height: 32,
           child: Row(
             children: [
+              const SizedBox(width: 6),
               AccountAvatar(
+                size: 22,
                 initials: signedIn ? info!.initials : null,
                 badge: expired ? GC.warn : null,
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
               Expanded(
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.titleSmall,
-                    ),
-                    Text(
-                      subtitle,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall,
-                    ),
-                  ],
+                child: Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: const TextStyle(
+                    fontFamily: GC.sans,
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: GC.textHi,
+                  ),
                 ),
               ),
+              if (expired)
+                const Padding(
+                  padding: EdgeInsets.only(left: 6),
+                  child: Text(
+                    'Sign in again',
+                    style: TextStyle(
+                      fontFamily: GC.sans,
+                      fontSize: 11,
+                      color: GC.warn,
+                    ),
+                  ),
+                ),
+              const SizedBox(width: 4),
               const Icon(
                 Icons.unfold_more_rounded,
-                size: 18,
-                color: GC.textDim,
+                size: 15,
+                color: GC.textFaint,
               ),
+              const SizedBox(width: 6),
             ],
           ),
         ),

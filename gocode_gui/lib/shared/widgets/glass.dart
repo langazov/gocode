@@ -332,10 +332,10 @@ class PillHeader extends StatelessWidget implements PreferredSizeWidget {
   final Widget? title;
   final List<Widget> actions;
 
-  static const _height = 60.0;
+  static const _height = 46.0;
 
   @override
-  Size get preferredSize => const Size.fromHeight(_height + 20);
+  Size get preferredSize => const Size.fromHeight(_height + 18);
 
   @override
   Widget build(BuildContext context) {
@@ -351,7 +351,7 @@ class PillHeader extends StatelessWidget implements PreferredSizeWidget {
     return SafeArea(
       bottom: false,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+        padding: const EdgeInsets.fromLTRB(14, 10, 14, 8),
         child: Align(
           alignment: Alignment.topCenter,
           child: ConstrainedBox(
@@ -359,8 +359,8 @@ class PillHeader extends StatelessWidget implements PreferredSizeWidget {
             child: GlassSurface(
               radius: _height / 2,
               padding: EdgeInsets.only(
-                left: leading == null && menu == null ? 22 : 8,
-                right: 8,
+                left: leading == null && menu == null ? 18 : 6,
+                right: 6,
               ),
               child: SizedBox(
                 height: _height,
@@ -374,7 +374,7 @@ class PillHeader extends StatelessWidget implements PreferredSizeWidget {
                     Expanded(
                       child: Align(
                         alignment: Alignment.centerLeft,
-                        child: title ?? const GocodeLogo(),
+                        child: title ?? const GocodeLogo(size: 18),
                       ),
                     ),
                     ...actions,
@@ -414,14 +414,14 @@ class Eyebrow extends StatelessWidget {
     return GlassSurface(
       radius: 999,
       shadow: false,
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
       child: Text(
         text.toUpperCase(),
         style: const TextStyle(
           fontFamily: GC.sans,
-          fontSize: 12.5,
+          fontSize: 11,
           fontWeight: FontWeight.w500,
-          letterSpacing: 2.2,
+          letterSpacing: 1.8,
           height: 1.2,
           color: Color(0xFFB3A89B),
         ),
@@ -451,7 +451,7 @@ class StatusPill extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.10),
         borderRadius: BorderRadius.circular(999),
@@ -461,9 +461,9 @@ class StatusPill extends StatelessWidget {
         label.toUpperCase(),
         style: TextStyle(
           fontFamily: GC.sans,
-          fontSize: 11,
+          fontSize: 10,
           fontWeight: FontWeight.w600,
-          letterSpacing: 0.9,
+          letterSpacing: 0.8,
           height: 1,
           color: color,
         ),
@@ -482,7 +482,11 @@ class CodeBlock extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget body = SelectableText(text, style: GC.code, maxLines: maxLines);
+    Widget body = SelectableText(
+      text,
+      style: GC.code.copyWith(fontSize: 12, height: 1.45),
+      maxLines: maxLines,
+    );
     if (maxHeight != null) {
       body = ConstrainedBox(
         constraints: BoxConstraints(maxHeight: maxHeight!),
@@ -491,10 +495,10 @@ class CodeBlock extends StatelessWidget {
     }
     return Container(
       width: double.infinity,
-      padding: const EdgeInsets.all(12),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         color: const Color(0x40000000),
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(6),
         border: Border.all(color: GC.border),
       ),
       child: body,
@@ -563,4 +567,22 @@ class ErrorPanel extends StatelessWidget {
       ),
     );
   }
+}
+
+/// A dense popup-menu entry: 32px tall, 13px label, optional leading icon.
+PopupMenuItem<T> compactMenuItem<T>(T value, String label, {IconData? icon}) {
+  return PopupMenuItem<T>(
+    value: value,
+    height: 32,
+    padding: const EdgeInsets.symmetric(horizontal: 12),
+    child: Row(
+      children: [
+        if (icon != null) ...[
+          Icon(icon, size: 15, color: GC.textDim),
+          const SizedBox(width: 10),
+        ],
+        Text(label),
+      ],
+    ),
+  );
 }
