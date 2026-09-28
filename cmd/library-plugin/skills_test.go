@@ -8,6 +8,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	goruntime "runtime" // this package has its own runtime type
 	"sort"
 	"strings"
 	"testing"
@@ -350,7 +351,9 @@ func TestSkillShowMaterializeWritesOneFileIntoHashKeyedCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info.Mode().Perm()&0o100 == 0 {
+	// Windows has no execute bit (os.Chmod only toggles read-only), so the
+	// mode check is Unix-only.
+	if goruntime.GOOS != "windows" && info.Mode().Perm()&0o100 == 0 {
 		t.Fatalf("materialized script is not executable: %v", info.Mode())
 	}
 	if files := listFiles(t, e.project); len(files) != 0 {
