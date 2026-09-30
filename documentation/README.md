@@ -19,7 +19,7 @@ why it is put together that way, and where to look when changing it.
 | **6** | [The TUI](06-tui.md) | Bubble Tea architecture, the prompt, dialogs, streaming |
 | **7** | [Configuration](07-configuration.md) | Every config key, precedence, agents, skills, commands |
 | **8** | [HTTP API](08-http-api.md) | Route reference and the SSE event stream |
-| **9** | [LSP, MCP & plugins](09-integrations.md) | Language servers, Model Context Protocol clients, and the plugin host |
+| **9** | [LSP, MCP, plugins & ACP](09-integrations.md) | Language servers, Model Context Protocol clients, the plugin host, and editors driving gocode over the Agent Client Protocol |
 | **10** | [Development](10-development.md) | Building, testing, releasing, and the porting conventions |
 
 ## Design recommendations

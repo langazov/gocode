@@ -4,9 +4,12 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 	"strings"
+
+	"github.com/langazov/gocode-go/internal/tool"
 )
 
 const (
@@ -70,7 +73,7 @@ func (t *ReadTool) Execute(ctx context.Context, input map[string]any) (string, e
 	if limit < 1 {
 		limit = defaultReadLimit
 	}
-	target, err := t.resolver.Resolve(path)
+	target, err := t.resolver.ResolveCtx(ctx, path)
 	if err != nil {
 		return "", err
 	}
@@ -78,6 +81,13 @@ func (t *ReadTool) Execute(ctx context.Context, input map[string]any) (string, e
 		return listDirectory(target, offset, limit)
 	}
 	warmDiagnostics(ctx, t.diagnoser, target)
+	if env := tool.EnvFor(ctx); env != nil && env.FS != nil && env.FS.CanRead() {
+		content, err := env.FS.ReadTextFile(ctx, target)
+		if err != nil {
+			return "", fmt.Errorf("Unable to read %s", path)
+		}
+		return readLines(strings.NewReader(content), target, offset, limit)
+	}
 	return readFile(target, offset, limit)
 }
 
@@ -112,8 +122,12 @@ func readFile(path string, offset, limit int) (string, error) {
 		return "", fmt.Errorf("Unable to read %s", path)
 	}
 	defer file.Close()
+	return readLines(file, path, offset, limit)
+}
 
-	scanner := bufio.NewScanner(file)
+// readLines renders the numbered window of lines the read tool returns.
+func readLines(source io.Reader, path string, offset, limit int) (string, error) {
+	scanner := bufio.NewScanner(source)
 	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
 	var out strings.Builder
 	line := 1

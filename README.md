@@ -205,7 +205,7 @@ gocode attach http://box:4096              # drive a remote server from your ter
 <summary><b>Full command list</b></summary>
 
 ```
-acp          start ACP (Agent Client Protocol) server
+acp          run as an Agent Client Protocol agent for editors (ACP v1 + v2)
 agent        manage agents
 attach       attach to a running gocode server
 completion   generate shell completion script
@@ -230,6 +230,23 @@ web          start gocode server and open web interface
 
 </details>
 
+### In your editor (ACP)
+
+`gocode acp` speaks the [Agent Client Protocol](https://agentclientprotocol.com),
+versions 1 and 2, so any ACP editor can use gocode as its agent — streaming,
+tool calls with diffs, permission prompts, plans, modes and models, session
+history. In Zed:
+
+```json
+{
+  "agent_servers": {
+    "gocode": { "command": "gocode", "args": ["acp"] }
+  }
+}
+```
+
+See [LSP, MCP, plugins & ACP](documentation/09-integrations.md#acp-editors-driving-gocode) for what is supported.
+
 ## How it fits together
 
 The TUI is **always** an HTTP client — even locally. `gocode` boots the
@@ -241,6 +258,7 @@ is why remote and local behave the same.
 flowchart LR
   TUI["TUI<br/><i>Bubble Tea</i>"] -->|HTTP + SSE| SRV
   CLI["CLI<br/><i>run, export…</i>"] -->|in-process| SRV
+  ACP["Editors<br/><i>gocode acp</i>"] -->|in-process| SVC
   SRV["HTTP server<br/><i>/api/*</i>"] --> SVC["Session service"]
   SVC --> RUN["Runner<br/><i>the agent loop</i>"]
   RUN --> LLM["Providers<br/><i>Anthropic · OpenAI · Gemini</i>"]

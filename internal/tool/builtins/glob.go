@@ -56,7 +56,7 @@ func (t *GlobTool) Execute(ctx context.Context, input map[string]any) (string, e
 	limit := intArg(input, "limit", defaultGlobLimit)
 	base := t.resolver.Root
 	if sub := stringArg(input, "path"); sub != "" {
-		resolved, err := t.resolver.Resolve(sub)
+		resolved, err := t.resolver.ResolveCtx(ctx, sub)
 		if err != nil {
 			return "", err
 		}

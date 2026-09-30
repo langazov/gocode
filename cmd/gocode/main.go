@@ -147,7 +147,13 @@ type stack struct {
 	// against it, and anything else that means "the project" rather than
 	// "a project" should read it from here too.
 	workdir string
+	// borrowedDB is set when the database handle belongs to the caller
+	// (bootOptions.Database), which then owns closing it.
+	borrowedDB bool
 }
+
+// Workdir is the directory the runtime booted in.
+func (s *stack) Workdir() string { return s.workdir }
 
 // newServer builds the HTTP server this stack backs.
 //
@@ -188,6 +194,15 @@ func (s *stack) newServer() *server.Server {
 func (s *stack) Close() error {
 	if s.Plugins != nil {
 		_ = s.Plugins.Close(context.Background())
+	}
+	if s.MCP != nil && s.borrowedDB {
+		// A borrowed-database stack is one of several in a long-lived process
+		// (gocode acp), so its MCP children must go with it rather than wait
+		// for the process exit that reclaims them for every other command.
+		s.MCP.Close()
+	}
+	if s.borrowedDB {
+		return nil
 	}
 	return s.Database.Close()
 }
@@ -264,15 +279,50 @@ func loopbackURL(listener net.Listener) string {
 }
 
 func bootStackFor(ctx context.Context, modelFlag, serverURL string) (*stack, error) {
-	cfg, err := config.Load()
+	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, err
 	}
-	database, err := db.OpenDefault(ctx)
+	return bootStackWith(ctx, bootOptions{Directory: cwd, ModelFlag: modelFlag, ServerURL: serverURL})
+}
+
+// bootOptions parameterises bootStackWith. The zero value of every optional
+// field reproduces what the single-directory commands have always done.
+type bootOptions struct {
+	// Directory is the project the runtime serves: config discovery, tools,
+	// skills, commands, LSP and MCP are all rooted here. Required.
+	Directory string
+	ModelFlag string
+	ServerURL string
+	// Database, when set, is shared rather than opened: a process serving
+	// several directories at once (gocode acp) boots one stack per directory
+	// over a single handle, so the single-writer semaphore (db.DB.write)
+	// stays process-wide. The caller owns closing it.
+	Database *db.DB
+	// Catalog, when set, is shared the same way, so a second stack does not
+	// start a second background refresh of the same models.dev snapshot.
+	Catalog *modelsdev.Service
+}
+
+// bootStackWith builds the runtime for opts.Directory without consulting the
+// process working directory, which is what lets one process boot several.
+func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
+	modelFlag, serverURL := opts.ModelFlag, opts.ServerURL
+	cwd, err := filepath.Abs(opts.Directory)
 	if err != nil {
 		return nil, err
 	}
-	cwd, _ := os.Getwd()
+	cfg, err := config.LoadFor(cwd)
+	if err != nil {
+		return nil, err
+	}
+	database := opts.Database
+	if database == nil {
+		database, err = db.OpenDefault(ctx)
+		if err != nil {
+			return nil, err
+		}
+	}
 	// One line per boot, so a later failure can be read against who else was
 	// running. Instances only contend when they share a database file, and
 	// the file depends on the release channel — a dev build and an installed
@@ -375,12 +425,13 @@ func bootStackFor(ctx context.Context, modelFlag, serverURL string) (*stack, err
 		}
 	}
 	streamClient := newLazyProvider(cfg)
-	catalog := modelsdev.New()
-
-	workdir, err := os.Getwd()
-	if err != nil {
-		return nil, err
+	catalog := opts.Catalog
+	sharedCatalog := catalog != nil
+	if catalog == nil {
+		catalog = modelsdev.New()
 	}
+
+	workdir := cwd
 	// Skills are discovered from the project and the user's global config,
 	// project first so a local skill overrides a global one of the same
 	// name. .agents is a cross-tool convention other agent CLIs also write
@@ -574,13 +625,16 @@ func bootStackFor(ctx context.Context, modelFlag, serverURL string) (*stack, err
 	// Turn-level busy/idle for clients. See session/run_events.go for why the
 	// step events are not enough.
 	execution.OnStatus = session.PublishRunStatus(ctx, bus)
-	catalog.StartBackgroundRefresh(ctx)
-	// The per-account provider overlay (an opencode/Zen org's own model list)
-	// renews on the same terms as the public catalog: in the background,
-	// after boot. provider.Resolve above answered it from the cache this
-	// writes, so the fetch must not be waited on here — see
-	// provider.StartOverlayRefresh.
-	provider.StartOverlayRefresh(ctx)
+	if !sharedCatalog {
+		catalog.StartBackgroundRefresh(ctx)
+		// The per-account provider overlay (an opencode/Zen org's own model
+		// list) renews on the same terms as the public catalog: in the
+		// background, after boot. provider.Resolve above answered it from the
+		// cache this writes, so the fetch must not be waited on here — see
+		// provider.StartOverlayRefresh. A shared catalog means another stack
+		// in this process already started both.
+		provider.StartOverlayRefresh(ctx)
+	}
 	service := session.NewService(database, bus)
 	// Plan mode needs both the question service and the session service, so it
 	// is registered here rather than in the builtins block above.
@@ -635,6 +689,7 @@ func bootStackFor(ctx context.Context, modelFlag, serverURL string) (*stack, err
 		Memory:           memory.New(database),
 		ProjectID:        projectID,
 		workdir:          workdir,
+		borrowedDB:       opts.Database != nil,
 	}, nil
 }
 

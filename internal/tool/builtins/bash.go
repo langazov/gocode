@@ -72,11 +72,15 @@ func (t *BashTool) Execute(ctx context.Context, input map[string]any) (string, e
 	}
 	workdir := t.resolver.Root
 	if requested := stringArg(input, "workdir"); requested != "" {
-		resolved, err := t.resolver.Resolve(requested)
+		resolved, err := t.resolver.ResolveCtx(ctx, requested)
 		if err != nil {
 			return "", err
 		}
 		workdir = resolved
+	}
+
+	if env := tool.EnvFor(ctx); env != nil && env.Terminal != nil {
+		return runInClientTerminal(ctx, env.Terminal, command, workdir, timeoutMS)
 	}
 
 	runCtx, cancel := context.WithTimeout(ctx, time.Duration(timeoutMS)*time.Millisecond)
@@ -133,6 +137,43 @@ func (t *BashTool) Execute(ctx context.Context, input map[string]any) (string, e
 	}
 	if truncated {
 		text += "\n(output truncated)"
+	}
+	if text == "" {
+		return "(no output)", nil
+	}
+	return text, nil
+}
+
+// runInClientTerminal runs the command in the client's terminal instead of a
+// local process, and reports it in the same shape the local path does: the
+// output, then an error for a timeout or a non-zero exit. The client owns the
+// timeout mechanics (kill, then collect what was printed), per the "Building
+// a Timeout" recipe in agentclientprotocol.com/protocol/v1/terminals.
+func runInClientTerminal(ctx context.Context, terminal tool.ClientTerminal, command, workdir string, timeoutMS int) (string, error) {
+	exec, _ := tool.ExecFrom(ctx)
+	result, err := terminal.Run(ctx, tool.TerminalRequest{
+		SessionID:   exec.SessionID,
+		CallID:      exec.CallID,
+		Command:     command,
+		Cwd:         workdir,
+		Timeout:     time.Duration(timeoutMS) * time.Millisecond,
+		OutputLimit: maxOutputBytes,
+	})
+	if err != nil {
+		return "", fmt.Errorf("bash: %w", err)
+	}
+	text := result.Output
+	if result.Truncated {
+		text += "\n(output truncated)"
+	}
+	if result.TimedOut {
+		return text, fmt.Errorf("bash: command timed out after %dms", timeoutMS)
+	}
+	if result.ExitCode == nil && result.Signal != "" {
+		return text, fmt.Errorf("bash: command terminated by signal %s", result.Signal)
+	}
+	if result.ExitCode != nil && *result.ExitCode != 0 {
+		return text, fmt.Errorf("bash: command exited with code %d", *result.ExitCode)
 	}
 	if text == "" {
 		return "(no output)", nil

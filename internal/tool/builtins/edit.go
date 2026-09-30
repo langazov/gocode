@@ -3,7 +3,6 @@ package builtins
 import (
 	"context"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/langazov/gocode-go/internal/diff"
@@ -71,11 +70,11 @@ func (t *EditTool) Execute(ctx context.Context, input map[string]any) (string, e
 	if oldString == "" {
 		return "", fmt.Errorf("oldString must not be empty. Use write to create or overwrite a file.")
 	}
-	target, err := t.resolver.Resolve(path)
+	target, err := t.resolver.ResolveCtx(ctx, path)
 	if err != nil {
 		return "", err
 	}
-	raw, err := os.ReadFile(target)
+	raw, err := readText(ctx, target)
 	if err != nil {
 		return "", fmt.Errorf("Unable to edit %s", path)
 	}
@@ -97,7 +96,7 @@ func (t *EditTool) Execute(ctx context.Context, input map[string]any) (string, e
 		replaced = strings.Replace(text, oldString, newString, 1)
 	}
 	output := joinBOM(replaced, bom)
-	if err := os.WriteFile(target, []byte(output), 0o644); err != nil {
+	if err := writeText(ctx, target, []byte(output)); err != nil {
 		return "", fmt.Errorf("Unable to edit %s", path)
 	}
 	return formatEditOutput(target, replacements, text, replaced) + diagnosticsFooter(ctx, t.diagnoser, target), nil

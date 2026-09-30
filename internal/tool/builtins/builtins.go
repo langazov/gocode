@@ -5,6 +5,7 @@
 package builtins
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -47,6 +48,16 @@ func (r Resolver) Resolve(input string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("path escapes working directory: %s", input)
+}
+
+// ResolveCtx is Resolve for a tool call: a session environment registered for
+// the call's session (tool.SessionEnv) adds its workspace roots to the
+// allowed directories.
+func (r Resolver) ResolveCtx(ctx context.Context, input string) (string, error) {
+	if env := tool.EnvFor(ctx); env != nil && len(env.Roots) > 0 {
+		r.Allow = append(append([]string(nil), r.Allow...), env.Roots...)
+	}
+	return r.Resolve(input)
 }
 
 // within reports whether candidate is dir itself or sits underneath it.
