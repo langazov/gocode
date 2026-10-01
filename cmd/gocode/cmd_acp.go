@@ -142,8 +142,21 @@ func acpRuntime(s *stack) *acp.Runtime {
 		Commands:    s.Commands,
 		MCP:         s.MCP,
 		Models:      newModelLister(s).list,
-		Close:       s.Close,
+		// Predictions want a fast model: small_model when configured.
+		CompletionModel: completionModel(s.Config),
+		Close:           s.Close,
 	}
+}
+
+// completionModel is the configured small_model, or zero for the default.
+func completionModel(cfg *config.Config) session.ModelRef {
+	if cfg == nil {
+		return session.ModelRef{}
+	}
+	if providerID, modelID, ok := config.ParseModelRef(cfg.SmallModel); ok {
+		return session.ModelRef{ProviderID: providerID, ID: modelID}
+	}
+	return session.ModelRef{}
 }
 
 // modelLister caches the reachable-model list briefly: the ACP agent reads

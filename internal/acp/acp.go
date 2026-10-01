@@ -55,6 +55,9 @@ type Runtime struct {
 	MCP         *mcp.Service
 	// Models lists the models the user can reach, for the model selector.
 	Models func(ctx context.Context) []Model
+	// CompletionModel serves next-edit predictions (nes.go): the config's
+	// small_model. Zero falls back to Sessions.DefaultModel.
+	CompletionModel session.ModelRef
 	// Close releases the runtime. Called once, when the agent shuts down.
 	Close func() error
 }
@@ -119,6 +122,9 @@ type Agent struct {
 	// elicitations tracks outstanding URL-mode elicitation ids, which must be
 	// unique per connection (protocol/v1/elicitation "URL completion").
 	elicitations map[string]bool
+
+	// nes holds next-edit-suggestion sessions (nes.go).
+	nes nesState
 }
 
 // runtimeEntry boots a runtime once, however many requests race for it.
@@ -193,6 +199,9 @@ func (a *Agent) register() {
 	// Extension: forking is an RFD, not part of either stable version, so it
 	// is offered under an extension name (protocol/v1/extensibility).
 	a.handle("_gocode/session/fork", anyVersion, a.forkSession)
+	// Extension: next edit suggestions / inline completion (nes.go), the NES
+	// RFD under extension names.
+	a.registerNES()
 
 	a.conn.OnNotify("session/cancel", func(params json.RawMessage) {
 		if !a.ready() {

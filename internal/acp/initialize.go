@@ -195,7 +195,7 @@ func (a *Agent) initializeV1(client clientCaps) obj {
 			},
 			"auth": obj{"logout": obj{}},
 			"_meta": obj{
-				"gocode": obj{"fork": true},
+				"gocode": obj{"fork": true, "nes": nesCapability()},
 			},
 		},
 		"agentInfo":   a.implementation(),
@@ -225,7 +225,7 @@ func (a *Agent) initializeV2(client clientCaps) obj {
 				"additionalDirectories": obj{},
 			},
 			"_meta": obj{
-				"gocode": obj{"fork": true},
+				"gocode": obj{"fork": true, "nes": nesCapability()},
 			},
 		},
 		// Returning methods commits the agent to both auth/login and

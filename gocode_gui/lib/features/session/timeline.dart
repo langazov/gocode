@@ -2,8 +2,9 @@ import 'dart:async';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/acp/connection.dart';
 import '../../core/api/client.dart';
-import '../../core/api/models.dart';
+import '../../core/api/models.dart' hide Provider;
 import '../../core/connection/controller.dart';
 
 /// One renderable row in a session timeline.
@@ -111,6 +112,7 @@ class SessionState {
     this.queued = const [],
     this.todos = const [],
     this.stats,
+    this.acpConfigOptions,
   });
 
   final Session session;
@@ -120,6 +122,11 @@ class SessionState {
   final List<Todo> todos;
   final SessionStats? stats;
 
+  /// The ACP session's config options, when this state came from the ACP
+  /// transport; null over HTTP. Pickers read the model/thought_level
+  /// options from here instead of the model catalog.
+  final List<Object>? acpConfigOptions;
+
   SessionState copyWith({
     Session? session,
     List<TimelineItem>? items,
@@ -127,6 +134,7 @@ class SessionState {
     List<QueuedPrompt>? queued,
     List<Todo>? todos,
     SessionStats? stats,
+    List<Object>? acpConfigOptions,
   }) => SessionState(
     session: session ?? this.session,
     items: items ?? this.items,
@@ -134,6 +142,7 @@ class SessionState {
     queued: queued ?? this.queued,
     todos: todos ?? this.todos,
     stats: stats ?? this.stats,
+    acpConfigOptions: acpConfigOptions ?? this.acpConfigOptions,
   );
 }
 
@@ -192,10 +201,31 @@ NoticeItem _noticeFor(Message m) {
   );
 }
 
+/// The imperative surface a session screen drives, whichever transport
+/// backs it: HTTP ([SessionController]) or ACP ([AcpSessionController]).
+abstract class SessionBackend {
+  String get sessionID;
+  Stream<SessionState> get stream;
+
+  Future<void> prompt(
+    String text, {
+    String delivery,
+    List<FileAttachment> files,
+  });
+
+  Future<void> interrupt();
+  Future<void> setAgent(String agent);
+  Future<void> setModel(
+    String providerID,
+    String modelID, {
+    String? variant,
+  });
+}
+
 /// Drives one session's [SessionState] stream: initial reconcile, live SSE
 /// events, and reconcile-on-reconnect (gocode subscriptions are lossy by
 /// design, so every reconnect re-fetches durable state).
-class SessionController {
+class SessionController implements SessionBackend {
   SessionController({
     required GocodeClient client,
     required this.sessionID,
@@ -206,11 +236,13 @@ class SessionController {
        _reconnectSignal = reconnectSignal;
 
   final GocodeClient _client;
+  @override
   final String sessionID;
   final Stream<ApiEvent> _events;
   final Stream<void>? _reconnectSignal;
 
   final _stream = StreamController<SessionState>.broadcast();
+  @override
   Stream<SessionState> get stream => _stream.stream;
 
   StreamSubscription<ApiEvent>? _eventSub;
@@ -317,6 +349,7 @@ class SessionController {
   }
 
   /// Sends a prompt; the server admits it durably and events drive the rest.
+  @override
   Future<void> prompt(
     String text, {
     String delivery = 'queue',
@@ -326,8 +359,10 @@ class SessionController {
     unawaited(reconcile());
   }
 
+  @override
   Future<void> interrupt() => _client.interrupt(sessionID);
 
+  @override
   Future<void> setModel(
     String providerID,
     String modelID, {
@@ -337,6 +372,7 @@ class SessionController {
     unawaited(reconcile());
   }
 
+  @override
   Future<void> setAgent(String agent) async {
     await _client.setAgent(sessionID, agent);
     unawaited(reconcile());
@@ -383,12 +419,35 @@ final sessionStateProvider = StreamProvider.autoDispose
 
 /// The controller behind [sessionStateProvider], for actions (prompt,
 /// interrupt, model/agent switch). Read, not watch — actions are imperative.
-SessionController? sessionControllerOf(Ref ref, String sessionID) =>
-    ref.read(sessionStateProvider(sessionID)) is AsyncError
-    ? null
-    : sessionControllerRegistry[sessionID];
+/// Covers both transports: the ACP controller when its projection is live,
+/// the HTTP controller otherwise.
+SessionBackend? sessionControllerOf(Ref ref, String sessionID) {
+  final acp = ref.read(acpConnectionProvider);
+  final acpController = acp?.controllers[sessionID];
+  if (acpController != null) return acpController;
+  return ref.read(sessionStateProvider(sessionID)) is AsyncError
+      ? null
+      : sessionControllerRegistry[sessionID];
+}
 
-/// Registry of live controllers, so imperative actions (send, interrupt)
-/// can find the controller for a session without watching providers.
-final Map<String, SessionController> sessionControllerRegistry =
-    <String, SessionController>{};
+/// Widget-facing variant of [sessionControllerOf] (a WidgetRef reads
+/// providers the same way; only the static type differs).
+SessionBackend? sessionBackendOf(WidgetRef ref, String sessionID) {
+  final acp = ref.read(acpConnectionProvider);
+  final acpController = acp?.controllers[sessionID];
+  if (acpController != null) return acpController;
+  return sessionControllerRegistry[sessionID];
+}
+
+/// Registry of live HTTP controllers, so imperative actions (send,
+/// interrupt) can find the controller for a session without watching
+/// providers.
+final Map<String, SessionBackend> sessionControllerRegistry =
+    <String, SessionBackend>{};
+
+/// The live ACP connection, or null when not in ACP mode. Watches the
+/// connection state so it appears and disappears with it.
+final acpConnectionProvider = Provider<AcpConnection?>((ref) {
+  ref.watch(connectionProvider);
+  return ref.read(connectionProvider.notifier).controller?.acp;
+});

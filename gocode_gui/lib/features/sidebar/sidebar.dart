@@ -12,6 +12,7 @@ import '../../shared/widgets/session_status.dart';
 import '../account/avatar.dart';
 import '../account/providers.dart';
 import '../home/providers.dart';
+import '../session/timeline.dart' show acpConnectionProvider;
 import 'history.dart';
 import 'project_grouping.dart';
 import 'projects.dart';
@@ -96,18 +97,37 @@ class _SidebarState extends ConsumerState<Sidebar> {
   }
 
   Future<void> _act(String action, Session session) async {
-    final client = ref.read(apiClientProvider);
-    if (client == null) return;
     try {
+      final acp = ref.read(acpConnectionProvider);
       switch (action) {
         case 'rename':
           final title = await _promptTitle(session.title);
           if (title == null || title.trim().isEmpty) return;
+          if (acp != null) {
+            await _renameAcp(acp, session.id, title.trim());
+            break;
+          }
+          final client = ref.read(apiClientProvider);
+          if (client == null) return;
           await client.renameSession(session.id, title.trim());
         case 'fork':
+          if (acp != null) {
+            // Forking over ACP is a gocode extension the client does not
+            // exercise yet; sessions can still be continued by resuming.
+            throw UnsupportedError('fork is not available in ACP mode');
+          }
+          final client = ref.read(apiClientProvider);
+          if (client == null) return;
           await client.forkSession(session.id);
         case 'delete':
           if (await _confirmDelete(session.title) != true) return;
+          if (acp != null) {
+            await acp.deleteSession(session.id);
+            if (mounted && _activeSessionID == session.id) context.go('/');
+            break;
+          }
+          final client = ref.read(apiClientProvider);
+          if (client == null) return;
           await client.deleteSession(session.id);
           if (mounted && _activeSessionID == session.id) context.go('/');
       }
@@ -118,6 +138,12 @@ class _SidebarState extends ConsumerState<Sidebar> {
             .showSnackBar(SnackBar(content: Text('$e')));
       }
     }
+  }
+
+  /// ACP has no rename; the title the agent generated stands. Kept honest
+  /// rather than pretending: shows the limitation once.
+  Future<void> _renameAcp(dynamic acp, String id, String title) async {
+    throw UnsupportedError('renaming is not available in ACP mode');
   }
 
   Future<String?> _promptTitle(String current) {

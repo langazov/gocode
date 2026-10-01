@@ -4,6 +4,8 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../acp/client.dart';
+import '../acp/connection.dart';
 import '../api/client.dart';
 import '../api/models.dart' hide Provider;
 import '../api/sse.dart';
@@ -13,6 +15,10 @@ import '../process/supervisor.dart';
 enum ConnectionMode {
   /// Desktop: spawn `gocode serve` as a child process.
   local,
+
+  /// Desktop: spawn `gocode acp` and speak the Agent Client Protocol over
+  /// stdio — the same agent surface editors drive.
+  acp,
 
   /// Mobile (or advanced): attach to a running server.
   remote,
@@ -55,7 +61,11 @@ class ConnectionSettings {
     final prefs = await SharedPreferences.getInstance();
     final modeName = prefs.getString('connection.mode');
     return ConnectionSettings(
-      mode: modeName == 'remote' ? ConnectionMode.remote : ConnectionMode.local,
+      mode: switch (modeName) {
+        'remote' => ConnectionMode.remote,
+        'acp' => ConnectionMode.acp,
+        _ => ConnectionMode.local,
+      },
       binaryPath: prefs.getString('connection.binaryPath') ?? '',
       workingDirectory: prefs.getString('connection.workingDirectory') ?? '',
       remoteUrl: prefs.getString('connection.remoteUrl') ?? '',
@@ -112,6 +122,9 @@ class ConnectionController {
   GocodeClient? _client;
   SseClient? _sse;
 
+  AcpConnection? get acp => _acpConnection;
+  AcpConnection? _acpConnection;
+
   /// The SSE feed's reconnect signal — owners reconcile on every emission.
   ///
   /// Backed by a persistent bus (like [events]) rather than a passthrough
@@ -122,7 +135,8 @@ class ConnectionController {
   /// every future reconnect signal.
   Stream<void> get reconnectSignal => _reconnectBus.stream;
 
-  Stream<ApiEvent> get events => _eventBus.stream;
+  Stream<ApiEvent> get events =>
+    _acpConnection != null ? _acpConnection!.events : _eventBus.stream;
 
   // Sync, so AppConnection's state is current by the time connect() (and
   // hence apply()) completes, rather than a microtask later.
@@ -148,6 +162,51 @@ class ConnectionController {
     );
 
     try {
+      if (_settings.mode == ConnectionMode.acp) {
+        if (!Platform.isMacOS && !Platform.isLinux && !Platform.isWindows) {
+          throw StateError(
+            'ACP mode requires a desktop platform; use remote attach',
+          );
+        }
+        final dir = _settings.workingDirectory;
+        if (dir.isEmpty || !await Directory(dir).exists()) {
+          throw StateError('working directory not set or missing: $dir');
+        }
+        var binary = _settings.binaryPath;
+        if (binary.isEmpty || await BinaryLocator.verify(binary) == null) {
+          binary = await BinaryLocator.find() ?? '';
+        }
+        if (binary.isEmpty) {
+          throw StateError(
+            'gocode binary not found — set its path in Settings',
+          );
+        }
+        final acp = AcpClient(onLog: _appendLog);
+        await acp.start(
+          binaryPath: binary,
+          workingDirectory: dir,
+        );
+        final connection = AcpConnection(acp);
+        _acpConnection = connection;
+        // Warm the session list so the sidebar has history immediately.
+        unawaited(
+          connection
+              .refreshSessions()
+              .then((_) {})
+              .catchError((Object e) {
+            _appendLog('acp: session list: $e');
+          }),
+        );
+        _emit(
+          ConnectionState(
+            phase: ConnectionPhase.connected,
+            baseUrl: dir,
+            stderr: List.of(_log),
+          ),
+        );
+        return;
+      }
+
       String url;
       if (_settings.mode == ConnectionMode.local) {
         if (!Platform.isMacOS && !Platform.isLinux && !Platform.isWindows) {
@@ -240,6 +299,8 @@ class ConnectionController {
     _client = null;
     await _supervisor?.stop();
     _supervisor = null;
+    await _acpConnection?.stop();
+    _acpConnection = null;
     _emit(const ConnectionState());
   }
 

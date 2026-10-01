@@ -22,9 +22,10 @@ void main() {
     await tester.tap(find.text('Connect to a server'));
     await tester.pumpAndSettle();
 
-    // Expanded with Local selected by default.
+    // Expanded with ACP selected by default.
     expect(find.text('Project directory'), findsOneWidget);
-    expect(find.text('Local'), findsOneWidget);
+    expect(find.text('ACP'), findsOneWidget);
+    expect(find.text('Server'), findsOneWidget);
     expect(find.text('Remote'), findsOneWidget);
 
     await tester.tap(find.text('Remote'));

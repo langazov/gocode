@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../app/theme.dart';
+import '../../core/acp/protocol.dart';
 import '../../core/api/models.dart';
 import 'glass.dart';
 
@@ -26,6 +27,121 @@ Future<ModelChoice?> showModelPicker(
     allowDefault: allowDefault,
   ),
 );
+
+/// The ACP counterpart of [showModelPicker]: the same dialog over the
+/// config option's value rows.
+Future<ModelRow?> showAcpModelPicker(
+  BuildContext context, {
+  required List<ModelRow> rows,
+  String? selectedKey,
+}) => showDialog<ModelRow>(
+  context: context,
+  barrierColor: const Color(0x99000000),
+  builder: (_) => _AcpModelPickerDialog(
+    rows: rows,
+    selectedKey: selectedKey,
+  ),
+);
+
+class _AcpModelPickerDialog extends StatefulWidget {
+  const _AcpModelPickerDialog({
+    required this.rows,
+    required this.selectedKey,
+  });
+
+  final List<ModelRow> rows;
+  final String? selectedKey;
+
+  @override
+  State<_AcpModelPickerDialog> createState() => _AcpModelPickerDialogState();
+}
+
+class _AcpModelPickerDialogState extends State<_AcpModelPickerDialog> {
+  String _query = '';
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final q = _query.toLowerCase();
+    final filtered =
+        widget.rows
+            .where(
+              (m) =>
+                  q.isEmpty ||
+                  m.name.toLowerCase().contains(q) ||
+                  m.value.toLowerCase().contains(q),
+            )
+            .toList()
+          ..sort((a, b) => a.value.compareTo(b.value));
+
+    final rows = <Widget>[];
+    String? provider;
+    for (final m in filtered) {
+      if (m.providerName != null && m.providerName != provider) {
+        provider = m.providerName;
+        rows.add(
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 16, 12, 6),
+            child: Caption(provider!),
+          ),
+        );
+      }
+      rows.add(
+        _ModelRow(
+          title: m.name,
+          subtitle: m.value,
+          selected: m.key == widget.selectedKey,
+          onTap: () => Navigator.pop(context, m),
+        ),
+      );
+    }
+
+    return Dialog(
+      backgroundColor: Colors.transparent,
+      elevation: 0,
+      insetPadding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
+        child: GlassSurface(
+          radius: GC.rPanel,
+          tint: const Color(0xB31F1F1F),
+          padding: const EdgeInsets.fromLTRB(20, 22, 20, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('Choose a model', style: theme.textTheme.titleLarge),
+              const SizedBox(height: 4),
+              Text(
+                '${widget.rows.length} available from the session',
+                style: theme.textTheme.bodySmall,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                autofocus: true,
+                onChanged: (v) => setState(() => _query = v.trim()),
+                decoration: const InputDecoration(
+                  hintText: 'Search models…',
+                  prefixIcon: Icon(Icons.search, size: 18),
+                ),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: rows.isEmpty
+                    ? Center(
+                        child: Text(
+                          'No models match "$_query"',
+                          style: theme.textTheme.bodyMedium,
+                        ),
+                      )
+                    : ListView(children: rows),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _ModelPickerDialog extends StatefulWidget {
   const _ModelPickerDialog({

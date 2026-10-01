@@ -98,8 +98,13 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                           SegmentedButton<ConnectionMode>(
                             segments: const [
                               ButtonSegment(
+                                value: ConnectionMode.acp,
+                                label: Text('ACP'),
+                                icon: Icon(Icons.hub_outlined, size: 18),
+                              ),
+                              ButtonSegment(
                                 value: ConnectionMode.local,
-                                label: Text('Local'),
+                                label: Text('Server'),
                                 icon: Icon(Icons.terminal, size: 18),
                               ),
                               ButtonSegment(
@@ -115,7 +120,7 @@ class _SettingsScreenState extends ConsumerState<SettingsScreen> {
                             ),
                           ),
                           const SizedBox(height: 22),
-                          if (_draft.mode == ConnectionMode.local)
+                          if (_draft.mode != ConnectionMode.remote)
                             ..._localFields(theme)
                           else
                             ..._remoteFields(theme),

@@ -489,6 +489,18 @@ Session forking is an RFD, not part of either version: it is offered as the
 extension method `_gocode/session/fork`, advertised under
 `capabilities._meta.gocode.fork`.
 
+**Edit predictions** (inline completion and next-edit suggestions) follow
+the Next Edit Suggestions RFD under extension names, advertised under
+`_meta.gocode.nes` (UTF-16 positions): `_gocode/nes/start` and
+`_gocode/nes/close`, the `_gocode/document/didOpen|didChange|didClose|didSave|didFocus`
+notifications, `_gocode/nes/suggest` (returns `edit` suggestions), and
+`_gocode/nes/accept|reject`. The model rewrites a small region around the
+cursor, given the recent edits and nearby diagnostics. The rewrite is
+reduced to minimal edits: a lone insertion at the cursor is a completion;
+anything else is a next edit. Predictions use `small_model` when it is
+configured (pick a fast, non-reasoning model), otherwise the default model,
+at the model's lowest reasoning variant.
+
 ## Skills
 
 Adjacent to all three: **skills** are markdown files describing a capability, loaded

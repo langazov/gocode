@@ -45,8 +45,8 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
                 if (!connecting) ...[
                   const SizedBox(height: 14),
                   Text(
-                    'Pick a project to start a local server, or attach to one '
-                    'that is already running.',
+                    'Pick a project to start a local agent, or attach to a '
+                    'server that is already running.',
                     textAlign: TextAlign.center,
                     style: theme.textTheme.bodyLarge,
                   ),
@@ -122,7 +122,7 @@ class _ConnectScreenState extends ConsumerState<ConnectScreen> {
     if (directory == null) return;
     final settings = ref
         .read(settingsProvider)
-        .copyWith(mode: ConnectionMode.local, workingDirectory: directory);
+        .copyWith(mode: ConnectionMode.acp, workingDirectory: directory);
     ref.read(settingsProvider.notifier).update(settings);
     await ref.read(connectionProvider.notifier).apply(settings);
   }
@@ -210,8 +210,13 @@ class _SetupFormState extends ConsumerState<_SetupForm> {
         SegmentedButton<ConnectionMode>(
           segments: const [
             ButtonSegment(
+              value: ConnectionMode.acp,
+              label: Text('ACP'),
+              icon: Icon(Icons.hub_outlined, size: 18),
+            ),
+            ButtonSegment(
               value: ConnectionMode.local,
-              label: Text('Local'),
+              label: Text('Server'),
               icon: Icon(Icons.terminal, size: 18),
             ),
             ButtonSegment(
@@ -225,7 +230,7 @@ class _SetupFormState extends ConsumerState<_SetupForm> {
           onSelectionChanged: (s) => setState(() => _mode = s.first),
         ),
         const SizedBox(height: 16),
-        if (_mode == ConnectionMode.local)
+        if (_mode != ConnectionMode.remote)
           Row(
             children: [
               Expanded(
