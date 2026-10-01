@@ -58,9 +58,17 @@ type Runtime struct {
 	// CompletionModel serves next-edit predictions (nes.go): the config's
 	// small_model. Zero falls back to Sessions.DefaultModel.
 	CompletionModel session.ModelRef
+	// FIM completes between a prefix and a suffix for models trained for
+	// fill-in-the-middle (nes.go uses it for completions at the cursor).
+	// nil, or supported=false for a model, means use the rewrite path.
+	FIM FIMFunc
 	// Close releases the runtime. Called once, when the agent shuts down.
 	Close func() error
 }
+
+// FIMFunc completes the text between prefix and suffix with model. It
+// reports supported=false when the model has no fill-in-the-middle.
+type FIMFunc func(ctx context.Context, model session.ModelRef, prefix, suffix string, maxTokens int) (completion string, supported bool, err error)
 
 // Model is one selectable model.
 type Model struct {
@@ -149,6 +157,7 @@ func New(host Host, r io.Reader, w io.WriteCloser) *Agent {
 	if host.Log == nil {
 		host.Log = func(string, ...any) {}
 	}
+	nesReject = func(reason string) { host.Log("acp: nes: dropped prediction: %s", reason) }
 	a := &Agent{
 		host:         host,
 		conn:         jsonrpc.NewLineConn(w, r),

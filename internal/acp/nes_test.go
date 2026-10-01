@@ -1,12 +1,15 @@
 package acp
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/session"
 )
 
 func TestNESPositionsAreUTF16(t *testing.T) {
@@ -211,4 +214,144 @@ func TestNESProtocol(t *testing.T) {
 func versionName(v int) string {
 	b, _ := json.Marshal(v)
 	return "v" + string(b)
+}
+
+// Regression: real model replies that would have wiped or duplicated code.
+func TestNESRejectsDestructiveRewrites(t *testing.T) {
+	var lines []string
+	for i := 0; i < 30; i++ {
+		lines = append(lines, fmt.Sprintf("\tstep%d := compute(%d)", i, i))
+	}
+	text := "func f() {\n" + strings.Join(lines, "\n") + "\n}\n"
+	req := buildNESRequest("file:///w/a.go", "go", text, position{15, 0}, nil, nil)
+	region := text[req.start:req.end]
+	regionLines := strings.SplitAfter(region, "\n")
+
+	var reasons []string
+	nesReject = func(r string) { reasons = append(reasons, r) }
+	defer func() { nesReject = func(string) {} }()
+	reject := func(name, output string) {
+		t.Helper()
+		reasons = nil
+		if e, ok := req.edit(output); ok {
+			t.Fatalf("%s: accepted %+v", name, e)
+		}
+		t.Logf("%s: %v", name, reasons)
+	}
+	// Only the lines around the cursor came back, unchanged: placed, so
+	// nothing else is touched — and with no change, no suggestion.
+	reject("fragment", strings.Join(regionLines[6:11], ""))
+	// A fragment with a change is placed and edits only its own lines.
+	frag := strings.Replace(strings.Join(regionLines[6:11], ""), "compute(15)", "compute(15, true)", 1)
+	if e, ok := req.edit(frag); !ok || len(e.Edits) != 1 || e.Edits[0].NewText != ", true" || e.Edits[0].Range.Start.Line != 16 {
+		t.Fatalf("fragment edit = %+v %v", e, ok)
+	}
+	// A cursor-line-only reply is a completion at the cursor.
+	reqC := buildNESRequest("file:///w/a.go", "go", "func f() {\n\tfmt.Pri\n\tx := 1\n\ty := 2\n}\n", position{1, 8}, nil, nil)
+	if e, ok := reqC.edit("\tfmt.Println(x)"); !ok || e.Edits[0].NewText != "ntln(x)" || e.Edits[0].Range.Start != (position{1, 8}) {
+		t.Fatalf("cursor-line reply = %+v %v", e, ok)
+	}
+	// A chunk starting before the region, with the first line under-
+	// indented, is placed and keeps the document's indentation.
+	chunk := "\t\tstep1 := compute(1)\n" + strings.Join(lines[2:12], "\n") + "\n"
+	chunk = strings.Replace(chunk, "compute(10)", "compute(10, true)", 1)
+	if e, ok := req.edit(chunk); !ok || len(e.Edits) != 1 || e.Edits[0].NewText != ", true" || e.Edits[0].Range.Start.Line != 11 {
+		t.Fatalf("context chunk = %+v %v", e, ok)
+	}
+	// An unindented cursor-line reply keeps the line's indentation.
+	if e, ok := reqC.edit("fmt.Println(y)"); !ok || len(e.Edits) != 1 || e.Edits[0].NewText != "ntln(y)" || e.Edits[0].Range.Start != (position{1, 8}) {
+		t.Fatalf("unindented cursor-line reply = %+v %v", e, ok)
+	}
+	// A fragment that can't be placed is dropped.
+	reject("unplaceable", "\tnothing like this := here()\n\tor this()\n")
+	// The region with a copy of nearby lines pasted in.
+	reject("duplicate", strings.Join(regionLines[:9], "")+strings.Join(regionLines[3:7], "")+strings.Join(regionLines[9:], ""))
+	// Nearby lines pasted in a different order (the line-45 case).
+	reject("reordered duplicate", strings.Join(regionLines[:9], "")+regionLines[5]+regionLines[3]+regionLines[4]+strings.Join(regionLines[9:], ""))
+	// A mangled marker in the reply.
+	reject("marker", strings.Replace(region, "step15", "|editable_region_start|>step15", 1))
+	// Dropping three lines in the middle.
+	reject("deletion", strings.Join(regionLines[:5], "")+strings.Join(regionLines[8:], ""))
+
+	// A real multi-line completion is still fine.
+	text2 := "func g(xs []int) int {\n\ttotal := 0\n\tfor _, x := range xs {\n\t\t\n\t}\n\treturn total\n}\n"
+	req2 := buildNESRequest("file:///w/a.go", "go", text2, position{3, 2}, nil, nil)
+	out := strings.Replace(text2[req2.start:req2.end], "\t\t\n", "\t\tif x > 0 {\n\t\t\ttotal += x\n\t\t}\n", 1)
+	if e, ok := req2.edit(out); !ok || len(e.Edits) != 1 || !strings.Contains(e.Edits[0].NewText, "total += x") {
+		t.Fatalf("multi-line completion rejected: %+v %v", e, ok)
+	}
+}
+
+func TestNESFillInTheMiddle(t *testing.T) {
+	text := "func f() {\n\tfmt.Println(\n}\n"
+	req := buildNESRequest("file:///w/a.go", "go", text, position{1, 13}, nil, nil)
+	// The model closes the call; the line already... has nothing after the
+	// cursor, so the whole completion stays.
+	if e, ok := req.fimEdit("\"hi\")\n\n\tmore()\n"); !ok || e.Edits[0].NewText != `"hi")` || e.Cursor != (position{1, 18}) {
+		t.Fatalf("fim = %+v %v", e, ok)
+	}
+	// Overlap with the text after the cursor is dropped.
+	text2 := "x := foo()\n"
+	req2 := buildNESRequest("file:///w/a.go", "go", text2, position{0, 9}, nil, nil)
+	if e, ok := req2.fimEdit("a, b)"); !ok || e.Edits[0].NewText != "a, b" {
+		t.Fatalf("overlap = %+v %v", e, ok)
+	}
+	// Mid-line, a multi-line insertion is refused (the rewrite path takes
+	// over): "func sum|(a, b int) int {" must not get a new body pushed in.
+	text3 := "func sum(a, b int) int {\n\treturn a + b\n}\n"
+	req3 := buildNESRequest("file:///w/a.go", "go", text3, position{0, 8}, nil, nil)
+	if _, ok := req3.fimEdit("(xs []int) int {\n\ttotal := 0\n}"); ok {
+		t.Fatal("multi-line mid-line insertion accepted")
+	}
+	// Nothing to insert: no completion (the rewrite path takes over).
+	if _, ok := req2.fimEdit(")\n"); ok {
+		t.Fatal("pure overlap produced an edit")
+	}
+}
+
+func TestNESPrefersFIMAndFallsBackToRewrite(t *testing.T) {
+	provider := &scriptedProvider{}
+	f := newFixture(t, ProtocolV2, provider, fixtureOptions{})
+	var fimCalls int
+	fimReply := "ntln(x)"
+	f.runtime.FIM = func(ctx context.Context, model session.ModelRef, prefix, suffix string, maxTokens int) (string, bool, error) {
+		fimCalls++
+		if !strings.HasSuffix(prefix, "fmt.Pri") || !strings.HasPrefix(suffix, "\n}") {
+			t.Errorf("fim context: prefix %q suffix %q", prefix, suffix)
+		}
+		return fimReply, true, nil
+	}
+	var started struct {
+		SessionID string `json:"sessionId"`
+	}
+	f.client.call("_gocode/nes/start", map[string]any{"workspaceUri": "file://" + f.dir}, &started)
+	uri := "file://" + f.dir + "/a.go"
+	text := "package a\n\nfunc f(x int) {\n\tfmt.Pri\n}\n"
+	f.client.conn.Notify("_gocode/document/didOpen", map[string]any{"sessionId": started.SessionID, "uri": uri, "languageId": "go", "version": 1, "text": text})
+	time.Sleep(50 * time.Millisecond)
+	suggest := func() []any {
+		var res map[string]any
+		f.client.call("_gocode/nes/suggest", map[string]any{"sessionId": started.SessionID, "uri": uri, "version": 1,
+			"position": map[string]any{"line": 3, "character": 8}}, &res)
+		list, _ := res["suggestions"].([]any)
+		return list
+	}
+	got := suggest()
+	if len(got) != 1 || !strings.Contains(toJSONString(got), `"newText":"ntln(x)"`) || len(provider.requests) != 0 {
+		t.Fatalf("fim suggestion: %v (chat calls %d)", got, len(provider.requests))
+	}
+	// FIM has nothing to add: the chat rewrite runs instead.
+	fimReply = ""
+	provider.mu.Lock()
+	provider.turns = [][]llm.StreamEvent{textTurn(strings.Replace(text, "fmt.Pri", "fmt.Print(x)", 1))}
+	provider.mu.Unlock()
+	got = suggest()
+	if fimCalls != 2 || len(provider.requests) != 1 || !strings.Contains(toJSONString(got), `"newText":"nt(x)"`) {
+		t.Fatalf("fallback: %v (fim %d, chat %d)", got, fimCalls, len(provider.requests))
+	}
+}
+
+func toJSONString(v any) string {
+	b, _ := json.Marshal(v)
+	return string(b)
 }

@@ -501,6 +501,14 @@ anything else is a next edit. Predictions use `small_model` when it is
 configured (pick a fast, non-reasoning model), otherwise the default model,
 at the model's lowest reasoning variant.
 
+Fill-in-the-middle models complete at the cursor directly: with
+`small_model` set to a Codestral model (`mistral/codestral-latest`),
+completions go to the provider's `/fim/completions` endpoint with the text
+before and after the cursor (sub-second, no rewrite to reconcile). The
+completion is cut at the first blank line and must stay on the line when
+code follows the cursor. When it has nothing to insert, the chat rewrite
+looks for a next edit instead.
+
 ## Skills
 
 Adjacent to all three: **skills** are markdown files describing a capability, loaded

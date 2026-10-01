@@ -54,7 +54,10 @@ const (
 	nesContextBefore = 120
 	nesContextAfter  = 40
 	nesHistoryMax    = 6
-	nesTimeout       = 20 * time.Second
+	// Lines around the cursor a reply that is not the exact region may be
+	// placed in.
+	nesAlignWindow = 40
+	nesTimeout     = 20 * time.Second
 	// Room for hidden reasoning on models that think even when asked not
 	// to; the rewrite itself is a few hundred tokens.
 	nesMaxTokens = 4096
@@ -377,16 +380,37 @@ func (a *Agent) nesSuggest(ctx context.Context, params json.RawMessage) (any, er
 	return jsonrpc.Deferred(func() (any, error) {
 		cctx, cancel := context.WithTimeout(ctx, nesTimeout)
 		defer cancel()
-		output, err := complete(cctx, rt.Runner.Provider, model, lowReasoning(rt.Runner, model), nesSystemPrompt, req.prompt)
-		if err != nil {
-			if ctx.Err() != nil {
-				return obj{"suggestions": []obj{}}, nil // cancelled: superseded by newer typing
+		none := obj{"suggestions": []obj{}}
+		var edit nesEdit
+		ok := false
+		// Fill-in-the-middle models complete at the cursor directly — fast,
+		// and nothing to reconstruct. With nothing to insert there, the
+		// rewrite path below still looks for a next edit.
+		if rt.FIM != nil {
+			prefix := text[max(0, req.cursor-fimPrefixMax):req.cursor]
+			suffix := text[req.cursor:min(len(text), req.cursor+fimSuffixMax)]
+			out, supported, err := rt.FIM(cctx, model, prefix, suffix, fimMaxTokens)
+			if supported {
+				if err != nil {
+					if ctx.Err() != nil {
+						return none, nil // cancelled: superseded by newer typing
+					}
+					return nil, internalError("prediction failed: %v", err)
+				}
+				edit, ok = req.fimEdit(out)
 			}
-			return nil, internalError("prediction failed: %v", err)
 		}
-		edit, ok := req.edit(output)
 		if !ok {
-			return obj{"suggestions": []obj{}}, nil
+			output, err := complete(cctx, rt.Runner.Provider, model, lowReasoning(rt.Runner, model), nesSystemPrompt, req.prompt)
+			if err != nil {
+				if ctx.Err() != nil {
+					return none, nil // cancelled: superseded by newer typing
+				}
+				return nil, internalError("prediction failed: %v", err)
+			}
+			if edit, ok = req.edit(output); !ok {
+				return none, nil
+			}
 		}
 		id, err := newMessageID()
 		if err != nil {
@@ -409,7 +433,7 @@ const nesSystemPrompt = `You are a code completion and next-edit prediction engi
 You see a file with an editable region marked by ` + regionStart + ` and ` + regionEnd + `, and the cursor marked by ` + cursorMarker + `.
 Predict what the user will type or change next, judging from the code and their recent edits:
 complete the code at the cursor, and/or make the follow-up edit the recent changes imply (e.g. update the other uses of a renamed identifier, add the missing field, fix the obvious error).
-Reply with ONLY the full rewritten editable region: no markers, no cursor marker, no explanations, no code fences.
+Reply with ONLY the full rewritten editable region, from its first line to its last line: no markers, no cursor marker, no explanations, no code fences.
 Keep everything outside your change byte-for-byte identical. If no change is needed, return the region unchanged.`
 
 // nesRequest is one prepared prediction: the prompt and how to map the
@@ -489,6 +513,60 @@ func buildNESRequest(uri, language, text string, pos position, history []string,
 	return nesRequest{prompt: b.String(), text: text, start: start, end: end, cursor: cursor}
 }
 
+const (
+	// Fill-in-the-middle context around the cursor, in bytes.
+	fimPrefixMax = 8000
+	fimSuffixMax = 3000
+	fimMaxTokens = 256
+)
+
+// fimEdit turns a fill-in-the-middle completion into an insertion at the
+// cursor: cut at the first blank line (one statement or block, not the
+// rest of the file), without the part that repeats the text after the
+// cursor, and subject to the same plausibility checks as rewrites.
+func (r nesRequest) fimEdit(out string) (nesEdit, bool) {
+	if i := strings.Index(out, "\n\n"); i >= 0 {
+		out = out[:i]
+	}
+	out = strings.TrimRight(out, " \t\n")
+	if lines := strings.SplitAfter(out, "\n"); len(lines) > 15 {
+		out = strings.TrimRight(strings.Join(lines[:15], ""), "\n")
+	}
+	// Models often close what is already closed ("foo(" + "x)" before an
+	// existing ")"): drop the longest end of the completion that the text
+	// after the cursor starts with.
+	suffix := r.text[r.cursor:]
+	if nl := strings.IndexByte(suffix, '\n'); nl >= 0 {
+		suffix = suffix[:nl]
+	}
+	for k := min(len(out), len(suffix)); k > 0; k-- {
+		if strings.HasSuffix(out, suffix[:k]) {
+			out = out[:len(out)-k]
+			break
+		}
+	}
+	if strings.TrimSpace(out) == "" {
+		return nesEdit{}, false
+	}
+	// In the middle of a line, a completion stays on it: a multi-line
+	// insertion before existing code (a new function body pushed in front
+	// of a renamed function's parameters) breaks the line.
+	if strings.TrimSpace(suffix) != "" && strings.Contains(out, "\n") {
+		nesReject("fim: multi-line insertion in the middle of a line")
+		return nesEdit{}, false
+	}
+	if reason := implausibleEdits(r.text, []span{{r.cursor, r.cursor, out}}); reason != "" {
+		nesReject("fim: " + reason)
+		return nesEdit{}, false
+	}
+	pos := positionOf(r.text, r.cursor)
+	edited := r.text[:r.cursor] + out + r.text[r.cursor:]
+	return nesEdit{
+		Edits:  []nesTextEdit{{Range: textRange{Start: pos, End: pos}, NewText: out}},
+		Cursor: positionOf(edited, r.cursor+len(out)),
+	}, true
+}
+
 // lowReasoning is the model's cheapest reasoning variant (none, minimal or
 // low, from the catalog), so predictions answer fast; nil when the model
 // has none or the runner can't resolve variants.
@@ -515,18 +593,28 @@ func (r nesRequest) edit(output string) (nesEdit, bool) {
 		return nesEdit{}, false
 	}
 	region := r.text[r.start:r.end]
+	base := r.start
 	rewritten := cleanRewrite(output, region)
 	if rewritten == region {
 		return nesEdit{}, false
 	}
-	// Implausible rewrites (the model echoed the prompt, or dropped most of
-	// the region) are not suggestions.
-	if len(rewritten) > 2*len(region)+400 || (len(region) > 80 && len(rewritten) < len(region)/3) {
-		return nesEdit{}, false
-	}
-	type span struct {
-		start, end int // byte offsets in r.text
-		text       string
+	// Implausible rewrites (the model echoed the prompt, leaked a marker,
+	// returned a fragment that can't be placed) are not suggestions. A
+	// wrong prediction costs a keystroke; a destructive one costs the
+	// user's code.
+	if reason := r.implausibleRewrite(region, rewritten); reason != "" {
+		// Models often return just the lines around the change. Place such a
+		// fragment by its first and last lines and diff only that slice;
+		// lines it doesn't cover are never touched.
+		a, b, frag, ok := r.alignFragment(output)
+		if !ok || strings.HasPrefix(reason, "marker") {
+			nesReject(fmt.Sprintf("%s (reply %q)", reason, truncate(output, 600)))
+			return nesEdit{}, false
+		}
+		region, rewritten, base = r.text[a:b], frag, a
+		if rewritten == region {
+			return nesEdit{}, false
+		}
 	}
 	var spans []span
 	add := func(at int, old, repl string) {
@@ -538,7 +626,7 @@ func (r nesRequest) edit(output string) (nesEdit, bool) {
 	}
 	for _, h := range udiff.Lines(region, rewritten) {
 		old := region[h.Start:h.End]
-		at := r.start + h.Start
+		at := base + h.Start
 		oldLines, newLines := strings.SplitAfter(old, "\n"), strings.SplitAfter(h.New, "\n")
 		if len(oldLines) != len(newLines) {
 			add(at, old, h.New) // lines added or removed: one edit
@@ -551,6 +639,10 @@ func (r nesRequest) edit(output string) (nesEdit, bool) {
 		}
 	}
 	if len(spans) == 0 {
+		return nesEdit{}, false
+	}
+	if reason := implausibleEdits(r.text, spans); reason != "" {
+		nesReject(reason)
 		return nesEdit{}, false
 	}
 	// Prefer anchoring a lone insertion at the cursor, so typing-ahead
@@ -588,6 +680,246 @@ func (r nesRequest) edit(output string) (nesEdit, bool) {
 	edited.WriteString(r.text[prev:])
 	out.Cursor = positionOf(edited.String(), caret)
 	return out, true
+}
+
+// span is one minimal replacement, as byte offsets in the document.
+type span struct {
+	start, end int
+	text       string
+}
+
+// nesReject receives why a prediction was dropped (tests observe it).
+var nesReject = func(string) {}
+
+// implausibleRewrite checks the model returned the whole region, intact
+// around the change. It returns why not, or "".
+func (r nesRequest) implausibleRewrite(region, rewritten string) string {
+	if len(rewritten) > 2*len(region)+400 {
+		return "rewrite much longer than the region"
+	}
+	for _, m := range []string{"editable_region", "user_cursor", "<|", "|>"} {
+		if strings.Contains(rewritten, m) && !strings.Contains(region, m) {
+			return "marker leaked into the rewrite"
+		}
+	}
+	// The region's first and last non-blank lines anchor it: unless the
+	// cursor is on them they must come back unchanged, or the model
+	// returned a fragment (whose missing lines would become deletions).
+	oldLines := nonBlankLines(region)
+	newLines := nonBlankLines(rewritten)
+	if len(oldLines) == 0 || len(newLines) == 0 {
+		return "empty region or rewrite"
+	}
+	cursorLine := strings.TrimRight(lineAt(r.text, r.cursor), " \t")
+	if first := oldLines[0]; first != cursorLine && newLines[0] != first {
+		return "rewrite lost the region's first line"
+	}
+	if last := oldLines[len(oldLines)-1]; last != cursorLine && newLines[len(newLines)-1] != last {
+		return "rewrite lost the region's last line"
+	}
+	return ""
+}
+
+// alignFragment places a reply that is not the exact region — a fragment
+// of it, or a chunk that starts or ends in the surrounding context. Its
+// first and last non-blank lines must match document lines near the
+// cursor (ignoring indentation; the occurrence nearest the cursor), or be
+// the cursor line itself, edited around the cursor. It returns the
+// document slice [a, b) the reply replaces and the reply shaped like that
+// slice. Lines outside the slice are never touched.
+func (r nesRequest) alignFragment(output string) (a, b int, frag string, ok bool) {
+	// A long reply may start or end beyond what can be placed (it ran on
+	// into the context, or stopped mid-line at the token limit): drop a few
+	// lines from either end until it aligns. Dropped lines only mean the
+	// document lines there stay untouched.
+	all := strings.Split(stripReply(output), "\n")
+	for head := 0; head <= 10 && head < len(all); head++ {
+		for tail := 0; tail <= 20 && head+tail < len(all); tail++ {
+			if a, b, frag, ok = r.alignLines(strings.Join(all[head:len(all)-tail], "\n")); ok {
+				return a, b, frag, true
+			}
+		}
+	}
+	return 0, 0, "", false
+}
+
+// alignLines places one candidate reply (see alignFragment).
+func (r nesRequest) alignLines(out string) (a, b int, frag string, ok bool) {
+	outLines := strings.Split(out, "\n")
+	nonBlank := nonBlankLines(out)
+	if len(nonBlank) == 0 {
+		return 0, 0, "", false
+	}
+	// Document lines around the cursor, with byte offsets.
+	type dl struct {
+		text       string // without the newline, right-trimmed
+		start, end int    // end includes the newline
+	}
+	starts := lineStarts(r.text)
+	cursorLine := positionOf(r.text, r.cursor).Line
+	lo := max(0, cursorLine-nesAlignWindow)
+	hi := min(len(starts)-1, cursorLine+nesAlignWindow)
+	var lines []dl
+	for i := lo; i <= hi; i++ {
+		end := len(r.text)
+		if i+1 < len(starts) {
+			end = starts[i+1]
+		}
+		lines = append(lines, dl{strings.TrimRight(strings.TrimSuffix(r.text[starts[i]:end], "\n"), " \t"), starts[i], end})
+	}
+	cursorIdx := cursorLine - lo
+	before := r.text[lines[cursorIdx].start:r.cursor]
+	after := strings.TrimRight(strings.TrimSuffix(r.text[r.cursor:lines[cursorIdx].end], "\n"), " \t")
+	same := func(x, y string) bool { return strings.TrimSpace(x) == strings.TrimSpace(y) }
+	nearest := func(want string, from int) int {
+		best := -1
+		for i := from; i < len(lines); i++ {
+			if strings.TrimSpace(lines[i].text) != "" && same(lines[i].text, want) &&
+				(best < 0 || abs(i-cursorIdx) < abs(best-cursorIdx)) {
+				best = i
+			}
+		}
+		return best
+	}
+	first, last := nonBlank[0], nonBlank[len(nonBlank)-1]
+	sIdx := nearest(first, 0)
+	if sIdx < 0 && strings.TrimSpace(before) != "" && strings.HasPrefix(strings.TrimSpace(first), strings.TrimSpace(before)) {
+		sIdx = cursorIdx // starts on the edited cursor line
+	}
+	if sIdx < 0 {
+		return 0, 0, "", false
+	}
+	eIdx := nearest(last, sIdx)
+	if eIdx < 0 && cursorIdx >= sIdx && strings.HasSuffix(last, after) &&
+		(len(nonBlank) > 1 || strings.HasPrefix(strings.TrimSpace(last), strings.TrimSpace(before))) {
+		eIdx = cursorIdx // ends on the edited cursor line
+	}
+	if eIdx < 0 || eIdx < sIdx {
+		return 0, 0, "", false
+	}
+	// The reply must be about as long as the slice it replaces.
+	if span := eIdx - sIdx + 1; len(nonBlank) > span+15 || span > len(nonBlank)+3 {
+		return 0, 0, "", false
+	}
+	// Models often get the first line's indentation wrong: keep the
+	// document's when the line is otherwise the same.
+	for k, l := range outLines {
+		if strings.TrimSpace(l) == "" {
+			continue
+		}
+		docLine := r.text[lines[sIdx].start:lines[sIdx].end]
+		editedCursorLine := sIdx == cursorIdx && strings.HasPrefix(strings.TrimSpace(l), strings.TrimSpace(before))
+		if same(l, docLine) || editedCursorLine {
+			indent := docLine[:len(docLine)-len(strings.TrimLeft(docLine, " \t"))]
+			outLines[k] = indent + strings.TrimLeft(l, " \t")
+		}
+		break
+	}
+	a, b = lines[sIdx].start, lines[eIdx].end
+	frag = strings.Trim(strings.Join(outLines, "\n"), "\n")
+	if strings.HasSuffix(r.text[a:b], "\n") {
+		frag += "\n"
+	}
+	return a, b, frag, true
+}
+
+// stripReply removes fences, markers and surrounding blank lines from a
+// reply, keeping indentation.
+func stripReply(output string) string {
+	out := strings.TrimSpace(output)
+	if strings.HasPrefix(out, "```") {
+		if i := strings.IndexByte(out, '\n'); i >= 0 {
+			out = out[i+1:]
+		}
+		out = strings.TrimSuffix(strings.TrimRight(out, " \t\n"), "```")
+	}
+	for _, m := range []string{regionStart, regionEnd, cursorMarker} {
+		out = strings.ReplaceAll(out, m, "")
+	}
+	// TrimSpace above ate the first line's indentation; take it back from
+	// the raw reply.
+	raw := strings.TrimLeft(output, "\n")
+	if lead := raw[:len(raw)-len(strings.TrimLeft(raw, " \t"))]; lead != "" && !strings.HasPrefix(out, lead) && !strings.HasPrefix(out, "```") {
+		out = lead + out
+	}
+	return strings.Trim(out, "\n")
+}
+
+func abs(x int) int {
+	if x < 0 {
+		return -x
+	}
+	return x
+}
+
+// implausibleEdits bounds what one prediction may do: a few small,
+// local edits, never a block deletion or a pasted copy of nearby code.
+func implausibleEdits(text string, spans []span) string {
+	if len(spans) > 3 {
+		return "too many edits"
+	}
+	deleted, inserted := 0, 0
+	for _, sp := range spans {
+		oldNL := strings.Count(text[sp.start:sp.end], "\n")
+		newNL := strings.Count(sp.text, "\n")
+		if oldNL > 3 {
+			return "replaces too many lines"
+		}
+		if oldNL > newNL {
+			deleted += oldNL - newNL
+		} else {
+			inserted += newNL - oldNL
+		}
+		// A multi-line insertion that repeats code already around it is the
+		// model duplicating the region, not a completion: reject when half
+		// or more of its substantial lines already exist nearby.
+		if newNL >= 2 {
+			near := map[string]bool{}
+			lo, hi := max(0, sp.start-3000), min(len(text), sp.end+3000)
+			for _, l := range strings.Split(text[lo:sp.start]+text[sp.end:hi], "\n") {
+				near[strings.TrimSpace(l)] = true
+			}
+			substantial, repeated := 0, 0
+			for _, l := range nonBlankLines(sp.text) {
+				if t := strings.TrimSpace(l); len(t) >= 6 {
+					substantial++
+					if near[t] {
+						repeated++
+					}
+				}
+			}
+			if substantial >= 2 && repeated*2 >= substantial {
+				return "insertion duplicates nearby code"
+			}
+		}
+	}
+	if deleted > 2 {
+		return "deletes too many lines"
+	}
+	if inserted > 15 {
+		return "inserts too many lines"
+	}
+	return ""
+}
+
+func nonBlankLines(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if strings.TrimSpace(l) != "" {
+			out = append(out, strings.TrimRight(l, " \t"))
+		}
+	}
+	return out
+}
+
+// lineAt returns the text of the line containing byte offset off.
+func lineAt(text string, off int) string {
+	start := strings.LastIndexByte(text[:off], '\n') + 1
+	end := strings.IndexByte(text[off:], '\n')
+	if end < 0 {
+		return text[start:]
+	}
+	return text[start : off+end]
 }
 
 // anchorAt moves a pure insertion of ins at off to the cursor when the text
@@ -745,4 +1077,11 @@ func uriPath(uri string) (string, error) {
 		return "", fmt.Errorf("not a file URI: %s", uri)
 	}
 	return filepath.FromSlash(u.Path), nil
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
 }

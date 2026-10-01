@@ -144,6 +144,7 @@ func acpRuntime(s *stack) *acp.Runtime {
 		Models:      newModelLister(s).list,
 		// Predictions want a fast model: small_model when configured.
 		CompletionModel: completionModel(s.Config),
+		FIM:             fimCompleter(s.Config),
 		Close:           s.Close,
 	}
 }
