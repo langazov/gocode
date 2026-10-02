@@ -20,6 +20,9 @@ import 'theme.dart';
 import 'title_bar.dart';
 import 'window_chrome.dart';
 
+/// How long switching views takes (the route cross-fade).
+const routeFadeDuration = Duration(milliseconds: 140);
+
 /// The app router. Its redirect re-runs whenever the connection phase
 /// changes, so the connect gate opens and closes in place — re-keying the
 /// whole MaterialApp instead would drop every route's state.
@@ -31,10 +34,22 @@ final routerProvider = Provider<GoRouter>((ref) {
   );
 
   // Each page paints its own ground, so route transitions stay opaque.
-  Page<void> page(GoRouterState state, Widget child) => MaterialPage<void>(
-    key: state.pageKey,
-    child: AmbientBackground(child: child),
-  );
+  //
+  // A short fade, not the platform slide: on macOS that is a ~0.5s
+  // Cupertino push whose every frame re-renders the glass blurs of two
+  // moving pages. Nothing moves in a fade, and views switch the way a
+  // desktop app's do — near instantly.
+  Page<void> page(GoRouterState state, Widget child) =>
+      CustomTransitionPage<void>(
+        key: state.pageKey,
+        transitionDuration: routeFadeDuration,
+        reverseTransitionDuration: routeFadeDuration,
+        child: AmbientBackground(child: child),
+        transitionsBuilder: (context, animation, _, child) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+          child: child,
+        ),
+      );
 
   GoRoute route(String path, Widget Function(GoRouterState state) build) =>
       GoRoute(
