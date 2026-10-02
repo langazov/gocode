@@ -1,32 +1,35 @@
 import 'package:flutter/material.dart';
 import 'package:gpt_markdown/gpt_markdown.dart';
 
-/// Design tokens after gocoder.org: a neutral near-black ground, one orange
+/// Design tokens after gocoder.org: a cool blue-black ground, one orange
 /// accent, and translucent "liquid glass" surfaces. The site is dark-only,
 /// and so is the app.
+///
+/// Every text tier clears WCAG AA (4.5:1) on every surface, [textFaint] on
+/// [surface3] included; keep it that way when tuning.
 abstract final class GC {
   // Ground and solid surfaces.
-  static const bgPage = Color(0xFF171717);
-  static const surface1 = Color(0xFF1F1F1F);
-  static const surface2 = Color(0xFF262626);
-  static const surface3 = Color(0xFF2E2E2E);
+  static const bgPage = Color(0xFF0B0E14);
+  static const surface1 = Color(0xFF11151D);
+  static const surface2 = Color(0xFF171C26);
+  static const surface3 = Color(0xFF1F2531);
 
   // Accent.
   static const accent = Color(0xFFE8862D);
   static const accentHover = Color(0xFFF39741);
   static const accentPress = Color(0xFFD2751F);
-  static const accentText = Color(0xFFEFA35B);
+  static const accentText = Color(0xFFF2AC66);
   static const accentInk = Color(0xFF26160A);
 
   // Text.
-  static const textHi = Color(0xFFF4EFE9);
-  static const textBody = Color(0xFFB4A99E);
-  static const textDim = Color(0xFF94897D);
-  static const textFaint = Color(0xFF6E645A);
+  static const textHi = Color(0xFFEDF1F7);
+  static const textBody = Color(0xFFC5CDDA);
+  static const textDim = Color(0xFFA0AABA);
+  static const textFaint = Color(0xFF7F8A9C);
 
   // Lines.
-  static const border = Color(0x14FFF0E0);
-  static const borderStrong = Color(0x24FFF0E0);
+  static const border = Color(0x1AC8D6F0);
+  static const borderStrong = Color(0x2EC8D6F0);
   static const borderAccent = Color(0x61E8862D);
   static const glassBorder = Color(0x12FFFFFF);
 
@@ -230,7 +233,7 @@ class AppTheme {
       surface: GC.bgPage,
       onSurface: GC.textHi,
       onSurfaceVariant: GC.textBody,
-      surfaceContainerLowest: Color(0xFF1A1A1A),
+      surfaceContainerLowest: Color(0xFF0E1218),
       surfaceContainerLow: GC.surface1,
       surfaceContainer: GC.surface1,
       surfaceContainerHigh: GC.surface2,
@@ -425,7 +428,7 @@ class AppTheme {
         showCheckmark: false,
       ),
       dialogTheme: DialogThemeData(
-        backgroundColor: const Color(0xF21F1F1F),
+        backgroundColor: GC.surface1.withValues(alpha: 0.96),
         elevation: 0,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(GC.rPanel),

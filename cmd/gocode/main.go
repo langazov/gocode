@@ -180,6 +180,7 @@ func (s *stack) newServer() *server.Server {
 		Memory:      s.Memory,
 		ProjectID:   s.ProjectID,
 		VCSWorkdir:  s.workdir,
+		Runner:      s.Runner,
 	}
 	// Lets connected interfaces notice sign-ins made in other processes. It
 	// runs for the life of the process, as the server does.

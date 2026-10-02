@@ -62,6 +62,10 @@ type Server struct {
 	// a working server.
 	VCSWorkdir string
 
+	// Runner supplies the model provider for one-shot calls outside any
+	// session (AI commit messages). nil disables them with a 503.
+	Runner *session.Runner
+
 	// oauth tracks in-flight provider logins started from the interface. A
 	// device flow outlives the request that begins it, so the attempt is
 	// parked here and polled.
@@ -101,6 +105,8 @@ func (s *Server) Mux() *http.ServeMux {
 	// viewer can open anywhere and degrade to "No diff!" like the TS plugin.
 	mux.HandleFunc("GET /api/vcs", s.vcsInfo)
 	mux.HandleFunc("GET /api/vcs/diff", s.vcsDiff)
+	// Source Control for the desktop client (git.go).
+	s.registerGitRoutes(mux)
 	if s.MCP != nil {
 		mux.HandleFunc("GET /api/mcp", s.listMCP)
 	}

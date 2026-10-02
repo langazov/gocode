@@ -247,6 +247,55 @@ because it is multi-project; this one is a single project per process.
   and "No diff!". Patches beyond the total byte cap come back header-only,
   exactly like the TS `emptyPatch` fallback.
 
+### Source Control (`/api/vcs/git/*`)
+
+The desktop client's (`gocode_gui`) git surface, over
+`internal/vcs/gitops` — a port of goide's host git service, with no TS
+counterpart. Unlike the two routes above, every route takes an optional
+`?directory=` (absolute, existing): the client groups sessions by project
+folder and each is its own repository. Without it the routes act on the
+process's working directory. Operations run at the repository top level;
+paths are relative to it.
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/api/vcs/git/status` | branch, upstream, ahead/behind, in-progress operation, stash count, remotes, `files` (`{isRepo:false}` outside a repository) |
+| `GET` | `/api/vcs/git/diff?path=&staged=&untracked=&commit=` | one file's unified diff: `{diff}` |
+| `GET` | `/api/vcs/git/branches` | `{current, branches:[{name, upstream, ahead, behind, …}], remote:[…]}` |
+| `GET` | `/api/vcs/git/log?limit=&skip=&all=&query=&path=` | `{commits}`, topological order (the client draws the graph) |
+| `GET` | `/api/vcs/git/show/{hash}` | message body, changed files, line totals |
+| `GET` | `/api/vcs/git/stash` | `{entries}` |
+| `POST` | `/api/vcs/git/init` | `git init` in the directory itself |
+| `POST` | `/api/vcs/git/stage` | `{paths, all, unstage}` |
+| `POST` | `/api/vcs/git/discard` | `{paths, all, includeUntracked}` — restores tracked paths, deletes untracked ones |
+| `POST` | `/api/vcs/git/apply` | `{patch, cached, reverse}` — stage / unstage / discard one hunk |
+| `POST` | `/api/vcs/git/commit` | `{message, amend, all, signoff}` → `{commit}` (short hash) |
+| `POST` | `/api/vcs/git/remote` | `{op: fetch\|pull\|push, rebase, setUpstream, force, tags, …}` → `{output}` |
+| `POST` | `/api/vcs/git/checkout` | `{branch, create, startPoint}`; `origin/x` checks out its local tracker |
+| `POST` | `/api/vcs/git/branch` | `{op: delete\|rename\|merge, name, newName, force}` |
+| `POST` | `/api/vcs/git/commit-op` | `{op: revert\|cherry-pick\|reset-soft\|reset-mixed\|reset-hard\|tag, hash, name}` |
+| `POST` | `/api/vcs/git/stash` | `{op: push\|pop\|apply\|drop, index, message, includeUntracked}` → `{entries}` |
+| `POST` | `/api/vcs/git/conflict` | `{op: ours\|theirs\|resolved\|abort\|continue, path}` |
+| `POST` | `/api/vcs/git/commit-message` | `{stagedOnly, model}` — the model drafts a commit message; streams NDJSON (see below) |
+
+git runs non-interactively (no credential prompts, no editors), so a
+request never hangs on input. A git refusal — a conflict, a rejected push,
+an empty commit message — answers **422** with git's own message in
+`error`; malformed requests are 400.
+
+`commit-message` describes the staged changes (`stagedOnly`) or everything
+"Commit All" would take, untracked files included, with one model call —
+no tools, no session, nothing in the event log. The model is `model`
+(`provider/id`) when given, else `small_model`, else the default model. The
+patch sent is capped at 60 KB; the file list always covers every file, and
+the eight most recent subjects are included so the message matches the
+repository's style. Nothing to describe is a 422 and no provider a 503,
+both plain JSON. Once the model is called the reply is
+`application/x-ndjson`: `{"text", "model"}` lines with the message so far,
+then a final `{"text"|"error", "model", "done": true}`. The final text is
+cleaned of preambles, code fences and quotes. Closing the request stops the
+model call.
+
 ## Memories
 
 Durable memories (the `memory` native plugin's backing store) have their own

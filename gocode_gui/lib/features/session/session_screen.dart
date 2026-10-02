@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,10 +8,12 @@ import 'package:go_router/go_router.dart';
 import '../../app/theme.dart';
 import '../../core/acp/protocol.dart';
 import '../../core/api/models.dart';
+import '../../core/connection/controller.dart' show apiClientProvider;
 import '../../shared/widgets/glass.dart';
 import '../../shared/widgets/message_parts.dart';
 import '../../shared/widgets/model_picker.dart';
 import '../../shared/widgets/session_status.dart';
+import '../git/git_screen.dart' show sourceControlLocation;
 import '../home/providers.dart';
 import 'prompt_history.dart';
 import 'timeline.dart';
@@ -174,6 +175,14 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
             ? Text('Session', style: theme.textTheme.titleSmall)
             : _HeaderTitle(session: state.session, models: models),
         actions: [
+          if (state != null && ref.watch(apiClientProvider) != null)
+            IconButton(
+              tooltip: 'Source control',
+              icon: const Icon(Icons.account_tree_outlined, size: 18),
+              onPressed: () => context.push(
+                sourceControlLocation(directory: state.session.directory),
+              ),
+            ),
           if (state != null)
             Padding(
               padding: const EdgeInsets.only(right: 10),
@@ -195,8 +204,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                 modelLabel: _modelName(state.session.model, models),
                 onSend: () => unawaited(_send()),
                 onInterrupt: () => unawaited(_interrupt()),
-                onPickModel: () =>
-                    unawaited(_chooseModel(models, state)),
+                onPickModel: () => unawaited(_chooseModel(models, state)),
                 onPickAgent: (agent) => unawaited(_setAgent(agent)),
                 variants: _variantsOfState(state, models),
                 variant: _currentVariantOf(state, models),
@@ -278,8 +286,8 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     return Stack(
       children: [
         Positioned.fill(child: list),
-        _EdgeBlur(height: pad.top, top: true),
-        _EdgeBlur(height: pad.bottom, top: false),
+        _EdgeFade(height: pad.top, top: true),
+        _EdgeFade(height: pad.bottom, top: false),
       ],
     );
   }
@@ -368,44 +376,23 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
   }
 }
 
-/// Frosts the strip of timeline content passing behind the floating header
-/// (top) or composer (bottom), graduating from fully blurred at the screen
-/// edge (bottom of menu → top; top of input → bottom) down to fully sharp
-/// where it meets the visible content — so it blurs away instead of sliding
-/// past visibly sharp at full width, outside their narrower pill-shaped
-/// glass bounds.
+/// Fades the timeline out under the floating header (top) and composer
+/// (bottom): a gradient from the page ground to clear, so content
+/// dissolves into the chrome instead of sliding past it sharp-edged,
+/// outside the glass panels' own narrower, pill-shaped bounds.
 ///
-/// Built from several plain `BackdropFilter`s, each covering a
-/// progressively smaller slice anchored at the chrome edge with a stronger
-/// blur, so they compound near the edge and taper off toward the content —
-/// a stepped approximation of a graduated blur. (A single `BackdropFilter`
-/// inside a fading `ShaderMask` would be the direct way to do this, but
-/// `BackdropFilter` only sees what's painted within its own compositing
-/// layer, and `ShaderMask` isolates its child into a blank one — it ends up
-/// blurring nothing.)
+/// Deliberately not a blur. This was five stacked `BackdropFilter`s per
+/// edge (a stepped graduated frost); every one re-samples and blurs the
+/// backdrop on every frame, and together they cost ~7ms of raster time per
+/// frame plus 100–200ms spikes when a session opened (measured with
+/// integration_test/perf/open_session_perf.dart: average raster 11.2ms →
+/// 4.1ms, missed frames 20 → 8 without them). A gradient paints once.
 /// Ignores hits so scrolling still reaches the list underneath.
-class _EdgeBlur extends StatelessWidget {
-  const _EdgeBlur({required this.height, required this.top});
+class _EdgeFade extends StatelessWidget {
+  const _EdgeFade({required this.height, required this.top});
 
   final double height;
   final bool top;
-
-  /// Fraction of [height] each successive layer covers, measured inward
-  /// from the chrome edge, paired with that layer's own (small) blur.
-  /// Composing N Gaussian blurs is itself a Gaussian with variance equal to
-  /// their sum, so the effective blur near the chrome edge — where every
-  /// layer overlaps — is `sqrt(Σ sigma²)`, not `Σ sigma`: these peak around
-  /// sigma 6 at the edge, not the ~22 five layers of 3/6/9/12/15 compounded
-  /// to. Small, evenly-sized per-layer jumps (instead of one big 0→3 jump
-  /// at the full-height outermost layer) also keep any single step's own
-  /// hard edge from reading as a visible seam.
-  static const _steps = [
-    (fraction: 1.0, sigma: 1.0),
-    (fraction: 0.7, sigma: 1.6),
-    (fraction: 0.45, sigma: 2.2),
-    (fraction: 0.25, sigma: 2.8),
-    (fraction: 0.1, sigma: 3.4),
-  ];
 
   @override
   Widget build(BuildContext context) {
@@ -417,33 +404,28 @@ class _EdgeBlur extends StatelessWidget {
       right: 0,
       height: height,
       child: IgnorePointer(
-        child: Stack(
-          children: [
-            for (final step in _steps)
-              Positioned(
-                top: top ? 0 : null,
-                bottom: top ? null : 0,
-                left: 0,
-                right: 0,
-                height: height * step.fraction,
-                child: ClipRect(
-                  child: BackdropFilter(
-                    filter: ui.ImageFilter.blur(
-                      sigmaX: step.sigma,
-                      sigmaY: step.sigma,
-                    ),
-                    child: const SizedBox.expand(),
-                  ),
-                ),
-              ),
-          ],
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              begin: top ? Alignment.topCenter : Alignment.bottomCenter,
+              end: top ? Alignment.bottomCenter : Alignment.topCenter,
+              colors: [
+                GC.bgPage,
+                GC.bgPage.withValues(alpha: 0.85),
+                GC.bgPage.withValues(alpha: 0),
+              ],
+              stops: const [0, 0.45, 1],
+            ),
+          ),
         ),
       ),
     );
   }
 }
 
-const _fadeInDuration = Duration(milliseconds: 220);
+/// Short: the content already waited out the route fade (app.dart's
+/// routeFadeDuration), so this only softens its arrival.
+const _fadeInDuration = Duration(milliseconds: 140);
 
 /// Fades its child in once, on first build; later rebuilds don't repeat it.
 class _FadeIn extends StatelessWidget {
@@ -845,7 +827,7 @@ class _ComposerState extends State<_Composer> {
             constraints: const BoxConstraints(maxWidth: 860),
             child: GlassSurface(
               radius: GC.rPanel,
-              tint: const Color(0x66171717),
+              tint: GC.bgPage.withValues(alpha: 0.4),
               padding: const EdgeInsets.fromLTRB(20, 8, 10, 10),
               child: Column(
                 mainAxisSize: MainAxisSize.min,

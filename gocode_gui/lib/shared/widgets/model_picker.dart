@@ -104,7 +104,7 @@ class _AcpModelPickerDialogState extends State<_AcpModelPickerDialog> {
         constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
         child: GlassSurface(
           radius: GC.rPanel,
-          tint: const Color(0xB31F1F1F),
+          tint: GC.surface1.withValues(alpha: 0.7),
           padding: const EdgeInsets.fromLTRB(20, 22, 20, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -221,7 +221,7 @@ class _ModelPickerDialogState extends State<_ModelPickerDialog> {
         constraints: const BoxConstraints(maxWidth: 560, maxHeight: 640),
         child: GlassSurface(
           radius: GC.rPanel,
-          tint: const Color(0xB31F1F1F),
+          tint: GC.surface1.withValues(alpha: 0.7),
           padding: const EdgeInsets.fromLTRB(20, 22, 20, 12),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,

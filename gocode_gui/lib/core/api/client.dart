@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 
 import 'account.dart';
+import 'git_models.dart';
 import 'models.dart';
 
 /// Error shape returned by the gocode server: `{"error": "message"}`.
@@ -383,6 +384,131 @@ class GocodeClient {
         .map(FileDiff.fromJson)
         .toList();
   }
+
+  // --------------------------------------------------------------------- git
+  //
+  // Source Control (internal/server/git.go). Every call takes the folder it
+  // acts on; null means the server's own working directory. Git's refusals
+  // (conflicts, rejected pushes) arrive as ApiException(422) with git's
+  // message.
+
+  String _git(
+    String path,
+    String? directory, [
+    Map<String, String> query = const {},
+  ]) {
+    final params = {
+      if (directory != null && directory.isNotEmpty) 'directory': directory,
+      ...query,
+    };
+    final uri = Uri(
+      path: '/api/vcs/git/$path',
+      queryParameters: params.isEmpty ? null : params,
+    );
+    return uri.toString();
+  }
+
+  Future<GitStatus> gitStatus({String? directory}) async =>
+      GitStatus.fromJson(await _getJson(_git('status', directory)));
+
+  /// Unified diff of one repo-relative [path]: the worktree against the
+  /// index, the index against HEAD ([staged]), a new file ([untracked]), or
+  /// the file's change in [commit].
+  Future<String> gitDiff(
+    String path, {
+    String? directory,
+    bool staged = false,
+    bool untracked = false,
+    String commit = '',
+  }) async {
+    final json = await _getJson(
+      _git('diff', directory, {
+        'path': path,
+        if (staged) 'staged': 'true',
+        if (untracked) 'untracked': 'true',
+        if (commit.isNotEmpty) 'commit': commit,
+      }),
+    );
+    return json['diff'] as String? ?? '';
+  }
+
+  Future<GitBranches> gitBranches({String? directory}) async =>
+      GitBranches.fromJson(await _getJson(_git('branches', directory)));
+
+  Future<List<GitCommitInfo>> gitLog({
+    String? directory,
+    int limit = 200,
+    int skip = 0,
+    bool all = false,
+    String query = '',
+    String path = '',
+  }) async {
+    final json = await _getJson(
+      _git('log', directory, {
+        'limit': '$limit',
+        if (skip > 0) 'skip': '$skip',
+        if (all) 'all': 'true',
+        if (query.isNotEmpty) 'query': query,
+        if (path.isNotEmpty) 'path': path,
+      }),
+    );
+    return [
+      for (final c in (json['commits'] as List?) ?? const [])
+        if (c is Map<String, dynamic>) GitCommitInfo.fromJson(c),
+    ];
+  }
+
+  Future<GitCommitDetails> gitShow(String hash, {String? directory}) async =>
+      GitCommitDetails.fromJson(
+        await _getJson(_git('show/${Uri.encodeComponent(hash)}', directory)),
+      );
+
+  Future<List<GitStashEntry>> gitStashList({String? directory}) async =>
+      GitStashEntry.listFrom(await _getJson(_git('stash', directory)));
+
+  /// Has the model draft a commit message for the staged changes
+  /// ([stagedOnly]) or for everything "Commit All" would take. Emits the
+  /// message so far as it is written, then a final event with `done` (and
+  /// the cleaned message, or `error`). Completing [abort] stops the draft.
+  Stream<CommitMessageDraft> gitCommitMessage({
+    String? directory,
+    bool stagedOnly = false,
+    String model = '',
+    Future<void>? abort,
+  }) async* {
+    final request = http.AbortableRequest(
+      'POST',
+      Uri.parse(_url(_git('commit-message', directory))),
+      abortTrigger: abort,
+    );
+    request.headers.addAll(_headers);
+    request.headers['Content-Type'] = 'application/json';
+    request.body = jsonEncode({
+      'stagedOnly': stagedOnly,
+      if (model.isNotEmpty) 'model': model,
+    });
+    final res = await _http.send(request);
+    if (res.statusCode < 200 || res.statusCode >= 300) {
+      final text = await res.stream.bytesToString();
+      throw ApiException(res.statusCode, _errorMessage(text, request.url.path));
+    }
+    final lines = res.stream
+        .transform(utf8.decoder)
+        .transform(const LineSplitter());
+    await for (final line in lines) {
+      if (line.trim().isEmpty) continue;
+      yield CommitMessageDraft.fromJson(
+        jsonDecode(line) as Map<String, dynamic>,
+      );
+    }
+  }
+
+  /// Runs a mutating git operation: POST [op] with [body].
+  Future<Map<String, dynamic>> gitOp(
+    String op,
+    Map<String, Object?> body, {
+    String? directory,
+  }) => _send('POST', _git(op, directory), body);
 
   void close() => _http.close();
 }

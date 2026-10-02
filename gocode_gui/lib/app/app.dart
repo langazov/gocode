@@ -8,6 +8,7 @@ import '../features/account/profile_screen.dart';
 import '../features/account/usage_screen.dart';
 import '../features/account/user_settings_screen.dart';
 import '../features/asks/asks.dart';
+import '../features/git/git_screen.dart';
 import '../features/home/home_screen.dart';
 import '../features/home/new_session_screen.dart';
 import '../features/session/session_screen.dart';
@@ -16,6 +17,11 @@ import '../shared/widgets/glass.dart';
 import 'connect_screen.dart';
 import 'shell.dart';
 import 'theme.dart';
+import 'title_bar.dart';
+import 'window_chrome.dart';
+
+/// How long switching views takes (the route cross-fade).
+const routeFadeDuration = Duration(milliseconds: 140);
 
 /// The app router. Its redirect re-runs whenever the connection phase
 /// changes, so the connect gate opens and closes in place — re-keying the
@@ -28,10 +34,22 @@ final routerProvider = Provider<GoRouter>((ref) {
   );
 
   // Each page paints its own ground, so route transitions stay opaque.
-  Page<void> page(GoRouterState state, Widget child) => MaterialPage<void>(
-    key: state.pageKey,
-    child: AmbientBackground(child: child),
-  );
+  //
+  // A short fade, not the platform slide: on macOS that is a ~0.5s
+  // Cupertino push whose every frame re-renders the glass blurs of two
+  // moving pages. Nothing moves in a fade, and views switch the way a
+  // desktop app's do — near instantly.
+  Page<void> page(GoRouterState state, Widget child) =>
+      CustomTransitionPage<void>(
+        key: state.pageKey,
+        transitionDuration: routeFadeDuration,
+        reverseTransitionDuration: routeFadeDuration,
+        child: AmbientBackground(child: child),
+        transitionsBuilder: (context, animation, _, child) => FadeTransition(
+          opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+          child: child,
+        ),
+      );
 
   GoRoute route(String path, Widget Function(GoRouterState state) build) =>
       GoRoute(
@@ -60,6 +78,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           route('/', (_) => const HomeScreen()),
           route('/new', (_) => const NewSessionScreen()),
           route('/settings', (_) => const SettingsScreen()),
+          route(
+            '/git',
+            (state) => GitScreen(directory: state.uri.queryParameters['dir']),
+          ),
           route(
             '/session/:id',
             (state) => SessionScreen(sessionID: state.pathParameters['id']!),
@@ -93,10 +115,14 @@ class GoCodeApp extends ConsumerWidget {
       routerConfig: router,
       // Asks open sheets on the router's navigator; this builder sits above
       // it, so it gets the navigator by key rather than by context.
-      builder: (context, child) => AsksOverlay(
-        navigatorKey: router.routerDelegate.navigatorKey,
-        child: child ?? const SizedBox.shrink(),
-      ),
+      builder: (context, child) {
+        final page = child ?? const SizedBox.shrink();
+        return AsksOverlay(
+          navigatorKey: router.routerDelegate.navigatorKey,
+          // Desktop: the app draws the title bar (window_chrome.dart).
+          child: showsAppTitleBar ? TitleBarFrame(child: page) : page,
+        );
+      },
     );
   }
 }
