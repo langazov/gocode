@@ -1,6 +1,6 @@
 # 10. Development
 
-[← LSP & MCP](09-integrations.md) · [Index](README.md)
+[← LSP & MCP](09-integrations.md) · [Index](README.md) · [Next: Gocode Desktop →](11-desktop.md)
 
 ---
 
@@ -230,4 +230,4 @@ never ran.
 
 ---
 
-[← LSP & MCP](09-integrations.md) · [Index](README.md)
+[← LSP & MCP](09-integrations.md) · [Index](README.md) · [Next: Gocode Desktop →](11-desktop.md)

@@ -11,7 +11,7 @@ One statically linked binary. No Node, no Bun, no runtime to install.
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[Install](#install) · [Quick start](#quick-start) · [Documentation](documentation/) · [Website](https://langazov.github.io/gocode/)
+[Install](#install) · [Quick start](#quick-start) · [Desktop app](#desktop-app) · [Documentation](documentation/) · [Website](https://langazov.github.io/gocode/)
 
 </div>
 
@@ -127,6 +127,13 @@ brew untap langazov/tap   # optional, drops the tap as well
 
 Homebrew itself is a prerequisite. If you do not have it, see
 [brew.sh](https://brew.sh) — the same installer covers macOS and Linux.
+
+On macOS the same tap also has a cask for the [desktop app](#desktop-app),
+which pulls in this formula as a dependency:
+
+```sh
+brew install --cask langazov/tap/gocode-desktop
+```
 
 ### Download a binary
 
@@ -247,16 +254,75 @@ history. In Zed:
 
 See [LSP, MCP, plugins & ACP](documentation/09-integrations.md#acp-editors-driving-gocode) for what is supported.
 
+## Desktop app
+
+**Gocode Desktop** is a native client for macOS, Linux and Windows, built
+with Flutter. Pick a project folder and it starts `gocode serve` there in the
+background. It can also attach to a server that is already running, or drive
+`gocode acp` over the Agent Client Protocol.
+
+<div align="center">
+
+<img src="docs/assets/gocode-desktop-session.png" alt="A Gocode Desktop session titled &quot;check kubernetes cluster state&quot;: a markdown answer with inline code, a numbered list of outstanding issues and a bash code block with a Copy code button, followed by a token and cost footer, above a prompt box with build agent and default model pickers." width="900">
+
+<sub>Sessions grouped by project in the sidebar; markdown, code blocks and per-turn token and cost in the timeline; agent and model pickers on the prompt.</sub>
+
+<br><br>
+
+<img src="docs/assets/gocode-desktop-changes.png" alt="The Gocode Desktop Source Control view, Changes tab: a branch picker on main with Sync, Fetch and History buttons, a commit message box with an AI sparkle button, a Commit All button, and a list of nine changed files marked M or U, with Discard all and Stage all actions." width="900">
+
+<sub>Source Control built in: stage, discard, and commit, with the commit message drafted by the model if you want.</sub>
+
+<br><br>
+
+<img src="docs/assets/gocode-desktop-history.png" alt="The Gocode Desktop Source Control view, History tab: a colored commit graph down the left with merge lines, each row showing branch and tag chips such as main, v0.5.0 and origin branches, the commit subject, author, relative time and short hash, under a commit message search box and an All branches toggle." width="900">
+
+<sub>The commit graph across all branches, with tags, remotes and searchable messages.</sub>
+
+</div>
+
+It ships in every release as `gocode-desktop-*`. On macOS, install it with
+Homebrew:
+
+```sh
+brew install --cask langazov/tap/gocode-desktop
+```
+
+The cask lives in the same [tap](https://github.com/langazov/homebrew-tap) as
+the CLI. It installs `Gocode Desktop.app` into `/Applications` as a universal
+build (Apple silicon and Intel, macOS 12 or later), and installs the `gocode`
+formula first if you don't have it, since the app runs that binary. The app is
+unsigned, but the cask clears the quarantine flag for you, so it opens
+without the `xattr` step. Every release updates the cask along with the
+formula:
+
+```sh
+brew upgrade --cask gocode-desktop
+brew uninstall --cask gocode-desktop          # gocode itself stays installed
+brew uninstall --zap --cask gocode-desktop    # also remove the app's preferences and caches
+```
+
+On Linux and Windows, unpack `gocode-desktop-<version>-linux-x64.tar.gz` or
+`gocode-desktop-<version>-windows-x64.zip` from the
+[latest release](https://github.com/langazov/gocode/releases/latest). The app
+runs the `gocode` binary, so install that too.
+
+**[→ Gocode Desktop, in full](documentation/11-desktop.md)**: connection
+modes, sessions, permission asks, Source Control, and building it from
+source.
+
 ## How it fits together
 
 The TUI is **always** an HTTP client — even locally. `gocode` boots the
 service stack, starts a server on an ephemeral loopback port, and connects to
 it. `gocode attach` is the identical path pointed at a different host, which
-is why remote and local behave the same.
+is why remote and local behave the same. Gocode Desktop works the same way:
+it spawns `gocode serve` and talks to it over the same API.
 
 ```mermaid
 flowchart LR
   TUI["TUI<br/><i>Bubble Tea</i>"] -->|HTTP + SSE| SRV
+  DESK["Gocode Desktop<br/><i>Flutter</i>"] -->|HTTP + SSE| SRV
   CLI["CLI<br/><i>run, export…</i>"] -->|in-process| SRV
   ACP["Editors<br/><i>gocode acp</i>"] -->|in-process| SVC
   SRV["HTTP server<br/><i>/api/*</i>"] --> SVC["Session service"]
@@ -390,6 +456,7 @@ internal/
   server/           HTTP API
   tui/              Bubble Tea interface
   lsp/  mcp/        language server and MCP clients
+gocode_gui/         Gocode Desktop, the Flutter client
 examples/           worked examples (plugin-echo)
 documentation/      detailed docs (start here)
 docs/               the published website

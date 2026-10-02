@@ -21,6 +21,7 @@ why it is put together that way, and where to look when changing it.
 | **8** | [HTTP API](08-http-api.md) | Route reference and the SSE event stream |
 | **9** | [LSP, MCP, plugins & ACP](09-integrations.md) | Language servers, Model Context Protocol clients, the plugin host, and editors driving gocode over the Agent Client Protocol |
 | **10** | [Development](10-development.md) | Building, testing, releasing, and the porting conventions |
+| **11** | [Gocode Desktop](11-desktop.md) | The Flutter desktop client: install, connection modes, sessions, Source Control |
 
 ## Design recommendations
 
@@ -42,7 +43,8 @@ root, or in `docs/`.
 
 `gocode` is an AI coding agent that runs in your terminal. You type a request;
 it reads and edits files, runs commands, and reports back — asking permission
-before anything destructive.
+before anything destructive. [Gocode Desktop](11-desktop.md) is a native app
+over the same server, for those who would rather not live in a terminal.
 
 Three facts explain most of the design:
 
@@ -63,6 +65,7 @@ SQLite. All six release targets cross-compile from a single Linux runner.
 flowchart TB
   subgraph clients["Clients"]
     TUI["TUI"]
+    DESK["Gocode Desktop"]
     CLI["CLI"]
     HTTP["Any HTTP client"]
   end
@@ -83,6 +86,7 @@ flowchart TB
   end
 
   TUI --> SRV
+  DESK --> SRV
   CLI --> SVC
   HTTP --> SRV
   SRV --> SVC --> RUN
