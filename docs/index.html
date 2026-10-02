@@ -225,6 +225,7 @@
     <span class="spacer"></span>
     <a class="link" href="#features">Features</a>
     <a class="link opt" href="#screenshots">Screenshots</a>
+    <a class="link" href="#desktop">Desktop</a>
     <a class="link opt" href="#install">Install</a>
     <a class="link" href="#downloads">Downloads</a>
     <a class="link opt" href="#parity">Parity</a>
@@ -339,6 +340,54 @@
           <figcaption>MCP tools driving a real diagnosis — the kubernetes server inspects a live cluster and gocode turns the results into a structured report.</figcaption>
         </figure>
       </div>
+    </div>
+  </section>
+
+  <section id="desktop">
+    <div class="wrap">
+      <h2>Gocode Desktop</h2>
+      <p class="sub">
+        A native app for macOS, Linux and Windows over the same agent. Pick a project folder and it
+        runs <code class="inline">gocode serve</code> there in the background, or attach it to a server
+        that is already running.
+      </p>
+      <div class="shots">
+        <figure class="shot">
+          <img src="assets/gocode-desktop-home.png" alt="Gocode Desktop on launch: a sidebar listing New session, Source control and Search above a Projects tab with three project folders and their session counts, and a main pane asking &quot;What are we building today?&quot; with a Start a session button." loading="lazy">
+          <figcaption>Sessions grouped by project folder, with the project, branch and connection in the title bar.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/gocode-desktop-session.png" alt="A Gocode Desktop session titled &quot;check kubernetes cluster state&quot;: a markdown answer with inline code, a numbered list of outstanding issues and a bash code block with a Copy code button, followed by a token and cost footer, above a prompt box with build agent and default model pickers." loading="lazy">
+          <figcaption>The timeline renders markdown and code blocks, and shows tokens and cost per turn. Agent and model pickers sit on the prompt.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/gocode-desktop-changes.png" alt="The Gocode Desktop Source Control view, Changes tab: a branch picker on main with Sync, Fetch and History buttons, a commit message box with an AI sparkle button, a Commit All button, and a list of nine changed files marked M or U, with Discard all and Stage all actions." loading="lazy">
+          <figcaption>Source Control built in: stage, discard, and commit, with the commit message drafted by the model if you want.</figcaption>
+        </figure>
+        <figure class="shot">
+          <img src="assets/gocode-desktop-history.png" alt="The Gocode Desktop Source Control view, History tab: a colored commit graph down the left with merge lines, each row showing branch and tag chips such as main, v0.5.0 and origin branches, the commit subject, author, relative time and short hash, under a commit message search box and an All branches toggle." loading="lazy">
+          <figcaption>The commit graph across all branches, with tags, remotes and searchable messages.</figcaption>
+        </figure>
+      </div>
+
+      <h2 style="margin-top:44px; font-size:20px">Get the app</h2>
+      <p class="sub">It runs the <code class="inline">gocode</code> binary, so install that too (see Downloads below).</p>
+      <div class="dl-grid" id="desktop-grid"></div>
+      <h2 style="margin-top:44px; font-size:20px">Homebrew (macOS)</h2>
+      <p class="sub">
+        The cask installs a universal build (Apple silicon and Intel, macOS 12 or later) into
+        <code class="inline">/Applications</code>. It pulls in the <code class="inline">gocode</code> formula if you
+        don't have it yet, and clears the quarantine flag so the unsigned app opens right away.
+      </p>
+      <pre class="code">brew install --cask langazov/tap/gocode-desktop
+
+brew upgrade --cask gocode-desktop        <span style="color:#6e6e7c"># updated with every release</span>
+brew uninstall --cask gocode-desktop      <span style="color:#6e6e7c"># gocode itself stays installed</span></pre>
+      <p class="note">
+        Downloaded by hand, the macOS app is unsigned. Clear the quarantine flag once with
+        <code class="inline">xattr -dr com.apple.quarantine "/Applications/Gocode Desktop.app"</code>.
+        On Linux it needs GTK 3.
+      </p>
     </div>
   </section>
 
@@ -467,7 +516,32 @@ gocode run "fix the failing test"   <span style="color:#6e6e7c"># one-shot, no i
     return mb >= 1 ? mb.toFixed(1) + " MB" : Math.round(bytes / 1024) + " KB";
   }
 
+  var DESKTOP = [
+    { match: /macos-universal\.zip$/, icon: "🍎", name: "macOS",   detail: "Apple silicon + Intel" },
+    { match: /linux-x64\.tar\.gz$/,   icon: "🐧", name: "Linux",   detail: "x86_64 · GTK 3" },
+    { match: /windows-x64\.zip$/,     icon: "🪟", name: "Windows", detail: "x64" }
+  ];
+
+  function card(href, icon, name, detail) {
+    var a = document.createElement("a");
+    a.className = "dl";
+    a.href = href;
+    a.innerHTML =
+      '<span class="os">' + icon + '</span>' +
+      '<span class="meta"><b>' + name + '</b><span>' + detail + '</span></span>' +
+      '<span class="arrow">↓</span>';
+    return a;
+  }
+
+  function desktopFallback() {
+    var grid = document.getElementById("desktop-grid");
+    grid.innerHTML = "";
+    grid.appendChild(card(base + "/releases", "📦", "All releases",
+      "github.com/" + owner + "/" + repo + "/releases"));
+  }
+
   function fallback(message) {
+    desktopFallback();
     document.getElementById("release-tag").textContent = "see GitHub";
     document.getElementById("release-sub").textContent = message;
     document.getElementById("downloads-grid").innerHTML =
@@ -536,6 +610,18 @@ gocode run "fix the failing test"   <span style="color:#6e6e7c"># one-shot, no i
         grid.appendChild(cell);
       });
       if (!grid.children.length) fallback("This release has no published binaries yet.");
+
+      var desktop = document.getElementById("desktop-grid");
+      desktop.innerHTML = "";
+      DESKTOP.forEach(function (platform) {
+        var asset = (release.assets || []).filter(function (a) {
+          return /^gocode-desktop-/.test(a.name) && platform.match.test(a.name);
+        })[0];
+        if (!asset) return;
+        desktop.appendChild(card(asset.browser_download_url, platform.icon, platform.name,
+          platform.detail + " · " + size(asset.size)));
+      });
+      if (!desktop.children.length) desktopFallback();
     })
     .catch(function () {
       fallback("Could not reach the GitHub API — open the releases page directly.");
