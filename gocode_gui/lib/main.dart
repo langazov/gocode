@@ -5,7 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/app.dart';
+import 'app/theme.dart';
 import 'app/tray_controller.dart';
+import 'app/window_chrome.dart';
 import 'core/connection/controller.dart';
 
 Future<void> main() async {
@@ -40,6 +42,9 @@ Future<void> main() async {
   // in main() — starting early enough could hit it mid-setup.
   WidgetsBinding.instance.addPostFrameCallback((_) {
     unawaited(TrayController.instance.start());
+    // The native window behind the app's own title bar: dark traffic
+    // lights and menus, and no light flash while resizing.
+    unawaited(setWindowAppearance(dark: true, background: GC.bgPage));
   });
 
   runApp(

@@ -17,6 +17,8 @@ import '../shared/widgets/glass.dart';
 import 'connect_screen.dart';
 import 'shell.dart';
 import 'theme.dart';
+import 'title_bar.dart';
+import 'window_chrome.dart';
 
 /// The app router. Its redirect re-runs whenever the connection phase
 /// changes, so the connect gate opens and closes in place — re-keying the
@@ -98,10 +100,14 @@ class GoCodeApp extends ConsumerWidget {
       routerConfig: router,
       // Asks open sheets on the router's navigator; this builder sits above
       // it, so it gets the navigator by key rather than by context.
-      builder: (context, child) => AsksOverlay(
-        navigatorKey: router.routerDelegate.navigatorKey,
-        child: child ?? const SizedBox.shrink(),
-      ),
+      builder: (context, child) {
+        final page = child ?? const SizedBox.shrink();
+        return AsksOverlay(
+          navigatorKey: router.routerDelegate.navigatorKey,
+          // Desktop: the app draws the title bar (window_chrome.dart).
+          child: showsAppTitleBar ? TitleBarFrame(child: page) : page,
+        );
+      },
     );
   }
 }

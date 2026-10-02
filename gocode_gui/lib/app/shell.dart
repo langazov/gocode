@@ -4,6 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../core/connection/controller.dart';
 import '../features/sidebar/sidebar.dart';
 import 'sidebar_scope.dart';
+import 'sidebar_state.dart';
+import 'window_chrome.dart' show showsAppTitleBar;
 import 'theme.dart';
 
 /// The window layout while connected: the session-history sidebar docked on
@@ -22,9 +24,7 @@ class AppShell extends ConsumerStatefulWidget {
 }
 
 class _AppShellState extends ConsumerState<AppShell> {
-  static const _wideBreakpoint = 900.0;
   final _scaffold = GlobalKey<ScaffoldState>();
-  bool _hidden = false;
 
   @override
   Widget build(BuildContext context) {
@@ -33,20 +33,23 @@ class _AppShellState extends ConsumerState<AppShell> {
     );
     // Settings is reachable before connecting; there's no history to show.
     if (!connected) return widget.child;
+    final hidden = ref.watch(sidebarProvider.select((s) => s.hidden));
+    // The title bar's sidebar button asks for the drawer on narrow windows.
+    ref.listen(
+      sidebarProvider.select((s) => s.drawerRequests),
+      (_, _) => _scaffold.currentState?.openDrawer(),
+    );
 
     return LayoutBuilder(
       builder: (context, constraints) {
-        final wide = constraints.maxWidth >= _wideBreakpoint;
-        final docked = wide && !_hidden;
+        final wide = constraints.maxWidth >= sidebarWideBreakpoint;
+        final docked = wide && !hidden;
         final page = SidebarScope(
-          visible: docked,
-          onOpen: () {
-            if (wide) {
-              setState(() => _hidden = false);
-            } else {
-              _scaffold.currentState?.openDrawer();
-            }
-          },
+          // With the app's title bar, its sidebar button is the way back;
+          // pages don't add their own.
+          visible: docked || showsAppTitleBar,
+          onOpen: () =>
+              ref.read(sidebarProvider.notifier).toggle(wide: wide),
           child: widget.child,
         );
 
@@ -66,7 +69,9 @@ class _AppShellState extends ConsumerState<AppShell> {
                       maxWidth: sidebarWidth,
                       child: Sidebar(
                         location: widget.location,
-                        onHide: () => setState(() => _hidden = true),
+                        onHide: showsAppTitleBar
+                            ? null
+                            : ref.read(sidebarProvider.notifier).hide,
                       ),
                     ),
                   ),
