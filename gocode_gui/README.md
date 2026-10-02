@@ -36,4 +36,7 @@ lib/core/acp/        ACP v1 client: JSON-RPC over stdio, protocol types,
 lib/core/api/         HTTP client + SSE (Server/Remote modes)
 lib/core/connection/  Connection settings/lifecycle shared by all modes
 lib/features/…        Screens (session timeline, sidebar, asks, settings)
+lib/features/git/     Source Control (changes, diff viewer, branches,
+                     history graph) over /api/vcs/git — Server/Remote
+                     modes only; ported from goide
 ```

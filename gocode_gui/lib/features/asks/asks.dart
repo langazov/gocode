@@ -273,7 +273,7 @@ class _AskSheet extends ConsumerWidget {
           ),
           child: GlassSurface(
             radius: GC.rPanel,
-            tint: const Color(0xCC1F1F1F),
+            tint: GC.surface1.withValues(alpha: 0.8),
             padding: const EdgeInsets.all(22),
             child: switch (ask) {
               PermissionAsk(:final request) => _PermissionSheet(

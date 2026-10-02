@@ -7,7 +7,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/sidebar_scope.dart';
 import '../../app/theme.dart';
 
-/// The page ground: near-black with soft gray light pooled at the
+/// The page ground: blue-black with soft cool light pooled at the
 /// edges — something for the glass surfaces above it to refract.
 class AmbientBackground extends StatelessWidget {
   const AmbientBackground({super.key, required this.child});
@@ -55,17 +55,17 @@ class _AmbientPainter extends CustomPainter {
     glow(
       Offset(size.width * 0.12, -size.height * 0.08),
       extent * 0.62,
-      const Color(0xFFFFFFFF).withValues(alpha: 0.07),
+      const Color(0xFF8FA8D6).withValues(alpha: 0.06),
     );
     glow(
       Offset(size.width * 1.02, size.height * 0.42),
       extent * 0.48,
-      const Color(0xFFFFFFFF).withValues(alpha: 0.045),
+      const Color(0xFF8FA8D6).withValues(alpha: 0.04),
     );
     glow(
       Offset(size.width * 0.38, size.height * 1.08),
       extent * 0.55,
-      const Color(0xFFFFFFFF).withValues(alpha: 0.04),
+      const Color(0xFF8FA8D6).withValues(alpha: 0.035),
     );
   }
 
@@ -423,7 +423,7 @@ class Eyebrow extends StatelessWidget {
           fontWeight: FontWeight.w500,
           letterSpacing: 1.8,
           height: 1.2,
-          color: Color(0xFFB3A89B),
+          color: GC.textBody,
         ),
       ),
     );

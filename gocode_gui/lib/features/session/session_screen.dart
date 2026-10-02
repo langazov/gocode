@@ -9,10 +9,12 @@ import 'package:go_router/go_router.dart';
 import '../../app/theme.dart';
 import '../../core/acp/protocol.dart';
 import '../../core/api/models.dart';
+import '../../core/connection/controller.dart' show apiClientProvider;
 import '../../shared/widgets/glass.dart';
 import '../../shared/widgets/message_parts.dart';
 import '../../shared/widgets/model_picker.dart';
 import '../../shared/widgets/session_status.dart';
+import '../git/git_screen.dart' show sourceControlLocation;
 import '../home/providers.dart';
 import 'prompt_history.dart';
 import 'timeline.dart';
@@ -174,6 +176,14 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
             ? Text('Session', style: theme.textTheme.titleSmall)
             : _HeaderTitle(session: state.session, models: models),
         actions: [
+          if (state != null && ref.watch(apiClientProvider) != null)
+            IconButton(
+              tooltip: 'Source control',
+              icon: const Icon(Icons.account_tree_outlined, size: 18),
+              onPressed: () => context.push(
+                sourceControlLocation(directory: state.session.directory),
+              ),
+            ),
           if (state != null)
             Padding(
               padding: const EdgeInsets.only(right: 10),
@@ -195,8 +205,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                 modelLabel: _modelName(state.session.model, models),
                 onSend: () => unawaited(_send()),
                 onInterrupt: () => unawaited(_interrupt()),
-                onPickModel: () =>
-                    unawaited(_chooseModel(models, state)),
+                onPickModel: () => unawaited(_chooseModel(models, state)),
                 onPickAgent: (agent) => unawaited(_setAgent(agent)),
                 variants: _variantsOfState(state, models),
                 variant: _currentVariantOf(state, models),
@@ -845,7 +854,7 @@ class _ComposerState extends State<_Composer> {
             constraints: const BoxConstraints(maxWidth: 860),
             child: GlassSurface(
               radius: GC.rPanel,
-              tint: const Color(0x66171717),
+              tint: GC.bgPage.withValues(alpha: 0.4),
               padding: const EdgeInsets.fromLTRB(20, 8, 10, 10),
               child: Column(
                 mainAxisSize: MainAxisSize.min,

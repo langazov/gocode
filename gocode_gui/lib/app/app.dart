@@ -8,6 +8,7 @@ import '../features/account/profile_screen.dart';
 import '../features/account/usage_screen.dart';
 import '../features/account/user_settings_screen.dart';
 import '../features/asks/asks.dart';
+import '../features/git/git_screen.dart';
 import '../features/home/home_screen.dart';
 import '../features/home/new_session_screen.dart';
 import '../features/session/session_screen.dart';
@@ -60,6 +61,10 @@ final routerProvider = Provider<GoRouter>((ref) {
           route('/', (_) => const HomeScreen()),
           route('/new', (_) => const NewSessionScreen()),
           route('/settings', (_) => const SettingsScreen()),
+          route(
+            '/git',
+            (state) => GitScreen(directory: state.uri.queryParameters['dir']),
+          ),
           route(
             '/session/:id',
             (state) => SessionScreen(sessionID: state.pathParameters['id']!),

@@ -11,6 +11,7 @@ import '../../shared/widgets/glass.dart';
 import '../../shared/widgets/session_status.dart';
 import '../account/avatar.dart';
 import '../account/providers.dart';
+import '../git/git_screen.dart' show sourceControlLocation;
 import '../home/providers.dart';
 import '../session/timeline.dart' show acpConnectionProvider;
 import 'history.dart';
@@ -27,6 +28,7 @@ abstract final class SidebarKeys {
   static const projectsTab = ValueKey('sidebar-projects-tab');
   static const chatsTab = ValueKey('sidebar-chats-tab');
   static const newProject = ValueKey('sidebar-new-project');
+  static const sourceControl = ValueKey('sidebar-source-control');
 }
 
 /// The left navigation: new session, a Projects/Chats tab pair, and the
@@ -259,6 +261,29 @@ class _SidebarState extends ConsumerState<Sidebar> {
                         ),
                         SizedBox(width: 8),
                         Text('New session', style: _navStyle),
+                      ],
+                    ),
+                  ),
+                  SidebarRow(
+                    key: SidebarKeys.sourceControl,
+                    selected: widget.location == '/git',
+                    onTap: () => _go(
+                      sourceControlLocation(
+                        directory: selectedProject?.directory,
+                      ),
+                    ),
+                    builder: (_) => const Row(
+                      children: [
+                        SizedBox(
+                          width: 16,
+                          child: Icon(
+                            Icons.account_tree_outlined,
+                            size: 15,
+                            color: GC.textBody,
+                          ),
+                        ),
+                        SizedBox(width: 8),
+                        Text('Source control', style: _navStyle),
                       ],
                     ),
                   ),
