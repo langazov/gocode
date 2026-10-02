@@ -131,6 +131,9 @@ Known deliberate divergences:
 | MCP tool-call default timeout is 300s, not the TS SDK's 60s | remote MCP servers regularly host slow tools (monorepo code search, batch queries); a 60s ceiling fails them mid-run |
 | An empty completion is retried, then settled as a failed step | upstream's `SessionRetry.policy` only sees streams that *fail*; a clean HTTP 200 whose stream ends with no text, reasoning, tool call or output token (free-tier OpenRouter upstreams do this) settles there as a normal finish and the session silently stops. Here it is retried 3× (500ms apart; safe because nothing was dispatched), then settled as `step.failed` so the user sees why the turn ended |
 | MCP connect default timeout is 60s, not TS's 30s | a remote connect hosts the whole OAuth bootstrap (discovery, dynamic client registration, token exchange) — 30s cut real flows short (`mcp auth` dying mid-browser-flow); `mcp.<name>.timeout` (ms) overrides both defaults |
+| ACP serves v1 and v2, not v1 only | upstream's `acp` speaks v1 through the TypeScript SDK; the v2 migration guide asks agents to serve both versions side by side, negotiated per connection, so this port does |
+| ACP drives sessions in-process, one runtime per `cwd` | upstream's ACP agent is an HTTP client of a local server rooted at one directory; here each session's `cwd` gets its own runtime over a shared database, so sessions in different projects run against their own config and tools |
+| ACP session forking is `_gocode/session/fork` | forking is an RFD, not part of stable v1 or v2; upstream advertises it as `sessionCapabilities.fork`, which neither stable schema defines |
 
 ## CI
 

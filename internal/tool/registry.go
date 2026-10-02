@@ -83,6 +83,7 @@ func (r *Registry) Execute(ctx context.Context, name string, input map[string]an
 	if !ok {
 		return "", fmt.Errorf("tool: unknown tool %q", name)
 	}
+	ctx = WithExec(ctx, exec)
 	if aware, ok := tool.(SessionAware); ok {
 		return aware.ExecuteWithContext(ctx, input, exec)
 	}

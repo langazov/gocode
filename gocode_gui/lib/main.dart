@@ -30,7 +30,7 @@ Future<void> main() async {
   final settings = container.read(settingsProvider);
   final configured = settings.mode == ConnectionMode.remote
       ? settings.remoteUrl.trim().isNotEmpty
-      : settings.workingDirectory.trim().isNotEmpty;
+      : settings.workingDirectory.trim().isNotEmpty;  // local & acp both need a directory
   if (configured) {
     unawaited(container.read(connectionProvider.notifier).connect());
   }

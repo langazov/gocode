@@ -151,7 +151,7 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 	// Resolve everything first: a patch either applies whole or not at all.
 	changes := make([]fileChange, 0, len(hunks))
 	for _, hunk := range hunks {
-		target, err := t.resolver.Resolve(hunk.Path)
+		target, err := t.resolver.ResolveCtx(ctx, hunk.Path)
 		if err != nil {
 			return "", err
 		}
@@ -169,7 +169,7 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 			if err != nil || info.IsDir() {
 				return "", fmt.Errorf("apply_patch verification failed: Failed to read file to update: %s", target)
 			}
-			raw, err := os.ReadFile(target)
+			raw, err := readText(ctx, target)
 			if err != nil {
 				return "", fmt.Errorf("apply_patch verification failed: %w", err)
 			}
@@ -180,7 +180,7 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 			oldText, _ := patch.SplitBOM(string(raw))
 			change := newFileChange(target, "update", oldText, content, bom)
 			if hunk.MovePath != "" {
-				movePath, err := t.resolver.Resolve(hunk.MovePath)
+				movePath, err := t.resolver.ResolveCtx(ctx, hunk.MovePath)
 				if err != nil {
 					return "", err
 				}
@@ -189,7 +189,7 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 			changes = append(changes, change)
 
 		case patch.HunkDelete:
-			raw, err := os.ReadFile(target)
+			raw, err := readText(ctx, target)
 			if err != nil {
 				return "", fmt.Errorf("apply_patch verification failed: %w", err)
 			}
@@ -206,17 +206,17 @@ func (t *ApplyPatchTool) Execute(ctx context.Context, input map[string]any) (str
 	for _, change := range changes {
 		switch change.kind {
 		case "add":
-			if err := writeWithDirs(change.path, patch.JoinBOM(change.content, change.bom)); err != nil {
+			if err := writeWithDirs(ctx, change.path, patch.JoinBOM(change.content, change.bom)); err != nil {
 				return "", err
 			}
 			summary = append(summary, t.summaryLine("A", change.path, change))
 		case "update":
-			if err := writeWithDirs(change.path, patch.JoinBOM(change.content, change.bom)); err != nil {
+			if err := writeWithDirs(ctx, change.path, patch.JoinBOM(change.content, change.bom)); err != nil {
 				return "", err
 			}
 			summary = append(summary, t.summaryLine("M", change.path, change))
 		case "move":
-			if err := writeWithDirs(change.movePath, patch.JoinBOM(change.content, change.bom)); err != nil {
+			if err := writeWithDirs(ctx, change.movePath, patch.JoinBOM(change.content, change.bom)); err != nil {
 				return "", err
 			}
 			if err := os.Remove(change.path); err != nil && !os.IsNotExist(err) {
@@ -292,11 +292,6 @@ func (t *ApplyPatchTool) relative(target string) string {
 	return filepath.ToSlash(rel)
 }
 
-func writeWithDirs(target, content string) error {
-	if dir := filepath.Dir(target); dir != "" && dir != "." {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return err
-		}
-	}
-	return os.WriteFile(target, []byte(content), 0o644)
+func writeWithDirs(ctx context.Context, target, content string) error {
+	return writeText(ctx, target, []byte(content))
 }

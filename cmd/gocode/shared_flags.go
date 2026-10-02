@@ -54,11 +54,10 @@ func sessionSelectFlags() []clix.Flag {
 	}
 }
 
-// notImplemented reports a command whose TypeScript backend (MCP client, LSP
-// client, cloud account service, ACP, plugin installer, ...) has no Go port
-// yet. The flags are still fully parsed, matching go-port-gaps.md.
+// notImplemented reports a command whose TypeScript backend has no Go port
+// yet. The flags are still fully parsed, so the command surface matches.
 func notImplemented(path string) error {
-	return &usageError{msg: path + ": not yet implemented in the Go port (see specs/go-port-gaps.md)"}
+	return &usageError{msg: path + ": not yet implemented in the Go port"}
 }
 
 // applyPermissionBypass implements the bypass tiers from the permissions

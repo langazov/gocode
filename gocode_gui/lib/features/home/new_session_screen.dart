@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../../app/theme.dart';
 import '../../core/api/models.dart';
 import '../../core/connection/controller.dart';
+import '../session/timeline.dart' show acpConnectionProvider;
 import '../../shared/widgets/glass.dart';
 import '../../shared/widgets/model_picker.dart';
 import '../sidebar/projects.dart';
@@ -89,29 +90,53 @@ class _NewSessionScreenState extends ConsumerState<NewSessionScreen> {
   }
 
   Future<void> _create() async {
-    final client = ref.read(apiClientProvider);
     final dir = _directory.text.trim();
-    if (client == null || dir.isEmpty) return;
+    if (dir.isEmpty) return;
     setState(() {
       _creating = true;
       _error = null;
     });
     try {
-      final session = await client.createSession(
-        directory: dir,
-        title: _title.text.trim(),
-      );
-      final model = _model;
-      if (model != null) {
-        await client.setModel(session.id, model.providerID, model.id);
-      }
-      final agent = _agent;
-      if (agent != null && agent != session.agent) {
-        await client.setAgent(session.id, agent);
+      late final String sessionID;
+      final acp = ref.read(acpConnectionProvider);
+      if (acp != null) {
+        // ACP: create + apply agent/model through the controller's config
+        // options, then hand the projection to the session screen.
+        final controller = await acp.createSession(dir);
+        sessionID = controller.sessionID;
+        try {
+          final agent = _agent;
+          if (agent != null) {
+            await controller.setAgent(agent);
+          }
+          final model = _model;
+          if (model != null) {
+            await controller.setModel(model.providerID, model.id);
+          }
+        } catch (_) {
+          // Setup best-effort: the session exists and is usable without
+          // the optional agent/model overrides.
+        }
+      } else {
+        final client = ref.read(apiClientProvider);
+        if (client == null) return;
+        final session = await client.createSession(
+          directory: dir,
+          title: _title.text.trim(),
+        );
+        sessionID = session.id;
+        final model = _model;
+        if (model != null) {
+          await client.setModel(session.id, model.providerID, model.id);
+        }
+        final agent = _agent;
+        if (agent != null && agent != session.agent) {
+          await client.setAgent(session.id, agent);
+        }
       }
       ref.invalidate(sessionsProvider);
       // Replace the stack so Back from the session lands on home.
-      if (mounted) context.go('/session/${session.id}');
+      if (mounted) context.go('/session/$sessionID');
     } catch (e) {
       if (mounted) setState(() => _error = '$e');
     } finally {

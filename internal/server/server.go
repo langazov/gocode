@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net"
@@ -483,17 +484,32 @@ type modelEntry struct {
 }
 
 func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
-	catalog, err := s.Models.Get(r.Context())
+	out, err := AvailableModels(r.Context(), s.Models, s.Config)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	catalog = resolveCatalog(r.Context(), catalog)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// ModelEntry is one selectable model as the model list reports it.
+type ModelEntry = modelEntry
+
+// AvailableModels lists the models the user can actually reach — the catalog
+// filtered by provider availability, plus config-defined providers — sorted
+// by provider then model. It backs GET /api/model and the ACP model selector,
+// which must offer exactly the same list.
+func AvailableModels(ctx context.Context, models *modelsdev.Service, cfg *config.Config) ([]ModelEntry, error) {
+	catalog, err := models.Get(ctx)
+	if err != nil {
+		return nil, err
+	}
+	catalog = resolveCatalog(ctx, catalog)
 	out := []modelEntry{}
 	seen := map[string]bool{}
 	// Only providers the user can actually reach — see available.go. The
 	// catalog is the database, not the list.
-	availability := newProviderAvailability(s.Config)
+	availability := newProviderAvailability(cfg)
 	appendModel := func(providerID string, _ config.Provider, modelID string, model modelsdev.Model) {
 		key := providerID + "/" + modelID
 		if seen[key] {
@@ -520,13 +536,13 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		out = append(out, entry)
 	}
 	for providerID, entry := range catalog {
-		for modelID, model := range providerModels(r.Context(), providerID, entry, s.Config) {
+		for modelID, model := range providerModels(ctx, providerID, entry, cfg) {
 			appendModel(providerID, config.Provider{}, modelID, model)
 		}
 	}
 	// Config-defined providers and models extend the catalog.
-	if s.Config != nil {
-		for providerID, provider := range s.Config.Provider {
+	if cfg != nil {
+		for providerID, provider := range cfg.Provider {
 			for modelID, model := range provider.Models {
 				appendModel(providerID, provider, modelID, modelsdev.Model{Name: model.Name})
 			}
@@ -538,7 +554,7 @@ func (s *Server) listModels(w http.ResponseWriter, r *http.Request) {
 		}
 		return out[i].ID < out[j].ID
 	})
-	writeJSON(w, http.StatusOK, out)
+	return out, nil
 }
 
 func (s *Server) listProviders(w http.ResponseWriter, r *http.Request) {

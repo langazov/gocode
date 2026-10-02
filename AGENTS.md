@@ -57,10 +57,11 @@ Everything the agent does becomes a durable event in SQLite before visible state
 | `internal/rag/` | Semantic search: chunking, embeddings, vector store (powers `rag-plugin`) |
 | `internal/memory/` · `internal/memoryplugin/` | Durable agent memories: store + the native plugin that injects them into every system prompt |
 | `internal/background/` | Detached background jobs (subagents launched with `task(background: true)`) |
-| `internal/jsonrpc/` | Shared Content-Length JSON-RPC connection (client + server) |
+| `internal/jsonrpc/` | Shared JSON-RPC connection (client + server): Content-Length framing for LSP, newline-delimited + batches + `$/cancel_request` for ACP |
 | `internal/lspprotocol/` | Shared LSP wire types |
 | `internal/mddoc/` | Markdown document model: headings, links, UTF-16 positions |
 | `internal/mcp/` | MCP server connections, reconnect, tool import |
+| `internal/acp/` | Agent Client Protocol agent (`gocode acp`): v1 + v2 over stdio, one runtime per session `cwd` |
 | `internal/plugin/` | Plugin host: hook catalog, native + subprocess tiers, loader |
 | `internal/configedit/` | Surgical global-config edits for installers (`gocode plugin enable`, `gocode lsp enable`) |
 | `internal/skill/` | Skill discovery from markdown files |

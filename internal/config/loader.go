@@ -27,7 +27,19 @@ type Source struct {
 //  3. project gocode.json(c) discovered upward to the worktree root
 //  4. .gocode dirs and GOCODE_CONFIG_DIR: gocode.json, gocode.jsonc
 //  5. GOCODE_CONFIG_CONTENT inline override
+//
+// Project config is discovered from the process working directory; see
+// LoadTracedFor for an explicit one.
 func LoadTraced() (*Config, []Source, error) {
+	directory, _ := os.Getwd()
+	return LoadTracedFor(directory)
+}
+
+// LoadTracedFor is LoadTraced with project discovery rooted at directory
+// instead of the process working directory. A process that serves several
+// projects at once (gocode acp) boots one runtime per directory and cannot
+// chdir between them.
+func LoadTracedFor(directory string) (*Config, []Source, error) {
 	merged := map[string]any{}
 	var sources []Source
 
@@ -69,7 +81,6 @@ func LoadTraced() (*Config, []Source, error) {
 	}
 
 	if !disableProjectConfig() {
-		directory, _ := os.Getwd()
 		worktree := configpaths.Worktree(directory)
 		for _, file := range configpaths.Files("gocode", directory, worktree) {
 			mergeFile(file, "project", false)
@@ -130,6 +141,12 @@ func LoadTraced() (*Config, []Source, error) {
 // Load merges every config source, failing on non-global errors.
 func Load() (*Config, error) {
 	config, _, err := LoadTraced()
+	return config, err
+}
+
+// LoadFor is Load with project discovery rooted at directory.
+func LoadFor(directory string) (*Config, error) {
+	config, _, err := LoadTracedFor(directory)
 	return config, err
 }
 

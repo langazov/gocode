@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/theme.dart';
+import '../../core/acp/protocol.dart';
 import '../../core/api/models.dart';
 import '../../shared/widgets/glass.dart';
 import '../../shared/widgets/message_parts.dart';
@@ -39,8 +40,7 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
   bool _routeSettled = false;
   Animation<double>? _routeAnimation;
 
-  SessionController? get _controller =>
-      sessionControllerRegistry[widget.sessionID];
+  SessionBackend? get _controller => sessionBackendOf(ref, widget.sessionID);
 
   @override
   void didChangeDependencies() {
@@ -104,11 +104,32 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     await _run(() => controller.setAgent(agent));
   }
 
-  Future<void> _chooseModel(List<ModelEntry> models, Session session) async {
+  Future<void> _chooseModel(List<ModelEntry> models, SessionState state) async {
+    // ACP mode has no model catalog endpoint; the session's own config
+    // options are the list.
+    if (state.acpConfigOptions != null) {
+      final rows = acpModelRows(state.acpConfigOptions!);
+      final choice = await showAcpModelPicker(
+        context,
+        rows: rows,
+        selectedKey: state.session.model?.key,
+      );
+      final row = choice;
+      final controller = _controller;
+      if (row == null || controller == null) return;
+      final slash = row.value.indexOf('/');
+      await _run(
+        () => controller.setModel(
+          row.value.substring(0, slash),
+          row.value.substring(slash + 1),
+        ),
+      );
+      return;
+    }
     final choice = await showModelPicker(
       context,
       models: models,
-      selectedKey: session.model?.key,
+      selectedKey: state.session.model?.key,
     );
     final model = choice?.model;
     final controller = _controller;
@@ -175,10 +196,10 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
                 onSend: () => unawaited(_send()),
                 onInterrupt: () => unawaited(_interrupt()),
                 onPickModel: () =>
-                    unawaited(_chooseModel(models, state.session)),
+                    unawaited(_chooseModel(models, state)),
                 onPickAgent: (agent) => unawaited(_setAgent(agent)),
-                variants: _variantsOf(state.session.model, models),
-                variant: _currentVariant(state.session.model, models),
+                variants: _variantsOfState(state, models),
+                variant: _currentVariantOf(state, models),
                 onPickVariant: (variant) =>
                     unawaited(_setVariant(state.session, variant)),
               ),
@@ -456,6 +477,24 @@ List<String> _variantsOf(ModelRef? ref, List<ModelEntry> models) {
     if (m.key == ref.key) return m.variants;
   }
   return const [];
+}
+
+/// The thinking levels the current backend reports: the model's variants
+/// over HTTP, the thought_level option's values over ACP.
+List<String> _variantsOfState(SessionState state, List<ModelEntry> models) {
+  if (state.acpConfigOptions != null) {
+    return acpThoughtLevels(state.acpConfigOptions!);
+  }
+  return _variantsOf(state.session.model, models);
+}
+
+String? _currentVariantOf(SessionState state, List<ModelEntry> models) {
+  if (state.acpConfigOptions != null) {
+    final current = state.session.model?.variant;
+    if (current == null || current.isEmpty) return null;
+    return _variantsOfState(state, models).contains(current) ? current : null;
+  }
+  return _currentVariant(state.session.model, models);
 }
 
 /// The level in effect — but only while it is still one of the model's

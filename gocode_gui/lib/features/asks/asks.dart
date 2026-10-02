@@ -4,23 +4,51 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
+import '../../core/acp/client.dart';
+import '../../core/acp/connection.dart';
 import '../../core/api/client.dart';
 import '../../core/api/models.dart';
 import '../../core/connection/controller.dart';
+import '../session/timeline.dart' show acpConnectionProvider;
 import '../../shared/widgets/diff_view.dart';
 import '../../shared/widgets/glass.dart';
 
-/// Pending permission asks and questions, polled and reconciled from events.
+/// Pending permission asks and questions. In HTTP mode these are polled and
+/// reconciled from events; in ACP mode the agent itself pushes each ask as
+/// a server→client request that stays open until answered here.
 class AsksNotifier extends Notifier<List<Ask>> {
   Timer? _poll;
   StreamSubscription<ApiEvent>? _sub;
+  StreamSubscription<AcpPermissionRequest>? _acpSub;
+  ProviderSubscription<ConnectionPhase>? _acpModeSub;
 
   @override
   List<Ask> build() {
     ref.onDispose(() {
       _poll?.cancel();
       _sub?.cancel();
+      _acpSub?.cancel();
+      _acpModeSub?.close();
     });
+
+    final acp = ref.watch(acpConnectionProvider);
+    if (acp != null) {
+      // ACP asks arrive as requests that block the agent's turn; the list
+      // here mirrors the pending set 1:1.
+      _acpSub = acp.permissionRequests.listen((request) {
+        state = [...state, AcpPermissionAsk(request)];
+      });
+      // Leaving ACP mode clears any unanswered asks with the connection.
+      _acpModeSub = ref.listen(
+        connectionProvider.select((s) => s.phase),
+        (_, _) {
+          if (ref.read(acpConnectionProvider) == null) {
+            state = state.where((a) => a is! AcpPermissionAsk).toList();
+          }
+        },
+      );
+      return state;
+    }
 
     final client = ref.watch(apiClientProvider);
     final connection = ref.watch(connectionControllerProvider);
@@ -58,6 +86,10 @@ class AsksNotifier extends Notifier<List<Ask>> {
     } catch (_) {
       // Transient; the next tick retries.
     }
+  }
+
+  void _dropAcpAskById(String id) {
+    state = state.where((a) => a.id != id).toList();
   }
 
   Future<void> replyPermission(
@@ -112,6 +144,31 @@ sealed class Ask {
 
   String get id;
   String get sessionID;
+}
+
+/// One ACP permission ask. [optionIds]/[optionLabels] expose the options
+/// the agent offered; answering goes through the ACP connection.
+class AcpPermissionAsk extends Ask {
+  const AcpPermissionAsk(this.request);
+
+  final AcpPermissionRequest request;
+
+  @override
+  String get id => 'acp_${request.hashCode}';
+  @override
+  String get sessionID => request.sessionID;
+
+  List<String> get optionIds => [for (final o in request.options) o.id];
+  List<String> get optionLabels => [for (final o in request.options) o.name];
+
+  String get title => request.title;
+  String? get diffText => request.diffText;
+
+  bool get canAlways => optionIds.contains('always');
+
+  Future<void> reply(AcpConnection acp, String optionId) async {
+    await acp.replyPermission(request, optionId);
+  }
 }
 
 class PermissionAsk extends Ask {
@@ -223,6 +280,7 @@ class _AskSheet extends ConsumerWidget {
                 request: request,
               ),
               QuestionAsk(:final request) => _QuestionSheet(request: request),
+              final AcpPermissionAsk acpAsk => _AcpPermissionSheet(ask: acpAsk),
             },
           ),
         ),
@@ -354,6 +412,112 @@ class _ReplyingNotifier extends Notifier<bool> {
   bool build() => false;
 
   void set(bool value) => state = value;
+}
+
+/// The ACP permission sheet: the ask's own title and options, rendered
+/// like the HTTP one.
+class _AcpPermissionSheet extends ConsumerWidget {
+  const _AcpPermissionSheet({required this.ask});
+
+  final AcpPermissionAsk ask;
+
+  Future<void> _reply(WidgetRef ref, String optionId) async {
+    final container = ProviderScope.containerOf(ref.context, listen: false);
+    container.read(_replyingProvider.notifier).set(true);
+    try {
+      final acp = container.read(acpConnectionProvider);
+      await ask.reply(acp!, optionId);
+      // The pending list drops this ask once its request resolves.
+      container
+          .read(asksProvider.notifier)
+          ._dropAcpAskById(ask.id);
+    } finally {
+      container.read(_replyingProvider.notifier).set(false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final busy = ref.watch(_replyingProvider);
+    final diff = ask.diffText;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: GC.accent.withValues(alpha: 0.14),
+                borderRadius: BorderRadius.circular(GC.rInput),
+                border: Border.all(color: GC.borderAccent),
+              ),
+              child: const Icon(
+                Icons.shield_outlined,
+                size: 18,
+                color: GC.accentText,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Caption('Permission'),
+                  Text(ask.title, style: theme.textTheme.titleMedium),
+                ],
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 16),
+        if (diff != null)
+          Flexible(
+            child: SingleChildScrollView(child: DiffView(patch: diff)),
+          )
+        else ...[
+          const SizedBox(height: 4),
+        ],
+        const SizedBox(height: 18),
+        if (busy)
+          const Center(
+            child: SizedBox.square(
+              dimension: 22,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          )
+        else
+          Wrap(
+            alignment: WrapAlignment.end,
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              OutlinedButton.icon(
+                style: _dangerStyle,
+                onPressed: () => unawaited(_reply(ref, 'reject')),
+                icon: const Icon(Icons.block, size: 18),
+                label: const Text('Deny'),
+              ),
+              if (ask.canAlways)
+                OutlinedButton.icon(
+                  onPressed: () => unawaited(_reply(ref, 'always')),
+                  icon: const Icon(Icons.done_all_rounded, size: 18),
+                  label: const Text('Always allow'),
+                ),
+              FilledButton.icon(
+                onPressed: () => unawaited(_reply(ref, 'once')),
+                icon: const Icon(Icons.check_rounded, size: 18),
+                label: const Text('Allow once'),
+              ),
+            ],
+          ),
+      ],
+    );
+  }
 }
 
 class _QuestionSheet extends ConsumerWidget {

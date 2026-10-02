@@ -67,7 +67,7 @@ func (t *GrepTool) Execute(ctx context.Context, input map[string]any) (string, e
 	limit := intArg(input, "limit", defaultGrepLimit)
 	base := t.resolver.Root
 	if sub := stringArg(input, "path"); sub != "" {
-		resolved, resolveErr := t.resolver.Resolve(sub)
+		resolved, resolveErr := t.resolver.ResolveCtx(ctx, sub)
 		if resolveErr != nil {
 			return "", resolveErr
 		}

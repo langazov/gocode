@@ -15,9 +15,9 @@ class HomeScreen extends ConsumerWidget {
     final theme = Theme.of(context);
     final connection = ref.watch(connectionProvider);
     final settings = ref.watch(settingsProvider);
-    final where = settings.mode == ConnectionMode.local
-        ? settings.workingDirectory
-        : (connection.baseUrl ?? settings.remoteUrl);
+    final where = settings.mode == ConnectionMode.remote
+        ? (connection.baseUrl ?? settings.remoteUrl)
+        : settings.workingDirectory;
 
     return Scaffold(
       extendBodyBehindAppBar: true,

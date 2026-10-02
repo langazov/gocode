@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 )
 
 type WriteTool struct {
@@ -52,18 +51,13 @@ func (t *WriteTool) Execute(ctx context.Context, input map[string]any) (string, 
 	if path == "" {
 		return "", fmt.Errorf("write: path is required")
 	}
-	target, err := t.resolver.Resolve(path)
+	target, err := t.resolver.ResolveCtx(ctx, path)
 	if err != nil {
 		return "", err
 	}
 	_, statErr := os.Stat(target)
 	existed := statErr == nil
-	if dir := filepath.Dir(target); dir != "" {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return "", fmt.Errorf("Unable to write %s", path)
-		}
-	}
-	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+	if err := writeText(ctx, target, []byte(content)); err != nil {
 		return "", fmt.Errorf("Unable to write %s", path)
 	}
 	verb := "Created"

@@ -1,11 +1,12 @@
-# 9. LSP, MCP & plugins
+# 9. LSP, MCP, plugins & ACP
 
 [← HTTP API](08-http-api.md) · [Index](README.md) · [Next: Development →](10-development.md)
 
 ---
 
-Three ways the outside world reaches in. LSP makes the agent's edits *correct*;
-MCP adds tools it can call; plugins change how the agent itself behaves.
+Four ways the outside world reaches in. LSP makes the agent's edits *correct*;
+MCP adds tools it can call; plugins change how the agent itself behaves; ACP
+lets an editor drive the whole agent.
 
 ## LSP
 
@@ -386,6 +387,127 @@ permission seams do.
 [`examples/plugin-echo`](../examples/plugin-echo) is a complete process plugin
 in ~150 lines, with the protocol written out. Nothing in it is Go-specific — a
 plugin is an executable, not a library.
+
+## ACP: editors driving gocode
+
+`gocode acp` runs gocode as an [Agent Client Protocol](https://agentclientprotocol.com)
+agent: an editor (Zed, JetBrains, Neovim plugins, …) launches it as a
+subprocess and speaks newline-delimited JSON-RPC over its stdin/stdout. Both
+stable protocol versions are served — **v1** and **v2** — picked per connection
+in `initialize`, which is how the v2 migration guide asks agents to support
+both. The implementation is `internal/acp`; the command is `cmd/gocode/cmd_acp.go`.
+
+```json
+// Zed settings.json
+{
+  "agent_servers": {
+    "gocode": { "command": "gocode", "args": ["acp"] }
+  }
+}
+```
+
+```mermaid
+flowchart LR
+  E[editor] -- "stdin/stdout NDJSON" --> C[jsonrpc.Conn<br/>ordered dispatch]
+  C --> A[acp.Agent]
+  A -- "one per cwd, lazily" --> R1[runtime /repo-a]
+  A --> R2[runtime /repo-b]
+  R1 & R2 --> DB[(shared SQLite handle)]
+  R1 -. "bus events" .-> A
+  A -. "session/update" .-> E
+```
+
+### In-process, one runtime per directory
+
+The agent drives the session service directly, as `gocode run` does, rather
+than going through the HTTP server: the stdio process is the client. Every
+session's `cwd` gets its own runtime (`bootStackWith` with an explicit
+`Directory`), booted on first use and kept for the process: config, tools,
+skills, commands, LSP and MCP are all rooted in the session's project, never
+in the process working directory. The runtimes share one database handle, so
+the single-writer semaphore stays process-wide. `session/list` reads the
+database directly and boots nothing.
+
+### What maps to what
+
+| gocode | v1 | v2 |
+|---|---|---|
+| `session.next.text.delta` / `reasoning.delta` | `agent_message_chunk` / `agent_thought_chunk` | same, `messageId` required |
+| `tool.called` | `tool_call` (pending) | first `tool_call_update` for the id |
+| permission granted (gate wrapper) | `tool_call_update` `in_progress` | same |
+| `tool.success` / `tool.failed` | `completed` / `failed`, output, `{path, oldText, newText}` diff | same, structured `changes` + `git_patch` diff; `cancelled` for interrupted |
+| bash output | client terminal (if offered), else text | agent-owned display terminal: `terminal_update` + base64 `terminal_output_chunk` |
+| `todowrite` | `plan` | `plan_update` (`planId: "todo"`) |
+| primary agents | `modes` + `current_mode_update` + `mode` config option | `mode` config option |
+| model / variants | `model` / `thought_level` config options | same, `configId`/`groupId` |
+| turn end | `session/prompt` response `stopReason` | `state_update` `idle` + `stopReason` |
+| permission ask | `session/request_permission` with a tool-call patch | same method, `title` + `command`/`tool_call` subject; `requires_action` while waiting |
+| question tool | form `elicitation/create`, else permission options | same |
+
+The v2 prompt response only acknowledges insertion (`{messageId}`); the turn
+is reported through `state_update` (`running` → `requires_action` → `idle`).
+An unrecognised or cancelled permission outcome is always a refusal.
+
+### Client capabilities
+
+A v1 client that advertises `fs.readTextFile`/`writeTextFile` gets the file
+tools' reads and writes served through `fs/*`, so the agent sees and edits the
+editor's unsaved buffers; one that advertises `terminal` gets the shell tool
+run in its own terminal (`terminal/create` → `wait_for_exit` with timeout →
+`output` → `release`). Both go through `tool.SessionEnv`, a per-session seam the
+builtins consult — as do `additionalDirectories`, which widen the file tools'
+sandbox for that session. v2 removed the client execution surface; there the
+tools always run locally.
+
+### Transport details
+
+- stdout carries protocol messages only. `cmd_acp.go` duplicates the real stdout
+  for the connection and points descriptor 1 at stderr, so no child process
+  can write into the stream.
+- Messages are handled in arrival order. A request that has to wait (a v1
+  prompt lasts a whole turn; close and delete wait for it to stop) returns a
+  `jsonrpc.Deferred`, which frees the queue at once, so `session/cancel`
+  is never stuck behind the prompt it cancels.
+- `$/cancel_request` cancels an in-flight request (answered `-32800`); JSON-RPC
+  batch arrays are accepted; unknown `_`-prefixed methods are `-32601`, unknown
+  notifications are ignored.
+- Closing stdin cancels running turns, still answers every request already
+  received, then exits.
+
+### Authentication
+
+There is no protocol-driven way to type a secret, so `authenticate` /
+`auth/login` with `gocode-login` succeeds when credentials already exist and
+returns `auth_required` (`-32000`) otherwise. A client that supports terminal
+auth is also offered a `terminal` method whose args (`--login`) turn its own
+`gocode acp` invocation into the interactive `gocode auth login` flow.
+`logout` / `auth/logout` remove the default provider's stored credential.
+
+### Beyond the stable versions
+
+Session forking is an RFD, not part of either version: it is offered as the
+extension method `_gocode/session/fork`, advertised under
+`capabilities._meta.gocode.fork`.
+
+**Edit predictions** (inline completion and next-edit suggestions) follow
+the Next Edit Suggestions RFD under extension names, advertised under
+`_meta.gocode.nes` (UTF-16 positions): `_gocode/nes/start` and
+`_gocode/nes/close`, the `_gocode/document/didOpen|didChange|didClose|didSave|didFocus`
+notifications, `_gocode/nes/suggest` (returns `edit` suggestions), and
+`_gocode/nes/accept|reject`. The model rewrites a small region around the
+cursor, given the recent edits and nearby diagnostics. The rewrite is
+reduced to minimal edits: a lone insertion at the cursor is a completion;
+anything else is a next edit. Predictions use `small_model` when it is
+configured (pick a fast, non-reasoning model), otherwise the default model,
+at the model's lowest reasoning variant.
+
+Fill-in-the-middle models complete at the cursor directly: with
+`small_model` set to a Codestral model (`mistral/codestral-latest`),
+completions go to the provider's `/fim/completions` endpoint with the text
+before and after the cursor (sub-second, no rewrite to reconcile). The
+completion is cut at the first blank line and must stay on the line when
+code follows the cursor. When it has nothing to insert, the chat rewrite
+looks for a next edit instead.
 
 ## Skills
 
