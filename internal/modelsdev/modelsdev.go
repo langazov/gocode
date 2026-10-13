@@ -99,6 +99,7 @@ func (s *Service) Get(ctx context.Context) (Catalog, error) {
 		s.cache <- entry // hand back the same (still-unloaded) entry
 		return nil, err
 	}
+	catalog = s.withSavedContextLimits(catalog)
 	s.cache <- cacheEntry{catalog: catalog, loaded: true}
 	return catalog, nil
 }
