@@ -185,6 +185,12 @@ registration and token exchange run inside that budget), **5 minutes** per
 tool call — a remote server's slow tools (monorepo code search, batch
 queries) should finish rather than fail mid-run.
 
+A server can be switched off without removing it: `"enabled": false` keeps
+the entry but skips connecting it. The TUI's `/mcp` dialog and
+`gocode mcp enable|disable <name>` write this key (removing it entirely on
+enable), into whichever config file — global or project — effectively
+defines that server.
+
 Interactive authentication (`gocode mcp auth <name>`) waits **5 minutes** for
 the browser consent round-trip — independent of the per-server `timeout` —
 then reports `authorization timed out` rather than a bare

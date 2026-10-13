@@ -2,6 +2,8 @@ package client
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -10,10 +12,13 @@ import (
 	"github.com/langazov/gocode-go/internal/db"
 	"github.com/langazov/gocode-go/internal/event"
 	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/mcp"
 	"github.com/langazov/gocode-go/internal/permission"
 	"github.com/langazov/gocode-go/internal/server"
 	"github.com/langazov/gocode-go/internal/session"
 	"github.com/langazov/gocode-go/internal/tool"
+
+	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // TestRoundTripAgainstServer exercises the TUI client against the real
@@ -180,4 +185,87 @@ func TestVcsRoundTrip(t *testing.T) {
 	if _, err := c.VcsDiff(ctx, "branch", 12); err != nil {
 		t.Fatalf("branch mode: %v", err)
 	}
+}
+
+// TestMCPServersInfoRoundTrip proves the management list through the real
+// server: mcp.ServerInfo nests its Status object on the wire, so the client
+// must flatten it — a decode mismatch here once left the /mcp dialog
+// permanently on its empty state while the endpoint itself worked.
+func TestMCPServersInfoRoundTrip(t *testing.T) {
+	mcpService := mcp.NewService(t.TempDir())
+	defer mcpService.Close()
+	// A disabled entry needs no upstream: the shape under test is the
+	// listing, and disabled servers are exactly the ones only this richer
+	// view surfaces.
+	mcpService.Load(context.Background(), map[string]mcp.ServerConfig{
+		"off": {Type: "remote", URL: "https://mcp.example.invalid", Enabled: boolPtrFalse()},
+		// A connected server is what carries the token-cost fields; the
+		// upstream needs to actually expose one tool.
+		"live": {Type: "remote", URL: upstreamMCP(t).URL},
+	})
+
+	api := httptest.NewServer((&server.Server{MCP: mcpService, VCSWorkdir: t.TempDir()}).Mux())
+	defer api.Close()
+
+	c := New(api.URL)
+	servers, err := c.MCPServersInfo(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 2 {
+		t.Fatalf("servers = %+v, want one entry", servers)
+	}
+	var got, live MCPServerInfo
+	for _, server := range servers {
+		switch server.Name {
+		case "off":
+			got = server
+		case "live":
+			live = server
+		}
+	}
+	if got.Name == "" || live.Name == "" {
+		t.Fatalf("servers = %+v, want an off and a live entry", servers)
+	}
+	if got.Name != "off" || got.Type != "remote" || got.URL != "https://mcp.example.invalid" {
+		t.Errorf("entry = %+v", got)
+	}
+	if got.Enabled {
+		t.Error("Enabled = true, want false")
+	}
+	if got.Status != "disabled" {
+		t.Errorf("Status = %q, want disabled — the nested wire status was not flattened", got.Status)
+	}
+	if got.ToolCount != 0 || got.EstTokens != 0 {
+		t.Errorf("disabled server reports cost %d tools / %d tokens, want zeros", got.ToolCount, got.EstTokens)
+	}
+	if live.Name != "live" || live.ToolCount != 1 {
+		t.Errorf("live entry = %+v, want one tool", live)
+	}
+	if live.EstTokens <= 0 {
+		t.Errorf("live EstTokens = %d, want a positive estimate", live.EstTokens)
+	}
+}
+
+func boolPtrFalse() *bool {
+	value := false
+	return &value
+}
+
+// upstreamMCP starts a one-tool streamable MCP server, the same shape
+// internal/mcp's tests use.
+func upstreamMCP(t *testing.T) *httptest.Server {
+	t.Helper()
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "upstream", Version: "v0"}, nil)
+	server.AddTool(&sdkmcp.Tool{
+		Name:        "echo",
+		Description: "echoes its input back",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"message":{"type":"string"}}}`),
+	}, func(_ context.Context, req *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: "echo"}}}, nil
+	})
+	handler := sdkmcp.NewStreamableHTTPHandler(func(r *http.Request) *sdkmcp.Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+	return httpServer
 }

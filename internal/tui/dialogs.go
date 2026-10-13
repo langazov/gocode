@@ -739,6 +739,9 @@ func (a *App) commandsRegistry() []overlayItem {
 		{Label: "Plugins", Value: "plugins.list", Slash: "plugins", Category: "System", Action: func() tea.Msg {
 			return a.pluginsOverlay()
 		}},
+		{Label: "MCP servers", Value: "mcp.list", Slash: "mcp", Category: "System", Action: func() tea.Msg {
+			return a.mcpOverlay()
+		}},
 		{Label: "Manage memories", Value: "memory.list", Slash: "memory", Category: "System",
 			Action: func() tea.Msg { return a.memoriesOverlay() },
 			// "/memory <instruction>" saves without opening the dialog.

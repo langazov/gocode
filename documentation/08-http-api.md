@@ -211,6 +211,10 @@ offered: gocoder.org requires a signed-in browser session for them.
 | `DELETE` | `/api/skill/external/{source}` | drop them |
 | `GET` | `/api/lsp` | language server status |
 | `GET` | `/api/mcp` | MCP server status |
+| `GET` | `/api/mcp/servers` | every configured MCP server — connected, disabled or failed — with type, endpoint and enable state |
+| `POST` | `/api/mcp/{name}/enable` | persist `enabled` (removing the key) to the winning config file and connect |
+| `POST` | `/api/mcp/{name}/disable` | persist `enabled: false`, disconnect and unregister the server's tools |
+| `DELETE` | `/api/mcp/{name}` | remove the server from its config file and disconnect; stored OAuth credentials are kept |
 | `GET` | `/api/job` | background jobs |
 | `GET` | `/api/plugin` | loaded plugins, their hooks and tools |
 

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -69,6 +70,38 @@ type connection struct {
 	session      *sdkmcp.ClientSession
 	tools        []*sdkmcp.Tool
 	instructions string
+	// toolCount/estTokens are the latest measurement of this server's tool
+	// set: set when a connect succeeds, deliberately kept when the server
+	// is later disabled — a server disabled mid-run can still show what
+	// re-enabling it would cost back. Zeros mean never measured this run
+	// (booted disabled), where the tool set is genuinely unknown without
+	// connecting.
+	toolCount int
+	estTokens int
+}
+
+// ServerInfo is one configured server for API surfaces that need more than
+// the live status: the management endpoints' clients (the TUI's MCP dialog,
+// the desktop app) render type, endpoint and enable state alongside the
+// status dot. Disabled servers are included — a server turned off is still
+// configured, and the dialog is where it gets turned back on.
+type ServerInfo struct {
+	Name    string   `json:"name"`
+	Type    string   `json:"type"`
+	URL     string   `json:"url,omitempty"`
+	Command []string `json:"command,omitempty"`
+	Enabled bool     `json:"enabled"`
+	Status  Status   `json:"status"`
+	// ToolCount is how many tools the server contributes when connected;
+	// EstTokens the estimated context those tool definitions consume.
+	// CostLive is true when those figures are in the context right now
+	// (connected); false means last-known — a server disabled mid-run keeps
+	// its measurement so the dialog can show what re-enabling costs, while
+	// one that never connected this run reports zeros.
+	ToolCount int          `json:"toolCount"`
+	EstTokens int          `json:"estTokens"`
+	CostLive  bool         `json:"costLive"`
+	Config    ServerConfig `json:"-"`
 }
 
 // Service is this port's MCP.Service: connects configured servers, tracks
@@ -192,8 +225,47 @@ func (s *Service) Disconnect(name string) {
 	}
 	s.mu.Unlock()
 	if ok && conn.session != nil {
+		s.unregisterConnTools(conn)
 		conn.session.Close()
 	}
+}
+
+// Disable is Disconnect plus the "disabled" bookkeeping: the server's entry
+// stays (so it remains listed with a disabled status) and its config is
+// remembered for a later Enable/Connect. Unlike Disconnect, a disabled
+// server is never retried by a reconnect loop — reconnectLoop exits once
+// the conn it retries holds no live session.
+func (s *Service) Disable(name string) {
+	s.mu.Lock()
+	conn, ok := s.conns[name]
+	if ok {
+		delete(s.conns, name)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	s.unregisterConnTools(conn)
+	if conn.session != nil {
+		conn.session.Close()
+	}
+	s.setConn(name, &connection{
+		name:   name,
+		config: conn.config.WithEnabled(false),
+		status: Status{Status: "disabled"},
+		// Keep the last measurement: the dialog shows what re-enabling
+		// this server would cost back, which is the number the user just
+		// acted on — dropping it would blank the row the moment the
+		// disable lands.
+		toolCount: conn.toolCount,
+		estTokens: conn.estTokens,
+	})
+}
+
+// Enable reconnects a disabled server: connect() re-registers its tools and
+// restarts the reconnect watcher, exactly like the initial LoadAsync path.
+func (s *Service) Enable(ctx context.Context, name string, cfg ServerConfig) Status {
+	return s.connect(ctx, name, cfg.WithEnabled(true), modePassive, nil)
 }
 
 func (s *Service) connect(ctx context.Context, name string, cfg ServerConfig, mode oauthMode, onAuthURL func(string)) Status {
@@ -253,7 +325,16 @@ func (s *Service) connect(ctx context.Context, name string, cfg ServerConfig, mo
 	}
 
 	status := Status{Status: "connected"}
-	conn := &connection{name: name, config: cfg, status: status, session: session, tools: tools, instructions: instructions}
+	conn := &connection{
+		name:         name,
+		config:       cfg,
+		status:       status,
+		session:      session,
+		tools:        tools,
+		instructions: instructions,
+		toolCount:    len(tools),
+		estTokens:    toolTokens(name, tools),
+	}
 	s.setConn(name, conn)
 	s.registerConnTools(conn)
 	go s.watchAndReconnect(name, cfg, session)
@@ -278,17 +359,24 @@ func (s *Service) watchAndReconnect(name string, cfg ServerConfig, session *sdkm
 
 	s.mu.Lock()
 	conn, ok := s.conns[name]
-	current := ok && conn.session == session
-	if current {
-		conn.session = nil
-		conn.tools = nil
-		conn.instructions = ""
-		conn.status = Status{Status: "failed", Error: "connection closed"}
-	}
-	s.mu.Unlock()
-	if !current {
+	if !ok || conn.session != session {
+		s.mu.Unlock()
 		return
 	}
+	// Capture the tool list before the conn is cleared below:
+	// unregisterConnTools recomputes names from conn.tools, which is set to
+	// nil on the very next lines — unregistering first would be a no-op.
+	tools := conn.tools
+	conn.session = nil
+	conn.tools = nil
+	conn.instructions = ""
+	conn.status = Status{Status: "failed", Error: "connection closed"}
+	s.mu.Unlock()
+	// The dropped session's tools must stop being advertised the moment the
+	// session dies, not only when a retry eventually reconnects — between
+	// the drop and the reconnect the registry would otherwise still list
+	// tools whose session is gone.
+	s.unregisterConnTools(&connection{name: name, tools: tools})
 
 	s.reconnectLoop(name, cfg)
 }
@@ -342,6 +430,22 @@ func (s *Service) registerConnTools(conn *connection) {
 	timeout := time.Duration(conn.config.TimeoutOr(int(defaultToolTimeout/time.Millisecond))) * time.Millisecond
 	for _, def := range conn.tools {
 		registry.Register(&mcpTool{clientName: conn.name, def: def, session: conn.session, timeout: timeout})
+	}
+}
+
+// unregisterConnTools removes every tool a connection registered from the
+// wired registry, the mirror of registerConnTools. Names are recomputed from
+// the conn's own tools (ToolName), not remembered from registration, so the
+// two paths can never disagree about what was registered.
+func (s *Service) unregisterConnTools(conn *connection) {
+	s.mu.RLock()
+	registry := s.registry
+	s.mu.RUnlock()
+	if registry == nil {
+		return
+	}
+	for _, def := range conn.tools {
+		registry.Unregister(ToolName(conn.name, def.Name))
 	}
 }
 
@@ -485,6 +589,55 @@ func (s *Service) Statuses() map[string]Status {
 		out[name] = conn.status
 	}
 	return out
+}
+
+// Servers returns every configured server — connected, disabled or failed —
+// sorted by name, with type, endpoint, enable state and live status. It is
+// the listing surface the management dialog builds its rows from; Statuses
+// remains the lighter status-only view the sidebar polls.
+func (s *Service) Servers() []ServerInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ServerInfo, 0, len(s.conns))
+	for name, conn := range s.conns {
+		info := ServerInfo{
+			Name:      name,
+			Type:      conn.config.Type,
+			URL:       conn.config.URL,
+			Command:   conn.config.Command,
+			Enabled:   conn.config.IsEnabled(),
+			Status:    conn.status,
+			ToolCount: conn.toolCount,
+			EstTokens: conn.estTokens,
+			CostLive:  conn.status.Connected(),
+			Config:    conn.config,
+		}
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// toolTokens estimates the context tokens one server's tool
+// definitions consume — every tool's name, description and input schema as
+// the provider serializes them. The heuristic is chars/4, the same coarse
+// estimate session.estimateTokens uses for compaction budgeting: an exact
+// count would need the provider's own tokenizer, which the process never
+// sees for tool definitions. Names are recomputed via ToolName so the
+// estimate covers what is actually advertised, prefix included.
+func toolTokens(name string, tools []*sdkmcp.Tool) int {
+	total := 0
+	for _, def := range tools {
+		full := ToolName(name, def.Name)
+		total += (len(full) + 3) / 4
+		total += (len(def.Description) + 3) / 4
+		if schema, ok := def.InputSchema.(map[string]any); ok {
+			if encoded, err := json.Marshal(schema); err == nil {
+				total += (len(encoded) + 3) / 4
+			}
+		}
+	}
+	return total
 }
 
 // ServerNames returns the connected server names, sorted.

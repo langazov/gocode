@@ -109,6 +109,10 @@ func (s *Server) Mux() *http.ServeMux {
 	s.registerGitRoutes(mux)
 	if s.MCP != nil {
 		mux.HandleFunc("GET /api/mcp", s.listMCP)
+		mux.HandleFunc("GET /api/mcp/servers", s.listMCPServers)
+		mux.HandleFunc("POST /api/mcp/{name}/enable", s.enableMCP)
+		mux.HandleFunc("POST /api/mcp/{name}/disable", s.disableMCP)
+		mux.HandleFunc("DELETE /api/mcp/{name}", s.deleteMCP)
 	}
 	if s.Plugins != nil {
 		mux.HandleFunc("GET /api/plugin", s.listPlugins)

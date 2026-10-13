@@ -1566,6 +1566,7 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | `dialogs.go` | App-side dialog wiring: shell builders, close/cmd adapters (`wrapDialogCmd`, `CloseThenMsg`), compositing entry points, command registry |
 | `dialogs_confirm.go` | The read-only panels' content (help, status, stats body/hints/budget) |
 | `dialogs_{model,provider,plugins,memory,skill}.go` | Individual dialog content |
+| `dialogs_mcp.go` | The `/mcp` MCP server management dialog: rows from GET /api/mcp/servers, live enable/disable/delete, details drill-in |
 | `stats_overlay.go` | `/stats` aggregation (the computation half) |
 | `diffviewer.go` | The `/diff` route: state, fetch, layout, navigation, keys, mouse (see §6.5) |
 | `diffviewer_tree.go` | The diff viewer's file-tree logic: build, flatten, navigate |

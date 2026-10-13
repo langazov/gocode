@@ -204,9 +204,17 @@ type App struct {
 
 	tip        string
 	mcpServers []client.MCPServer
-	cwd        string
-	homeDir    string
-	gitBranch  string
+	// mcpInfo is the richer per-server view (GET /api/mcp/servers) the MCP
+	// management dialog renders — type, endpoint, enable state. Refreshed
+	// whenever the dialog opens or a mutation lands, not on every tick: the
+	// status-only mcpServers stays the cheap list the sidebar polls.
+	mcpInfo []client.MCPServerInfo
+	// mcpDetail is the server name being drilled into in the MCP dialog, ""
+	// at the list level — the same shape as pluginDialogState.detail.
+	mcpDetail string
+	cwd       string
+	homeDir   string
+	gitBranch string
 	// diff is the diff viewer route's state while it is open (nil
 	// otherwise), and diffReturn the view to restore on close — the TS
 	// plugin's route plus returnRoute params. See diffviewer.go.
@@ -1391,6 +1399,24 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 	case mcpMsg:
 		a.mcpServers = msg.servers
 		return nil
+	case mcpInfoMsg:
+		a.mcpInfo = msg.servers
+		// The dialog opens from the cached list and this refresh lands a
+		// moment later; fold it in rather than making the user reopen. A
+		// details drill-in is replaced wholesale — the info it shows is
+		// exactly what just refreshed.
+		if a.overlay != nil && a.overlay.Kind == dialog.KindList {
+			if a.mcpDetail != "" {
+				if info, ok := mcpLookup(msg.servers, a.mcpDetail); ok {
+					a.openMCPDetail(a.mcpDetail, info)
+				}
+			} else {
+				a.rebuildMCPItems()
+			}
+		}
+		return nil
+	case mcpMutationMsg:
+		return staticMsg(statusMsg{text: msg.text, isErr: msg.isErr})
 	case lspMsg:
 		a.lsp = msg.state
 		return nil

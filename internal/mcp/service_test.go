@@ -97,6 +97,130 @@ func TestServiceStatusesAndServerNames(t *testing.T) {
 	}
 }
 
+// Disable removes a live connection's tools from the wired registry and
+// leaves the server listed as disabled; Enable reconnects and re-registers.
+func TestServiceDisableUnregistersAndEnableReconnects(t *testing.T) {
+	httpServer := newTestMCPServer(t)
+
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+
+	cfg := ServerConfig{Type: "remote", URL: httpServer.URL}
+	if status := svc.Connect(context.Background(), "myserver", cfg); status.Status != "connected" {
+		t.Fatalf("connect = %+v", status)
+	}
+
+	registry := tool.NewRegistry()
+	svc.SetRegistry(registry)
+	svc.RegisterTools(registry)
+	name := ToolName("myserver", "echo")
+	if _, ok := registry.Get(name); !ok {
+		t.Fatal("tool was never registered")
+	}
+
+	// Disable: tools gone from the registry, status disabled, still listed.
+	svc.Disable("myserver")
+	if _, ok := registry.Get(name); ok {
+		t.Error("tool stayed registered after Disable")
+	}
+	if status := svc.Statuses()["myserver"]; status.Status != "disabled" {
+		t.Errorf("status after Disable = %+v", status)
+	}
+	servers := svc.Servers()
+	if len(servers) != 1 || servers[0].Name != "myserver" {
+		t.Fatalf("Servers() after Disable = %+v, want the one disabled entry", servers)
+	}
+	if servers[0].Enabled {
+		t.Error("Servers() reports enabled after Disable")
+	}
+	// The measurement survives the disable: the dialog shows what enabling
+	// it back would cost, flagged as not-live via CostLive.
+	if servers[0].ToolCount != 1 || servers[0].EstTokens <= 0 {
+		t.Errorf("last-known cost lost on Disable: %+v", servers[0])
+	}
+	if servers[0].CostLive {
+		t.Error("CostLive = true after Disable, want false (last-known)")
+	}
+
+	// Enable: reconnected, tools back.
+	status := svc.Enable(context.Background(), "myserver", cfg)
+	if status.Status != "connected" {
+		t.Fatalf("Enable = %+v", status)
+	}
+	if _, ok := registry.Get(name); !ok {
+		t.Error("tool not re-registered after Enable")
+	}
+	if servers := svc.Servers(); !servers[0].Enabled {
+		t.Error("Servers() reports disabled after Enable")
+	}
+	if servers := svc.Servers(); !servers[0].CostLive {
+		t.Error("CostLive = false after Enable, want true")
+	}
+}
+
+// Servers() lists disabled and failed servers alongside connected ones —
+// the management dialog's whole row set, sorted by name.
+func TestServiceServersIncludesDisabledAndFailed(t *testing.T) {
+	httpServer := newTestMCPServer(t)
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+
+	svc.Load(context.Background(), map[string]ServerConfig{
+		"zeta":    {Type: "remote", URL: httpServer.URL},
+		"alpha":   {Type: "remote", URL: httpServer.URL, Enabled: boolPtr(false)},
+		"failure": {Type: "remote", URL: "http://127.0.0.1:1"},
+	})
+
+	servers := svc.Servers()
+	if len(servers) != 3 {
+		t.Fatalf("Servers() = %+v, want 3 entries", servers)
+	}
+	wantOrder := []string{"alpha", "failure", "zeta"}
+	for i, want := range wantOrder {
+		if servers[i].Name != want {
+			t.Errorf("Servers()[%d] = %q, want %q (sorted)", i, servers[i].Name, want)
+		}
+	}
+	if servers[0].Status.Status != "disabled" {
+		t.Errorf("alpha status = %+v, want disabled", servers[0].Status)
+	}
+	if servers[2].Type != "remote" || servers[2].URL == "" {
+		t.Errorf("zeta config view = %+v, want type and url", servers[2])
+	}
+}
+
+// A connected server's ServerInfo quantifies its context cost: tool count
+// and a positive chars/4 token estimate over names, descriptions and
+// schemas. A disabled server reports zeros — the cost column's whole point.
+func TestServiceServersReportTokenEstimate(t *testing.T) {
+	httpServer := newTestMCPServer(t)
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+
+	svc.Load(context.Background(), map[string]ServerConfig{
+		"live": {Type: "remote", URL: httpServer.URL},
+		"off":  {Type: "remote", URL: httpServer.URL, Enabled: boolPtr(false)},
+	})
+
+	byName := map[string]ServerInfo{}
+	for _, info := range svc.Servers() {
+		byName[info.Name] = info
+	}
+	live := byName["live"]
+	if live.ToolCount != 1 {
+		t.Errorf("live ToolCount = %d, want 1", live.ToolCount)
+	}
+	if live.EstTokens <= 0 {
+		t.Errorf("live EstTokens = %d, want a positive estimate", live.EstTokens)
+	}
+	if live.CostLive != true {
+		t.Errorf("live CostLive = %v, want true", live.CostLive)
+	}
+	if off := byName["off"]; off.ToolCount != 0 || off.EstTokens != 0 || off.CostLive {
+		t.Errorf("off = %d tools / %d tokens / live=%v, want zeros and not live (booted disabled is never measured)", off.ToolCount, off.EstTokens, off.CostLive)
+	}
+}
+
 func TestServiceDisabledServerNeverConnects(t *testing.T) {
 	svc := NewService(t.TempDir())
 	defer svc.Close()
