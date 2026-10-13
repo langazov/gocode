@@ -1023,6 +1023,12 @@ func (a *App) toolRow(message client.Message, id, name string, state *toolState)
 			if block := a.todoWriteBlock(state); block != "" {
 				return block, nil
 			}
+		case "question":
+			// The answers render as a block once settled; before that the
+			// banner owns the ask and the row stays a label.
+			if block := a.questionBlock(state); block != "" {
+				return block, nil
+			}
 		}
 	}
 	icon, label := toolLabel(name, state.Input, a.displayPath)
@@ -1612,6 +1618,106 @@ func (a *App) todoWriteBlock(state *toolState) string {
 	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
 }
 
+// questionPrompts returns the question tool's input prompts, which hold the
+// question text and headers even before the ask is answered — the input is
+// stored on the tool part the moment the call starts.
+func questionPrompts(input map[string]any) []map[string]any {
+	raw, _ := input["questions"].([]any)
+	prompts := make([]map[string]any, 0, len(raw))
+	for _, item := range raw {
+		if entry, ok := item.(map[string]any); ok {
+			prompts = append(prompts, entry)
+		}
+	}
+	return prompts
+}
+
+// qaPair is one question with the answer the user gave it.
+type qaPair struct {
+	Question string
+	Answer   string
+}
+
+// questionAnswerPrefix marks the answer row of a Q/A pair in the question
+// tool's output; questionRows matches the numbered question row above it.
+const questionAnswerPrefix = "   Answer: "
+
+var questionRows = regexp.MustCompile(`^\d+\.\s`)
+
+// parseQuestionAnswers decodes the Q/A pairs from the question tool's output
+// — the format internal/tool/builtins/question.go emits:
+//
+//	The user answered your questions:
+//
+//	1. Which database?
+//	   Answer: Postgres
+//
+//	Continue with the user's answers in mind.
+//
+// Anything that does not fit — a session recorded before this format, or an
+// error string in place of output — returns nil, and the caller falls back
+// to the plain tool row.
+func parseQuestionAnswers(output string) []qaPair {
+	const header = "The user answered your questions:"
+	if !strings.HasPrefix(output, header) {
+		return nil
+	}
+	var pairs []qaPair
+	var pending *qaPair
+	for _, line := range strings.Split(strings.TrimRight(output, "\n"), "\n") {
+		switch {
+		case line == "" || line == header || line == "Continue with the user's answers in mind.":
+			continue
+		case strings.HasPrefix(line, questionAnswerPrefix):
+			if pending == nil {
+				return nil
+			}
+			pending.Answer = strings.TrimPrefix(line, questionAnswerPrefix)
+			pairs = append(pairs, *pending)
+			pending = nil
+		case questionRows.MatchString(line):
+			pending = &qaPair{Question: strings.TrimSpace(line[questionRows.FindStringIndex(line)[1]:])}
+		case pending != nil:
+			// A question long enough to wrap in the stored output continues
+			// on the next row; fold it back into the question.
+			pending.Question += " " + strings.TrimSpace(line)
+		default:
+			return nil
+		}
+	}
+	if pending != nil {
+		// An answer never landed: the round was interrupted.
+		return nil
+	}
+	return pairs
+}
+
+// questionBlock renders a settled question round's answers as a panel — the
+// shape todoWriteBlock uses — so session history shows the exchange as
+// structured Q/A rows instead of the raw tool output running into one long
+// wrapped line. Returns "" (falling back to the labeled tool row) until the
+// output decodes to at least one pair.
+func (a *App) questionBlock(state *toolState) string {
+	pairs := parseQuestionAnswers(state.Output)
+	if len(pairs) == 0 {
+		return ""
+	}
+	room := a.blockToolInterior()
+	lines := []string{a.styles().Muted.Render("# Questions")}
+	for _, pair := range pairs {
+		question := a.onPanel(a.theme.Text, false)
+		answer := a.onPanel(a.theme.Primary, false)
+		if pair.Answer == "" || pair.Answer == "Unanswered" {
+			answer = a.onPanel(a.theme.TextMuted, false)
+		}
+		lines = append(lines,
+			renderLines(question, truncateRunes("  "+pair.Question, room)),
+			renderLines(answer, truncateRunes("    "+pair.Answer, room)),
+		)
+	}
+	return a.blockToolStyle().Render(strings.Join(lines, "\n"))
+}
+
 // todoColor is the row color for a todo's status, shared by the sidebar row
 // and the timeline's TodoWrite block.
 func (a *App) todoColor(status string) color.Color {
@@ -1713,6 +1819,22 @@ func toolLabel(name string, input map[string]any, display func(string) string) (
 		return "%", "Fetching from the web..."
 	case "todowrite":
 		return "⚙", "Updating todos..."
+	case "question":
+		// The label names what was asked; the banner is the ask UI while the
+		// round is live, and questionBlock replaces the row with the answers
+		// once the tool settles.
+		prompts := questionPrompts(input)
+		switch {
+		case len(prompts) == 0:
+			return "?", "Asking you..."
+		case len(prompts) > 1:
+			return "?", fmt.Sprintf("Asked %d questions", len(prompts))
+		}
+		if header, _ := prompts[0]["header"].(string); header != "" {
+			return "?", header
+		}
+		question, _ := prompts[0]["question"].(string)
+		return "?", question
 	case "task":
 		// The label itself (icon is finished by toolRow/taskRow, which know
 		// the status: ✓ once completed, spinner while running, │ otherwise).

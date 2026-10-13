@@ -105,16 +105,22 @@ func (t *QuestionTool) ExecuteWithContext(ctx context.Context, input map[string]
 		return "", err
 	}
 
-	parts := make([]string, 0, len(prompts))
+	// A structured, one-question-per-block result. The flat `"Q"="A", "Q"="A"`
+	// line this replaced read as one long run-on row in session history and
+	// gave the TUI nothing to render an answer block from; the TUI's question
+	// tool row parses this same format (parseQuestionAnswers in
+	// internal/tui/render.go) to show the Q/A pairs as a panel.
+	var b strings.Builder
+	b.WriteString("The user answered your questions:\n")
 	for i, prompt := range prompts {
 		answer := "Unanswered"
 		if i < len(answers) && len(answers[i]) > 0 {
 			answer = strings.Join(answers[i], ", ")
 		}
-		parts = append(parts, fmt.Sprintf("%q=%q", prompt.Question, answer))
+		b.WriteString(fmt.Sprintf("\n%d. %s\n   Answer: %s\n", i+1, prompt.Question, answer))
 	}
-	return "User has answered your questions: " + strings.Join(parts, ", ") +
-		". You can now continue with the user's answers in mind.", nil
+	b.WriteString("\nContinue with the user's answers in mind.")
+	return b.String(), nil
 }
 
 func decodePrompts(input map[string]any) ([]question.Prompt, error) {

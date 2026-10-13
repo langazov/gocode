@@ -360,7 +360,7 @@ Use these; do not introduce synonyms. All are single-cell except where noted.
 | `•` | Status dot (colored by state) | MCP, LSP, plugins, version line |
 | `⊙` | MCP indicator | home status bar |
 | `△` | Permission required | permission banner |
-| `?` | Question | question banner |
+| `?` | Question | question banner, question tool row |
 | `▣` | Assistant settlement line | timeline |
 | `⬖` | Card marker | getting-started card |
 | `✕` | Dismiss | getting-started card |
@@ -739,6 +739,32 @@ background so only the corner shape shows):
   files, `markdownBody` for `.md`.
 - `read` shows `→ Read <path>  (N lines)`; `write` shows `← Write <path>` and
   renders the **input content**, not the tool's one-line output.
+
+### 7.5.1 Question answers
+
+A settled question round renders as a Q/A panel in the same block-tool chrome
+(the tool's output is one block per question — header, question row, answer
+row — which `parseQuestionAnswers` decodes; the model-facing text is the same
+format, so history and transcript agree):
+
+```
+┃
+┃  # Questions
+┃    Which database?
+┃      Postgres
+┃    Run migrations now?
+┃      Yes, defer them
+┃
+```
+
+- Question row: `Text` on the panel; answer row indented two more columns in
+  `Primary`; an `Unanswered` row falls back to `TextMuted`.
+- Rows truncate to the panel interior (`blockToolInterior`), never wrap — a
+  wrapped answer is the one-long-line problem this block exists to fix.
+- While the round is live the banner (§8.4) owns the ask; the tool row shows
+  the label only (`? <header>` / `? <question>` / `? Asked N questions`).
+- Output that does not parse (pre-format sessions, an error in place of
+  output) falls back to the plain tool row — never a guessed answer.
 
 ### 7.6 Edit diff
 
