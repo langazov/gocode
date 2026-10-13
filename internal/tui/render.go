@@ -31,6 +31,23 @@ type toolState = struct {
 	Metadata map[string]any `json:"metadata,omitempty"`
 }
 
+// MAX_MESSAGE_CONTENT_SIZE bounds the rendered size of a single assistant
+// message text part. A message larger than this is truncated with a notice
+// rather than overwhelming the renderer. 1 MiB is generous for normal use
+// but prevents a runaway response from consuming unbounded memory/CPU.
+const MAX_MESSAGE_CONTENT_SIZE = 1 << 20
+
+// MAX_REASONING_SIZE bounds the rendered size of a single reasoning part.
+// Extended thinking can be very long on reasoning models; this mirrors the
+// message cap so neither path can bypass the limit.
+const MAX_REASONING_SIZE = 1 << 20
+
+// MAX_TOOL_OUTPUT_SIZE bounds the rendered size of a tool's output (bash,
+// read, write). The syntax highlighter already caps at 256 KiB (maxHighlightBytes
+// in highlight.go), but this provides a second, UI-level guard for the plain
+// text path and for tool outputs that don't go through the highlighter.
+const MAX_TOOL_OUTPUT_SIZE = 1 << 20
+
 // timelineLines renders the message timeline like the session scrollbox:
 // blocks separated by one blank line (marginTop=1). A thin wrapper over
 // buildTimeline for callers that only need the lines (existing tests
@@ -468,13 +485,23 @@ func (a *App) renderAssistant(message client.Message, data client.AssistantData,
 			if part.Time != nil {
 				partTime = &reasoningPartTime{Created: part.Time.Created, Completed: part.Time.Completed}
 			}
-			if block := a.reasoningBlock(part.ID, running, part.Text, partTime); block != "" {
+			// Cap reasoning content size to prevent rendering DoS.
+			reasoningText := part.Text
+			if len(reasoningText) > MAX_REASONING_SIZE {
+				reasoningText = reasoningText[:MAX_REASONING_SIZE] + "\n\n[… reasoning truncated at 1 MiB …]"
+			}
+			if block := a.reasoningBlock(part.ID, running, reasoningText, partTime); block != "" {
 				refs = append(refs, a.reasoningRef(part.ID, block, lineOffset))
 				appendBlock(block)
 			}
 		case "text":
 			if part.Text != "" {
-				appendBlock(a.assistantTextBlock(part.Text))
+				// Cap message content size to prevent rendering DoS.
+				text := part.Text
+				if len(text) > MAX_MESSAGE_CONTENT_SIZE {
+					text = text[:MAX_MESSAGE_CONTENT_SIZE] + "\n\n[… message truncated at 1 MiB …]"
+				}
+				appendBlock(a.assistantTextBlock(text))
 			}
 		case "tool":
 			block, toolRef := a.toolRow(message, part.ID, part.Name, part.State)
@@ -711,6 +738,10 @@ func (a *App) reasoningBlock(id string, running bool, rawText string, partTime *
 	// matches that exactly (Replace-all would over-strip a block containing
 	// more than one placeholder).
 	content := strings.TrimSpace(strings.Replace(rawText, "[REDACTED]", "", 1))
+	// Cap reasoning content size to prevent rendering DoS.
+	if len(content) > MAX_REASONING_SIZE {
+		content = content[:MAX_REASONING_SIZE] + "\n\n[… reasoning truncated at 1 MiB …]"
+	}
 	if content == "" {
 		return ""
 	}
@@ -797,6 +828,10 @@ func (a *App) reasoningBody(body string, extraIndent int) string {
 	if body == "" {
 		return ""
 	}
+	// Cap reasoning body size to prevent rendering DoS.
+	if len(body) > MAX_REASONING_SIZE {
+		body = body[:MAX_REASONING_SIZE] + "\n\n[… reasoning truncated at 1 MiB …]"
+	}
 	// Same glamour pass assistantTextBlock uses (see markdown.go), but the
 	// dimmed palette: think bodies arrive as markdown (bold titles, lists,
 	// fenced code) and markdownRendererDim fades every color toward the
@@ -821,6 +856,10 @@ func (a *App) reasoningBody(body string, extraIndent int) string {
 // indent(3) + wrap width contentWidth()-4 = contentWidth()-1 — rather than
 // widening the markdown side to fill a wider box.
 func (a *App) assistantTextBlock(text string) string {
+	// Cap message content size to prevent rendering DoS.
+	if len(text) > MAX_MESSAGE_CONTENT_SIZE {
+		text = text[:MAX_MESSAGE_CONTENT_SIZE] + "\n\n[… message truncated at 1 MiB …]"
+	}
 	body := indent(a.renderMarkdown(text, a.contentWidth()-4), 3)
 	return "\n" + body
 }
@@ -874,6 +913,10 @@ func (a *App) streamingTextBlock(id, text string) string {
 		}
 	}
 	start := time.Now()
+	// Cap streaming text to prevent unbounded growth during rendering.
+	if len(text) > MAX_MESSAGE_CONTENT_SIZE {
+		text = text[:MAX_MESSAGE_CONTENT_SIZE] + "\n\n[… message truncated at 1 MiB …]"
+	}
 	block := a.assistantTextBlock(text)
 	a.putStreamRender(id, streamedBlock{
 		text:  text,
@@ -929,6 +972,10 @@ func (a *App) streamingReasoningBlock(id, text string) string {
 		}
 	}
 	start := time.Now()
+	// Cap streaming reasoning to prevent unbounded growth during rendering.
+	if len(text) > MAX_REASONING_SIZE {
+		text = text[:MAX_REASONING_SIZE] + "\n\n[… reasoning truncated at 1 MiB …]"
+	}
 	block := a.reasoningBlock(id, true, text, nil)
 	a.putStreamRender(key, streamedBlock{
 		text:  text,
@@ -1265,6 +1312,10 @@ func (a *App) bashBlock(id string, state *toolState) (string, *toolOutputHeaderR
 // will actually be shown, so a collapsed block tokenises one line rather than
 // the whole file.
 func (a *App) collapsibleBlock(id, head, body string, innerWidth int, render bodyRenderer, state *toolState) (string, *toolOutputHeaderRef) {
+	// Cap tool output size to prevent rendering DoS when expanded.
+	if len(body) > MAX_TOOL_OUTPUT_SIZE {
+		body = body[:MAX_TOOL_OUTPUT_SIZE] + "\n\n[… output truncated at 1 MiB …]"
+	}
 	lines := []string{head}
 	var ref *toolOutputHeaderRef
 	expandedBlock := false

@@ -17,6 +17,11 @@ import (
 
 const maxHistoryEntries = 50
 
+// MAX_PROMPT_HISTORY_ENTRY_SIZE bounds a single prompt history entry.
+// The history keeps at most 50 entries (maxHistoryEntries), but an individual
+// entry could still be huge. This caps it at 64 KiB.
+const MAX_PROMPT_HISTORY_ENTRY_SIZE = 64 << 10
+
 const promptHistoryFile = "prompt-history.jsonl"
 
 type promptHistoryEntry struct {
@@ -121,6 +126,10 @@ func (h *promptHistory) Move(direction int, currentInput string) (string, bool) 
 func (h *promptHistory) Append(input string) {
 	if input == "" {
 		return
+	}
+	// Cap entry size to prevent a single huge prompt from dominating storage.
+	if len(input) > MAX_PROMPT_HISTORY_ENTRY_SIZE {
+		input = input[:MAX_PROMPT_HISTORY_ENTRY_SIZE]
 	}
 	if len(h.entries) > 0 && h.entries[len(h.entries)-1].Input == input {
 		h.index = 0

@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -66,6 +68,92 @@ func TestServiceConnectRemoteAndRegisterTools(t *testing.T) {
 	}
 	if out != "echo: hi" {
 		t.Fatalf("Execute() = %q, want %q", out, "echo: hi")
+	}
+}
+
+// An oversize MCP result must settle as an error naming the size and the
+// limit, never as a clipped payload the model would mistake for the full
+// answer.
+func TestOversizeToolResultReturnsError(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "spew-server", Version: "v0.0.1"}, nil)
+	server.AddTool(&sdkmcp.Tool{
+		Name:        "spew",
+		Description: "returns a huge payload",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		huge := strings.Repeat("x", maxToolOutputBytes*4)
+		return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: huge}}}, nil
+	})
+	handler := sdkmcp.NewStreamableHTTPHandler(func(r *http.Request) *sdkmcp.Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+	status := svc.Connect(context.Background(), "spew", ServerConfig{Type: "remote", URL: httpServer.URL})
+	if status.Status != "connected" {
+		t.Fatalf("expected connected, got %+v", status)
+	}
+
+	registry := tool.NewRegistry()
+	svc.RegisterTools(registry)
+	spew, ok := registry.Get(ToolName("spew", "spew"))
+	if !ok {
+		t.Fatal("spew tool not registered")
+	}
+
+	out, err := spew.Execute(context.Background(), map[string]any{})
+	if err == nil {
+		t.Fatalf("expected an oversize error, got result of %d bytes", len(out))
+	}
+	var tooLarge *toolOutputTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("expected *toolOutputTooLargeError, got %T: %v", err, err)
+	}
+	if tooLarge.bytes != maxToolOutputBytes*4 {
+		t.Fatalf("reported size = %d, want %d", tooLarge.bytes, maxToolOutputBytes*4)
+	}
+	// The error text is the model's tool result: it must state the fix.
+	if !strings.Contains(err.Error(), "Narrow the call") {
+		t.Fatalf("error text does not tell the model what to do: %q", err.Error())
+	}
+}
+
+// A result under the limit passes through unchanged, and so does a plain
+// IsError result — only oversize payloads are rejected.
+func TestNormalSizeResultsPassThrough(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "ok-server", Version: "v0.0.1"}, nil)
+	server.AddTool(&sdkmcp.Tool{
+		Name:        "fit",
+		Description: "returns a fitting payload",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		ok := strings.Repeat("y", maxToolOutputBytes) // exactly at the limit
+		return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: ok}}}, nil
+	})
+	handler := sdkmcp.NewStreamableHTTPHandler(func(r *http.Request) *sdkmcp.Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+	if status := svc.Connect(context.Background(), "ok", ServerConfig{Type: "remote", URL: httpServer.URL}); status.Status != "connected" {
+		t.Fatalf("expected connected, got %+v", status)
+	}
+
+	registry := tool.NewRegistry()
+	svc.RegisterTools(registry)
+	fit, ok := registry.Get(ToolName("ok", "fit"))
+	if !ok {
+		t.Fatal("fit tool not registered")
+	}
+
+	out, err := fit.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("an exactly-at-limit result must pass: %v", err)
+	}
+	if len(out) != maxToolOutputBytes {
+		t.Fatalf("result was %d bytes, want %d (unchanged)", len(out), maxToolOutputBytes)
 	}
 }
 

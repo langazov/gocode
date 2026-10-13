@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"time"
+	"unicode/utf8"
 
 	"github.com/langazov/gocode-go/internal/event"
 	"github.com/langazov/gocode-go/internal/llm"
@@ -14,6 +15,34 @@ import (
 // JS thread. Here each dispatch is a real goroutine that may fork a process,
 // so the fan-out is capped.
 const DefaultToolConcurrency = 8
+
+// maxPersistedToolOutputBytes is the runner's last-resort cap on a tool
+// result before it reaches the bus. Builtins cap themselves (bash at 512 KiB,
+// MCP in the adapter at the same figure), but the runner is the one place
+// every result passes through regardless of origin — an ACP client terminal,
+// a plugin's tool.execute.after hook that grows the output, anything added
+// later. What crosses this line is persisted into the event and
+// session_message rows, replayed to the model on every subsequent turn, and
+// re-rendered on every interface repaint, so an unbounded result is a
+// database row and a request body that never stops growing. The figure
+// matches the shell tool's own cap: roomy for a real result, small enough
+// that no single tool can dominate a session.
+const maxPersistedToolOutputBytes = 512 * 1024
+
+// capPersistedOutput truncates a settled tool result to
+// maxPersistedToolOutputBytes, cutting on a rune boundary so a multi-byte
+// character is never split, and marking the cut so both the model and the
+// interface can tell a clipped result from a complete one.
+func capPersistedOutput(output string) string {
+	if len(output) <= maxPersistedToolOutputBytes {
+		return output
+	}
+	cut := maxPersistedToolOutputBytes
+	for cut > 0 && !utf8.RuneStart(output[cut]) {
+		cut--
+	}
+	return output[:cut] + "\n(output truncated at 512 KiB)"
+}
 
 // settlement is one finished tool call, handed from a worker goroutine back to
 // the turn goroutine. It is the only thing workers ever produce: they never
@@ -83,12 +112,16 @@ func (r *Runner) settleTool(ctx context.Context, sem chan struct{}, done <-chan 
 func (r *Runner) publishSettlement(ctx context.Context, sessionID, assistantMessageID string, settled settlement) error {
 	provider := map[string]any{"executed": settled.call.ProviderExecuted}
 	if settled.err != nil {
+		// The error text is persisted and replayed exactly like a result, and
+		// it comes from foreign code — an MCP server's failure message can be
+		// a whole stack dump. Same cap, same treatment.
+		errText := capPersistedOutput(settled.err.Error())
 		_, err := r.Bus.Publish(ctx, ToolFailed, map[string]any{
 			"sessionID":          sessionID,
 			"timestamp":          nowMillis(),
 			"assistantMessageID": assistantMessageID,
 			"callID":             settled.call.ID,
-			"error":              map[string]any{"type": "unknown", "message": settled.err.Error()},
+			"error":              map[string]any{"type": "unknown", "message": errText},
 			"provider":           provider,
 		}, event.PublishOptions{})
 		return err
@@ -98,7 +131,7 @@ func (r *Runner) publishSettlement(ctx context.Context, sessionID, assistantMess
 		"timestamp":          nowMillis(),
 		"assistantMessageID": assistantMessageID,
 		"callID":             settled.call.ID,
-		"output":             settled.output,
+		"output":             capPersistedOutput(settled.output),
 		"provider":           provider,
 	}, event.PublishOptions{})
 	return err
