@@ -23,7 +23,7 @@ func TestOpenRouterAttributionHeadersApplied(t *testing.T) {
 	}
 	want := map[string]string{
 		"HTTP-Referer":            "https://gocoder.org",
-		"X-OpenRouter-Title":      "gocode",
+		"X-OpenRouter-Title":      "GoCode",
 		"X-OpenRouter-Categories": "cli-agent",
 	}
 	for key, value := range want {
@@ -65,8 +65,8 @@ func TestOpenRouterAttributionHeadersReachRequests(t *testing.T) {
 	if referer != "https://gocoder.org" {
 		t.Errorf("HTTP-Referer = %q, want https://gocoder.org", referer)
 	}
-	if title != "gocode" {
-		t.Errorf("X-OpenRouter-Title = %q, want gocode", title)
+	if title != "GoCode" {
+		t.Errorf("X-OpenRouter-Title = %q, want GoCode", title)
 	}
 }
 

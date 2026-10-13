@@ -48,8 +48,8 @@ func TestResolveOpenRouterSendsAttributionHeaders(t *testing.T) {
 	if gotReferer != "https://gocoder.org" {
 		t.Errorf("HTTP-Referer = %q, want https://gocoder.org", gotReferer)
 	}
-	if gotTitle != "gocode" {
-		t.Errorf("X-OpenRouter-Title = %q, want gocode", gotTitle)
+	if gotTitle != "GoCode" {
+		t.Errorf("X-OpenRouter-Title = %q, want GoCode", gotTitle)
 	}
 	if gotCategories != "cli-agent" {
 		t.Errorf("X-OpenRouter-Categories = %q, want cli-agent", gotCategories)
