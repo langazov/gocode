@@ -146,6 +146,7 @@ func (c *modelCache) invalidate() {
 // models until the TTL lapses.
 func InvalidateModelCaches() {
 	copilotModelCache.invalidate()
+	chatgptModelsCache.invalidate()
 }
 
 // AuthMethods advertises the device flow, so `gocode providers login`

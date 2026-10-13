@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -245,10 +247,19 @@ func TestChatGPTModelEligible(t *testing.T) {
 	}
 }
 
-// TestOpenAIFetchModelsGatesSubscriptionModels: with an OAuth credential the
-// model list is the eligible subset; any other credential keeps the catalog
-// list (nil nil → LiveModels falls back to it).
-func TestOpenAIFetchModelsGatesSubscriptionModels(t *testing.T) {
+// TestOpenAIFetchModelsGatesSubscriptionModelsOffline: with an OAuth
+// credential and the backend unreachable, the model list degrades to the
+// offline catalog gate rather than emptying the picker; any other
+// credential keeps the catalog list (nil nil → LiveModels falls back).
+func TestOpenAIFetchModelsGatesSubscriptionModelsOffline(t *testing.T) {
+	// A dead endpoint so the live fetch fails and the fallback shows.
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer dead.Close()
+	chatgptModelsCache.invalidate()
+	defer chatgptModelsCache.invalidate()
+
 	catalog := map[string]modelsdev.Model{
 		"gpt-5.1": {ID: "gpt-5.1"},
 		"gpt-4o":  {ID: "gpt-4o"},
@@ -262,6 +273,9 @@ func TestOpenAIFetchModelsGatesSubscriptionModels(t *testing.T) {
 		AccountID: "acct_123",
 	})
 	r.Models = catalog
+	r.BaseURL = dead.URL
+	r.APIKey = "access-token"
+	r.Header("chatgpt-account-id", "acct_123")
 	got, err := (openaiTransform{}).FetchModels(context.Background(), r)
 	if err != nil {
 		t.Fatal(err)
@@ -275,8 +289,93 @@ func TestOpenAIFetchModelsGatesSubscriptionModels(t *testing.T) {
 
 	r = chatgptTestCredential(t, auth.Info{Type: "api", Key: "sk-test"})
 	r.Models = catalog
+	// No account header: an API key never gets the codex rewrite, so the
+	// guard must skip the fetch before any network call.
 	if got, err := (openaiTransform{}).FetchModels(context.Background(), r); err != nil || got != nil {
 		t.Errorf("API-key FetchModels = (%v, %v), want (nil, nil) so LiveModels falls back to the catalog", got, err)
+	}
+}
+
+// TestOpenAIFetchModelsFetchesCodexList: with a live codex backend the list
+// comes from the wire — list-visible models only — carrying the account
+// header a subscription token requires.
+func TestOpenAIFetchModelsFetchesCodexList(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer access-token" {
+			t.Errorf("Authorization = %q, want the bearer token", r.Header.Get("Authorization"))
+		}
+		if r.Header.Get("chatgpt-account-id") != "acct_123" {
+			t.Errorf("chatgpt-account-id = %q, want acct_123", r.Header.Get("chatgpt-account-id"))
+		}
+		if r.URL.Query().Get("client_version") == "" {
+			t.Error("client_version query parameter is required")
+		}
+		w.Write([]byte(`{"models":[
+			{"slug":"gpt-6.1-sol","display_name":"GPT-6.1-Sol","context_window":500000,
+			 "visibility":"list","input_modalities":["text","image"],
+			 "supported_reasoning_levels":[{"effort":"low"},{"effort":"high"}],
+			 "model_messages":{"instructions_template":"MUST NOT BE KEPT"}},
+			{"slug":"gpt-reserve","display_name":"GPT-Reserve","visibility":"hide"},
+			{"slug":"","visibility":"list"}
+		]}`))
+	}))
+	defer server.Close()
+	chatgptModelsCache.invalidate()
+	defer chatgptModelsCache.invalidate()
+
+	r := chatgptTestCredential(t, auth.Info{
+		Type:      "oauth",
+		Access:    "access-token",
+		Refresh:   "refresh-token",
+		Expires:   time.Now().Add(time.Hour).UnixMilli(),
+		AccountID: "acct_123",
+	})
+	r.BaseURL = server.URL
+	r.APIKey = "access-token"
+	r.Header("chatgpt-account-id", "acct_123")
+	r.Models = map[string]modelsdev.Model{"gpt-4o": {ID: "gpt-4o"}}
+
+	got, err := (openaiTransform{}).FetchModels(context.Background(), r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("got %d models, want only the list-visible one: %v", len(got), got)
+	}
+	model, ok := got["gpt-6.1-sol"]
+	if !ok {
+		t.Fatal("expected gpt-6.1-sol from the live list")
+	}
+	if model.Name != "GPT-6.1-Sol" || model.Limit.Context != 500000 {
+		t.Errorf("model = %+v, want the wire display name and context window", model)
+	}
+	if !model.Attachment {
+		t.Error("an image-modality model should be marked attachment-capable")
+	}
+	if !model.Reasoning || len(model.ReasoningOptions) != 1 || len(model.ReasoningOptions[0].Values) != 2 {
+		t.Errorf("reasoning options = %+v, want the wire effort levels", model.ReasoningOptions)
+	}
+	if _, ok := got["gpt-4o"]; ok {
+		t.Error("a live list must replace the catalog's, not merge with it")
+	}
+}
+
+// TestOpenAIFetchModelsSkipsCustomRelay: a custom baseURL is a deliberate
+// relay choice; the codex list is not behind it, and the picker falls back
+// to the catalog list untouched.
+func TestOpenAIFetchModelsSkipsCustomRelay(t *testing.T) {
+	r := chatgptTestCredential(t, auth.Info{
+		Type:      "oauth",
+		Access:    "access-token",
+		Refresh:   "refresh-token",
+		Expires:   time.Now().Add(time.Hour).UnixMilli(),
+		AccountID: "acct_123",
+	})
+	r.BaseURL = "https://relay.internal/v1"
+	r.APIKey = "access-token"
+	r.Models = map[string]modelsdev.Model{"gpt-4o": {ID: "gpt-4o"}}
+	if got, err := (openaiTransform{}).FetchModels(context.Background(), r); err != nil || got != nil {
+		t.Errorf("FetchModels = (%v, %v), want (nil, nil) for a custom relay", got, err)
 	}
 }
 

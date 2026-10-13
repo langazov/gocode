@@ -5,14 +5,18 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/auth"
+	"github.com/langazov/gocode-go/internal/installation"
 	"github.com/langazov/gocode-go/internal/llm/openai"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 )
@@ -327,24 +331,177 @@ func chatgptModelEligible(id string) bool {
 	return false
 }
 
-// FetchModels implements ModelSource, gating the catalog's model list to the
-// models a ChatGPT subscription actually unlocks. A non-OAuth credential
-// (or none) keeps the full public list: the gate only applies to a logged-in
-// subscription. Purely offline — a filter, not a fetch — so it needs neither
-// the modelCache plumbing nor invalidation on login/logout.
+// FetchModels implements ModelSource with the codex backend's live model
+// list, which is what a ChatGPT subscription actually unlocks — the dialog
+// then offers exactly the models the plan can serve, instead of a catalog
+// filter that guesses. A non-OAuth credential (or none) keeps the full
+// public catalog list: an API key is entitled to all of it, and the caller
+// falls back to r.Models when this returns nil (see Resolved.LiveModels).
 func (openaiTransform) FetchModels(ctx context.Context, r *Resolved) (map[string]modelsdev.Model, error) {
 	info, err := chatgptCredentialInUse(ctx, r)
 	if err != nil || info == nil {
-		// Not a subscription login in use: the caller falls back to the
-		// catalog list (see Resolved.LiveModels), which is exactly what an
-		// API key is entitled to.
 		return nil, nil
 	}
-	out := make(map[string]modelsdev.Model, len(r.Models))
-	for id, model := range r.Models {
+	// Fetch live only where Apply's codex rewrite is in effect: it sets the
+	// account header exactly when it rewrites the endpoint, and a custom
+	// relay (OPENAI_BASE_URL) keeps neither. The catalog filter is the
+	// honest answer there.
+	if r.Options.Headers["chatgpt-account-id"] == "" {
+		return nil, nil
+	}
+	models, err := chatgptModelsCache.get(ctx, r.BaseURL, r.APIKey, info.AccountID)
+	if err != nil || len(models) == 0 {
+		// The offline gate stays as the fallback: the picker keeps a
+		// subscription-shaped list even when the backend is unreachable,
+		// rather than emptying or showing the whole public catalog.
+		return chatgptCatalogGate(r.Models), nil
+	}
+	return models, nil
+}
+
+// chatgptCatalogGate is the offline fallback the live fetch degrades to.
+func chatgptCatalogGate(catalog map[string]modelsdev.Model) map[string]modelsdev.Model {
+	out := make(map[string]modelsdev.Model, len(catalog))
+	for id, model := range catalog {
 		if chatgptModelEligible(id) {
 			out[id] = model
 		}
+	}
+	return out
+}
+
+// chatgptModelTTL bounds how stale the codex model list may get. The list
+// changes on the order of weeks; this is about not re-fetching on every
+// dialog open, the hot path the copilot cache exists for too.
+const chatgptModelTTL = 5 * time.Minute
+
+// chatgptModelCacheEntry mirrors copilot's modelCacheEntry, sharing the
+// modelCache type would couple the two providers' invalidation for no gain.
+type chatgptModelCacheEntry struct {
+	models  map[string]modelsdev.Model
+	err     error
+	fetched time.Time
+}
+
+var chatgptModelsCache = &chatgptModelCache{}
+
+type chatgptModelCache struct {
+	mu      sync.Mutex
+	entries map[string]chatgptModelCacheEntry
+}
+
+func (c *chatgptModelCache) get(ctx context.Context, baseURL, token, accountID string) (map[string]modelsdev.Model, error) {
+	// Key on the credential: switching accounts must not serve the previous
+	// plan's models.
+	key := baseURL + "\x00" + accountID + "\x00" + token
+	c.mu.Lock()
+	entry, ok := c.entries[key]
+	fresh := ok && time.Since(entry.fetched) < chatgptModelTTL
+	c.mu.Unlock()
+	if fresh {
+		return entry.models, entry.err
+	}
+	models, err := chatgptModels(ctx, baseURL, token, accountID)
+	c.mu.Lock()
+	if c.entries == nil {
+		c.entries = map[string]chatgptModelCacheEntry{}
+	}
+	// Failures are cached too: a bad credential must not cost a slow failing
+	// round trip on every dialog open.
+	c.entries[key] = chatgptModelCacheEntry{models: models, err: err, fetched: time.Now()}
+	c.mu.Unlock()
+	return models, err
+}
+
+func (c *chatgptModelCache) invalidate() {
+	c.mu.Lock()
+	c.entries = nil
+	c.mu.Unlock()
+}
+
+// codexModel is the subset of the codex backend's model record the picker
+// cares about. The wire payload also carries multi-kilobyte instruction
+// templates (model_messages); declaring only these fields keeps them out of
+// memory.
+type codexModel struct {
+	Slug                     string   `json:"slug"`
+	DisplayName              string   `json:"display_name"`
+	Description              string   `json:"description"`
+	ContextWindow            int      `json:"context_window"`
+	InputModalities          []string `json:"input_modalities"`
+	SupportedReasoningLevels []struct {
+		Effort string `json:"effort"`
+	} `json:"supported_reasoning_levels"`
+	Visibility string `json:"visibility"`
+}
+
+// chatgptModels fetches the live list from the codex backend. Only
+// list-visible models are kept: visibility "hide" entries (gpt-reserve,
+// codex-auto-review) are infrastructure the picker must not offer — the
+// same filter the picker-enabled flag plays for Copilot.
+//
+// client_version must be strict semver in the Codex CLI's version space,
+// and the backend filters the list by each model's minimal_client_version:
+// "0.0.1" answers zero models, 0.15x answers most. gocode's own version is
+// a different numbering scheme — sending it answers an empty list — so this
+// is a floor constant covering every model the backend currently lists
+// (the highest minimal_client_version seen is 0.155). A model newer than
+// this floor either works over the same Responses protocol or fails at
+// request time with a normal error, which is how any unknown model behaves.
+const codexModelsClientVersion = "1.0.0"
+
+func chatgptModels(ctx context.Context, baseURL, token, accountID string) (map[string]modelsdev.Model, error) {
+	endpoint := strings.TrimRight(baseURL, "/") + "/models?client_version=" + codexModelsClientVersion
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("chatgpt-account-id", accountID)
+	req.Header.Set("User-Agent", "gocode/"+installation.Version)
+	req.Header.Set("Accept", "application/json")
+
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		return nil, fmt.Errorf("openai: fetching chatgpt models returned %d", res.StatusCode)
+	}
+	var payload struct {
+		Models []codexModel `json:"models"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&payload); err != nil {
+		return nil, err
+	}
+
+	out := map[string]modelsdev.Model{}
+	for _, item := range payload.Models {
+		if item.Slug == "" || item.Visibility != "list" {
+			continue
+		}
+		model := modelsdev.Model{
+			ID:       item.Slug,
+			Name:     item.DisplayName,
+			ToolCall: true,
+			Limit:    modelsdev.Limit{Context: float64(item.ContextWindow)},
+		}
+		for _, modality := range item.InputModalities {
+			if modality == "image" {
+				model.Attachment = true
+			}
+		}
+		if len(item.SupportedReasoningLevels) > 0 {
+			model.Reasoning = true
+			values := make([]*string, 0, len(item.SupportedReasoningLevels))
+			for _, level := range item.SupportedReasoningLevels {
+				effort := level.Effort
+				values = append(values, &effort)
+			}
+			model.ReasoningOptions = []modelsdev.ReasoningOption{{Type: "effort", Values: values}}
+		}
+		out[item.Slug] = model
 	}
 	return out, nil
 }
