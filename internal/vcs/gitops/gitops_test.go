@@ -41,6 +41,9 @@ func newRepo(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	sh(t, dir, "init", "-q", "-b", "main")
+	// Byte-exact content assertions below; Windows defaults autocrlf to
+	// true, which would rewrite LF to CRLF in the worktree.
+	sh(t, dir, "config", "core.autocrlf", "false")
 	sh(t, dir, "config", "user.name", "T")
 	sh(t, dir, "config", "user.email", "t@e.x")
 	write(t, dir, "a.txt", "one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n")
@@ -458,6 +461,7 @@ func TestChangesToCommit(t *testing.T) {
 	// A repo without commits describes everything against the empty tree.
 	fresh := t.TempDir()
 	sh(t, fresh, "init", "-q", "-b", "main")
+	sh(t, fresh, "config", "core.autocrlf", "false")
 	write(t, fresh, "x.go", "package x\n")
 	c, err := ChangesToCommit(ctx, fresh, false, 1<<20)
 	if err != nil || !strings.Contains(c.Patch, "+package x") {

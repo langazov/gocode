@@ -289,7 +289,7 @@ func TestSessionListFiltersAndPaginates(t *testing.T) {
 		t.Fatalf("second page: %v", next)
 	}
 	var other map[string]any
-	f.client.call("session/list", map[string]any{"cwd": "/nowhere/else"}, &other)
+	f.client.call("session/list", map[string]any{"cwd": filepath.Join(t.TempDir(), "nowhere", "else")}, &other)
 	if rest, _ := other["sessions"].([]any); len(rest) != 0 {
 		t.Fatalf("cwd filter ignored: %v", other)
 	}
