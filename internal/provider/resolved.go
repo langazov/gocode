@@ -50,6 +50,10 @@ type Resolved struct {
 	// the provider publishes its own list (github-copilot does).
 	Models map[string]modelsdev.Model
 
+	// LiveContextLimits contains only successfully retrieved provider metadata,
+	// never catalog fallbacks. Model-list callers may persist these limits.
+	LiveContextLimits map[string]modelsdev.Model
+
 	// keyErr records why credential resolution failed, deferred until Client
 	// so that a transform has the chance to supply a credential or to make one
 	// unnecessary. Reported only if the provider still has no way to

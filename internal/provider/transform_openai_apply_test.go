@@ -349,6 +349,9 @@ func TestOpenAIFetchModelsFetchesCodexList(t *testing.T) {
 	if model.Name != "GPT-6.1-Sol" || model.Limit.Context != 500000 {
 		t.Errorf("model = %+v, want the wire display name and context window", model)
 	}
+	if r.LiveContextLimits["gpt-6.1-sol"].Limit.Context != 500000 {
+		t.Error("successfully retrieved context limit not available for persistence")
+	}
 	if !model.Attachment {
 		t.Error("an image-modality model should be marked attachment-capable")
 	}

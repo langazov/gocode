@@ -542,7 +542,7 @@ func AvailableModels(ctx context.Context, models *modelsdev.Service, cfg *config
 		out = append(out, entry)
 	}
 	for providerID, entry := range catalog {
-		for modelID, model := range providerModels(ctx, providerID, entry, cfg) {
+		for modelID, model := range providerModels(ctx, providerID, entry, cfg, models) {
 			appendModel(providerID, config.Provider{}, modelID, model)
 		}
 	}

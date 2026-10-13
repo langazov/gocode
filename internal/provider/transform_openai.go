@@ -356,6 +356,7 @@ func (openaiTransform) FetchModels(ctx context.Context, r *Resolved) (map[string
 		// rather than emptying or showing the whole public catalog.
 		return chatgptCatalogGate(r.Models), nil
 	}
+	r.LiveContextLimits = models
 	return models, nil
 }
 

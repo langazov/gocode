@@ -5,6 +5,7 @@ import (
 	"sort"
 
 	"github.com/langazov/gocode-go/internal/config"
+	"github.com/langazov/gocode-go/internal/global"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 	"github.com/langazov/gocode-go/internal/provider"
 )
@@ -22,11 +23,11 @@ func resolveCatalog(ctx context.Context, catalog modelsdev.Catalog) modelsdev.Ca
 // providerModels returns the models to advertise for a provider: the ones it
 // publishes itself when it has an opinion, and the catalog's list otherwise.
 //
-// Only github-copilot currently publishes its own, and only when the user is
-// logged in; every other provider takes the catalog path with no network call.
+// Providers such as OpenAI (ChatGPT login) and github-copilot publish live lists
+// when logged in; providers without a model source take the catalog path.
 // A provider that fails to resolve keeps its catalog models rather than
 // disappearing from the picker.
-func providerModels(ctx context.Context, providerID string, entry modelsdev.Provider, cfg *config.Config) map[string]modelsdev.Model {
+func providerModels(ctx context.Context, providerID string, entry modelsdev.Provider, cfg *config.Config, catalog *modelsdev.Service) map[string]modelsdev.Model {
 	if !provider.PublishesModels(providerID, entry) {
 		return entry.Models
 	}
@@ -34,7 +35,13 @@ func providerModels(ctx context.Context, providerID string, entry modelsdev.Prov
 	if err != nil {
 		return entry.Models
 	}
-	return resolved.LiveModels(ctx)
+	models := resolved.LiveModels(ctx)
+	if providerID == "openai" && len(resolved.LiveContextLimits) > 0 && catalog != nil {
+		if err := catalog.SaveContextLimits(ctx, providerID, resolved.LiveContextLimits); err != nil {
+			global.LogBackground("modelsdev: saving OpenAI context limits: %v", err)
+		}
+	}
+	return models
 }
 
 // modelVariants lists the selectable reasoning variants of one catalog
