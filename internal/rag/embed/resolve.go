@@ -95,7 +95,16 @@ func Resolve(ctx context.Context, cfg Config, providers *provider.Service) (*Cli
 		return nil, fmt.Errorf("rag: resolve credentials for provider %q: %w", cfg.Provider, err)
 	}
 
-	return New(baseURL, apiKey, cfg.Model), nil
+	client := New(baseURL, apiKey, cfg.Model)
+	// OpenRouter app attribution: embedding traffic a user's own OpenRouter
+	// key generates lands on the same app entry their chat traffic does.
+	// Only the direct provider gets it — when gocoder.org's proxy fronts
+	// OpenRouter, the attribution headers are its to send, from its own
+	// account.
+	if cfg.Provider == "openrouter" {
+		client.ExtraHeaders = provider.OpenRouterAttributionHeaders()
+	}
+	return client, nil
 }
 
 // resolveGocoder builds a gocoder.org client when cfg asks for one, or when

@@ -89,6 +89,12 @@ type Client struct {
 	// gocoder.org's /api/embeddings reads it (to pick its upstream); it stays
 	// empty for OpenAI-compatible endpoints, which reject unknown fields.
 	Provider string
+	// ExtraHeaders are sent with every request, after Content-Type and
+	// Authorization, so they cannot displace the essentials. The motivating
+	// case is OpenRouter app attribution: embedding traffic a user's own
+	// OpenRouter key generates should land on the same app entry as chat
+	// traffic does (see internal/provider's openrouter transform).
+	ExtraHeaders map[string]string
 	// HTTP is the client used for requests; defaults to a 60s-timeout client.
 	HTTP *http.Client
 	// BatchSize overrides DefaultBatchSize.
@@ -370,6 +376,9 @@ func (c *Client) embedBatchOnce(ctx context.Context, texts []string) ([][]float3
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", "Bearer "+c.APIKey)
+	for key, value := range c.ExtraHeaders {
+		httpReq.Header.Set(key, value)
+	}
 
 	httpClient := c.HTTP
 	if httpClient == nil {
