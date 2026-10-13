@@ -134,6 +134,7 @@ Known deliberate divergences:
 | ACP serves v1 and v2, not v1 only | upstream's `acp` speaks v1 through the TypeScript SDK; the v2 migration guide asks agents to serve both versions side by side, negotiated per connection, so this port does |
 | ACP drives sessions in-process, one runtime per `cwd` | upstream's ACP agent is an HTTP client of a local server rooted at one directory; here each session's `cwd` gets its own runtime over a shared database, so sessions in different projects run against their own config and tools |
 | ACP session forking is `_gocode/session/fork` | forking is an RFD, not part of stable v1 or v2; upstream advertises it as `sessionCapabilities.fork`, which neither stable schema defines |
+| Copilot device-flow URL carries the user code | upstream's `authorize()` opens the bare `verification_uri` and asks the user to type the code; GitHub's device page pre-fills the entry form from a `user_code` query param, so the opened browser is a confirmation away with no typing |
 
 ## CI
 

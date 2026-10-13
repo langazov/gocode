@@ -298,3 +298,60 @@ func TestInvalidateModelCaches(t *testing.T) {
 		t.Errorf("made %d requests, want 2 — invalidation must force a refetch", got)
 	}
 }
+
+// TestCopilotVerificationURLCarriesCode: the browser-opened URL embeds the
+// user code as a user_code query param so GitHub's device page pre-fills it,
+// skipping the typing step. Empty and already-parameterized URLs pass
+// through untouched.
+func TestCopilotVerificationURLCarriesCode(t *testing.T) {
+	cases := []struct {
+		name string
+		uri  string
+		code string
+		want string
+	}{
+		{
+			name: "github.com device page",
+			uri:  "https://github.com/login/device",
+			code: "ABCD-1234",
+			want: "https://github.com/login/device?user_code=ABCD-1234",
+		},
+		{
+			name: "enterprise device page",
+			uri:  "https://company.ghe.com/login/device",
+			code: "WXYZ-9999",
+			want: "https://company.ghe.com/login/device?user_code=WXYZ-9999",
+		},
+		{
+			name: "no code leaves the URI alone",
+			uri:  "https://github.com/login/device",
+			code: "",
+			want: "https://github.com/login/device",
+		},
+		{
+			name: "existing user_code is not overwritten",
+			uri:  "https://github.com/login/device?user_code=REAL-1",
+			code: "OTHER-2",
+			want: "https://github.com/login/device?user_code=REAL-1",
+		},
+		{
+			name: "existing query params are preserved",
+			uri:  "https://github.com/login/device?from=cli",
+			code: "ABCD-1234",
+			want: "https://github.com/login/device?from=cli&user_code=ABCD-1234",
+		},
+		{
+			name: "unparseable URI falls back to the original",
+			uri:  "https://gith%ubb.com/login device",
+			code: "ABCD-1234",
+			want: "https://gith%ubb.com/login device",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := copilotVerificationURL(tc.uri, tc.code); got != tc.want {
+				t.Errorf("copilotVerificationURL(%q, %q) = %q, want %q", tc.uri, tc.code, got, tc.want)
+			}
+		})
+	}
+}
