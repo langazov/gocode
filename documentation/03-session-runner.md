@@ -278,6 +278,17 @@ message telling the model to stop, not an error.
 Permissions are **inherited and narrowed** by `subagent_permissions.go` — a
 child can never hold rights its parent lacked.
 
+**Model inheritance** (`spawn.go` `resolveChildModel`): a fresh child resolves
+its model as (1) an explicit `model` argument on the task call
+(`provider/model`), then (2) the subagent's own configured model, then (3) the
+parent session's current model — the pinned column a mid-session
+`POST /api/session/{id}/model` switch wrote, else the parent agent's
+configured model — with the parent's reasoning variant travelling along. With
+no winner the child resolves through the runner default, which is what the
+parent itself runs. A `task_id` resume re-pins only when the call carries an
+explicit `model` argument; a plain resume keeps the child's own state so the
+parent's later switches cannot reach back into it.
+
 ## Cost accounting
 
 `stepCost` prices each step from the models.dev catalog, distinguishing four

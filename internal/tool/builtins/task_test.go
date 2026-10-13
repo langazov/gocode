@@ -75,6 +75,13 @@ func (s *stubSpawner) notifications() []string {
 	return append([]string(nil), s.notified...)
 }
 
+// recorded copies the captured spawn requests for assertions.
+func (s *stubSpawner) recorded() []tool.SpawnRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]tool.SpawnRequest(nil), s.spawns...)
+}
+
 var taskExec = tool.ExecContext{SessionID: "ses_parent", Agent: "build", CallID: "call_1", AssistantMessageID: "msg_asst_1"}
 
 func taskInput(extra map[string]any) map[string]any {
@@ -402,5 +409,61 @@ func TestTaskToolPublishesBackgroundFlag(t *testing.T) {
 	defer mu.Unlock()
 	if background, _ := gotMeta["background"].(bool); !background {
 		t.Fatalf("background task's metadata = %v, want background: true", gotMeta)
+	}
+}
+
+func TestTaskToolPassesModelArgument(t *testing.T) {
+	spawner := newStubSpawner()
+	task := NewTaskTool(spawner)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := task.ExecuteWithContext(context.Background(),
+			taskInput(map[string]any{"model": "openai/gpt-5.2"}), taskExec)
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	spawner.finish("ses_child_general", tool.SpawnResult{SessionID: "ses_child_general", Text: "ok"})
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("model argument rejected: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("task did not return")
+	}
+	spawns := spawner.recorded()
+	if len(spawns) != 1 {
+		t.Fatalf("expected 1 spawn, got %d", len(spawns))
+	}
+	if spawns[0].Model != "openai/gpt-5.2" {
+		t.Fatalf("model argument not passed through: %q", spawns[0].Model)
+	}
+}
+
+func TestTaskToolEmptyModelIsNoOverride(t *testing.T) {
+	spawner := newStubSpawner()
+	task := NewTaskTool(spawner)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := task.ExecuteWithContext(context.Background(), taskInput(nil), taskExec)
+		done <- err
+	}()
+	time.Sleep(50 * time.Millisecond)
+	spawner.finish("ses_child_general", tool.SpawnResult{SessionID: "ses_child_general", Text: "ok"})
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("task did not return")
+	}
+	spawns := spawner.recorded()
+	if len(spawns) != 1 || spawns[0].Model != "" {
+		t.Fatalf("absent model argument must stay empty, got %+v", spawns)
 	}
 }

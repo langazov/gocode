@@ -91,6 +91,10 @@ func (t *TaskTool) InputSchema() map[string]any {
 				"type":        "string",
 				"description": "The type of specialized agent to use for this task",
 			},
+			"model": map[string]any{
+				"type":        "string",
+				"description": "Optional model override for this run, in the format provider/model (e.g. anthropic/claude-sonnet-5). Omit to use the subagent's own configured model, or the parent session's current model when the subagent has none.",
+			},
 			"task_id": map[string]any{
 				"type":        "string",
 				"description": "Set this only to resume a previous task: pass a prior task_id and the task continues that subagent session instead of creating a fresh one",
@@ -143,6 +147,7 @@ func (t *TaskTool) ExecuteWithContext(ctx context.Context, input map[string]any,
 		Description:     description,
 		Prompt:          prompt,
 		ResumeSessionID: stringArg(input, "task_id"),
+		Model:           stringArg(input, "model"),
 	})
 	if err != nil {
 		return "", err

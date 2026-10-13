@@ -49,6 +49,11 @@ type CreateInput struct {
 	// Permission overrides the agent's ruleset for this session only. Used by
 	// the task tool to hand a subagent a ruleset derived from its parent's.
 	Permission permission.Ruleset
+	// Model pins a model on the session row at creation, ahead of the first
+	// turn. Nil leaves the column empty so the runner resolves the agent's
+	// model, then the boot default. Used by the task tool to hand a spawned
+	// subagent its parent's current model.
+	Model *ModelRef
 }
 
 type Info struct {
@@ -94,6 +99,11 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (Info, error) {
 	}
 	if len(input.Permission) > 0 {
 		if err := s.setPermission(ctx, sessionID, input.Permission); err != nil {
+			return Info{}, err
+		}
+	}
+	if input.Model != nil {
+		if err := s.SetModel(ctx, sessionID, *input.Model); err != nil {
 			return Info{}, err
 		}
 	}
