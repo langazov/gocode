@@ -29,7 +29,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -42,6 +41,7 @@ import (
 	"github.com/langazov/gocode-go/internal/diff"
 	"github.com/langazov/gocode-go/internal/jsonrpc"
 	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/lspprotocol"
 	"github.com/langazov/gocode-go/internal/session"
 )
 
@@ -1069,14 +1069,11 @@ func positionOf(text string, off int) position {
 
 // uriPath converts a file:// URI to a path.
 func uriPath(uri string) (string, error) {
-	u, err := url.Parse(uri)
-	if err != nil {
-		return "", err
-	}
-	if u.Scheme != "file" {
+	path, ok := lspprotocol.PathFromURI(uri)
+	if !ok {
 		return "", fmt.Errorf("not a file URI: %s", uri)
 	}
-	return filepath.FromSlash(u.Path), nil
+	return path, nil
 }
 
 func truncate(s string, n int) string {

@@ -42,7 +42,9 @@ func TestTransformRegistryMatches(t *testing.T) {
 		{"anthropic", true},
 		{"azure", true},
 		{"snowflake-cortex", true},
-		{"openrouter", false},
+		// openrouter has one — app attribution only; it is otherwise a plain
+		// catalog provider.
+		{"openrouter", true},
 		{"groq", false},
 		{"totally-unknown", false},
 	}

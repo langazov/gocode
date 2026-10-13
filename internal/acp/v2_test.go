@@ -11,6 +11,7 @@ import (
 
 	"github.com/langazov/gocode-go/internal/jsonrpc"
 	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/lspprotocol"
 	"github.com/langazov/gocode-go/internal/permission"
 )
 
@@ -438,8 +439,8 @@ func TestPromptContentConversion(t *testing.T) {
 	os.WriteFile(source, []byte("package main"), 0o644)
 	f.client.call("session/prompt", map[string]any{"sessionId": sessionID, "prompt": []any{
 		map[string]any{"type": "text", "text": "Review"},
-		map[string]any{"type": "resource_link", "uri": "file://" + source, "name": "main.go"},
-		map[string]any{"type": "resource", "resource": map[string]any{"uri": "file://" + source, "text": "package main // unsaved"}},
+		map[string]any{"type": "resource_link", "uri": lspprotocol.URIFromPath(source), "name": "main.go"},
+		map[string]any{"type": "resource", "resource": map[string]any{"uri": lspprotocol.URIFromPath(source), "text": "package main // unsaved"}},
 		map[string]any{"type": "image", "mimeType": "image/png", "data": "iVBORw0KGgo="},
 	}}, nil)
 	f.client.waitFor("idle", func(u map[string]any) bool { return u["sessionUpdate"] == "state_update" && u["state"] == "idle" })

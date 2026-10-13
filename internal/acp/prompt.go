@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
 
 	"github.com/langazov/gocode-go/internal/command"
 	"github.com/langazov/gocode-go/internal/jsonrpc"
+	"github.com/langazov/gocode-go/internal/lspprotocol"
 	"github.com/langazov/gocode-go/internal/session"
 )
 
@@ -143,11 +143,10 @@ func promptInput(blocks []contentBlock, cwd string) (session.Prompt, []contentBl
 // displayPath turns a file:// URI into a path, relative to cwd when inside
 // it; any other URI is kept as is.
 func displayPath(uri, cwd string) string {
-	parsed, err := url.Parse(uri)
-	if err != nil || parsed.Scheme != "file" {
+	path, ok := lspprotocol.PathFromURI(uri)
+	if !ok {
 		return uri
 	}
-	path := parsed.Path
 	if rel, err := filepath.Rel(cwd, path); err == nil && !strings.HasPrefix(rel, "..") {
 		return rel
 	}
@@ -158,8 +157,8 @@ func nameFromURI(uri, fallback string) string {
 	if uri == "" {
 		return fallback
 	}
-	if parsed, err := url.Parse(uri); err == nil && parsed.Path != "" {
-		return filepath.Base(parsed.Path)
+	if path, ok := lspprotocol.PathFromURI(uri); ok {
+		return filepath.Base(path)
 	}
 	return fallback
 }

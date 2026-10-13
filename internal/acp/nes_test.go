@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/langazov/gocode-go/internal/llm"
+	"github.com/langazov/gocode-go/internal/lspprotocol"
 	"github.com/langazov/gocode-go/internal/session"
 )
 
@@ -135,11 +137,11 @@ func TestNESProtocol(t *testing.T) {
 			var started struct {
 				SessionID string `json:"sessionId"`
 			}
-			f.client.call("_gocode/nes/start", map[string]any{"workspaceUri": "file://" + f.dir}, &started)
+			f.client.call("_gocode/nes/start", map[string]any{"workspaceUri": lspprotocol.URIFromPath(f.dir)}, &started)
 			if started.SessionID == "" {
 				t.Fatal("no NES session")
 			}
-			uri := "file://" + f.dir + "/main.go"
+			uri := lspprotocol.URIFromPath(filepath.Join(f.dir, "main.go"))
 			notify := func(method string, p map[string]any) {
 				p["sessionId"] = started.SessionID
 				if err := f.client.conn.Notify("_gocode/"+method, p); err != nil {
@@ -324,8 +326,8 @@ func TestNESPrefersFIMAndFallsBackToRewrite(t *testing.T) {
 	var started struct {
 		SessionID string `json:"sessionId"`
 	}
-	f.client.call("_gocode/nes/start", map[string]any{"workspaceUri": "file://" + f.dir}, &started)
-	uri := "file://" + f.dir + "/a.go"
+	f.client.call("_gocode/nes/start", map[string]any{"workspaceUri": lspprotocol.URIFromPath(f.dir)}, &started)
+	uri := lspprotocol.URIFromPath(filepath.Join(f.dir, "a.go"))
 	text := "package a\n\nfunc f(x int) {\n\tfmt.Pri\n}\n"
 	f.client.conn.Notify("_gocode/document/didOpen", map[string]any{"sessionId": started.SessionID, "uri": uri, "languageId": "go", "version": 1, "text": text})
 	time.Sleep(50 * time.Millisecond)
