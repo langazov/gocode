@@ -87,6 +87,10 @@ func (s *Server) deleteMCP(w http.ResponseWriter, r *http.Request) {
 		writeConfigError(w, err)
 		return
 	}
+	// Drop the persisted usage measurement too: it is keyed by name, and a
+	// server re-added under the same name must measure fresh rather than
+	// show the deleted one's figures.
+	_ = mcp.UsageRemove(name)
 	s.MCP.Disconnect(name)
 	writeJSON(w, http.StatusOK, map[string]bool{"removed": true})
 }

@@ -24,6 +24,10 @@ func newMCPTestServer(t *testing.T) (*Server, string, string) {
 
 	globalRoot := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", globalRoot)
+	// The MCP service persists context-cost measurements to the data dir
+	// (mcp-usage.json) on every successful connect; keep those writes out
+	// of the developer's real store.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	globalConfig := filepath.Join(globalRoot, "gocode", "gocode.json")
 	if err := os.MkdirAll(filepath.Dir(globalConfig), 0o755); err != nil {
 		t.Fatal(err)
@@ -95,6 +99,49 @@ func TestListMCPServersIncludesDisabled(t *testing.T) {
 		}
 	}
 }
+
+// A server disabled in a previous run — one that boots disabled carrying a
+// measurement restored from the usage store — reports its figures through
+// GET /api/mcp/servers, which is what the /mcp dialog's cost column reads:
+// the row shows what enabling it would cost back instead of "—" forever.
+func TestListMCPServersReportsDisabledServerUsage(t *testing.T) {
+	mcpUpstream := startTestUpstream(t)
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
+
+	cfg := mcp.ServerConfig{Type: "remote", URL: mcpUpstream.URL, Enabled: &disabled}
+	// What a previous run persisted when the server was last connected.
+	if err := mcp.UsageSet("off", mcp.UsageEntry{Type: cfg.Type, URL: cfg.URL, ToolCount: 2, EstTokens: 250}); err != nil {
+		t.Fatal(err)
+	}
+
+	service := mcp.NewService(t.TempDir())
+	t.Cleanup(service.Close)
+	service.Load(context.Background(), map[string]mcp.ServerConfig{"off": cfg})
+
+	s := &Server{MCP: service, VCSWorkdir: t.TempDir()}
+	rec := httptest.NewRecorder()
+	s.Mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/mcp/servers", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d: %s", rec.Code, rec.Body.String())
+	}
+	var servers []mcp.ServerInfo
+	if err := json.NewDecoder(rec.Body).Decode(&servers); err != nil {
+		t.Fatal(err)
+	}
+	if len(servers) != 1 {
+		t.Fatalf("servers = %+v, want the one disabled entry", servers)
+	}
+	got := servers[0]
+	if got.ToolCount != 2 || got.EstTokens != 250 {
+		t.Errorf("figures = %d tools / %d tokens, want the stored 2 / 250", got.ToolCount, got.EstTokens)
+	}
+	if got.CostLive {
+		t.Error("CostLive = true for a disabled server, want false — the tools are not in the context")
+	}
+}
+
+var disabled = false
 
 // POST disable persists enabled:false, disconnects and unregisters the
 // tools; POST enable reverses both.

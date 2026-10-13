@@ -192,6 +192,10 @@ func TestVcsRoundTrip(t *testing.T) {
 // must flatten it — a decode mismatch here once left the /mcp dialog
 // permanently on its empty state while the endpoint itself worked.
 func TestMCPServersInfoRoundTrip(t *testing.T) {
+	// The service reads/writes the context-cost measurement store in the
+	// data dir on disabled/live connects; keep the test off the
+	// developer's real store.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	mcpService := mcp.NewService(t.TempDir())
 	defer mcpService.Close()
 	// A disabled entry needs no upstream: the shape under test is the

@@ -71,11 +71,12 @@ type connection struct {
 	tools        []*sdkmcp.Tool
 	instructions string
 	// toolCount/estTokens are the latest measurement of this server's tool
-	// set: set when a connect succeeds, deliberately kept when the server
-	// is later disabled — a server disabled mid-run can still show what
-	// re-enabling it would cost back. Zeros mean never measured this run
-	// (booted disabled), where the tool set is genuinely unknown without
-	// connecting.
+	// set: live from the current connection, kept when the server is later
+	// disabled mid-run, or restored from the persisted measurement in
+	// data/mcp-usage.json (usage.go) for one that booted disabled — either
+	// way the dialog can show what re-enabling it would cost back. Zeros
+	// mean never measured anywhere: no live connect ever succeeded and no
+	// measurement is stored, so the tool set is genuinely unknown.
 	toolCount int
 	estTokens int
 }
@@ -131,6 +132,17 @@ type Service struct {
 	// racing other tests' background goroutines.
 	reconnectMinBackoff time.Duration
 	reconnectMaxBackoff time.Duration
+
+	// usageProbed records the disabled servers this process has already
+	// started a measure-once probe for (see probeUsageOnce): a server with
+	// no stored measurement is probed at most once per run, however many
+	// times connect() sees it disabled (Load, LoadAsync, Connect).
+	usageProbed map[string]bool
+
+	// usageProbeEnabled gates the background measure-once probe; test-only
+	// (unexported setter), the same pattern as setReconnectBackoff, so a
+	// test can assert seeded-from-store figures without the probe racing.
+	usageProbeEnabled bool
 }
 
 // NewService creates the shared MCP client identity ("gocode", matching
@@ -141,6 +153,8 @@ func NewService(directory string) *Service {
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	return &Service{
 		conns:               map[string]*connection{},
+		usageProbed:         map[string]bool{},
+		usageProbeEnabled:   true,
 		directory:           directory,
 		client:              client,
 		watchCtx:            watchCtx,
@@ -246,6 +260,15 @@ func (s *Service) Disable(name string) {
 		return
 	}
 	s.unregisterConnTools(conn)
+	// Persist the measurement a live connection carries, so the figures
+	// survive a restart: the next boot finds the server disabled in config
+	// and its cost in the usage store. Redundant with the persist-on-
+	// connect in connect()'s success path when the figures are unchanged,
+	// but a conn that never had a session (booted disabled, figures
+	// restored from the store) should not rewrite the store either.
+	if conn.session != nil {
+		_ = UsageSet(name, conn.usageEntry())
+	}
 	if conn.session != nil {
 		conn.session.Close()
 	}
@@ -271,7 +294,18 @@ func (s *Service) Enable(ctx context.Context, name string, cfg ServerConfig) Sta
 func (s *Service) connect(ctx context.Context, name string, cfg ServerConfig, mode oauthMode, onAuthURL func(string)) Status {
 	if !cfg.IsEnabled() {
 		status := Status{Status: "disabled"}
-		s.setConn(name, &connection{name: name, config: cfg, status: status})
+		conn := &connection{name: name, config: cfg, status: status}
+		seeded := seedUsage(name, cfg, conn)
+		s.setConn(name, conn)
+		// No usable measurement stored (never connected anywhere, or the
+		// endpoint changed since it was taken): measure once in the
+		// background rather than showing "—" until the first manual
+		// enable. The probe never touches a registry — the tool
+		// descriptions are counted, not advertised — and leaves the
+		// server disabled, so nothing enters any model's context.
+		if !seeded && s.usageProbeOn() && !s.markUsageProbed(name) {
+			go s.probeUsageOnce(name, cfg, conn)
+		}
 		return status
 	}
 
@@ -303,7 +337,9 @@ func (s *Service) connect(ctx context.Context, name string, cfg ServerConfig, mo
 
 	if err != nil {
 		status := classifyError(err)
-		s.setConn(name, &connection{name: name, config: cfg, status: status})
+		conn := &connection{name: name, config: cfg, status: status}
+		seedUsage(name, cfg, conn)
+		s.setConn(name, conn)
 		return status
 	}
 
@@ -337,8 +373,143 @@ func (s *Service) connect(ctx context.Context, name string, cfg ServerConfig, mo
 	}
 	s.setConn(name, conn)
 	s.registerConnTools(conn)
+	// Persist the measurement on every successful (re)connect, not only on
+	// a later Disable: the store stays fresh as a server's tool set
+	// changes, and a boot that finds the server disabled in config always
+	// has a figure to seed from — even when the disable came from a config
+	// edit outside this process rather than the dialog.
+	_ = UsageSet(name, conn.usageEntry())
 	go s.watchAndReconnect(name, cfg, session)
 	return status
+}
+
+// usageEntry snapshots a connection's measurement with the endpoint
+// fingerprint UsageGet validates against.
+func (conn *connection) usageEntry() UsageEntry {
+	return UsageEntry{
+		Type:      conn.config.Type,
+		URL:       conn.config.URL,
+		Command:   conn.config.Command,
+		ToolCount: conn.toolCount,
+		EstTokens: conn.estTokens,
+	}
+}
+
+// seedUsage fills a not-yet-published connection's context-cost figures
+// from the persisted measurement when they are otherwise unknown, so every
+// non-connected row — disabled at boot, failed, needs-auth — still shows
+// what a successful enable would cost back instead of "—". Reports whether
+// a measurement was found; a stored entry with zero tools counts as found
+// (the server genuinely exposes none), which is what keeps such a server
+// from being re-probed on every boot.
+func seedUsage(name string, cfg ServerConfig, conn *connection) bool {
+	if conn.toolCount > 0 || conn.estTokens > 0 {
+		return true
+	}
+	entry, ok := UsageGet(name, cfg)
+	if !ok {
+		return false
+	}
+	conn.toolCount = entry.ToolCount
+	conn.estTokens = entry.EstTokens
+	return true
+}
+
+// probeUsageOnce measures a disabled server's tool set once, in the
+// background: connect the endpoint with no registry involved (the tool
+// descriptions are counted, never advertised — nothing enters any model's
+// context), persist the figures for the next boot, then fold them into the
+// disabled connection so the dialog's row picks them up on its next
+// refresh. The probe session is closed before this returns — the server
+// ends exactly as disabled as it started.
+func (s *Service) probeUsageOnce(name string, cfg ServerConfig, conn *connection) {
+	entry, ok := s.measure(s.watchCtx, name, cfg)
+	if !ok {
+		return
+	}
+	_ = UsageSet(name, entry)
+	s.mu.Lock()
+	// Only a conn that is still the one this probe was spawned for, and
+	// still not connected, takes the figures: an Enable in the meantime
+	// replaced it with a live measurement of its own.
+	if cur, exists := s.conns[name]; exists && cur == conn && !cur.status.Connected() {
+		cur.toolCount = entry.ToolCount
+		cur.estTokens = entry.EstTokens
+	}
+	s.mu.Unlock()
+}
+
+// measure connects cfg's endpoint once, counts its tools and estimates the
+// context tokens their definitions consume — the same estimate a live
+// connect records — and closes the session again. It registers nothing
+// anywhere: no registry is consulted, so measuring a disabled server never
+// adds its tool descriptions to the context. ok is false when the endpoint
+// could not be connected or its tools not listed (down, or needs auth);
+// nothing is persisted in that case, and the next boot tries again.
+func (s *Service) measure(ctx context.Context, name string, cfg ServerConfig) (UsageEntry, bool) {
+	timeout := time.Duration(cfg.TimeoutOr(int(defaultTimeout/time.Millisecond))) * time.Millisecond
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var session *sdkmcp.ClientSession
+	var err error
+	switch cfg.Type {
+	case "local":
+		session, err = s.connectLocal(probeCtx, name, cfg)
+	case "remote":
+		// Passive: a server that needs interactive auth fails fast here
+		// (errAuthRequired) instead of opening a browser — measuring a
+		// disabled server must never demand user interaction.
+		session, err = s.connectRemote(probeCtx, name, cfg, modePassive, nil)
+	default:
+		return UsageEntry{}, false
+	}
+	if err != nil {
+		return UsageEntry{}, false
+	}
+	defer session.Close()
+
+	var tools []*sdkmcp.Tool
+	if res := session.InitializeResult(); res != nil && res.Capabilities != nil && res.Capabilities.Tools != nil {
+		for t, terr := range session.Tools(probeCtx, nil) {
+			if terr != nil {
+				return UsageEntry{}, false
+			}
+			tools = append(tools, t)
+		}
+	}
+	return UsageEntry{
+		Type:      cfg.Type,
+		URL:       cfg.URL,
+		Command:   cfg.Command,
+		ToolCount: len(tools),
+		EstTokens: toolTokens(name, tools),
+	}, true
+}
+
+// markUsageProbed records that name's measure-once probe has been started
+// in this process, and reports whether it had already been started.
+func (s *Service) markUsageProbed(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	already := s.usageProbed[name]
+	s.usageProbed[name] = true
+	return already
+}
+
+// usageProbeOn reads the probe gate under the lock.
+func (s *Service) usageProbeOn() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.usageProbeEnabled
+}
+
+// setUsageProbeEnabled turns the background measure-once probe off (or back
+// on); test-only, for the same reason as setReconnectBackoff.
+func (s *Service) setUsageProbeEnabled(enabled bool) {
+	s.mu.Lock()
+	s.usageProbeEnabled = enabled
+	s.mu.Unlock()
 }
 
 // watchAndReconnect blocks until session's underlying connection closes —

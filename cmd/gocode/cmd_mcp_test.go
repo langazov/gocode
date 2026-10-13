@@ -52,6 +52,9 @@ func TestMCPCLIDisableEnable(t *testing.T) {
 }
 
 func TestMCPCLIRemove(t *testing.T) {
+	// Remove drops the stored usage measurement (mcp-usage.json in the
+	// data dir); keep the test off the developer's real store.
+	t.Setenv("XDG_DATA_HOME", t.TempDir())
 	configPath, _ := mcpCLIEnv(t)
 
 	runMCPCommand(t, runMCPRemove, "github")

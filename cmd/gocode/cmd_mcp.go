@@ -91,6 +91,9 @@ func runMCPRemove(a *clix.Args) error {
 	if _, err := config.RemoveMCPServer(cwd, name); err != nil {
 		return err
 	}
+	// Same as the HTTP delete route: a stored usage measurement is keyed by
+	// name, so it goes with the config entry.
+	_ = mcp.UsageRemove(name)
 	fmt.Printf("MCP server %q removed (OAuth credentials kept; `gocode mcp logout %s` drops them)\n", name, name)
 	return nil
 }

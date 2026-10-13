@@ -191,11 +191,14 @@ func TestServiceServersIncludesDisabledAndFailed(t *testing.T) {
 
 // A connected server's ServerInfo quantifies its context cost: tool count
 // and a positive chars/4 token estimate over names, descriptions and
-// schemas. A disabled server reports zeros — the cost column's whole point.
+// schemas. A disabled server with no measurement anywhere reports zeros —
+// the cost column's whole point — which is why the probe is off here; the
+// probe's own behavior is covered by the usage tests below.
 func TestServiceServersReportTokenEstimate(t *testing.T) {
 	httpServer := newTestMCPServer(t)
 	svc := NewService(t.TempDir())
 	defer svc.Close()
+	svc.setUsageProbeEnabled(false)
 
 	svc.Load(context.Background(), map[string]ServerConfig{
 		"live": {Type: "remote", URL: httpServer.URL},
@@ -217,7 +220,7 @@ func TestServiceServersReportTokenEstimate(t *testing.T) {
 		t.Errorf("live CostLive = %v, want true", live.CostLive)
 	}
 	if off := byName["off"]; off.ToolCount != 0 || off.EstTokens != 0 || off.CostLive {
-		t.Errorf("off = %d tools / %d tokens / live=%v, want zeros and not live (booted disabled is never measured)", off.ToolCount, off.EstTokens, off.CostLive)
+		t.Errorf("off = %d tools / %d tokens / live=%v, want zeros and not live (never measured, probe off)", off.ToolCount, off.EstTokens, off.CostLive)
 	}
 }
 

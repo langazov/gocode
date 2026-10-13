@@ -98,10 +98,11 @@ func mcpItems(servers []client.MCPServerInfo) []overlayItem {
 		}
 		// The right-aligned footer is the server's context cost, the way
 		// the model dialog right-aligns pricing. Connected: what it costs
-		// right now. Disabled mid-run: the last-known cost, prefixed "+"
-		// — what enabling it would cost back. Never measured (booted
-		// disabled, needs auth, failed): "—", because the number would be
-		// a guess, not a measurement.
+		// right now. Any other state with a measurement (restored from the
+		// persisted usage store, or kept from a live connection earlier in
+		// the run): the last-known cost, prefixed "+" — what enabling it
+		// would cost back. No measurement anywhere: "—" until the boot
+		// probe lands (or forever, for a server that cannot be reached).
 		footer := "—"
 		switch {
 		case server.CostLive:
