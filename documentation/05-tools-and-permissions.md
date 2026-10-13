@@ -88,7 +88,7 @@ mindmap
 | `bash` | run a command | permission-gated, see below |
 | `webfetch` | fetch a URL | |
 | `websearch` | search the web | |
-| `task` | spawn a sub-agent | its own session; see [runner](03-session-runner.md) |
+| `task` | spawn a sub-agent | its own session; optional `model` arg (`provider/model`) overrides the child's model; see [runner](03-session-runner.md) |
 | `todowrite` | maintain a task list | session-scoped |
 | `skill` | load a skill's instructions | |
 | `question` | ask you a question | blocks the turn on your answer |

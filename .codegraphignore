@@ -1,0 +1,8 @@
+# codegraph capture ignores (gitignore syntax, honored in every mode).
+# This file complements .gitignore: git-tracked files that capture must
+# never read can be excluded here without touching git.
+
+# opencode: a 14 MB checked-in Mach-O binary; exceeds the 8 MB per-file
+# capture budget and holds nothing to analyze.
+/opencode
+/gocode

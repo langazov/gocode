@@ -15,6 +15,13 @@ type SpawnRequest struct {
 	// ResumeSessionID continues an earlier subagent session (task's task_id)
 	// instead of creating a fresh one.
 	ResumeSessionID string
+	// Model optionally pins the child's model for this run, as a raw
+	// "provider/model" string (task's model argument). Empty means the
+	// spawner's own precedence applies: the subagent's configured model,
+	// then the parent session's current model. Raw string, not a typed ref,
+	// because the tool layer cannot import the session package that owns
+	// ModelRef; the spawner parses and validates.
+	Model string
 }
 
 // SpawnResult is the single outcome of a subagent run.

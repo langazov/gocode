@@ -102,6 +102,74 @@ func (s *Spawner) Agent(id string) (bool, bool) {
 	return true, info.Mode == "subagent" || info.Mode == "all"
 }
 
+// parseRequestedModel parses the task tool's model argument, "provider/model",
+// into a reference. Empty means no override; malformed is an error the caller
+// surfaces to the model so it can retry with a valid ID.
+func parseRequestedModel(raw string) (*ModelRef, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	providerID, modelID, ok := strings.Cut(raw, "/")
+	if !ok || providerID == "" || modelID == "" {
+		return nil, fmt.Errorf(
+			"Invalid model %q: expected the format provider/model (e.g. anthropic/claude-sonnet-5)", raw)
+	}
+	return &ModelRef{ProviderID: providerID, ID: modelID}, nil
+}
+
+// resolveChildModel computes the model pinned on a freshly created subagent
+// session, or nil to leave the child's model column empty and let the
+// runner's own precedence (resolveAgent) resolve it.
+//
+// The order mirrors upstream task.ts (`next.model ?? parent's current model`)
+// plus the per-call override:
+//
+//  1. req.Model — an explicit model argument on the task call wins over
+//     everything: a subagent can start on any model, passed as parameter.
+//     It carries no variant: naming a model means that model with its
+//     default options.
+//  2. The subagent's own configured model (info.Model): leave the column
+//     empty — resolveAgent applies the agent's model on every turn, and a
+//     pinned session model would override it (upstream issue #35126:
+//     inheriting must not beat the subagent's own config).
+//  3. The parent session's current model: its pinned model column first —
+//     which is what a mid-session model switch writes — then the parent
+//     agent's configured model, which is the effective model of a parent
+//     that never pinned one. This is the inheritance the port was missing:
+//     without it a child resolved to the boot default and ignored the
+//     parent's switch entirely. The variant travels with an inherited
+//     model (upstream issue #24757: inheriting only the IDs drops the
+//     reasoning variant a switched parent runs).
+//  4. Neither resolves → leave the column empty; the child falls through
+//     its own agent (step 2 already found none) to the runner default,
+//     which is the model the parent itself runs.
+//
+// parent.Agent may be empty (a session created without one); Select resolves
+// that to the default agent exactly like the runner does for a turn, so the
+// parent-agent lookup here matches what the parent actually runs.
+func (s *Spawner) resolveChildModel(req tool.SpawnRequest, parent Info, info agent.Info) (*ModelRef, error) {
+	if req.Model != "" {
+		return parseRequestedModel(req.Model)
+	}
+	if info.Model != nil {
+		return nil, nil
+	}
+	if parent.Model != nil {
+		ref := *parent.Model
+		return &ref, nil
+	}
+	if s.Agents != nil {
+		if selection := s.Agents.Select(parent.Agent); selection.Info != nil && selection.Info.Model != nil {
+			return &ModelRef{
+				ProviderID: selection.Info.Model.ProviderID,
+				ID:         selection.Info.Model.ID,
+				Variant:    selection.Info.Model.Variant,
+			}, nil
+		}
+	}
+	return nil, nil
+}
+
 // Spawn starts a subagent session and returns a channel carrying its single
 // result. The returned channel is closed after the result is delivered.
 func (s *Spawner) Spawn(ctx context.Context, req tool.SpawnRequest) (string, <-chan tool.SpawnResult, error) {
@@ -132,6 +200,22 @@ func (s *Spawner) Spawn(ctx context.Context, req tool.SpawnRequest) (string, <-c
 		if existing == nil {
 			return "", nil, notFound(childID)
 		}
+		// An explicit model argument follows a resumed child across turns;
+		// a resume without one keeps whatever model the child already runs.
+		// Inheritance is a fresh-spawn concern: re-resolving it here would
+		// stomp a child's own pinned model (or its agent's) with the
+		// parent's later switch every time the parent resumed it.
+		if req.Model != "" {
+			pinned, err := parseRequestedModel(req.Model)
+			if err != nil {
+				return "", nil, err
+			}
+			if pinned != nil {
+				if err := s.Service.SetModel(ctx, childID, *pinned); err != nil {
+					return "", nil, err
+				}
+			}
+		}
 	} else {
 		parent, err := s.Service.Get(ctx, req.ParentSessionID)
 		if err != nil {
@@ -144,12 +228,17 @@ func (s *Spawner) Spawn(ctx context.Context, req tool.SpawnRequest) (string, <-c
 		if err != nil {
 			return "", nil, err
 		}
+		model, err := s.resolveChildModel(req, *parent, info)
+		if err != nil {
+			return "", nil, err
+		}
 		child, err := s.Service.Create(ctx, CreateInput{
 			Directory:  parent.Directory,
 			Title:      req.Description + " (@" + info.ID + " subagent)",
 			ParentID:   req.ParentSessionID,
 			Agent:      info.ID,
 			Permission: DeriveSubagentPermissions(parentRules, info),
+			Model:      model,
 		})
 		if err != nil {
 			return "", nil, err

@@ -68,8 +68,12 @@ func TestQuestionToolReturnsAnswers(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `"Which database?"="Postgres"`) {
-		t.Fatalf("output missing the answer: %q", out)
+	// The result is structured one-question-per-block so session history
+	// reads as Q/A rows rather than one long line, and so the TUI can parse
+	// the pairs back out (parseQuestionAnswers).
+	want := "The user answered your questions:\n\n1. Which database?\n   Answer: Postgres\n\nContinue with the user's answers in mind."
+	if out != want {
+		t.Fatalf("output = %q\nwant %q", out, want)
 	}
 
 	input := asker.lastInput(t)
@@ -94,7 +98,7 @@ func TestQuestionToolMarksUnanswered(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(out, `="Unanswered"`) {
+	if !strings.Contains(out, `Answer: Unanswered`) {
 		t.Fatalf("output should mark an empty answer as unanswered: %q", out)
 	}
 }
