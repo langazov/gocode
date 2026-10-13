@@ -74,7 +74,10 @@ type Server struct {
 
 // Mux builds the HTTP route tree. The TypeScript server exposes GET /api/health
 // returning { healthy: true }; session routes follow the /api/session paths.
-func (s *Server) Mux() *http.ServeMux {
+// The returned handler caps every request body (see maxRequestBodyBytes); it
+// is the mux itself, so route-pattern features keep working, only reached
+// through the limiting wrapper.
+func (s *Server) Mux() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]bool{"healthy": true})
@@ -109,6 +112,10 @@ func (s *Server) Mux() *http.ServeMux {
 	s.registerGitRoutes(mux)
 	if s.MCP != nil {
 		mux.HandleFunc("GET /api/mcp", s.listMCP)
+		mux.HandleFunc("GET /api/mcp/servers", s.listMCPServers)
+		mux.HandleFunc("POST /api/mcp/{name}/enable", s.enableMCP)
+		mux.HandleFunc("POST /api/mcp/{name}/disable", s.disableMCP)
+		mux.HandleFunc("DELETE /api/mcp/{name}", s.deleteMCP)
 	}
 	if s.Plugins != nil {
 		mux.HandleFunc("GET /api/plugin", s.listPlugins)
@@ -164,12 +171,39 @@ func (s *Server) Mux() *http.ServeMux {
 		mux.HandleFunc("POST /api/session/{sessionID}/fork", s.forkSession)
 		mux.HandleFunc("POST /api/session/{sessionID}/compact", s.compactSession)
 	}
-	return mux
+	return limitRequestBodySize(mux)
+}
+
+// maxRequestBodyBytes bounds what any single request to the embedded API may
+// carry. The routes decode JSON straight from r.Body, so without a bound a
+// client could stream an unbounded payload into memory and from there into
+// the database — a pasted novel as a prompt, an attachment of arbitrary
+// size. 64 MiB is generous: it comfortably covers a legitimate multi-message
+// conversation with several base64 image attachments (which inflate by ~4/3),
+// while stopping a runaway client from ballooning the process.
+const maxRequestBodyBytes = 64 << 20
+
+// limitRequestBodySize wraps the mux so every request body is capped at
+// maxRequestBodyBytes. The error is the standard one for an over-large body,
+// which Go's http machinery reports as 413 on the client side.
+func limitRequestBodySize(handler http.Handler) *limitedHandler {
+	return &limitedHandler{handler: handler}
+}
+
+type limitedHandler struct {
+	handler http.Handler
+}
+
+func (l *limitedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if r.Body != nil {
+		r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	}
+	l.handler.ServeHTTP(w, r)
 }
 
 // Mux returns the health-only route tree (no session service), kept for
 // callers that only need liveness.
-func Mux() *http.ServeMux {
+func Mux() http.Handler {
 	return (&Server{}).Mux()
 }
 

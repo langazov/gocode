@@ -25,6 +25,20 @@ func TestMain(m *testing.M) {
 		runTestStdioServer()
 		os.Exit(0)
 	}
+	// Isolate the data dir for the whole package: the usage store
+	// (usage.go) is read on every disabled/failed connect and written on
+	// every successful one, so without this the package's tests would
+	// read and write the developer's real mcp-usage.json. Tests that need
+	// their own store (usage round-trips) override the env per-test with
+	// t.Setenv, which restores this value on exit.
+	if os.Getenv("XDG_DATA_HOME") == "" {
+		dir, err := os.MkdirTemp("", "gocode-mcp-test-data-")
+		if err != nil {
+			os.Exit(1)
+		}
+		defer os.RemoveAll(dir)
+		os.Setenv("XDG_DATA_HOME", dir)
+	}
 	os.Exit(m.Run())
 }
 

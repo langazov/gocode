@@ -203,6 +203,36 @@ Servers are connected at boot and **reconnected with backoff** on failure. A
 dead MCP server degrades the tool set; it does not stop gocode from starting.
 `GET /api/mcp` and `gocode mcp` report status.
 
+### Managing servers at runtime
+
+The `/mcp` dialog in the TUI (command palette → "MCP servers", or `/mcp`)
+lists every configured server — enabled or not — and can enable, disable and
+delete them. Every action applies **live**: enabling connects immediately,
+disabling disconnects and unregisters the server's tools from the model's
+tool set, so no restart is needed. The same operations exist as
+`gocode mcp enable|disable|remove <name>`, which edit the config only (a
+running process picks them up at its next start).
+
+Edits land in the **winning config file** for that server — the last file in
+the merge order (global, then `GOCODE_CONFIG`, then project files) that
+defines it — so a disable cannot be silently overridden by a project config
+on the next load. A config file carrying comments or trailing commas is
+refused rather than rewritten. Deleting a server keeps its stored OAuth
+credentials; `gocode mcp logout <name>` drops those.
+
+Every row also shows the server's **context cost** — how many tools it
+contributes and the estimated tokens their names, descriptions and schemas
+consume (chars/4, the same heuristic compaction budgets against). Connected
+servers show the live figure; disabled ones show the last measurement,
+prefixed "+", so the dialog always answers "what would enabling this cost
+back?". Measurements persist in `data/mcp-usage.json` keyed by server name
+and endpoint, and a disabled server with no stored measurement is probed
+once in the background at boot: gocode connects it far enough to count its
+tools, persists the figure and closes the connection again — the probe
+never registers anything, so the tool descriptions are measured, not added
+to any model's context, and the server ends exactly as disabled as it
+started.
+
 ## Plugins
 
 MCP adds tools. Plugins change *behavior*: what the model is told, what a tool

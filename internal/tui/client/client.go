@@ -706,6 +706,92 @@ type MCPServer struct {
 	Error  string `json:"error,omitempty"`
 }
 
+// MCPServerInfo is one entry from GET /api/mcp/servers — the management
+// dialog's row model. It carries everything MCPServer has plus the config
+// view (type, endpoint, enable state), and includes disabled servers, which
+// the status-only list also reports but with no way to tell a disabled
+// server from a failed one by status string alone.
+type MCPServerInfo struct {
+	Name    string   `json:"name"`
+	Type    string   `json:"type"`
+	URL     string   `json:"url,omitempty"`
+	Command []string `json:"command,omitempty"`
+	Enabled bool     `json:"enabled"`
+	// ToolCount/EstTokens quantify what the server costs in context: how
+	// many tools it contributes and the estimated tokens those tool
+	// definitions consume. CostLive is true when the figures are in the
+	// context right now (connected); false means last-known — kept for a
+	// server disabled mid-run, zeros only when never measured this run.
+	ToolCount int  `json:"toolCount"`
+	EstTokens int  `json:"estTokens"`
+	CostLive  bool `json:"costLive"`
+	// Status/Error are flattened out of the wire's nested
+	// `"status": {"status": ..., "error": ...}` object (mcp.ServerInfo's
+	// Status field). Decoding the nested object into these string fields
+	// fails the whole request, which left the management dialog permanently
+	// on its empty state — so the conversion lives here, in one place.
+	Status string
+	Error  string
+}
+
+// MCPServersInfo fetches the management view of every configured server.
+func (c *Client) MCPServersInfo(ctx context.Context) ([]MCPServerInfo, error) {
+	var raw []struct {
+		Name      string   `json:"name"`
+		Type      string   `json:"type"`
+		URL       string   `json:"url"`
+		Command   []string `json:"command"`
+		Enabled   bool     `json:"enabled"`
+		ToolCount int      `json:"toolCount"`
+		EstTokens int      `json:"estTokens"`
+		CostLive  bool     `json:"costLive"`
+		Status    struct {
+			Status string `json:"status"`
+			Error  string `json:"error"`
+		} `json:"status"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/api/mcp/servers", nil, &raw); err != nil {
+		return nil, err
+	}
+	out := make([]MCPServerInfo, 0, len(raw))
+	for _, server := range raw {
+		out = append(out, MCPServerInfo{
+			Name:      server.Name,
+			Type:      server.Type,
+			URL:       server.URL,
+			Command:   server.Command,
+			Enabled:   server.Enabled,
+			ToolCount: server.ToolCount,
+			EstTokens: server.EstTokens,
+			CostLive:  server.CostLive,
+			Status:    server.Status.Status,
+			Error:     server.Status.Error,
+		})
+	}
+	return out, nil
+}
+
+// EnableMCP persists enabled=true for the named server and connects it
+// (POST /api/mcp/{name}/enable). The returned status is the connect result.
+func (c *Client) EnableMCP(ctx context.Context, name string) error {
+	var status struct {
+		Status string `json:"status"`
+	}
+	return c.do(ctx, http.MethodPost, "/api/mcp/"+url.PathEscape(name)+"/enable", nil, &status)
+}
+
+// DisableMCP persists enabled=false, disconnects the server and unregisters
+// its tools (POST /api/mcp/{name}/disable).
+func (c *Client) DisableMCP(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodPost, "/api/mcp/"+url.PathEscape(name)+"/disable", nil, nil)
+}
+
+// DeleteMCP removes the server from its config file and disconnects it
+// (DELETE /api/mcp/{name}). Stored OAuth credentials are kept.
+func (c *Client) DeleteMCP(ctx context.Context, name string) error {
+	return c.do(ctx, http.MethodDelete, "/api/mcp/"+url.PathEscape(name), nil, nil)
+}
+
 // MCPServers fetches live MCP server status, converting the server's
 // name-keyed map into a name-sorted slice (state.mcp()'s shape).
 func (c *Client) MCPServers(ctx context.Context) ([]MCPServer, error) {

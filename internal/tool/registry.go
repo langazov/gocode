@@ -57,6 +57,16 @@ func (r *Registry) Register(tool Tool) {
 	r.tools[tool.Name()] = tool
 }
 
+// Unregister removes a tool by name. It is the runtime half of an MCP
+// server's lifecycle: Disable/Disconnect unregister every tool the server
+// registered, so a server turned off mid-process stops advertising its tools
+// to the model instead of leaving callable ghosts in the registry.
+func (r *Registry) Unregister(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.tools, name)
+}
+
 func (r *Registry) Get(name string) (Tool, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

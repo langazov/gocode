@@ -10,6 +10,52 @@ import (
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
+// maxToolOutputBytes bounds what one MCP tool call may return into the
+// session. MCP servers are foreign code with no output discipline of their
+// own: a `describe everything` dump or a `list all` can be megabytes — a
+// result that would be persisted whole into session_message and event rows,
+// replayed to the model on every later turn, and re-rendered by the
+// interface on every repaint, bloating the database and stalling the
+// renderer for the rest of the session.
+//
+// Unlike the shell, which truncates its own bounded output and says so, an
+// oversize MCP result is rejected as an error rather than clipped. A
+// truncated half-result invites the model to answer from data it cannot know
+// is cut off mid-structure — truncated JSON parses as nothing, truncated YAML
+// as garbage — while an error names the problem and the fix, which the model
+// can act on: narrow the call. The figure matches the shell tool's own
+// maxOutputBytes: generous for real tool output, small enough that a runaway
+// server cannot dominate a session.
+const maxToolOutputBytes = 512 * 1024
+
+// toolOutputTooLargeError is what an oversize result settles with. Its text
+// is what the model sees as the tool result and what the interface shows on
+// the failed row, so it states the size, the limit, and the fix.
+type toolOutputTooLargeError struct {
+	tool  string
+	bytes int
+}
+
+func (e *toolOutputTooLargeError) Error() string {
+	return fmt.Sprintf(
+		"mcp: %s result too large: %s exceeds the %s limit. "+
+			"Narrow the call — filter, limit, or paginate the result — and retry.",
+		e.tool, formatBytes(e.bytes), formatBytes(maxToolOutputBytes))
+}
+
+// formatBytes renders a byte count in the largest sensible unit, the way the
+// oversize error quotes sizes to the model.
+func formatBytes(n int) string {
+	switch {
+	case n >= 1024*1024:
+		return fmt.Sprintf("%.1f MiB", float64(n)/(1024*1024))
+	case n >= 1024:
+		return fmt.Sprintf("%.1f KiB", float64(n)/1024)
+	default:
+		return fmt.Sprintf("%d B", n)
+	}
+}
+
 // mcpTool adapts one MCP tool from a connected server into internal/tool.Tool
 // (wraps the ai-sdk dynamicTool built by convertTool() in catalog.ts).
 type mcpTool struct {
@@ -54,6 +100,12 @@ func (t *mcpTool) Execute(ctx context.Context, input map[string]any) (string, er
 	}
 
 	text := flattenContent(result.Content)
+	if len(text) > maxToolOutputBytes {
+		// IsError results carry a message too, and a multi-megabyte error
+		// dump is just as unbounded as a success payload. The check runs
+		// before the IsError branch so both paths get the same treatment.
+		return "", &toolOutputTooLargeError{tool: t.Name(), bytes: len(text)}
+	}
 	if result.IsError {
 		if text == "" {
 			text = "MCP tool returned an error"
@@ -63,6 +115,9 @@ func (t *mcpTool) Execute(ctx context.Context, input map[string]any) (string, er
 	if text == "" && result.StructuredContent != nil {
 		encoded, err := json.Marshal(result.StructuredContent)
 		if err == nil {
+			if len(encoded) > maxToolOutputBytes {
+				return "", &toolOutputTooLargeError{tool: t.Name(), bytes: len(encoded)}
+			}
 			text = string(encoded)
 		}
 	}

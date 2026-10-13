@@ -34,6 +34,15 @@ func mcpCommand() *clix.Command {
 				},
 				Run: runMCPAdd},
 			{Name: "list", Aliases: []string{"ls"}, Describe: "list MCP servers and their status", Run: runMCPList},
+			{Name: "enable", Describe: "enable an MCP server",
+				Positionals: []clix.Positional{{Name: "name", Required: true, Describe: "name of the MCP server"}},
+				Run:         runMCPEnable},
+			{Name: "disable", Describe: "disable an MCP server",
+				Positionals: []clix.Positional{{Name: "name", Required: true, Describe: "name of the MCP server"}},
+				Run:         runMCPDisable},
+			{Name: "remove", Aliases: []string{"rm"}, Describe: "remove an MCP server from its config",
+				Positionals: []clix.Positional{{Name: "name", Required: true, Describe: "name of the MCP server"}},
+				Run:         runMCPRemove},
 			{Name: "auth", Describe: "authenticate with an OAuth-enabled MCP server", Positionals: namePositional,
 				Sub: []*clix.Command{
 					{Name: "list", Aliases: []string{"ls"}, Describe: "list OAuth-capable MCP servers and their auth status",
@@ -47,6 +56,46 @@ func mcpCommand() *clix.Command {
 				Run:         runMCPDebug},
 		},
 	}
+}
+
+// runMCPEnable/runMCPDisable/runMCPRemove edit the winning config file via
+// the same config functions the HTTP API and the TUI dialog use, so a
+// terminal toggle and a dialog toggle write the same file the same way. The
+// running process picks the change up at its next boot; `gocode serve`/TUI
+// clients get the live variant through the HTTP endpoints.
+func runMCPEnable(a *clix.Args) error {
+	return runMCPSetEnabled(a, true)
+}
+
+func runMCPDisable(a *clix.Args) error {
+	return runMCPSetEnabled(a, false)
+}
+
+func runMCPSetEnabled(a *clix.Args, enabled bool) error {
+	name := a.PositionalOr("name", "")
+	cwd, _ := os.Getwd()
+	if _, err := config.SetMCPEnabled(cwd, name, enabled); err != nil {
+		return err
+	}
+	word := "disabled"
+	if enabled {
+		word = "enabled"
+	}
+	fmt.Printf("MCP server %q %s (applies at next start)\n", name, word)
+	return nil
+}
+
+func runMCPRemove(a *clix.Args) error {
+	name := a.PositionalOr("name", "")
+	cwd, _ := os.Getwd()
+	if _, err := config.RemoveMCPServer(cwd, name); err != nil {
+		return err
+	}
+	// Same as the HTTP delete route: a stored usage measurement is keyed by
+	// name, so it goes with the config entry.
+	_ = mcp.UsageRemove(name)
+	fmt.Printf("MCP server %q removed (OAuth credentials kept; `gocode mcp logout %s` drops them)\n", name, name)
+	return nil
 }
 
 func loadMCPServers() (map[string]mcp.ServerConfig, error) {
@@ -121,6 +170,10 @@ func runMCPList(a *clix.Args) error {
 	for _, name := range names {
 		cfg := servers[name]
 		status := statuses[name]
+		enabled := ""
+		if !cfg.IsEnabled() {
+			enabled = " (disabled)"
+		}
 		hint := ""
 		if status.Error != "" {
 			hint = "\n    " + status.Error
@@ -132,7 +185,7 @@ func runMCPList(a *clix.Args) error {
 		if cfg.Type == "local" {
 			typeHint = strings.Join(cfg.Command, " ")
 		}
-		fmt.Printf("%s %s %s%s\n    %s\n", statusIcon(status.Status), name, statusText(status.Status), hint, typeHint)
+		fmt.Printf("%s %s %s%s%s\n    %s\n", statusIcon(status.Status), name, statusText(status.Status), enabled, hint, typeHint)
 	}
 	fmt.Printf("%d server(s)\n", len(servers))
 	return nil

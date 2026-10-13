@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -69,6 +70,39 @@ type connection struct {
 	session      *sdkmcp.ClientSession
 	tools        []*sdkmcp.Tool
 	instructions string
+	// toolCount/estTokens are the latest measurement of this server's tool
+	// set: live from the current connection, kept when the server is later
+	// disabled mid-run, or restored from the persisted measurement in
+	// data/mcp-usage.json (usage.go) for one that booted disabled — either
+	// way the dialog can show what re-enabling it would cost back. Zeros
+	// mean never measured anywhere: no live connect ever succeeded and no
+	// measurement is stored, so the tool set is genuinely unknown.
+	toolCount int
+	estTokens int
+}
+
+// ServerInfo is one configured server for API surfaces that need more than
+// the live status: the management endpoints' clients (the TUI's MCP dialog,
+// the desktop app) render type, endpoint and enable state alongside the
+// status dot. Disabled servers are included — a server turned off is still
+// configured, and the dialog is where it gets turned back on.
+type ServerInfo struct {
+	Name    string   `json:"name"`
+	Type    string   `json:"type"`
+	URL     string   `json:"url,omitempty"`
+	Command []string `json:"command,omitempty"`
+	Enabled bool     `json:"enabled"`
+	Status  Status   `json:"status"`
+	// ToolCount is how many tools the server contributes when connected;
+	// EstTokens the estimated context those tool definitions consume.
+	// CostLive is true when those figures are in the context right now
+	// (connected); false means last-known — a server disabled mid-run keeps
+	// its measurement so the dialog can show what re-enabling costs, while
+	// one that never connected this run reports zeros.
+	ToolCount int          `json:"toolCount"`
+	EstTokens int          `json:"estTokens"`
+	CostLive  bool         `json:"costLive"`
+	Config    ServerConfig `json:"-"`
 }
 
 // Service is this port's MCP.Service: connects configured servers, tracks
@@ -98,6 +132,17 @@ type Service struct {
 	// racing other tests' background goroutines.
 	reconnectMinBackoff time.Duration
 	reconnectMaxBackoff time.Duration
+
+	// usageProbed records the disabled servers this process has already
+	// started a measure-once probe for (see probeUsageOnce): a server with
+	// no stored measurement is probed at most once per run, however many
+	// times connect() sees it disabled (Load, LoadAsync, Connect).
+	usageProbed map[string]bool
+
+	// usageProbeEnabled gates the background measure-once probe; test-only
+	// (unexported setter), the same pattern as setReconnectBackoff, so a
+	// test can assert seeded-from-store figures without the probe racing.
+	usageProbeEnabled bool
 }
 
 // NewService creates the shared MCP client identity ("gocode", matching
@@ -108,6 +153,8 @@ func NewService(directory string) *Service {
 	watchCtx, watchCancel := context.WithCancel(context.Background())
 	return &Service{
 		conns:               map[string]*connection{},
+		usageProbed:         map[string]bool{},
+		usageProbeEnabled:   true,
 		directory:           directory,
 		client:              client,
 		watchCtx:            watchCtx,
@@ -192,14 +239,73 @@ func (s *Service) Disconnect(name string) {
 	}
 	s.mu.Unlock()
 	if ok && conn.session != nil {
+		s.unregisterConnTools(conn)
 		conn.session.Close()
 	}
+}
+
+// Disable is Disconnect plus the "disabled" bookkeeping: the server's entry
+// stays (so it remains listed with a disabled status) and its config is
+// remembered for a later Enable/Connect. Unlike Disconnect, a disabled
+// server is never retried by a reconnect loop — reconnectLoop exits once
+// the conn it retries holds no live session.
+func (s *Service) Disable(name string) {
+	s.mu.Lock()
+	conn, ok := s.conns[name]
+	if ok {
+		delete(s.conns, name)
+	}
+	s.mu.Unlock()
+	if !ok {
+		return
+	}
+	s.unregisterConnTools(conn)
+	// Persist the measurement a live connection carries, so the figures
+	// survive a restart: the next boot finds the server disabled in config
+	// and its cost in the usage store. Redundant with the persist-on-
+	// connect in connect()'s success path when the figures are unchanged,
+	// but a conn that never had a session (booted disabled, figures
+	// restored from the store) should not rewrite the store either.
+	if conn.session != nil {
+		_ = UsageSet(name, conn.usageEntry())
+	}
+	if conn.session != nil {
+		conn.session.Close()
+	}
+	s.setConn(name, &connection{
+		name:   name,
+		config: conn.config.WithEnabled(false),
+		status: Status{Status: "disabled"},
+		// Keep the last measurement: the dialog shows what re-enabling
+		// this server would cost back, which is the number the user just
+		// acted on — dropping it would blank the row the moment the
+		// disable lands.
+		toolCount: conn.toolCount,
+		estTokens: conn.estTokens,
+	})
+}
+
+// Enable reconnects a disabled server: connect() re-registers its tools and
+// restarts the reconnect watcher, exactly like the initial LoadAsync path.
+func (s *Service) Enable(ctx context.Context, name string, cfg ServerConfig) Status {
+	return s.connect(ctx, name, cfg.WithEnabled(true), modePassive, nil)
 }
 
 func (s *Service) connect(ctx context.Context, name string, cfg ServerConfig, mode oauthMode, onAuthURL func(string)) Status {
 	if !cfg.IsEnabled() {
 		status := Status{Status: "disabled"}
-		s.setConn(name, &connection{name: name, config: cfg, status: status})
+		conn := &connection{name: name, config: cfg, status: status}
+		seeded := seedUsage(name, cfg, conn)
+		s.setConn(name, conn)
+		// No usable measurement stored (never connected anywhere, or the
+		// endpoint changed since it was taken): measure once in the
+		// background rather than showing "—" until the first manual
+		// enable. The probe never touches a registry — the tool
+		// descriptions are counted, not advertised — and leaves the
+		// server disabled, so nothing enters any model's context.
+		if !seeded && s.usageProbeOn() && !s.markUsageProbed(name) {
+			go s.probeUsageOnce(name, cfg, conn)
+		}
 		return status
 	}
 
@@ -231,7 +337,9 @@ func (s *Service) connect(ctx context.Context, name string, cfg ServerConfig, mo
 
 	if err != nil {
 		status := classifyError(err)
-		s.setConn(name, &connection{name: name, config: cfg, status: status})
+		conn := &connection{name: name, config: cfg, status: status}
+		seedUsage(name, cfg, conn)
+		s.setConn(name, conn)
 		return status
 	}
 
@@ -253,11 +361,155 @@ func (s *Service) connect(ctx context.Context, name string, cfg ServerConfig, mo
 	}
 
 	status := Status{Status: "connected"}
-	conn := &connection{name: name, config: cfg, status: status, session: session, tools: tools, instructions: instructions}
+	conn := &connection{
+		name:         name,
+		config:       cfg,
+		status:       status,
+		session:      session,
+		tools:        tools,
+		instructions: instructions,
+		toolCount:    len(tools),
+		estTokens:    toolTokens(name, tools),
+	}
 	s.setConn(name, conn)
 	s.registerConnTools(conn)
+	// Persist the measurement on every successful (re)connect, not only on
+	// a later Disable: the store stays fresh as a server's tool set
+	// changes, and a boot that finds the server disabled in config always
+	// has a figure to seed from — even when the disable came from a config
+	// edit outside this process rather than the dialog.
+	_ = UsageSet(name, conn.usageEntry())
 	go s.watchAndReconnect(name, cfg, session)
 	return status
+}
+
+// usageEntry snapshots a connection's measurement with the endpoint
+// fingerprint UsageGet validates against.
+func (conn *connection) usageEntry() UsageEntry {
+	return UsageEntry{
+		Type:      conn.config.Type,
+		URL:       conn.config.URL,
+		Command:   conn.config.Command,
+		ToolCount: conn.toolCount,
+		EstTokens: conn.estTokens,
+	}
+}
+
+// seedUsage fills a not-yet-published connection's context-cost figures
+// from the persisted measurement when they are otherwise unknown, so every
+// non-connected row — disabled at boot, failed, needs-auth — still shows
+// what a successful enable would cost back instead of "—". Reports whether
+// a measurement was found; a stored entry with zero tools counts as found
+// (the server genuinely exposes none), which is what keeps such a server
+// from being re-probed on every boot.
+func seedUsage(name string, cfg ServerConfig, conn *connection) bool {
+	if conn.toolCount > 0 || conn.estTokens > 0 {
+		return true
+	}
+	entry, ok := UsageGet(name, cfg)
+	if !ok {
+		return false
+	}
+	conn.toolCount = entry.ToolCount
+	conn.estTokens = entry.EstTokens
+	return true
+}
+
+// probeUsageOnce measures a disabled server's tool set once, in the
+// background: connect the endpoint with no registry involved (the tool
+// descriptions are counted, never advertised — nothing enters any model's
+// context), persist the figures for the next boot, then fold them into the
+// disabled connection so the dialog's row picks them up on its next
+// refresh. The probe session is closed before this returns — the server
+// ends exactly as disabled as it started.
+func (s *Service) probeUsageOnce(name string, cfg ServerConfig, conn *connection) {
+	entry, ok := s.measure(s.watchCtx, name, cfg)
+	if !ok {
+		return
+	}
+	_ = UsageSet(name, entry)
+	s.mu.Lock()
+	// Only a conn that is still the one this probe was spawned for, and
+	// still not connected, takes the figures: an Enable in the meantime
+	// replaced it with a live measurement of its own.
+	if cur, exists := s.conns[name]; exists && cur == conn && !cur.status.Connected() {
+		cur.toolCount = entry.ToolCount
+		cur.estTokens = entry.EstTokens
+	}
+	s.mu.Unlock()
+}
+
+// measure connects cfg's endpoint once, counts its tools and estimates the
+// context tokens their definitions consume — the same estimate a live
+// connect records — and closes the session again. It registers nothing
+// anywhere: no registry is consulted, so measuring a disabled server never
+// adds its tool descriptions to the context. ok is false when the endpoint
+// could not be connected or its tools not listed (down, or needs auth);
+// nothing is persisted in that case, and the next boot tries again.
+func (s *Service) measure(ctx context.Context, name string, cfg ServerConfig) (UsageEntry, bool) {
+	timeout := time.Duration(cfg.TimeoutOr(int(defaultTimeout/time.Millisecond))) * time.Millisecond
+	probeCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	var session *sdkmcp.ClientSession
+	var err error
+	switch cfg.Type {
+	case "local":
+		session, err = s.connectLocal(probeCtx, name, cfg)
+	case "remote":
+		// Passive: a server that needs interactive auth fails fast here
+		// (errAuthRequired) instead of opening a browser — measuring a
+		// disabled server must never demand user interaction.
+		session, err = s.connectRemote(probeCtx, name, cfg, modePassive, nil)
+	default:
+		return UsageEntry{}, false
+	}
+	if err != nil {
+		return UsageEntry{}, false
+	}
+	defer session.Close()
+
+	var tools []*sdkmcp.Tool
+	if res := session.InitializeResult(); res != nil && res.Capabilities != nil && res.Capabilities.Tools != nil {
+		for t, terr := range session.Tools(probeCtx, nil) {
+			if terr != nil {
+				return UsageEntry{}, false
+			}
+			tools = append(tools, t)
+		}
+	}
+	return UsageEntry{
+		Type:      cfg.Type,
+		URL:       cfg.URL,
+		Command:   cfg.Command,
+		ToolCount: len(tools),
+		EstTokens: toolTokens(name, tools),
+	}, true
+}
+
+// markUsageProbed records that name's measure-once probe has been started
+// in this process, and reports whether it had already been started.
+func (s *Service) markUsageProbed(name string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	already := s.usageProbed[name]
+	s.usageProbed[name] = true
+	return already
+}
+
+// usageProbeOn reads the probe gate under the lock.
+func (s *Service) usageProbeOn() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.usageProbeEnabled
+}
+
+// setUsageProbeEnabled turns the background measure-once probe off (or back
+// on); test-only, for the same reason as setReconnectBackoff.
+func (s *Service) setUsageProbeEnabled(enabled bool) {
+	s.mu.Lock()
+	s.usageProbeEnabled = enabled
+	s.mu.Unlock()
 }
 
 // watchAndReconnect blocks until session's underlying connection closes —
@@ -278,17 +530,24 @@ func (s *Service) watchAndReconnect(name string, cfg ServerConfig, session *sdkm
 
 	s.mu.Lock()
 	conn, ok := s.conns[name]
-	current := ok && conn.session == session
-	if current {
-		conn.session = nil
-		conn.tools = nil
-		conn.instructions = ""
-		conn.status = Status{Status: "failed", Error: "connection closed"}
-	}
-	s.mu.Unlock()
-	if !current {
+	if !ok || conn.session != session {
+		s.mu.Unlock()
 		return
 	}
+	// Capture the tool list before the conn is cleared below:
+	// unregisterConnTools recomputes names from conn.tools, which is set to
+	// nil on the very next lines — unregistering first would be a no-op.
+	tools := conn.tools
+	conn.session = nil
+	conn.tools = nil
+	conn.instructions = ""
+	conn.status = Status{Status: "failed", Error: "connection closed"}
+	s.mu.Unlock()
+	// The dropped session's tools must stop being advertised the moment the
+	// session dies, not only when a retry eventually reconnects — between
+	// the drop and the reconnect the registry would otherwise still list
+	// tools whose session is gone.
+	s.unregisterConnTools(&connection{name: name, tools: tools})
 
 	s.reconnectLoop(name, cfg)
 }
@@ -342,6 +601,22 @@ func (s *Service) registerConnTools(conn *connection) {
 	timeout := time.Duration(conn.config.TimeoutOr(int(defaultToolTimeout/time.Millisecond))) * time.Millisecond
 	for _, def := range conn.tools {
 		registry.Register(&mcpTool{clientName: conn.name, def: def, session: conn.session, timeout: timeout})
+	}
+}
+
+// unregisterConnTools removes every tool a connection registered from the
+// wired registry, the mirror of registerConnTools. Names are recomputed from
+// the conn's own tools (ToolName), not remembered from registration, so the
+// two paths can never disagree about what was registered.
+func (s *Service) unregisterConnTools(conn *connection) {
+	s.mu.RLock()
+	registry := s.registry
+	s.mu.RUnlock()
+	if registry == nil {
+		return
+	}
+	for _, def := range conn.tools {
+		registry.Unregister(ToolName(conn.name, def.Name))
 	}
 }
 
@@ -485,6 +760,55 @@ func (s *Service) Statuses() map[string]Status {
 		out[name] = conn.status
 	}
 	return out
+}
+
+// Servers returns every configured server — connected, disabled or failed —
+// sorted by name, with type, endpoint, enable state and live status. It is
+// the listing surface the management dialog builds its rows from; Statuses
+// remains the lighter status-only view the sidebar polls.
+func (s *Service) Servers() []ServerInfo {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]ServerInfo, 0, len(s.conns))
+	for name, conn := range s.conns {
+		info := ServerInfo{
+			Name:      name,
+			Type:      conn.config.Type,
+			URL:       conn.config.URL,
+			Command:   conn.config.Command,
+			Enabled:   conn.config.IsEnabled(),
+			Status:    conn.status,
+			ToolCount: conn.toolCount,
+			EstTokens: conn.estTokens,
+			CostLive:  conn.status.Connected(),
+			Config:    conn.config,
+		}
+		out = append(out, info)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
+	return out
+}
+
+// toolTokens estimates the context tokens one server's tool
+// definitions consume — every tool's name, description and input schema as
+// the provider serializes them. The heuristic is chars/4, the same coarse
+// estimate session.estimateTokens uses for compaction budgeting: an exact
+// count would need the provider's own tokenizer, which the process never
+// sees for tool definitions. Names are recomputed via ToolName so the
+// estimate covers what is actually advertised, prefix included.
+func toolTokens(name string, tools []*sdkmcp.Tool) int {
+	total := 0
+	for _, def := range tools {
+		full := ToolName(name, def.Name)
+		total += (len(full) + 3) / 4
+		total += (len(def.Description) + 3) / 4
+		if schema, ok := def.InputSchema.(map[string]any); ok {
+			if encoded, err := json.Marshal(schema); err == nil {
+				total += (len(encoded) + 3) / 4
+			}
+		}
+	}
+	return total
 }
 
 // ServerNames returns the connected server names, sorted.

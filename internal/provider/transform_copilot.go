@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -170,6 +171,29 @@ func (copilotTransform) AuthMethods() []Method {
 	}}
 }
 
+// copilotVerificationURL appends the user code to the verification URI as a
+// user_code query param. GitHub's device page pre-fills — and thus skips —
+// the code entry form when it is present, so the opened browser is one
+// confirmation away instead of a typing exercise. The TS original
+// (github-copilot.ts authorize()) opens the bare verification_uri and asks
+// the user to type the code; this is a deliberate divergence.
+func copilotVerificationURL(verificationURI, userCode string) string {
+	if userCode == "" {
+		return verificationURI
+	}
+	target, err := url.Parse(verificationURI)
+	if err != nil {
+		return verificationURI
+	}
+	query := target.Query()
+	if query.Get("user_code") != "" {
+		return verificationURI // already carries one; do not double-append
+	}
+	query.Set("user_code", userCode)
+	target.RawQuery = query.Encode()
+	return target.String()
+}
+
 func copilotLogin(ctx context.Context, answers map[string]string) (Credential, error) {
 	domain := "github.com"
 	if answers["deploymentType"] == "enterprise" {
@@ -192,10 +216,11 @@ func copilotLogin(ctx context.Context, answers map[string]string) (Credential, e
 	if err != nil {
 		return Credential{}, err
 	}
+	target := copilotVerificationURL(code.VerificationURI, code.UserCode)
 	promptLogin(ctx, LoginPrompt{
-		URL:     code.VerificationURI,
+		URL:     target,
 		Code:    code.UserCode,
-		Message: fmt.Sprintf("Open %s and enter code: %s\n\nWaiting for authorization...", code.VerificationURI, code.UserCode),
+		Message: fmt.Sprintf("Open %s and enter code: %s\n\nWaiting for authorization...", target, code.UserCode),
 	})
 
 	token, err := flow.Poll(ctx, code)

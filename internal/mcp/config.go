@@ -84,6 +84,20 @@ func (s ServerConfig) IsEnabled() bool {
 	return s.Enabled == nil || *s.Enabled
 }
 
+// WithEnabled returns a copy of the config with Enabled set to the explicit
+// state. Setting true is normalized to nil (absent), so an enabled server
+// round-trips back to the same JSON it was written with — config diffs stay
+// quiet for the common "toggle on the one I turned off earlier" round trip.
+func (s ServerConfig) WithEnabled(enabled bool) ServerConfig {
+	if enabled {
+		s.Enabled = nil
+	} else {
+		value := false
+		s.Enabled = &value
+	}
+	return s
+}
+
 // TimeoutOr returns the configured per-server timeout in milliseconds, or
 // def if unset.
 func (s ServerConfig) TimeoutOr(def int) int {

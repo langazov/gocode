@@ -3,8 +3,10 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +71,92 @@ func TestServiceConnectRemoteAndRegisterTools(t *testing.T) {
 	}
 }
 
+// An oversize MCP result must settle as an error naming the size and the
+// limit, never as a clipped payload the model would mistake for the full
+// answer.
+func TestOversizeToolResultReturnsError(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "spew-server", Version: "v0.0.1"}, nil)
+	server.AddTool(&sdkmcp.Tool{
+		Name:        "spew",
+		Description: "returns a huge payload",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		huge := strings.Repeat("x", maxToolOutputBytes*4)
+		return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: huge}}}, nil
+	})
+	handler := sdkmcp.NewStreamableHTTPHandler(func(r *http.Request) *sdkmcp.Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+	status := svc.Connect(context.Background(), "spew", ServerConfig{Type: "remote", URL: httpServer.URL})
+	if status.Status != "connected" {
+		t.Fatalf("expected connected, got %+v", status)
+	}
+
+	registry := tool.NewRegistry()
+	svc.RegisterTools(registry)
+	spew, ok := registry.Get(ToolName("spew", "spew"))
+	if !ok {
+		t.Fatal("spew tool not registered")
+	}
+
+	out, err := spew.Execute(context.Background(), map[string]any{})
+	if err == nil {
+		t.Fatalf("expected an oversize error, got result of %d bytes", len(out))
+	}
+	var tooLarge *toolOutputTooLargeError
+	if !errors.As(err, &tooLarge) {
+		t.Fatalf("expected *toolOutputTooLargeError, got %T: %v", err, err)
+	}
+	if tooLarge.bytes != maxToolOutputBytes*4 {
+		t.Fatalf("reported size = %d, want %d", tooLarge.bytes, maxToolOutputBytes*4)
+	}
+	// The error text is the model's tool result: it must state the fix.
+	if !strings.Contains(err.Error(), "Narrow the call") {
+		t.Fatalf("error text does not tell the model what to do: %q", err.Error())
+	}
+}
+
+// A result under the limit passes through unchanged, and so does a plain
+// IsError result — only oversize payloads are rejected.
+func TestNormalSizeResultsPassThrough(t *testing.T) {
+	server := sdkmcp.NewServer(&sdkmcp.Implementation{Name: "ok-server", Version: "v0.0.1"}, nil)
+	server.AddTool(&sdkmcp.Tool{
+		Name:        "fit",
+		Description: "returns a fitting payload",
+		InputSchema: json.RawMessage(`{"type":"object"}`),
+	}, func(_ context.Context, _ *sdkmcp.CallToolRequest) (*sdkmcp.CallToolResult, error) {
+		ok := strings.Repeat("y", maxToolOutputBytes) // exactly at the limit
+		return &sdkmcp.CallToolResult{Content: []sdkmcp.Content{&sdkmcp.TextContent{Text: ok}}}, nil
+	})
+	handler := sdkmcp.NewStreamableHTTPHandler(func(r *http.Request) *sdkmcp.Server { return server }, nil)
+	httpServer := httptest.NewServer(handler)
+	t.Cleanup(httpServer.Close)
+
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+	if status := svc.Connect(context.Background(), "ok", ServerConfig{Type: "remote", URL: httpServer.URL}); status.Status != "connected" {
+		t.Fatalf("expected connected, got %+v", status)
+	}
+
+	registry := tool.NewRegistry()
+	svc.RegisterTools(registry)
+	fit, ok := registry.Get(ToolName("ok", "fit"))
+	if !ok {
+		t.Fatal("fit tool not registered")
+	}
+
+	out, err := fit.Execute(context.Background(), map[string]any{})
+	if err != nil {
+		t.Fatalf("an exactly-at-limit result must pass: %v", err)
+	}
+	if len(out) != maxToolOutputBytes {
+		t.Fatalf("result was %d bytes, want %d (unchanged)", len(out), maxToolOutputBytes)
+	}
+}
+
 func TestServiceStatusesAndServerNames(t *testing.T) {
 	httpServer := newTestMCPServer(t)
 	svc := NewService(t.TempDir())
@@ -94,6 +182,133 @@ func TestServiceStatusesAndServerNames(t *testing.T) {
 	names := svc.ServerNames()
 	if len(names) != 1 || names[0] != "good" {
 		t.Fatalf("ServerNames() = %v, want [good]", names)
+	}
+}
+
+// Disable removes a live connection's tools from the wired registry and
+// leaves the server listed as disabled; Enable reconnects and re-registers.
+func TestServiceDisableUnregistersAndEnableReconnects(t *testing.T) {
+	httpServer := newTestMCPServer(t)
+
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+
+	cfg := ServerConfig{Type: "remote", URL: httpServer.URL}
+	if status := svc.Connect(context.Background(), "myserver", cfg); status.Status != "connected" {
+		t.Fatalf("connect = %+v", status)
+	}
+
+	registry := tool.NewRegistry()
+	svc.SetRegistry(registry)
+	svc.RegisterTools(registry)
+	name := ToolName("myserver", "echo")
+	if _, ok := registry.Get(name); !ok {
+		t.Fatal("tool was never registered")
+	}
+
+	// Disable: tools gone from the registry, status disabled, still listed.
+	svc.Disable("myserver")
+	if _, ok := registry.Get(name); ok {
+		t.Error("tool stayed registered after Disable")
+	}
+	if status := svc.Statuses()["myserver"]; status.Status != "disabled" {
+		t.Errorf("status after Disable = %+v", status)
+	}
+	servers := svc.Servers()
+	if len(servers) != 1 || servers[0].Name != "myserver" {
+		t.Fatalf("Servers() after Disable = %+v, want the one disabled entry", servers)
+	}
+	if servers[0].Enabled {
+		t.Error("Servers() reports enabled after Disable")
+	}
+	// The measurement survives the disable: the dialog shows what enabling
+	// it back would cost, flagged as not-live via CostLive.
+	if servers[0].ToolCount != 1 || servers[0].EstTokens <= 0 {
+		t.Errorf("last-known cost lost on Disable: %+v", servers[0])
+	}
+	if servers[0].CostLive {
+		t.Error("CostLive = true after Disable, want false (last-known)")
+	}
+
+	// Enable: reconnected, tools back.
+	status := svc.Enable(context.Background(), "myserver", cfg)
+	if status.Status != "connected" {
+		t.Fatalf("Enable = %+v", status)
+	}
+	if _, ok := registry.Get(name); !ok {
+		t.Error("tool not re-registered after Enable")
+	}
+	if servers := svc.Servers(); !servers[0].Enabled {
+		t.Error("Servers() reports disabled after Enable")
+	}
+	if servers := svc.Servers(); !servers[0].CostLive {
+		t.Error("CostLive = false after Enable, want true")
+	}
+}
+
+// Servers() lists disabled and failed servers alongside connected ones —
+// the management dialog's whole row set, sorted by name.
+func TestServiceServersIncludesDisabledAndFailed(t *testing.T) {
+	httpServer := newTestMCPServer(t)
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+
+	svc.Load(context.Background(), map[string]ServerConfig{
+		"zeta":    {Type: "remote", URL: httpServer.URL},
+		"alpha":   {Type: "remote", URL: httpServer.URL, Enabled: boolPtr(false)},
+		"failure": {Type: "remote", URL: "http://127.0.0.1:1"},
+	})
+
+	servers := svc.Servers()
+	if len(servers) != 3 {
+		t.Fatalf("Servers() = %+v, want 3 entries", servers)
+	}
+	wantOrder := []string{"alpha", "failure", "zeta"}
+	for i, want := range wantOrder {
+		if servers[i].Name != want {
+			t.Errorf("Servers()[%d] = %q, want %q (sorted)", i, servers[i].Name, want)
+		}
+	}
+	if servers[0].Status.Status != "disabled" {
+		t.Errorf("alpha status = %+v, want disabled", servers[0].Status)
+	}
+	if servers[2].Type != "remote" || servers[2].URL == "" {
+		t.Errorf("zeta config view = %+v, want type and url", servers[2])
+	}
+}
+
+// A connected server's ServerInfo quantifies its context cost: tool count
+// and a positive chars/4 token estimate over names, descriptions and
+// schemas. A disabled server with no measurement anywhere reports zeros —
+// the cost column's whole point — which is why the probe is off here; the
+// probe's own behavior is covered by the usage tests below.
+func TestServiceServersReportTokenEstimate(t *testing.T) {
+	httpServer := newTestMCPServer(t)
+	svc := NewService(t.TempDir())
+	defer svc.Close()
+	svc.setUsageProbeEnabled(false)
+
+	svc.Load(context.Background(), map[string]ServerConfig{
+		"live": {Type: "remote", URL: httpServer.URL},
+		"off":  {Type: "remote", URL: httpServer.URL, Enabled: boolPtr(false)},
+	})
+
+	byName := map[string]ServerInfo{}
+	for _, info := range svc.Servers() {
+		byName[info.Name] = info
+	}
+	live := byName["live"]
+	if live.ToolCount != 1 {
+		t.Errorf("live ToolCount = %d, want 1", live.ToolCount)
+	}
+	if live.EstTokens <= 0 {
+		t.Errorf("live EstTokens = %d, want a positive estimate", live.EstTokens)
+	}
+	if live.CostLive != true {
+		t.Errorf("live CostLive = %v, want true", live.CostLive)
+	}
+	if off := byName["off"]; off.ToolCount != 0 || off.EstTokens != 0 || off.CostLive {
+		t.Errorf("off = %d tools / %d tokens / live=%v, want zeros and not live (never measured, probe off)", off.ToolCount, off.EstTokens, off.CostLive)
 	}
 }
 
