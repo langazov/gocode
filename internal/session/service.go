@@ -26,6 +26,10 @@ type Service struct {
 	Execution    *Execution
 	Compactor    *Compactor
 	DefaultModel ModelRef
+	// ExternalInterrupt, when set, is also asked to stop a session Interrupt
+	// is called for: sessions this process launched on other stacks (a
+	// Harness² rollout) are not this Execution's to stop.
+	ExternalInterrupt func(sessionID string)
 }
 
 func NewService(database *db.DB, bus *event.Bus) *Service {
@@ -258,9 +262,14 @@ func notFound(sessionID string) error {
 
 // Interrupt stops any active execution for the session. Idle interruption is
 // a no-op.
+// Interrupt stops sessionID's active work in this process, and asks
+// ExternalInterrupt to stop it wherever else it runs.
 func (s *Service) Interrupt(sessionID string) {
 	if s.Execution != nil {
 		s.Execution.Interrupt(sessionID)
+	}
+	if s.ExternalInterrupt != nil {
+		s.ExternalInterrupt(sessionID)
 	}
 }
 

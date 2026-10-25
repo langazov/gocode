@@ -105,7 +105,8 @@ Keeping secrets in `{env:...}` is what lets `gocode.json` be committed.
   "command": { /* see below */ },
 
   // ── Harness² ────────────────────────────────────────────
-  "harness": { "library": "auto", "crossDomain": false, "model": "", "enabled": true },
+  "harness": { "library": "auto", "crossDomain": false, "model": "", "enabled": true,
+               "rolloutTimeout": "30m", "sessionTimeout": "20m" },
 
   "experimental": {}
 }
@@ -146,6 +147,8 @@ Harness² (`gocode harness`, `/harness` in the TUI; see
 | `library` | `"auto"` | experience-library backend: `auto` uses the gocoder.org Library when library-plugin is loaded and signed in — fully when the service reports the `harness` feature (`GET /library/version`), else skills in the Library and experience on disk (`split`) — and local otherwise; `local`; `cloud` (fail rather than fall back) |
 | `crossDomain` | `false` | also show lessons from other domains (cloud backend) |
 | `model` | executor's | `provider/model` for the editor, selector and reflector sessions |
+| `rolloutTimeout` | `"30m"` | longest one rollout may run; past it the session is interrupted and the rollout recorded as failed (`--rollout-timeout`) |
+| `sessionTimeout` | `"20m"` | the same for one editor, selector or reflector session (`--session-timeout`) |
 
 An installed harness (`.gocode/harness/`) is overlaid on every session in the
 project, below everything you wrote yourself: its always-on files follow your

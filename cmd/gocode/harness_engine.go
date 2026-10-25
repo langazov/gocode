@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/global"
@@ -23,6 +25,46 @@ type harnessOptions struct {
 	Width         int
 	CrossDomain   bool
 	KeepWorkspace bool
+	// RolloutTimeout and SessionTimeout override config harness.rolloutTimeout
+	// and harness.sessionTimeout.
+	RolloutTimeout time.Duration
+	SessionTimeout time.Duration
+}
+
+// liveHarnessStacks is st's registry of running Harness² stacks, created
+// once and hooked into its session service, so an interrupt sent to st
+// (Esc in the TUI) reaches a rollout running on a stack of its own.
+func (s *stack) liveHarnessStacks() *liveStacks {
+	s.harnessLiveOnce.Do(func() {
+		s.harnessLive = &liveStacks{}
+		if s.Service != nil {
+			s.Service.ExternalInterrupt = s.harnessLive.Interrupt
+		}
+	})
+	return s.harnessLive
+}
+
+// harnessTimeouts resolves the per-session limits: flag, then config, then
+// the defaults (zero).
+func harnessTimeouts(cfg *config.Config, opts harnessOptions) (time.Duration, time.Duration, error) {
+	rollout, session := opts.RolloutTimeout, opts.SessionTimeout
+	if cfg != nil && cfg.Harness != nil {
+		for _, pick := range []struct {
+			raw string
+			dst *time.Duration
+			key string
+		}{{cfg.Harness.RolloutTimeout, &rollout, "rolloutTimeout"}, {cfg.Harness.SessionTimeout, &session, "sessionTimeout"}} {
+			if *pick.dst != 0 || pick.raw == "" {
+				continue
+			}
+			d, err := time.ParseDuration(pick.raw)
+			if err != nil || d <= 0 {
+				return 0, 0, fmt.Errorf("harness.%s must be a duration like \"30m\", got %q", pick.key, pick.raw)
+			}
+			*pick.dst = d
+		}
+	}
+	return rollout, session, nil
 }
 
 // harnessRoot is where Harness² keeps run directories and the local
@@ -112,13 +154,20 @@ func newHarnessEngine(ctx context.Context, st *stack, opts harnessOptions) (*har
 	if model == "" {
 		model = st.ProviderID + "/" + st.ModelID
 	}
+	rolloutTimeout, sessionTimeout, err := harnessTimeouts(st.Config, opts)
+	if err != nil {
+		return nil, detection, err
+	}
 	stacks := &harnessStacks{
-		Database:      st.Database,
-		Catalog:       st.Models,
-		Model:         model,
-		ImproverModel: improverModel,
-		Variant:       opts.Variant,
-		Relay:         st.Bus,
+		Database:       st.Database,
+		Catalog:        st.Models,
+		Model:          model,
+		ImproverModel:  improverModel,
+		Variant:        opts.Variant,
+		Relay:          st.Bus,
+		Live:           st.liveHarnessStacks(),
+		RolloutTimeout: rolloutTimeout,
+		SessionTimeout: sessionTimeout,
 	}
 	engine := &harness.Engine{
 		Exec:           stacks,
@@ -180,6 +229,9 @@ func baseHarness(projectDir, explicit string) (harness.Tree, string, error) {
 // events carrying the run's state, so no projector is involved.
 func (s *stack) harnessService() *harness.Service {
 	s.harnessOnce.Do(func() {
+		// Hook the interrupt path in now, before the server serves its first
+		// request, rather than racing one when the first run starts.
+		s.liveHarnessStacks()
 		s.harness = &harness.Service{
 			Root: filepath.Join(harnessRoot(), "runs"),
 			NewEngine: func(ctx context.Context, launch harness.Launch) (*harness.Engine, harness.Detection, error) {

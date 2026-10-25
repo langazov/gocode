@@ -168,6 +168,10 @@ type stack struct {
 	harnessOnce sync.Once
 	// provider is the stack's model client, closed with it.
 	provider *lazyProvider
+	// harnessLive holds the stacks this one launched for Harness² sessions;
+	// its Interrupt is the session service's ExternalInterrupt.
+	harnessLive     *liveStacks
+	harnessLiveOnce sync.Once
 }
 
 // Workdir is the directory the runtime booted in.

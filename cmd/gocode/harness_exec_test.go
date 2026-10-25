@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/harness"
 	"github.com/langazov/gocode-go/internal/session"
@@ -25,6 +26,13 @@ type fakeHarnessModel struct {
 	rollouts int
 	editors  int
 	systems  []string
+	// firstCall, when set, is the rollout's first tool call instead of the
+	// write; toolResults records every tool result a rollout got back.
+	firstCall *struct {
+		name string
+		args map[string]any
+	}
+	toolResults []string
 }
 
 func (f *fakeHarnessModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -57,17 +65,29 @@ func (f *fakeHarnessModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		case "tool":
 			hasTool = true
+			if !improver(system) {
+				fakeResultsMu.Lock()
+				lastToolResult = text
+				fakeResultsMu.Unlock()
+			}
 		}
 	}
-	improver := strings.Contains(system, "one stage of Harness²")
+	isImprover := improver(system)
+	if hasTool && !isImprover {
+		fakeResultsMu.Lock()
+		f.mu.Lock()
+		f.toolResults = append(f.toolResults, lastToolResult)
+		f.mu.Unlock()
+		fakeResultsMu.Unlock()
+	}
 
 	var events []map[string]any
 	switch {
-	case !hasTool && improver && strings.Contains(user, "You are reading the complete record"):
+	case !hasTool && isImprover && strings.Contains(user, "You are reading the complete record"):
 		events = textEvents("<edits>\ncomponent: systemprompt.md\nverdict: helped\n</edits>\n<experience>\n" +
 			"cue: a new file the task names\nlesson: systemprompt.md should say to create named files first\n" +
 			"evidence: inv1 created it\nconfidence: low\n</experience>")
-	case !hasTool && improver:
+	case !hasTool && isImprover:
 		f.mu.Lock()
 		f.editors++
 		f.mu.Unlock()
@@ -76,9 +96,14 @@ func (f *fakeHarnessModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
 		f.rollouts++
 		f.systems = append(f.systems, system)
+		first := f.firstCall
 		f.mu.Unlock()
-		events = toolEvents("write", map[string]any{"path": "notes.txt", "content": "notes\n"})
-	case improver:
+		if first != nil {
+			events = toolEvents(first.name, first.args)
+		} else {
+			events = toolEvents("write", map[string]any{"path": "notes.txt", "content": "notes\n"})
+		}
+	case isImprover:
 		events = textEvents("<notes>systemprompt.md: the base rollouts created notes.txt late</notes>")
 	default:
 		events = textEvents("Created notes.txt.")
@@ -90,6 +115,13 @@ func (f *fakeHarnessModel) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Write([]byte("data: [DONE]\n\n"))
 }
+
+var (
+	fakeResultsMu  sync.Mutex
+	lastToolResult string
+)
+
+func improver(system string) bool { return strings.Contains(system, "one stage of Harness²") }
 
 func textEvents(text string) []map[string]any {
 	return []map[string]any{
@@ -299,5 +331,110 @@ func TestStackCloseShutsDownLanguageServers(t *testing.T) {
 	}
 	if !st.LSP.Closed() {
 		t.Fatal("stack.Close left the language servers running")
+	}
+}
+
+// rolloutHarness is a harnessStacks over st, for driving one rollout.
+func rolloutHarness(st *stack, timeout time.Duration) *harnessStacks {
+	return &harnessStacks{
+		Database: st.Database, Catalog: st.Models, Model: "faketest/fake-model",
+		Relay: st.Bus, Live: st.liveHarnessStacks(), RolloutTimeout: timeout,
+	}
+}
+
+func rolloutRequest(t *testing.T, onSession func(string)) harness.RolloutRequest {
+	return harness.RolloutRequest{
+		Task:  harness.Task{ID: "t", Domain: "d", Prompt: "Do the task."},
+		Label: "base1", HarnessDir: t.TempDir(), Workspace: t.TempDir(), OnSession: onSession,
+	}
+}
+
+func bootInTemp(t *testing.T) *stack {
+	t.Helper()
+	original, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(original) })
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	return bootStackT(t, context.Background(), "")
+}
+
+// A rollout whose model asks the user a question used to park forever:
+// nobody can answer it. The tool is denied, the model gets that back as the
+// result, and the rollout finishes.
+func TestRolloutNeverWaitsOnAQuestion(t *testing.T) {
+	fake := setupFakeHarnessModel(t)
+	fake.firstCall = &struct {
+		name string
+		args map[string]any
+	}{"question", map[string]any{"questions": []any{map[string]any{"question": "Which file?", "header": "File", "options": []any{map[string]any{"label": "a"}}}}}}
+	st := bootInTemp(t)
+	done := make(chan harness.Rollout, 1)
+	go func() {
+		result, _ := rolloutHarness(st, time.Minute).Rollout(context.Background(), rolloutRequest(t, nil))
+		done <- result
+	}()
+	select {
+	case result := <-done:
+		if !result.OK || result.Final == "" {
+			t.Fatalf("rollout = %+v", result)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatal("the rollout is waiting on a question nobody can answer")
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if len(fake.toolResults) == 0 || !strings.Contains(strings.ToLower(fake.toolResults[0]), "denied") &&
+		!strings.Contains(strings.ToLower(fake.toolResults[0]), "blocked") {
+		t.Fatalf("question tool result = %q, want a refusal", fake.toolResults)
+	}
+}
+
+func sleepingRollout(fake *fakeHarnessModel) {
+	fake.firstCall = &struct {
+		name string
+		args map[string]any
+	}{"bash", map[string]any{"command": "sleep 30", "description": "wait"}}
+}
+
+// A rollout that outlives its limit is stopped and recorded as failed.
+func TestRolloutStopsAtItsTimeout(t *testing.T) {
+	sleepingRollout(setupFakeHarnessModel(t))
+	st := bootInTemp(t)
+	started := time.Now()
+	result, err := rolloutHarness(st, time.Second).Rollout(context.Background(), rolloutRequest(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(started); took > 15*time.Second {
+		t.Fatalf("a 1s limit took %s to stop the rollout", took)
+	}
+	if result.OK || !strings.Contains(result.Error, "did not finish in time") {
+		t.Fatalf("rollout = %+v", result)
+	}
+}
+
+// Esc in the interface interrupts the launching server's session service,
+// which does not own the rollout; the interrupt must reach the stack that
+// does.
+func TestInterruptReachesARollout(t *testing.T) {
+	sleepingRollout(setupFakeHarnessModel(t))
+	st := bootInTemp(t)
+	sessions := make(chan string, 1)
+	done := make(chan harness.Rollout, 1)
+	go func() {
+		result, _ := rolloutHarness(st, time.Minute).Rollout(context.Background(), rolloutRequest(t, func(id string) { sessions <- id }))
+		done <- result
+	}()
+	id := <-sessions
+	time.Sleep(500 * time.Millisecond) // into the sleeping tool call
+	st.Service.Interrupt(id)
+	select {
+	case result := <-done:
+		if result.OK {
+			t.Fatalf("an interrupted rollout reported ok: %+v", result)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("the interrupt did not reach the rollout's stack")
 	}
 }

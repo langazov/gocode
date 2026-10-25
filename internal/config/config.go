@@ -49,6 +49,11 @@ type HarnessConfig struct {
 	// Model is the provider/model the improver sessions (editor, selector,
 	// reflector) run on; empty uses the executor's model.
 	Model string `json:"model,omitempty"`
+	// RolloutTimeout and SessionTimeout bound one rollout and one improver
+	// session (Go durations, e.g. "30m"); a session that runs longer is
+	// interrupted and recorded as failed. Defaults 30m and 20m.
+	RolloutTimeout string `json:"rolloutTimeout,omitempty"`
+	SessionTimeout string `json:"sessionTimeout,omitempty"`
 }
 
 // HarnessEnabled reports whether an installed harness may be overlaid.

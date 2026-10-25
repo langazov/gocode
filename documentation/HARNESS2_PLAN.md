@@ -441,6 +441,18 @@ excludes it unless `path` targets it; `GET /library/version` now reports
 
 Operational notes:
 
+- Rollout and improver sessions are unattended, so none may wait on a
+  person: their agents are denied `question`, `plan_enter` and `plan_exit`
+  (a question parked the turn forever — nobody can answer it), the runner
+  has no asker, each session has a wall-clock limit (`rolloutTimeout`,
+  `sessionTimeout`; on expiry the session is interrupted and recorded as
+  failed, and the run carries on), and a stack's close is bounded. Their
+  turns run as detached drains, so a cancelled context does not stop one by
+  itself; `drive` interrupts the session when the context ends.
+- An interrupt sent to the launching server (Esc in the TUI on a watched
+  rollout) is forwarded to the stack that runs the session
+  (`session.Service.ExternalInterrupt` → `liveStacks`).
+
 - Rollout and improver sessions are ordinary sessions in the shared database,
   under their run's directories. `gocode harness prune <task>|--all`, the
   runs list's `remove ctrl+d`, and `DELETE /api/harness/run/{id}` delete them

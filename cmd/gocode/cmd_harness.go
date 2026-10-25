@@ -12,6 +12,7 @@ import (
 	"strings"
 	"syscall"
 	"text/tabwriter"
+	"time"
 
 	"github.com/langazov/gocode-go/internal/clix"
 	"github.com/langazov/gocode-go/internal/db"
@@ -38,6 +39,8 @@ func harnessCommand() *clix.Command {
 		{Name: "base", Kind: clix.KindString, Describe: "harness directory to start from (default: the project's installed .gocode/harness, else none)"},
 		{Name: "width", Kind: clix.KindNumber, Default: float64(harness.DefaultWidth), Describe: "rollouts and editor sessions run at once"},
 		{Name: "keep-workspaces", Kind: clix.KindBool, Describe: "keep every rollout's working copy"},
+		{Name: "rollout-timeout", Kind: clix.KindString, Describe: "longest one rollout may run before it is stopped and recorded as failed, e.g. 45m (default: config harness.rolloutTimeout, else 30m)"},
+		{Name: "session-timeout", Kind: clix.KindString, Describe: "the same for one editor, selector or reflector session (default 20m)"},
 		{Name: "dry-run", Kind: clix.KindBool, Describe: "print the task, the backend and the budget, then exit without spending anything"},
 		{Name: "format", Kind: clix.KindString, Default: "default", Choices: []string{"default", "json"}, Describe: "json prints progress events and the summary as JSON lines"},
 	}
@@ -217,11 +220,11 @@ func runHarnessRun(a *clix.Args) error {
 		return err
 	}
 	defer st.Close()
-	engine, detection, err := newHarnessEngine(ctx, st, harnessOptions{
-		Library: a.String("library"), Model: a.String("model"), ImproverModel: a.String("improver-model"),
-		Variant: a.String("variant"), Width: a.IntOr("width", harness.DefaultWidth),
-		CrossDomain: a.Bool("cross-domain"), KeepWorkspace: a.Bool("keep-workspaces"),
-	})
+	opts, err := harnessRunOptions(a)
+	if err != nil {
+		return err
+	}
+	engine, detection, err := newHarnessEngine(ctx, st, opts)
 	if err != nil {
 		return err
 	}
@@ -922,11 +925,11 @@ func runHarnessSweep(a *clix.Args) error {
 		return err
 	}
 	defer st.Close()
-	engine, detection, err := newHarnessEngine(ctx, st, harnessOptions{
-		Library: a.String("library"), Model: a.String("model"), ImproverModel: a.String("improver-model"),
-		Variant: a.String("variant"), Width: a.IntOr("width", harness.DefaultWidth),
-		CrossDomain: a.Bool("cross-domain"), KeepWorkspace: a.Bool("keep-workspaces"),
-	})
+	opts, err := harnessRunOptions(a)
+	if err != nil {
+		return err
+	}
+	engine, detection, err := newHarnessEngine(ctx, st, opts)
 	if err != nil {
 		return err
 	}
@@ -973,4 +976,26 @@ func harnessStatusMark(status string) string {
 		return "✓"
 	}
 	return "✗"
+}
+
+// harnessRunOptions reads the flags run and sweep share.
+func harnessRunOptions(a *clix.Args) (harnessOptions, error) {
+	opts := harnessOptions{
+		Library: a.String("library"), Model: a.String("model"), ImproverModel: a.String("improver-model"),
+		Variant: a.String("variant"), Width: a.IntOr("width", harness.DefaultWidth),
+		CrossDomain: a.Bool("cross-domain"), KeepWorkspace: a.Bool("keep-workspaces"),
+	}
+	for _, f := range []struct {
+		name string
+		dst  *time.Duration
+	}{{"rollout-timeout", &opts.RolloutTimeout}, {"session-timeout", &opts.SessionTimeout}} {
+		if raw := a.String(f.name); raw != "" {
+			d, err := time.ParseDuration(raw)
+			if err != nil || d <= 0 {
+				return opts, &usageError{msg: "--" + f.name + " must be a duration like 30m"}
+			}
+			*f.dst = d
+		}
+	}
+	return opts, nil
 }
