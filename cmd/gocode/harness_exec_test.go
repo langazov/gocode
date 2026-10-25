@@ -276,3 +276,28 @@ drain:
 		t.Fatal("GOCODE_DISABLE_HARNESS did not turn the overlay off")
 	}
 }
+
+// A closed stack stops its language servers. Harness² boots and closes one
+// stack per rollout and editor session; each used to leave the servers its
+// edits had started running for the life of the process.
+func TestStackCloseShutsDownLanguageServers(t *testing.T) {
+	setupFakeHarnessModel(t)
+	original, _ := os.Getwd()
+	t.Cleanup(func() { os.Chdir(original) })
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatal(err)
+	}
+	st, err := bootStack(context.Background(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if st.LSP.Closed() {
+		t.Fatal("a fresh stack's language servers are already shut down")
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !st.LSP.Closed() {
+		t.Fatal("stack.Close left the language servers running")
+	}
+}

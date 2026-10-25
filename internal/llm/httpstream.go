@@ -33,6 +33,21 @@ const (
 	StreamIdleTimeout   = 5 * time.Minute
 )
 
+// IdleCloser is a client that can drop its pooled idle connections. Every
+// provider client owns a transport cloned from http.DefaultTransport, so a
+// short-lived stack (a Harness² rollout, one per session) leaves its pool
+// behind unless it is closed explicitly.
+type IdleCloser interface {
+	CloseIdleConnections()
+}
+
+// CloseIdle closes client's idle connections when it can.
+func CloseIdle(client StreamClient) {
+	if closer, ok := client.(IdleCloser); ok {
+		closer.CloseIdleConnections()
+	}
+}
+
 // NewStreamHTTPClient builds the HTTP client a provider client streams with:
 // no absolute Timeout, a response-header bound on the transport, and
 // otherwise http.DefaultTransport's settings (connection pooling, proxy and

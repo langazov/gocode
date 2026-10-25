@@ -94,6 +94,17 @@ func (l *lazyProvider) forProvider(providerID string) (llm.StreamClient, error) 
 	return client, err
 }
 
+// CloseIdleConnections drops every resolved client's pooled connections.
+func (l *lazyProvider) CloseIdleConnections() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for _, client := range l.clients {
+		if client != nil {
+			llm.CloseIdle(client)
+		}
+	}
+}
+
 type stack struct {
 	Service     *session.Service
 	Bus         *event.Bus
@@ -155,6 +166,8 @@ type stack struct {
 	// harnessService.
 	harness     *harness.Service
 	harnessOnce sync.Once
+	// provider is the stack's model client, closed with it.
+	provider *lazyProvider
 }
 
 // Workdir is the directory the runtime booted in.
@@ -201,6 +214,17 @@ func (s *stack) newServer() *server.Server {
 func (s *stack) Close() error {
 	if s.Plugins != nil {
 		_ = s.Plugins.Close(context.Background())
+	}
+	// Language servers are child processes too, started lazily by the file
+	// tools' diagnostics. A Harness² run boots a stack per rollout and per
+	// editor session and closes each when it settles; without this every
+	// one left its gopls (or whatever the edits woke) running for the life
+	// of the process. Shutdown is idempotent and a no-op when none started.
+	if s.LSP != nil {
+		s.LSP.Shutdown()
+	}
+	if s.provider != nil {
+		s.provider.CloseIdleConnections()
 	}
 	if s.MCP != nil && s.borrowedDB {
 		// A borrowed-database stack is one of several in a long-lived process
@@ -723,6 +747,7 @@ func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
 		ProjectID:        projectID,
 		workdir:          workdir,
 		borrowedDB:       opts.Database != nil,
+		provider:         streamClient,
 	}, nil
 }
 

@@ -109,12 +109,17 @@ const (
 // rollout's workspace, plus one line per changed binary file. It is the
 // deliverable of a coding task — the change itself, not the agent's account
 // of it.
+//
+// It holds one file pair at a time, never a tree: both trees are listed by
+// path and size, a pair whose sizes match is compared byte for byte, and
+// only a changed pair is read for its diff. A rollout of a large repository
+// costs memory for its largest changed file, not for the repository.
 func WorkspaceDiff(source, workspace string) (string, []string, error) {
-	before, err := snapshot(source)
+	before, err := listFiles(source)
 	if err != nil {
 		return "", nil, err
 	}
-	after, err := snapshot(workspace)
+	after, err := listFiles(workspace)
 	if err != nil {
 		return "", nil, err
 	}
@@ -134,14 +139,32 @@ func WorkspaceDiff(source, workspace string) (string, []string, error) {
 	var out strings.Builder
 	var changed []string
 	for _, rel := range sorted {
-		old, hadOld := before[rel]
-		cur, hasNew := after[rel]
-		if hadOld && hasNew && bytes.Equal(old, cur) {
-			continue
+		oldSize, hadOld := before[rel]
+		newSize, hasNew := after[rel]
+		oldPath, newPath := filepath.Join(source, filepath.FromSlash(rel)), filepath.Join(workspace, filepath.FromSlash(rel))
+		if hadOld && hasNew && oldSize == newSize {
+			same, err := sameContent(oldPath, newPath)
+			if err != nil {
+				return "", nil, err
+			}
+			if same {
+				continue
+			}
 		}
 		changed = append(changed, rel)
 		if out.Len() > maxDiffTotal {
 			continue
+		}
+		var old, cur []byte
+		if hadOld {
+			if old, err = os.ReadFile(oldPath); err != nil {
+				return "", nil, err
+			}
+		}
+		if hasNew {
+			if cur, err = os.ReadFile(newPath); err != nil {
+				return "", nil, err
+			}
 		}
 		if isBinary(old) || isBinary(cur) {
 			fmt.Fprintf(&out, "Binary file %s %s\n", rel, binaryVerb(hadOld, hasNew))
@@ -169,6 +192,39 @@ func WorkspaceDiff(source, workspace string) (string, []string, error) {
 	return out.String(), changed, nil
 }
 
+// sameContent compares two files of equal size in fixed-size chunks.
+func sameContent(a, b string) (bool, error) {
+	fa, err := os.Open(a)
+	if err != nil {
+		return false, err
+	}
+	defer fa.Close()
+	fb, err := os.Open(b)
+	if err != nil {
+		return false, err
+	}
+	defer fb.Close()
+	bufA, bufB := make([]byte, 64<<10), make([]byte, 64<<10)
+	for {
+		na, errA := io.ReadFull(fa, bufA)
+		nb, errB := io.ReadFull(fb, bufB)
+		if na != nb || !bytes.Equal(bufA[:na], bufB[:nb]) {
+			return false, nil
+		}
+		doneA := errA == io.EOF || errA == io.ErrUnexpectedEOF
+		doneB := errB == io.EOF || errB == io.ErrUnexpectedEOF
+		if doneA || doneB {
+			return doneA && doneB, nil
+		}
+		if errA != nil {
+			return false, errA
+		}
+		if errB != nil {
+			return false, errB
+		}
+	}
+}
+
 func binaryVerb(hadOld, hasNew bool) string {
 	switch {
 	case !hadOld:
@@ -187,8 +243,10 @@ func isBinary(data []byte) bool {
 	return bytes.IndexByte(data[:n], 0) >= 0
 }
 
-func snapshot(root string) (map[string][]byte, error) {
-	out := map[string][]byte{}
+// listFiles maps every regular file under root to its size, skipping VCS and
+// dependency directories. A missing root lists nothing.
+func listFiles(root string) (map[string]int64, error) {
+	out := map[string]int64{}
 	if root == "" {
 		return out, nil
 	}
@@ -208,15 +266,15 @@ func snapshot(root string) (map[string][]byte, error) {
 		if !entry.Type().IsRegular() {
 			return nil
 		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
 		rel, err := filepath.Rel(root, path)
 		if err != nil {
 			return err
 		}
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		out[filepath.ToSlash(rel)] = data
+		out[filepath.ToSlash(rel)] = info.Size()
 		return nil
 	})
 	return out, err

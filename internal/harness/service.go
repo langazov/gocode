@@ -297,6 +297,13 @@ func (s *Service) Start(ctx context.Context, launch Launch) (RunState, error) {
 			state.CostUSD = summary.CostUSD
 		}
 		snap := state.snapshot()
+		// A finished run is served from its summary on disk from here on;
+		// keeping every run's live state for the life of the server would
+		// grow without bound. One that died before writing a summary stays,
+		// so its error can still be read.
+		if _, err := os.Stat(s.summaryPath(snap.Task, snap.K, snap.Mode)); err == nil {
+			delete(s.active, id)
+		}
 		s.mu.Unlock()
 		if s.Publish != nil {
 			s.Publish(snap, Event{Type: "run.ended", Task: snap.Task, Mode: snap.Mode, OK: snap.Status == "ok", Detail: snap.Error})

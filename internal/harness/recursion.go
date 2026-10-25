@@ -390,6 +390,10 @@ func (e *Engine) roll(ctx context.Context, task Task, label string, tree Tree, h
 	_ = writeFileAll(filepath.Join(runDir, finalFile), result.Final)
 	_ = writeFileAll(filepath.Join(runDir, deliverableFile), deliverable.String())
 	_ = writeJSON(filepath.Join(runDir, runJSON), result)
+	// On disk now; RunRecord reads them back on demand. Holding every
+	// rollout's trajectory (up to MaxTrace each) for the whole run is what
+	// made a run's memory grow with its budget.
+	result.Trajectory, result.Final = "", ""
 	record.Rollout = result
 	return record
 }

@@ -461,3 +461,10 @@ func grow(blocks []ContentBlock, index int) []ContentBlock {
 	}
 	return blocks
 }
+
+// CloseIdleConnections implements llm.IdleCloser.
+func (c *Client) CloseIdleConnections() {
+	if c.HTTP != nil {
+		c.HTTP.CloseIdleConnections()
+	}
+}

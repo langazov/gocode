@@ -419,3 +419,28 @@ func TestHarnessLogFollows(t *testing.T) {
 		t.Fatalf("lines = %q", lines)
 	}
 }
+
+// A finished run leaves the snapshots a minute after its last event; a
+// running one never does.
+func TestAggregatorForgetsFinishedRuns(t *testing.T) {
+	tr := newTree()
+	for _, run := range []map[string]any{
+		{"id": "done--k1-parallel", "task": "done", "status": "ok"},
+		{"id": "live--k1-parallel", "task": "live", "status": "running"},
+	} {
+		tr.apply(client.Event{Type: "harness.stage.ended", Data: map[string]any{"run": run}})
+	}
+	if snap := tr.snapshot(0); len(snap.Harness) != 2 {
+		t.Fatalf("fresh runs = %d, want both", len(snap.Harness))
+	}
+	for id := range tr.harnessAt {
+		tr.harnessAt[id] = time.Now().Add(-2 * harnessRetention)
+	}
+	snap := tr.snapshot(0)
+	if _, ok := snap.Harness["done--k1-parallel"]; ok {
+		t.Fatal("a finished run outlived its retention")
+	}
+	if _, ok := snap.Harness["live--k1-parallel"]; !ok {
+		t.Fatal("a running run was dropped")
+	}
+}

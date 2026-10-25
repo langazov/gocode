@@ -389,6 +389,17 @@ func (s *Service) Available() []string {
 	return out
 }
 
+// Closed reports whether Shutdown has run: no server is running, and none
+// will start.
+func (s *Service) Closed() bool {
+	if s == nil {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.closed
+}
+
 // Shutdown stops every running server.
 func (s *Service) Shutdown() {
 	if s == nil {

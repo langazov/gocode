@@ -59,6 +59,17 @@ func (m *modelRoutedClient) Stream(ctx context.Context, request llm.Request, emi
 	return client.Stream(ctx, request, emit)
 }
 
+// CloseIdleConnections implements llm.IdleCloser over every client the
+// router created, and its fallback.
+func (m *modelRoutedClient) CloseIdleConnections() {
+	llm.CloseIdle(m.fallback)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, client := range m.clients {
+		llm.CloseIdle(client)
+	}
+}
+
 func (m *modelRoutedClient) clientFor(override *modelsdev.ProviderOverride) (llm.StreamClient, error) {
 	baseURL := override.API
 	if baseURL == "" {

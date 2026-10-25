@@ -222,10 +222,20 @@ type tree struct {
 	receivedBytes int
 	harness       map[string]client.HarnessRun
 	harnessSeq    int
+	// harnessAt is when each run was last reported, so a finished run can be
+	// dropped once every snapshot has had the chance to carry it.
+	harnessAt map[string]time.Time
 }
 
+// harnessRetention is how long a finished run stays in snapshots after its
+// last event. Snapshots can be dropped while the program is busy, so the
+// final state rides along for a while; after that the app's own run list
+// (mergeHarnessRuns) holds it, and the snapshot stops paying to copy it.
+const harnessRetention = time.Minute
+
 func newTree() *tree {
-	return &tree{sessions: map[string]*SessionNode{}, dirty: map[string]bool{}, harness: map[string]client.HarnessRun{}}
+	return &tree{sessions: map[string]*SessionNode{}, dirty: map[string]bool{}, harness: map[string]client.HarnessRun{},
+		harnessAt: map[string]time.Time{}}
 }
 
 func (t *tree) node(sessionID string) *SessionNode {
@@ -415,6 +425,11 @@ func (t *tree) snapshot(dropped int) Snapshot {
 		HarnessSeq:    t.harnessSeq,
 	}
 	for id, run := range t.harness {
+		if run.Status != "running" && time.Since(t.harnessAt[id]) > harnessRetention {
+			delete(t.harness, id)
+			delete(t.harnessAt, id)
+			continue
+		}
 		run.Rows = append([]client.HarnessRow(nil), run.Rows...)
 		out.Harness[id] = run
 	}
@@ -445,6 +460,7 @@ func (t *tree) applyHarness(e client.Event) bool {
 		return false
 	}
 	t.harness[run.ID] = run
+	t.harnessAt[run.ID] = time.Now()
 	t.harnessSeq++
 	return true
 }

@@ -299,3 +299,43 @@ func TestSyntaxCheck(t *testing.T) {
 		t.Fatalf("Validate ignored CheckScript: %v", err)
 	}
 }
+
+func TestWorkspaceDiff(t *testing.T) {
+	src, ws := t.TempDir(), t.TempDir()
+	write := func(root, rel, content string) {
+		t.Helper()
+		path := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	big := strings.Repeat("x", 200_000) // several comparison chunks
+	write(src, "same.txt", big)
+	write(ws, "same.txt", big)
+	write(src, "edited.go", "package a\n")
+	write(ws, "edited.go", "package b\n") // equal size, different bytes
+	write(src, "removed.md", "gone\n")
+	write(ws, "added.md", "new\n")
+	write(src, "img.bin", "\x00\x01")
+	write(ws, "img.bin", "\x00\x02")
+	write(ws, ".git/HEAD", "ref: x\n") // machinery, never a change
+
+	out, changed, err := WorkspaceDiff(src, ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(changed, ",") != "added.md,edited.go,img.bin,removed.md" {
+		t.Fatalf("changed = %v", changed)
+	}
+	for _, want := range []string{"+package b", "-package a", "--- /dev/null", "+++ /dev/null", "Binary file img.bin changed"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("diff lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "same.txt") {
+		t.Error("an unchanged file was diffed")
+	}
+}
