@@ -16,7 +16,24 @@ import (
 // CopyDir copies src into dst (created if missing), preserving file modes
 // and symlinks. A missing src leaves dst empty: a task without a workspace
 // starts from nothing.
+//
+// Copies are copy-on-write where the filesystem allows: a fresh dst is
+// cloned whole (clonefile on APFS), otherwise each file is reflinked when
+// it can be and copied when it cannot. A rollout of a large repository then
+// costs disk only for what it changes.
 func CopyDir(src, dst string) error {
+	if src != "" {
+		if _, err := os.Lstat(dst); os.IsNotExist(err) {
+			if info, err := os.Stat(src); err == nil && info.IsDir() {
+				if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+					return err
+				}
+				if cloneTree(src, dst) == nil {
+					return nil
+				}
+			}
+		}
+	}
 	if err := os.MkdirAll(dst, 0o755); err != nil {
 		return err
 	}
@@ -56,6 +73,9 @@ func CopyDir(src, dst string) error {
 }
 
 func copyFile(src, dst string, mode os.FileMode) error {
+	if _, err := os.Lstat(dst); os.IsNotExist(err) && cloneFile(src, dst) == nil {
+		return os.Chmod(dst, mode)
+	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err

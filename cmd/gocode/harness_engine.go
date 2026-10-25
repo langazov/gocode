@@ -10,6 +10,7 @@ import (
 	"github.com/langazov/gocode-go/internal/gocoder"
 	"github.com/langazov/gocode-go/internal/harness"
 	"github.com/langazov/gocode-go/internal/server"
+	"github.com/langazov/gocode-go/internal/session"
 )
 
 // harnessOptions are the knobs a Harness² run takes from the CLI or the API.
@@ -79,6 +80,9 @@ func harnessBackend(ctx context.Context, st *stack, setting string) (harness.Exp
 		HasKey:       cloud != nil,
 		CheckKey: func(ctx context.Context) error {
 			return gocoder.NewClient(libraryBaseURL(st.Config, account)).CheckKey(ctx, account.Key)
+		},
+		Features: func(ctx context.Context) ([]string, error) {
+			return gocoder.NewClient(libraryBaseURL(st.Config, account)).LibraryFeatures(ctx, account.Key)
 		},
 	})
 	if err != nil {
@@ -188,6 +192,9 @@ func (s *stack) harnessService() *harness.Service {
 			},
 			Install: func(ctx context.Context, summary *harness.Summary, req harness.InstallRequest) (harness.InstallResult, error) {
 				return installHarness(ctx, s.workdir, summary, req, func() (*harness.Cloud, error) { return harnessCloud(ctx, s) })
+			},
+			Prune: func(ctx context.Context, dir string) (int64, error) {
+				return session.DeleteUnder(ctx, s.Database, dir)
 			},
 			Base: func() harness.Tree {
 				tree, _, _ := baseHarness(s.workdir, "")

@@ -14,7 +14,9 @@ import (
 	"text/tabwriter"
 
 	"github.com/langazov/gocode-go/internal/clix"
+	"github.com/langazov/gocode-go/internal/db"
 	"github.com/langazov/gocode-go/internal/harness"
+	"github.com/langazov/gocode-go/internal/session"
 )
 
 // harnessCommand is the CLI for Harness² (internal/harness): adapt the
@@ -78,6 +80,17 @@ func harnessCommand() *clix.Command {
 					clix.Flag{Name: "dir", Kind: clix.KindString, Describe: "project directory (default: the current directory)"},
 				),
 				Run: runHarnessInstall,
+			},
+			{
+				Name: "prune",
+				Describe: "delete harness runs: their rollout and editor sessions and their run directories " +
+					"(the experience library is kept)",
+				Positionals: []clix.Positional{{Name: "task", Describe: "task id (with --k and --mode); omit with --all"}},
+				Flags: append(append([]clix.Flag{}, selectRun...),
+					clix.Flag{Name: "all", Kind: clix.KindBool, Describe: "every run"},
+					clix.Flag{Name: "sessions-only", Kind: clix.KindBool, Describe: "with --all: drop the sessions but keep run directories, so runs can still be shown and installed"},
+				),
+				Run: runHarnessPrune,
 			},
 			{
 				Name:        "validate",
@@ -726,4 +739,50 @@ func runHarnessLibrarySync(*clix.Args) error {
 	pushed, err := cloud.Sync(context.Background())
 	fmt.Printf("uploaded %d pending entr%s\n", pushed, map[bool]string{true: "y", false: "ies"}[pushed == 1])
 	return err
+}
+
+func runHarnessPrune(a *clix.Args) error {
+	ctx := context.Background()
+	task := a.PositionalOr("task", "")
+	all := a.Bool("all")
+	if (task == "") == !all {
+		return &usageError{msg: "give a task id, or --all"}
+	}
+	if a.Bool("sessions-only") && !all {
+		return &usageError{msg: "--sessions-only goes with --all"}
+	}
+	database, err := db.OpenDefault(ctx)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
+	runs := filepath.Join(harnessRoot(), "runs")
+	if all {
+		sessions, err := session.DeleteUnder(ctx, database, runs)
+		if err != nil {
+			return err
+		}
+		if !a.Bool("sessions-only") {
+			if err := os.RemoveAll(runs); err != nil {
+				return err
+			}
+			fmt.Printf("deleted every harness run (%d sessions); the experience library is kept\n", sessions)
+			return nil
+		}
+		fmt.Printf("deleted %d harness sessions; run directories are kept\n", sessions)
+		return nil
+	}
+	mode, err := harness.ParseMode(a.String("mode"))
+	if err != nil {
+		return err
+	}
+	service := &harness.Service{Root: runs, Prune: func(ctx context.Context, dir string) (int64, error) {
+		return session.DeleteUnder(ctx, database, dir)
+	}}
+	deleted, err := service.Delete(ctx, harness.RunID(task, a.IntOr("k", 1), mode))
+	if err != nil {
+		return err
+	}
+	fmt.Printf("deleted %s (%d sessions)\n", strings.Join(deleted.Removed, ", "), deleted.Sessions)
+	return nil
 }

@@ -654,3 +654,32 @@ func (s *Service) Parents(ctx context.Context, sessionID string) ([]string, erro
 	}
 	return out, nil
 }
+
+// DeleteUnder removes every session (and, through the cascade, its messages
+// and parts) whose directory is dir or below it, then every project rooted
+// there. It is how Harness² drops the rollout and improver sessions of a run:
+// they live in the run's own throwaway directories, so a directory prefix
+// names exactly them. It reports how many sessions went.
+//
+// The prefix match is a byte range, not LIKE or substr: SQLite's default
+// BINARY collation compares UTF-8 bytes, so [dir/, dir0) is every path under
+// dir and nothing else, whatever characters the path holds.
+func DeleteUnder(ctx context.Context, database *db.DB, dir string) (int64, error) {
+	dir = filepath.Clean(dir)
+	if dir == "" || dir == "." || dir == string(filepath.Separator) {
+		return 0, fmt.Errorf("session: refusing to delete under %q", dir)
+	}
+	low := dir + string(filepath.Separator)
+	high := dir + string(rune(filepath.Separator+1))
+	res, err := database.Exec(ctx,
+		`DELETE FROM session WHERE directory = ? OR (directory >= ? AND directory < ?)`, dir, low, high)
+	if err != nil {
+		return 0, err
+	}
+	deleted, _ := res.RowsAffected()
+	if _, err := database.Exec(ctx,
+		`DELETE FROM project WHERE worktree = ? OR (worktree >= ? AND worktree < ?)`, dir, low, high); err != nil {
+		return deleted, err
+	}
+	return deleted, nil
+}

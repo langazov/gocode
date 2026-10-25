@@ -176,6 +176,8 @@ func TestDetect(t *testing.T) {
 		{"bad key", DetectInput{PluginLoaded: true, PluginTools: ready.PluginTools, HasKey: true,
 			CheckKey: func(context.Context) error { return errors.New("401") }}, "auto", BackendLocal, "rejected", false},
 		{"cloud unavailable", DetectInput{}, "cloud", "", "", true},
+		{"auto, server stores .harness", withFeatures(ready, "skills", "harness"), "", BackendCloud, "stores .harness", false},
+		{"auto, older server", withFeatures(ready, "skills"), "", BackendSplit, "until gocoder.org", false},
 	}
 	for _, tc := range cases {
 		in := tc.in
@@ -332,4 +334,9 @@ func TestEngineRecordsSkillDriftAndExtraEvidence(t *testing.T) {
 	if _, err := os.Stat(evidence); err != nil {
 		t.Fatalf("extra evidence missing: %v", err)
 	}
+}
+
+func withFeatures(in DetectInput, features ...string) DetectInput {
+	in.Features = func(context.Context) ([]string, error) { return features, nil }
+	return in
 }

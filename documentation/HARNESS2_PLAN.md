@@ -390,7 +390,7 @@ What was built, where, and where it departs from the plan above.
 | Prompts (Phase 3) | `internal/harness/prompts.go`, `prompts/*.md` (attribution in `internal/harness/NOTICE`) |
 | Recursion, selection, reflection, library (Phases 4–5) | `recursion.go`, `selection.go`, `library.go`, `run.go` |
 | Library integration (Phase 5b, §7) | `internal/harness/cloud.go`; detection and wiring `cmd/gocode/harness_engine.go` |
-| CLI (Phase 6) | `cmd/gocode/cmd_harness.go` — `run`, `runs`, `show`, `install`, `validate`, `library ls\|show\|forget\|sync` |
+| CLI (Phase 6) | `cmd/gocode/cmd_harness.go` — `run`, `runs`, `show`, `install`, `prune`, `validate`, `library ls\|show\|forget\|sync` |
 | API + TUI (Phase 7) | `internal/harness/service.go`, `internal/server/harness.go`; `internal/tui/dialogs_harness.go`, the aggregator's `harness.*` branch |
 
 Departures from the plan:
@@ -420,15 +420,27 @@ Departures from the plan:
 - **Stage detail** is a read-only panel (§9.7) carrying the harness diff, not
   the diff viewer: the diff viewer is bound to `/api/vcs`.
 - **Split backend.** `auto` with library-plugin available resolves to
-  `split` — skills in the Library, experience on disk — until gocode-infra
-  reserves `.harness/`. `cloud` opts into the full backend now; uploads that
-  the server rejects stay pending and `sync` retries them.
+  `cloud` when the Library service lists `harness` in `GET /library/version`
+  `features`, and to `split` (skills in the Library, experience on disk)
+  against an older deployment. `cloud` can be forced; uploads the server
+  rejects stay pending and `sync` retries them.
 
-Not done:
+Server side (gocode-infra, branch `feature/harness-prefix`, not yet
+deployed): `internal/library/harness.go` reserves `.harness/` — any file type,
+5 MB per file, segments validated, 409 instead of dedupe — and plain search
+excludes it unless `path` targets it; `GET /library/version` now reports
+`features: ["skills", "harness"]`.
 
-- gocode-infra's `.harness/` prefix (§7.3) — a server change.
-- A rollout's workspace is a full copy (`.git` included); a very large
-  repository costs a copy per rollout. Source is copied into evidence only up
-  to 64 MB, past which a listing is written instead.
+Operational notes:
+
 - Rollout and improver sessions are ordinary sessions in the shared database,
-  under their temporary directories' projects; nothing cleans them up.
+  under their run's directories. `gocode harness prune <task>|--all`, the
+  runs list's `remove ctrl+d`, and `DELETE /api/harness/run/{id}` delete them
+  with the run (`session.DeleteUnder`); `prune --all --sessions-only` drops the
+  sessions but keeps every run's evidence and summary. Do not prune while a
+  run is going.
+- Workspace copies are copy-on-write where the filesystem allows
+  (`clonefile(2)` on APFS for the whole tree, `FICLONE` per file on btrfs/XFS),
+  else a plain copy — a very large repository on another filesystem still
+  costs a full copy per rollout. Source is copied into evidence only up to
+  64 MB, past which a listing is written instead.

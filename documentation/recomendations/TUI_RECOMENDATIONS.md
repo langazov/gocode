@@ -625,8 +625,9 @@ read-only panel; there is no new dialog kind (`dialogs_harness.go`).
 | `/harness library` · **Experience library · `<backend>`** | list | one category per domain; hint the lesson's cue (`pending upload ·` first when it has not reached the Library); footer the component census |
 | entry | read-only panel | `LESSON`, `WHY <label> WAS ADOPTED`, `WHAT EACH EDIT DID`, then every harness file |
 
-Footer actions: runs — `new ctrl+a` (standalone), `cancel ctrl+d` (two-press
-arm), `library ctrl+l`, `refresh ctrl+r`; run — `session ctrl+e` (open the
+Footer actions: runs — `new ctrl+a` (standalone), `remove ctrl+d` (two-press
+arm: cancels a running run, deletes a finished one with its sessions),
+`library ctrl+l`, `refresh ctrl+r`; run — `session ctrl+e` (open the
 row's rollout session), `install ctrl+s` and, when the backend is `split` or
 `cloud`, `publish ctrl+u` (finished runs only), `cancel ctrl+d` (running only),
 `back ctrl+b`; library — `forget ctrl+d` (two-press arm), `runs ctrl+b`.

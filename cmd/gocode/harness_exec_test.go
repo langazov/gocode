@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/langazov/gocode-go/internal/harness"
+	"github.com/langazov/gocode-go/internal/session"
 )
 
 // fakeHarnessModel is an OpenAI-compatible endpoint that plays every part of
@@ -213,6 +214,20 @@ func TestHarnessRunEndToEnd(t *testing.T) {
 	if dry, err := installHarness(ctx, project, summary, harness.InstallRequest{To: "project", DryRun: true}, nil); err != nil || dry.Written || !dry.Conflict {
 		t.Fatalf("dry run: %+v, %v", dry, err)
 	}
+	// Every rollout and editor session lives under the run directory, so
+	// pruning it leaves none behind — and nothing else goes with them.
+	var before, outside int
+	st.Database.QueryRow(ctx, `SELECT count(*) FROM session`).Scan(&before)
+	runs := filepath.Join(harnessRoot(), "runs")
+	pruned, err := session.DeleteUnder(ctx, st.Database, runs)
+	if err != nil || pruned != int64(harness.ExpectedRollouts(1)+harness.ExpectedSessions(1)+1) {
+		t.Fatalf("pruned %d of %d sessions: %v", pruned, before, err)
+	}
+	st.Database.QueryRow(ctx, `SELECT count(*) FROM session`).Scan(&outside)
+	if outside != before-int(pruned) {
+		t.Fatalf("%d sessions left, want %d", outside, before-int(pruned))
+	}
+
 	// A new stack in the project now carries the installed harness.
 	again := bootStackT(t, ctx, "")
 	if again.Runner.Harness == nil {

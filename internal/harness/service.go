@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -30,6 +31,9 @@ type Service struct {
 	Install func(ctx context.Context, summary *Summary, req InstallRequest) (InstallResult, error)
 	// Base supplies the starting harness for a launch that names none.
 	Base func() Tree
+	// Prune deletes the sessions (and their projects) rooted under a
+	// directory — session.DeleteUnder over the server's database.
+	Prune func(ctx context.Context, dir string) (int64, error)
 
 	mu     sync.Mutex
 	active map[string]*RunState
@@ -469,4 +473,66 @@ type InstallResult struct {
 	Warnings   []string       `json:"warnings,omitempty"`
 	Library    *PublishReport `json:"library,omitempty"`
 	Written    bool           `json:"written"`
+}
+
+// Deleted reports what Delete removed.
+type Deleted struct {
+	Sessions int64    `json:"sessions"`
+	Removed  []string `json:"removed"`
+}
+
+// ErrStillRunning is returned when deleting a run that has not stopped.
+var ErrStillRunning = errors.New("the run is still going; cancel it first")
+
+// Delete removes a run: its mode directory and every session under it. When
+// no other mode of the same task and k remains, the shared base rollouts and
+// their sessions go too. The experience library is not touched — a stored
+// lesson outlives the run that taught it.
+func (s *Service) Delete(ctx context.Context, id string) (Deleted, error) {
+	task, k, mode, err := ParseRunID(id)
+	if err != nil {
+		return Deleted{}, err
+	}
+	s.mu.Lock()
+	if state, ok := s.active[id]; ok && state.Status == "running" {
+		s.mu.Unlock()
+		return Deleted{}, ErrStillRunning
+	}
+	delete(s.active, id)
+	s.mu.Unlock()
+	engine := &Engine{Root: s.Root}
+	kdir := engine.Dir(task, k)
+	targets := []string{filepath.Join(kdir, mode)}
+	other := ModeSequential
+	if mode == ModeSequential {
+		other = ModeParallel
+	}
+	if _, err := os.Stat(engine.SummaryPath(task, k, other)); err != nil {
+		targets = []string{kdir}
+	}
+	var out Deleted
+	for _, dir := range targets {
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		if s.Prune != nil {
+			n, err := s.Prune(ctx, dir)
+			out.Sessions += n
+			if err != nil {
+				return out, err
+			}
+		}
+		if err := os.RemoveAll(dir); err != nil {
+			return out, err
+		}
+		out.Removed = append(out.Removed, dir)
+	}
+	if len(out.Removed) == 0 {
+		return out, fmt.Errorf("no run %s", id)
+	}
+	// An empty task directory is noise in the listing.
+	if entries, err := os.ReadDir(filepath.Join(s.Root, task)); err == nil && len(entries) == 0 {
+		_ = os.Remove(filepath.Join(s.Root, task))
+	}
+	return out, nil
 }

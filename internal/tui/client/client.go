@@ -1213,3 +1213,8 @@ func (c *Client) HarnessEntry(ctx context.Context, domain, task string) (*Harnes
 func (c *Client) ForgetHarnessEntry(ctx context.Context, domain, task string) error {
 	return c.do(ctx, http.MethodDelete, "/api/harness/library/"+url.PathEscape(domain)+"/"+url.PathEscape(task), nil, nil)
 }
+
+// DeleteHarness deletes a finished run: its sessions and run directory.
+func (c *Client) DeleteHarness(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/harness/run/"+url.PathEscape(id), nil, nil)
+}

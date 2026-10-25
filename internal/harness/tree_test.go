@@ -222,3 +222,43 @@ func TestOverlay(t *testing.T) {
 		t.Fatal("hooks without hooks.json")
 	}
 }
+
+// A workspace copy, cloned or not, is independent of its source: a rollout
+// writing into it must never reach the user's files.
+func TestCopyDirIsIndependent(t *testing.T) {
+	src := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "pkg", "a.go"), []byte("package pkg\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("pkg/a.go", filepath.Join(src, "link.go")); err != nil {
+		t.Fatal(err)
+	}
+	for _, fresh := range []bool{true, false} {
+		dst := filepath.Join(t.TempDir(), "ws")
+		if !fresh {
+			// An existing destination takes the per-file path.
+			if err := os.MkdirAll(dst, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if err := CopyDir(src, dst); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dst, "pkg", "a.go"), []byte("changed\n"), 0o640); err != nil {
+			t.Fatal(err)
+		}
+		data, _ := os.ReadFile(filepath.Join(src, "pkg", "a.go"))
+		if string(data) != "package pkg\n" {
+			t.Fatalf("fresh=%v: writing the copy changed the source: %q", fresh, data)
+		}
+		if info, err := os.Stat(filepath.Join(dst, "pkg", "a.go")); err != nil || info.Mode().Perm() != 0o640 {
+			t.Fatalf("fresh=%v: mode not kept: %v %v", fresh, info, err)
+		}
+		if link, err := os.Readlink(filepath.Join(dst, "link.go")); err != nil || link != "pkg/a.go" {
+			t.Fatalf("fresh=%v: symlink not kept: %q %v", fresh, link, err)
+		}
+	}
+}

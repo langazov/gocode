@@ -71,6 +71,9 @@ type DetectInput struct {
 	// HasKey reports a stored gocoder.org API key; CheckKey validates it.
 	HasKey   bool
 	CheckKey func(context.Context) error
+	// Features reports the reserved roots the Library service supports; on
+	// auto, "harness" among them selects the full cloud backend.
+	Features func(context.Context) ([]string, error)
 }
 
 // Detection is the backend a run uses and why.
@@ -83,9 +86,10 @@ type Detection struct {
 var requiredPluginTools = []string{"library_skill_search", "library_skill_store"}
 
 // Detect picks the backend once per run (§7.1). auto falls back to local
-// with the failed check named; cloud fails instead. Until gocode-infra
-// reserves `.harness/`, auto resolves to split: the Library for skills, the
-// local filesystem for experience.
+// with the failed check named; cloud fails instead. auto resolves to cloud
+// only when the service says it stores `.harness/`; against an older
+// deployment it resolves to split — the Library for skills, the local
+// filesystem for experience.
 func Detect(ctx context.Context, in DetectInput) (Detection, error) {
 	setting := strings.ToLower(strings.TrimSpace(in.Setting))
 	switch setting {
@@ -117,6 +121,11 @@ func Detect(ctx context.Context, in DetectInput) (Detection, error) {
 	}
 	if setting == BackendCloud {
 		return Detection{Backend: BackendCloud, Reason: "library-plugin loaded and signed in"}, nil
+	}
+	if in.Features != nil {
+		if features, err := in.Features(ctx); err == nil && containsAll(features, []string{"harness"}) {
+			return Detection{Backend: BackendCloud, Reason: "library-plugin loaded and signed in; gocoder.org stores .harness/"}, nil
+		}
 	}
 	return Detection{Backend: BackendSplit, Reason: "library-plugin loaded and signed in; experience stays local until gocoder.org accepts .harness/"}, nil
 }

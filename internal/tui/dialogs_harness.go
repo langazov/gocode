@@ -37,7 +37,10 @@ func (a *App) openHarnessRuns() {
 	o.SetActions([]dialogAction{
 		// Standalone: starting a run must work from the empty list.
 		{Title: "new", Keys: "ctrl+a", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.newHarnessRun("") }},
-		{Title: "cancel", Keys: "ctrl+d", OnTrigger: a.cancelHarnessAction},
+		// One key for both ends of a run's life: a running run is stopped, a
+		// finished one deleted (its sessions and run directory). Both arm
+		// first, like every destructive list action.
+		{Title: "remove", Keys: "ctrl+d", OnTrigger: a.removeHarnessAction},
 		{Title: "library", Keys: "ctrl+l", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.harnessLibraryOverlay() }},
 		{Title: "refresh", Keys: "ctrl+r", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.loadHarnessRunsCmd() }},
 	})
@@ -370,10 +373,10 @@ func (a *App) confirmHarnessPlan(msg harnessPlanMsg) {
 	}, nil)
 }
 
-func (a *App) cancelHarnessAction(item overlayItem) tea.Cmd {
+func (a *App) removeHarnessAction(item overlayItem) tea.Cmd {
 	run, ok := a.harnessRunByID(item.Value)
-	if !ok || run.Status != "running" {
-		return staticMsg(statusMsg{text: "that run is not running"})
+	if !ok {
+		return nil
 	}
 	o := a.overlay
 	if o != nil && o.Armed() != item.Value {
@@ -383,7 +386,17 @@ func (a *App) cancelHarnessAction(item overlayItem) tea.Cmd {
 	if o != nil {
 		o.Disarm()
 	}
-	return a.cancelHarnessRun(item.Value)
+	if run.Status == "running" {
+		return a.cancelHarnessRun(item.Value)
+	}
+	id := item.Value
+	return func() tea.Msg {
+		if err := a.client.DeleteHarness(a.ctx, id); err != nil {
+			return statusMsg{text: "delete failed: " + err.Error()}
+		}
+		runs, err := a.client.HarnessRuns(a.ctx)
+		return harnessRunsMsg{runs: runs, err: err, status: "deleted " + run.Task + " (" + run.Mode + ")"}
+	}
 }
 
 func (a *App) cancelHarnessRun(id string) tea.Cmd {

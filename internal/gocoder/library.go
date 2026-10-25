@@ -394,3 +394,16 @@ func (c *Client) SearchLibrarySkills(ctx context.Context, bearer string, req Ski
 	}
 	return out.Results, nil
 }
+
+// LibraryFeatures returns the reserved roots the Library service supports
+// ("skills", "harness"), from GET /library/version. A deployment that
+// predates the list reports none, which callers read as "skills only".
+func (c *Client) LibraryFeatures(ctx context.Context, bearer string) ([]string, error) {
+	var out struct {
+		Features []string `json:"features"`
+	}
+	if err := c.do(ctx, http.MethodGet, "/library/version", bearer, nil, &out); err != nil {
+		return nil, err
+	}
+	return out.Features, nil
+}

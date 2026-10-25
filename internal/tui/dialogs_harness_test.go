@@ -65,6 +65,8 @@ func newHarnessServer(t *testing.T, runs []client.HarnessRun) (*harnessServer, s
 		case strings.Contains(r.URL.Path, "/stage/"):
 			json.NewEncoder(w).Encode(client.HarnessStage{Label: "agg1", Diff: "+check the answer", SessionID: "ses_rollout",
 				Files: client.HarnessFiles{Modified: []string{"systemprompt.md"}}, Deliverable: "done", Delivered: true})
+		case r.Method == http.MethodDelete:
+			json.NewEncoder(w).Encode(map[string]any{"sessions": 1})
 		case strings.HasSuffix(r.URL.Path, "/install"):
 			json.NewEncoder(w).Encode(client.HarnessInstall{Target: "/p/.gocode/harness",
 				Files: client.HarnessFiles{Added: []string{"systemprompt.md"}}, Written: body["dryRun"] != true})
@@ -261,5 +263,20 @@ func TestHarnessStageLines(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("stage lines lack %q:\n%s", want, text)
 		}
+	}
+}
+
+// remove arms first; on a finished run the second press deletes it.
+func TestHarnessRemoveArmsThenDeletes(t *testing.T) {
+	state, url := newHarnessServer(t, sampleHarnessRuns())
+	app := newTestApp(t, url)
+	driveCmd(t, app, app.harnessOverlay())
+	finished := overlayItem{Value: "fix-login--k1-parallel"}
+	if cmd := app.removeHarnessAction(finished); cmd != nil || app.overlay.Armed() != finished.Value {
+		t.Fatal("the first press must only arm")
+	}
+	applyCmd(t, app, app.removeHarnessAction(finished))
+	if !state.saw("DELETE /api/harness/run/fix-login--k1-parallel") {
+		t.Fatalf("no delete sent: %v", state.requests)
 	}
 }

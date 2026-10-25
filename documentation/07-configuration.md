@@ -143,7 +143,7 @@ Harness² (`gocode harness`, `/harness` in the TUI; see
 | Key | Default | Meaning |
 |---|---|---|
 | `enabled` | `true` | `false` never overlays the harness installed at `.gocode/harness` (also `GOCODE_DISABLE_HARNESS=1`) |
-| `library` | `"auto"` | experience-library backend: `auto` uses the gocoder.org Library when library-plugin is loaded and signed in (skills in the Library, experience on disk until gocoder.org accepts `.harness/`), else local; `local`; `cloud` (fail rather than fall back) |
+| `library` | `"auto"` | experience-library backend: `auto` uses the gocoder.org Library when library-plugin is loaded and signed in — fully when the service reports the `harness` feature (`GET /library/version`), else skills in the Library and experience on disk (`split`) — and local otherwise; `local`; `cloud` (fail rather than fall back) |
 | `crossDomain` | `false` | also show lessons from other domains (cloud backend) |
 | `model` | executor's | `provider/model` for the editor, selector and reflector sessions |
 

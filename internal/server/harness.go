@@ -36,6 +36,7 @@ func (s *Server) registerHarness(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/harness/run", s.startHarnessRun)
 	mux.HandleFunc("GET /api/harness/run/{runID}", s.getHarnessRun)
 	mux.HandleFunc("POST /api/harness/run/{runID}/cancel", s.cancelHarnessRun)
+	mux.HandleFunc("DELETE /api/harness/run/{runID}", s.deleteHarnessRun)
 	mux.HandleFunc("GET /api/harness/run/{runID}/stage/{label}", s.getHarnessStage)
 	mux.HandleFunc("POST /api/harness/run/{runID}/install", s.installHarnessRun)
 	mux.HandleFunc("GET /api/harness/library", s.listHarnessLibrary)
@@ -157,6 +158,20 @@ func (s *Server) cancelHarnessRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": true})
+}
+
+func (s *Server) deleteHarnessRun(w http.ResponseWriter, r *http.Request) {
+	deleted, err := s.Harness.Delete(r.Context(), r.PathValue("runID"))
+	switch {
+	case errors.Is(err, harness.ErrStillRunning):
+		writeError(w, http.StatusConflict, err.Error())
+	case err != nil && len(deleted.Removed) == 0:
+		writeError(w, http.StatusNotFound, err.Error())
+	case err != nil:
+		writeError(w, http.StatusInternalServerError, err.Error())
+	default:
+		writeJSON(w, http.StatusOK, deleted)
+	}
 }
 
 func (s *Server) getHarnessStage(w http.ResponseWriter, r *http.Request) {

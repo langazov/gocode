@@ -324,6 +324,7 @@ finished run keeps its id across restarts.
 | `POST` | `/api/harness/run` | start one: `{prompt, id?, domain?, workspace?, k?, mode?, model?, improverModel?, library?, crossDomain?}`; `dryRun: true` returns the plan (rows, budget, backend) without spending anything. `409` while the same run is going |
 | `GET` | `/api/harness/run/{runID}` | one run: status, phase, a row per label, cost, adopted label, lesson |
 | `POST` | `/api/harness/run/{runID}/cancel` | stop it; finished work stays cached and a rerun resumes |
+| `DELETE` | `/api/harness/run/{runID}` | delete a stopped run: its directory and every rollout and editor session under it (the shared base too, when no other mode of that task and k remains); `409` while it runs. The experience library is kept |
 | `GET` | `/api/harness/run/{runID}/stage/{label}` | a label's harness diff against the base, editor notes, and its rollout (session id, deliverable) |
 | `POST` | `/api/harness/run/{runID}/install` | `{to: project\|library\|both, force, dryRun}`; `409` with the result when an installed harness or a Library skill differs and `force` is unset |
 | `GET` | `/api/harness/library` | the experience library by domain, with the active backend |

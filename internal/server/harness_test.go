@@ -144,4 +144,21 @@ drain:
 	if rec.Code != 409 {
 		t.Fatalf("sync on a local store: %d", rec.Code)
 	}
+
+	var pruned []string
+	server.Harness.Prune = func(_ context.Context, dir string) (int64, error) {
+		pruned = append(pruned, dir)
+		return 3, nil
+	}
+	rec = doJSON(t, server, "DELETE", "/api/harness/run/"+started.ID, nil)
+	if rec.Code != 200 || len(pruned) != 1 || !strings.HasSuffix(pruned[0], filepath.Join("answer", "k1")) {
+		t.Fatalf("delete: %d %s, pruned %v", rec.Code, rec.Body.String(), pruned)
+	}
+	if _, err := os.Stat(filepath.Join(root, "answer")); !os.IsNotExist(err) {
+		t.Fatalf("run directory left behind: %v", err)
+	}
+	rec = doJSON(t, server, "DELETE", "/api/harness/run/"+started.ID, nil)
+	if rec.Code != 404 {
+		t.Fatalf("second delete: %d", rec.Code)
+	}
 }
