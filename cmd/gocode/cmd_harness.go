@@ -295,6 +295,10 @@ func describeHarnessEvent(ev harness.Event) string {
 		return fmt.Sprintf("  %s selected %s%s", mark, ev.Label, detail)
 	case harness.EventReflected:
 		return fmt.Sprintf("  %s lesson%s", mark, detail)
+	case harness.EventSession:
+		return fmt.Sprintf("    %s %s session %s", ev.Label, ev.Role, ev.SessionID)
+	case harness.EventStageRetry:
+		return fmt.Sprintf("  ↻ %s attempt %d rejected · %s", ev.Label, ev.Attempt, clipLine(ev.Detail, 160))
 	}
 	return ""
 }

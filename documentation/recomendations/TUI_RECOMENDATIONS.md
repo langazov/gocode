@@ -627,10 +627,12 @@ read-only panel; there is no new dialog kind (`dialogs_harness.go`).
 
 Footer actions: runs — `new ctrl+a` (standalone), `remove ctrl+d` (two-press
 arm: cancels a running run, deletes a finished one with its sessions),
-`library ctrl+l`, `refresh ctrl+r`; run — `session ctrl+e` (open the
-row's rollout session), `install ctrl+s` and, when the backend is `split` or
-`cloud`, `publish ctrl+u` (finished runs only), `cancel ctrl+d` (running only),
-`back ctrl+b`; library — `forget ctrl+d` (two-press arm), `runs ctrl+b`.
+`library ctrl+l`, `refresh ctrl+r`; run — `watch ctrl+e` (open the session
+the row is working in now: its editor's while editing, its rollout's while
+rolling), `editor ctrl+o` (the row's editor session, also after it ended),
+`log ctrl+g` (the run's event log), `install ctrl+s` and, when the backend is
+`split` or `cloud`, `publish ctrl+u` (finished runs only), `cancel ctrl+d`
+(running only), `back ctrl+b`; library — `forget ctrl+d` (two-press arm), `runs ctrl+b`.
 
 **Rules:**
 
@@ -650,6 +652,20 @@ row's rollout session), `install ctrl+s` and, when the backend is `split` or
   the open runs list or plan rebuilds in place, keeping filter and selection
   (`refreshHarnessDialogs`). A run that stops raises a toast — success names
   the adopted label and cost, failure is `toastError`.
+- **The plan is a monitor.** A working row's hint is what its session is
+  doing now — the newest running tool and its telling argument
+  (`editing · read context/rollouts/base1.md`), or `thinking` — taken from the
+  session events the server relays from the rollout and editor stacks; a row
+  with rejected proposals carries `↻N`. The open plan rebuilds only when that
+  activity changes (`refreshHarnessActivity`), not on every frame.
+- **Every step can be watched live.** Rollout and editor sessions stream in
+  the session view exactly like a subagent's, because their events reach the
+  interface's stream; `/harness` returns to the run.
+- **The log is the lowest level.** **Harness log · `<task>`** is a read-only
+  panel (§9.7) of every event, time-stamped: `▸` phase, `◐` started or
+  session created (with its id), `↻` rejected attempt with the validation
+  error, `✓`/`✗` ended with cost. It follows new events while the reader is
+  at the bottom and holds its place once they scroll up.
 - **The hint row says a run is going.** While one runs, the right group gains
   `harness <task> · <phase> <done>/<rows> · $` in `TextMuted`, ahead of the
   `ctrl+p commands` hint and under the same `ShowActivityMeta` width gate as

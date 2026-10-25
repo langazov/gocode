@@ -23,6 +23,7 @@ why it is put together that way, and where to look when changing it.
 | **10** | [Development](10-development.md) | Building, testing, releasing, and the porting conventions |
 | **11** | [Gocode Desktop](11-desktop.md) | The Flutter desktop client: install, connection modes, sessions, Source Control |
 | — | [Harness²](HARNESS2_PLAN.md) | Recursive harness adaptation: design, the gocode mapping, library-plugin integration, and what was built |
+| — | [Harness² in Gocode Desktop](HARNESS2_GUI.md) | Plan for the desktop client's Harness² screens: data layer, screens, server additions, phases, tests |
 
 ## Design recommendations
 

@@ -286,6 +286,14 @@ type App struct {
 	harnessOpenRun    string
 	harnessLibrary    *client.HarnessLibrary
 	harnessLibraryErr string
+	// harnessLog is the open log panel's events for harnessLogRun, and
+	// harnessLogPos its scroll position at the last refresh (following while
+	// the reader stays at the bottom); harnessActivitySig is what the open
+	// run plan last showed of its rows' live activity.
+	harnessLog         []client.HarnessLogEvent
+	harnessLogRun      string
+	harnessLogPos      int
+	harnessActivitySig string
 	// catalogModels is the last-fetched model list, the port of TS's
 	// sync.data.provider: the dialogs render from it immediately instead of
 	// waiting on a request, and a refresh lands through catalogMsg.

@@ -1,7 +1,9 @@
 package harness
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -69,6 +71,75 @@ func (e *Engine) emit(ev Event) {
 	e.eventMu.Lock()
 	defer e.eventMu.Unlock()
 	e.OnEvent(ev)
+}
+
+// LogFile is the per-run event log, beside summary.json: one JSON event per
+// line, every event the run emitted, in order. It is how a run — from the
+// CLI or a server — can be followed and audited at the lowest level after
+// the fact.
+const LogFile = "events.jsonl"
+
+// runLog stamps and appends one run's events to its log, then forwards them
+// to the engine's OnEvent.
+type runLog struct {
+	engine     *Engine
+	task, mode string
+	mu         sync.Mutex
+	file       *os.File
+}
+
+func (e *Engine) openLog(path, task, mode string) *runLog {
+	l := &runLog{engine: e, task: task, mode: mode}
+	if f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644); err == nil {
+		l.file = f
+	}
+	return l
+}
+
+func (l *runLog) emit(ev Event) {
+	ev.Task, ev.Mode = l.task, l.mode
+	if ev.Time == 0 {
+		ev.Time = time.Now().UnixMilli()
+	}
+	if l.file != nil {
+		if data, err := json.Marshal(ev); err == nil {
+			l.mu.Lock()
+			_, _ = l.file.Write(append(data, '\n'))
+			l.mu.Unlock()
+		}
+	}
+	l.engine.emit(ev)
+}
+
+func (l *runLog) close() {
+	if l.file != nil {
+		_ = l.file.Close()
+	}
+}
+
+// ReadLog reads a run's event log; after skips that many events, so a
+// follower can ask only for what is new.
+func ReadLog(path string, after int) ([]Event, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var out []Event
+	n := 0
+	for _, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		n++
+		if n <= after {
+			continue
+		}
+		var ev Event
+		if json.Unmarshal(line, &ev) == nil {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
 }
 
 func (e *Engine) session(ctx context.Context, req SessionRequest) (Reply, error) {
@@ -187,8 +258,10 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 
 	ledger := &Ledger{}
 	summary.Ledger = ledger
+	log := e.openLog(filepath.Join(dir, mode, LogFile), task.ID, mode)
+	defer log.close()
 	m := &modeRun{
-		engine: e, task: task, k: k, mode: mode, dir: filepath.Join(dir, mode), ledger: ledger,
+		engine: e, task: task, k: k, mode: mode, dir: filepath.Join(dir, mode), ledger: ledger, log: log,
 		trees: map[string]Tree{"base": baseTree}, rollouts: map[string]RunRecord{},
 	}
 
@@ -207,14 +280,14 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 		m.extra = extra
 	}
 
-	e.emit(Event{Type: EventPhase, Task: task.ID, Mode: mode, Phase: "base"})
+	log.emit(Event{Type: EventPhase, Phase: "base"})
 	base := make([]RunRecord, k)
 	parallel(k, e.rolloutWidth(), func(i int) {
 		label := fmt.Sprintf("base%d", i+1)
 		// Rollouts materialise their own copy, without the editor stubs: the
 		// base evidence directory must stay byte-identical across a resume,
 		// or every cached improver reply would miss.
-		base[i] = e.roll(ctx, task, label, baseTree, filepath.Join(dir, "base", "harnesses", label), filepath.Join(dir, "base", "runs", label))
+		base[i] = e.roll(ctx, task, label, baseTree, filepath.Join(dir, "base", "harnesses", label), filepath.Join(dir, "base", "runs", label), log.emit)
 	})
 	anyOK := false
 	for _, run := range base {
@@ -257,10 +330,10 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 	sim := Diversity(finals)
 	summary.Similarity = &sim
 
-	e.emit(Event{Type: EventPhase, Task: task.ID, Mode: mode, Phase: "select"})
+	log.emit(Event{Type: EventPhase, Phase: "select"})
 	sel := m.selectFinal(ctx)
 	summary.Selection = sel
-	e.emit(Event{Type: EventSelected, Task: task.ID, Mode: mode, Phase: "select", Label: sel.ChosenLabel, OK: sel.OK,
+	log.emit(Event{Type: EventSelected, Phase: "select", Label: sel.ChosenLabel, OK: sel.OK,
 		Detail: firstNonEmpty(sel.Error, sel.Why)})
 	if !sel.OK {
 		summary.Errors = append(summary.Errors, "selection failed: "+sel.Error)
@@ -269,7 +342,7 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 	summary.Adopted = m.harnessDir(sel.ChosenLabel)
 
 	if e.Store != nil {
-		e.emit(Event{Type: EventPhase, Task: task.ID, Mode: mode, Phase: "reflect"})
+		log.emit(Event{Type: EventPhase, Phase: "reflect"})
 		exp := m.reflect(ctx, sel, baseDir)
 		summary.Experience = exp
 		if exp != nil {

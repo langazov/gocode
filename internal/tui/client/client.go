@@ -1027,11 +1027,35 @@ func (c *Client) BackgroundAvailable(ctx context.Context) bool {
 
 // HarnessRow is one label's progress in a Harness² run (harness.Row).
 type HarnessRow struct {
-	Label   string  `json:"label"`
-	Phase   string  `json:"phase"`
-	State   string  `json:"state"`
-	CostUSD float64 `json:"costUSD"`
-	Detail  string  `json:"detail,omitempty"`
+	Label         string  `json:"label"`
+	Phase         string  `json:"phase"`
+	State         string  `json:"state"`
+	CostUSD       float64 `json:"costUSD"`
+	Detail        string  `json:"detail,omitempty"`
+	SessionID     string  `json:"sessionID,omitempty"`
+	EditSessionID string  `json:"editSessionID,omitempty"`
+	Retries       int     `json:"retries,omitempty"`
+}
+
+// HarnessLogEvent is one line of a run's event log (harness.Event).
+type HarnessLogEvent struct {
+	Type      string  `json:"type"`
+	Time      int64   `json:"time"`
+	Phase     string  `json:"phase,omitempty"`
+	Label     string  `json:"label,omitempty"`
+	OK        bool    `json:"ok"`
+	Detail    string  `json:"detail,omitempty"`
+	CostUSD   float64 `json:"costUSD,omitempty"`
+	SessionID string  `json:"sessionID,omitempty"`
+	Role      string  `json:"role,omitempty"`
+	Attempt   int     `json:"attempt,omitempty"`
+}
+
+// HarnessLog reads a run's event log after the first `after` events.
+func (c *Client) HarnessLog(ctx context.Context, id string, after int) ([]HarnessLogEvent, error) {
+	var out []HarnessLogEvent
+	err := c.do(ctx, http.MethodGet, "/api/harness/run/"+url.PathEscape(id)+"/log?after="+strconv.Itoa(after), nil, &out)
+	return out, err
 }
 
 // HarnessRun is a Harness² run, live or finished (harness.RunState). The

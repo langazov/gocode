@@ -88,6 +88,13 @@ type Row struct {
 	State   string  `json:"state"`
 	CostUSD float64 `json:"costUSD"`
 	Detail  string  `json:"detail,omitempty"`
+	// SessionID is the label's rollout session; EditSessionID its latest
+	// improver session (editor, selector or reflector). Either can be opened
+	// while it runs to watch it live.
+	SessionID     string `json:"sessionID,omitempty"`
+	EditSessionID string `json:"editSessionID,omitempty"`
+	// Retries counts rejected proposals for the label.
+	Retries int `json:"retries,omitempty"`
 }
 
 // RunState is a run as clients see it, live or finished.
@@ -184,6 +191,17 @@ func (r *RunState) apply(ev Event) {
 	case EventSelected:
 		r.Adopted = ev.Label
 		r.Why = ev.Detail
+	case EventSession:
+		row := r.row(ev.Label)
+		if ev.Role == "rollout" {
+			row.SessionID = ev.SessionID
+		} else {
+			row.EditSessionID = ev.SessionID
+		}
+	case EventStageRetry:
+		row := r.row(ev.Label)
+		row.Retries++
+		row.Detail = fmt.Sprintf("retry %d: %s", ev.Attempt, ev.Detail)
 	case EventReflected:
 		row := r.row("experience")
 		row.State = map[bool]string{true: RowOK, false: RowFailed}[ev.OK]
@@ -317,7 +335,44 @@ func (s *Service) Get(id string) (RunState, error) {
 	if err != nil {
 		return RunState{}, fmt.Errorf("no run %s", id)
 	}
-	return FromSummary(summary), nil
+	state := FromSummary(summary)
+	// The summary keeps rollout sessions; the log also has the improver
+	// sessions and retries, so a finished run opens to the same detail a
+	// live one shows.
+	if events, err := ReadLog(s.logPath(task, k, mode), 0); err == nil {
+		for _, ev := range events {
+			switch ev.Type {
+			case EventSession:
+				row := state.row(ev.Label)
+				if ev.Role == "rollout" {
+					row.SessionID = ev.SessionID
+				} else {
+					row.EditSessionID = ev.SessionID
+				}
+			case EventStageRetry:
+				state.row(ev.Label).Retries++
+			}
+		}
+	}
+	return state, nil
+}
+
+func (s *Service) logPath(task string, k int, mode string) string {
+	return filepath.Join((&Engine{Root: s.Root}).Dir(task, k), mode, LogFile)
+}
+
+// Log returns a run's event log after the first `after` events, so a
+// follower polls for only what is new.
+func (s *Service) Log(id string, after int) ([]Event, error) {
+	task, k, mode, err := ParseRunID(id)
+	if err != nil {
+		return nil, err
+	}
+	events, err := ReadLog(s.logPath(task, k, mode), after)
+	if os.IsNotExist(err) {
+		return []Event{}, nil
+	}
+	return events, err
 }
 
 func (s *Service) summaryPath(task string, k int, mode string) string {
@@ -371,6 +426,7 @@ func FromSummary(s *Summary) RunState {
 		row.State = map[bool]string{true: RowOK, false: RowFailed}[run.OK && run.Delivered]
 		row.CostUSD += run.CostUSD
 		row.Detail = run.Error
+		row.SessionID = run.SessionID
 	}
 	for _, stage := range s.Stages {
 		row := state.row(stage.Label)

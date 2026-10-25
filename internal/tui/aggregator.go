@@ -23,6 +23,23 @@ type ToolState struct {
 	CallID string
 	Name   string
 	Status string // pending | completed | error
+	// Input is the call's one telling argument (a command, a path, a
+	// pattern), for surfaces that show what a session is doing right now.
+	Input string
+}
+
+// toolInputSummary picks the argument that says what a call does.
+func toolInputSummary(input any) string {
+	args, ok := input.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"command", "filePath", "path", "pattern", "url", "query", "name", "description", "subagent_type"} {
+		if v, ok := args[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.Join(strings.Fields(v), " ")
+		}
+	}
+	return ""
 }
 
 // SessionNode is the aggregator's live model of one session. Subagent sessions
@@ -329,7 +346,7 @@ func (t *tree) apply(e client.Event) bool {
 	case "session.next.tool.called":
 		callID, _ := e.Data["callID"].(string)
 		name, _ := e.Data["tool"].(string)
-		node.Tools[callID] = ToolState{CallID: callID, Name: name, Status: "pending"}
+		node.Tools[callID] = ToolState{CallID: callID, Name: name, Status: "pending", Input: toolInputSummary(e.Data["input"])}
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.tool.success", "session.next.tool.failed":

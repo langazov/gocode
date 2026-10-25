@@ -242,6 +242,9 @@ type RolloutRequest struct {
 	HarnessDir string
 	// Workspace is a fresh copy of the task workspace, owned by this rollout.
 	Workspace string
+	// OnSession, when set, is called with the rollout's session id as soon
+	// as the session exists, so a client can open it while it runs.
+	OnSession func(sessionID string)
 }
 
 // Rollout is what one execution produced. The engine renders its evidence
@@ -276,6 +279,8 @@ type SessionRequest struct {
 	// session runs rooted here and may edit `context/harness/`.
 	Workspace string
 	Mission   string
+	// OnSession, as on RolloutRequest.
+	OnSession func(sessionID string)
 }
 
 // Reply is what an improver session returned.
@@ -291,7 +296,8 @@ type Improver interface {
 
 // Event reports progress for the CLI, the HTTP API and the TUI.
 type Event struct {
-	Type    string  `json:"type"` // stage.started, stage.ended, rollout.started, rollout.ended, selected, reflected, phase
+	Type    string  `json:"type"` // see the Event* constants
+	Time    int64   `json:"time"` // unix milliseconds, set when emitted
 	Task    string  `json:"task"`
 	Mode    string  `json:"mode,omitempty"`
 	Phase   string  `json:"phase,omitempty"` // base, probe, compose, select, reflect
@@ -299,6 +305,12 @@ type Event struct {
 	OK      bool    `json:"ok"`
 	Detail  string  `json:"detail,omitempty"`
 	CostUSD float64 `json:"costUSD,omitempty"`
+	// SessionID and Role are set on EventSession: which session a stage or
+	// rollout runs in (Role is "rollout" or an improver role).
+	SessionID string `json:"sessionID,omitempty"`
+	Role      string `json:"role,omitempty"`
+	// Attempt numbers EventStageRetry's rejected attempt.
+	Attempt int `json:"attempt,omitempty"`
 }
 
 // Event types.
@@ -310,6 +322,11 @@ const (
 	EventStageEnded     = "stage.ended"
 	EventSelected       = "selected"
 	EventReflected      = "reflected"
+	// EventSession says a stage or rollout's session now exists.
+	EventSession = "session"
+	// EventStageRetry reports a rejected proposal and why; the next attempt
+	// follows.
+	EventStageRetry = "stage.retry"
 )
 
 // ExpectedRollouts is R = 4k: k base + 2k candidates + k finals (ledger.py).

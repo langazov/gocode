@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/langazov/gocode-go/internal/tui/client"
@@ -143,12 +144,59 @@ func (a *App) openHarnessRun(id string) {
 		return
 	}
 	a.harnessOpenRun = id
-	items := make([]overlayItem, 0, len(run.Rows)+2)
+	items := a.harnessRowItems(run)
+	title := harnessRunTitle + " · " + run.Task
+	a.openList(title, items)
+	o := a.overlay
+	o.SetSize(dialogLarge)
+	o.SetPlaceholder(fmt.Sprintf("%s · %s · %s", run.Budget, run.Backend, formatMoney(run.CostUSD)))
+	if run.Adopted != "" {
+		o.SetCurrent(run.Adopted)
+	}
+	actions := []dialogAction{
+		// The session the row is running right now — its editor while it
+		// edits, its rollout while it rolls — streamed live like a subagent.
+		{Title: "watch", Keys: "ctrl+e", OnTrigger: func(item overlayItem) tea.Cmd { return a.watchHarnessRow(id, item.Value, false) }},
+		{Title: "editor", Keys: "ctrl+o", OnTrigger: func(item overlayItem) tea.Cmd { return a.watchHarnessRow(id, item.Value, true) }},
+		{Title: "log", Keys: "ctrl+g", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.openHarnessLog(id) }},
+	}
+	if run.Status == "ok" {
+		actions = append(actions, dialogAction{Title: "install", Keys: "ctrl+s", Standalone: true,
+			OnTrigger: func(overlayItem) tea.Cmd { return a.planHarnessInstall(id, "project") }})
+		if run.Backend == "split" || run.Backend == "cloud" {
+			actions = append(actions, dialogAction{Title: "publish", Keys: "ctrl+u", Standalone: true,
+				OnTrigger: func(overlayItem) tea.Cmd { return a.planHarnessInstall(id, "library") }})
+		}
+	}
+	if run.Status == "running" {
+		actions = append(actions, dialogAction{Title: "cancel", Keys: "ctrl+d", Standalone: true,
+			OnTrigger: func(overlayItem) tea.Cmd { return a.cancelHarnessRun(id) }})
+	}
+	actions = append(actions, dialogAction{Title: "back", Keys: "ctrl+b", Standalone: true, Right: true,
+		OnTrigger: func(overlayItem) tea.Cmd { a.harnessOpenRun = ""; return a.harnessOverlay() }})
+	o.SetActions(actions)
+	if len(items) == 0 {
+		o.SetEmptyView("Nothing planned", "This run has no rows.")
+	}
+}
+
+// harnessRowItems renders a run's plan. A row that is working shows what its
+// session is doing this moment — the tool it is running and on what, from
+// the live session events the server relays — so the plan reads as a
+// monitor, not a checklist.
+func (a *App) harnessRowItems(run client.HarnessRun) []overlayItem {
+	id := run.ID
+	items := make([]overlayItem, 0, len(run.Rows))
 	for _, row := range run.Rows {
 		row := row
 		hint := row.State
-		if row.Detail != "" {
+		if activity := a.harnessRowActivity(row); activity != "" {
+			hint += " · " + activity
+		} else if row.Detail != "" {
 			hint += " · " + strings.Join(strings.Fields(row.Detail), " ")
+		}
+		if row.Retries > 0 {
+			hint += fmt.Sprintf(" · ↻%d", row.Retries)
 		}
 		footer := ""
 		if row.CostUSD > 0 {
@@ -170,35 +218,49 @@ func (a *App) openHarnessRun(id string) {
 			Action: func() tea.Msg { return a.loadHarnessStageCmd(id, row.Label) },
 		})
 	}
-	title := harnessRunTitle + " · " + run.Task
-	a.openList(title, items)
-	o := a.overlay
-	o.SetSize(dialogLarge)
-	o.SetPlaceholder(fmt.Sprintf("%s · %s · %s", run.Budget, run.Backend, formatMoney(run.CostUSD)))
-	if run.Adopted != "" {
-		o.SetCurrent(run.Adopted)
-	}
-	actions := []dialogAction{
-		{Title: "session", Keys: "ctrl+e", OnTrigger: func(item overlayItem) tea.Cmd { return a.openHarnessSession(id, item.Value) }},
-	}
-	if run.Status == "ok" {
-		actions = append(actions, dialogAction{Title: "install", Keys: "ctrl+s", Standalone: true,
-			OnTrigger: func(overlayItem) tea.Cmd { return a.planHarnessInstall(id, "project") }})
-		if run.Backend == "split" || run.Backend == "cloud" {
-			actions = append(actions, dialogAction{Title: "publish", Keys: "ctrl+u", Standalone: true,
-				OnTrigger: func(overlayItem) tea.Cmd { return a.planHarnessInstall(id, "library") }})
+	return items
+}
+
+// harnessRowSession is the session a row is working in now: its editor's
+// while it edits (or when editor is asked for), else its rollout's.
+func harnessRowSession(row client.HarnessRow, editor bool) string {
+	if editor || row.State == "editing" || row.SessionID == "" {
+		if row.EditSessionID != "" {
+			return row.EditSessionID
 		}
 	}
-	if run.Status == "running" {
-		actions = append(actions, dialogAction{Title: "cancel", Keys: "ctrl+d", Standalone: true,
-			OnTrigger: func(overlayItem) tea.Cmd { return a.cancelHarnessRun(id) }})
+	return row.SessionID
+}
+
+// harnessRowActivity is what a working row's session is doing: the newest
+// tool still running, with its telling argument, or "writing" while text
+// streams. Empty for a row that is not working.
+func (a *App) harnessRowActivity(row client.HarnessRow) string {
+	if row.State != "editing" && row.State != "rolling" {
+		return ""
 	}
-	actions = append(actions, dialogAction{Title: "back", Keys: "ctrl+b", Standalone: true, Right: true,
-		OnTrigger: func(overlayItem) tea.Cmd { a.harnessOpenRun = ""; return a.harnessOverlay() }})
-	o.SetActions(actions)
-	if len(items) == 0 {
-		o.SetEmptyView("Nothing planned", "This run has no rows.")
+	node := a.agents.Sessions[harnessRowSession(row, false)]
+	if node == nil {
+		return ""
 	}
+	var running []ToolState
+	for _, tool := range node.Tools {
+		if tool.Status == "pending" {
+			running = append(running, tool)
+		}
+	}
+	if len(running) > 0 {
+		sort.Slice(running, func(i, j int) bool { return running[i].CallID > running[j].CallID })
+		tool := running[0]
+		if tool.Input != "" {
+			return tool.Name + " " + truncateRunes(tool.Input, 60)
+		}
+		return tool.Name
+	}
+	if node.Busy {
+		return "thinking"
+	}
+	return ""
 }
 
 func harnessPhaseLabel(phase string) string {
@@ -262,14 +324,29 @@ func (a *App) mergeHarnessRuns(live map[string]client.HarnessRun) []client.Harne
 // applyHarnessSnapshot takes the harness half of an aggregator snapshot.
 func (a *App) applyHarnessSnapshot(snapshot Snapshot) tea.Cmd {
 	if snapshot.HarnessSeq == a.harnessSeq {
+		// Nothing moved in the runs themselves, but a working row's session
+		// may have started a new tool: refresh the open plan when what it
+		// shows would change.
+		a.refreshHarnessActivity()
 		return nil
 	}
 	a.harnessSeq = snapshot.HarnessSeq
 	a.harnessLoaded = true
 	ended := a.mergeHarnessRuns(snapshot.Harness)
 	a.refreshHarnessDialogs()
+	var follow tea.Cmd
+	if a.harnessLogOpen() && a.harnessLogRun != "" {
+		id, after := a.harnessLogRun, len(a.harnessLog)
+		follow = func() tea.Msg {
+			events, err := a.client.HarnessLog(a.ctx, id, after)
+			if err != nil || len(events) == 0 {
+				return nil
+			}
+			return harnessLogMsg{id: id, events: events}
+		}
+	}
 	if len(ended) == 0 {
-		return nil
+		return follow
 	}
 	run := ended[0]
 	opts := toastOptions{title: "Harness² · " + run.Task, variant: toastSuccess}
@@ -281,7 +358,30 @@ func (a *App) applyHarnessSnapshot(snapshot Snapshot) tea.Cmd {
 	default:
 		opts.message, opts.variant = run.Status+": "+run.Error, toastError
 	}
-	return a.showToastOptions(opts)
+	return tea.Batch(follow, a.showToastOptions(opts))
+}
+
+// refreshHarnessActivity rebuilds the open run plan when a working row's
+// live activity changed, and only then: snapshots arrive every frame.
+func (a *App) refreshHarnessActivity() {
+	o := a.overlay
+	if o == nil || o.Kind != dialog.KindList || !strings.HasPrefix(o.Title, harnessRunTitle+" · ") || a.harnessOpenRun == "" {
+		return
+	}
+	run, ok := a.harnessRunByID(a.harnessOpenRun)
+	if !ok || run.Status != "running" {
+		return
+	}
+	var b strings.Builder
+	for _, row := range run.Rows {
+		b.WriteString(a.harnessRowActivity(row))
+		b.WriteByte(0)
+	}
+	if b.String() == a.harnessActivitySig {
+		return
+	}
+	a.harnessActivitySig = b.String()
+	a.refreshHarnessDialogs()
 }
 
 // activeHarnessRun is the newest running run, for the hint row.
@@ -461,19 +561,36 @@ func (a *App) cancelHarnessRun(id string) tea.Cmd {
 	}
 }
 
-// openHarnessSession opens the rollout session behind a row.
-func (a *App) openHarnessSession(id, label string) tea.Cmd {
+// watchHarnessRow opens the session behind a row: the one it is working in
+// now, or its editor's when editor is set. The server relays rollout and
+// editor sessions' events, so the session view streams it live; /harness
+// comes back to the run.
+func (a *App) watchHarnessRow(id, label string, editor bool) tea.Cmd {
+	run, ok := a.harnessRunByID(id)
+	if !ok {
+		return nil
+	}
+	var row client.HarnessRow
+	for _, r := range run.Rows {
+		if r.Label == label {
+			row = r
+		}
+	}
+	sessionID := harnessRowSession(row, editor)
+	if editor {
+		sessionID = row.EditSessionID
+	}
+	if sessionID == "" {
+		what := "a session"
+		if editor {
+			what = "an editor session"
+		}
+		return staticMsg(statusMsg{text: label + " has no " + what + " yet"})
+	}
 	return func() tea.Msg {
-		stage, err := a.client.HarnessStage(a.ctx, id, label)
+		session, err := a.client.Session(a.ctx, sessionID)
 		if err != nil {
-			return statusMsg{text: "could not read " + label + ": " + err.Error()}
-		}
-		if stage.SessionID == "" {
-			return statusMsg{text: label + " has no rollout session yet"}
-		}
-		session, err := a.client.Session(a.ctx, stage.SessionID)
-		if err != nil {
-			return statusMsg{text: "could not open the rollout session: " + err.Error()}
+			return statusMsg{text: "could not open " + label + "'s session: " + err.Error()}
 		}
 		// Through CloseThen, so the run dialog is gone before the session
 		// view assumes no dialog is standing (§9.1).
@@ -800,6 +917,11 @@ func (a *App) handleHarnessMsg(msg tea.Msg) (tea.Cmd, bool) {
 		return nil, true
 	case harnessInstallPlanMsg:
 		return a.confirmHarnessInstall(msg), true
+	case harnessLogMsg:
+		if msg.reset || a.harnessLogOpen() {
+			a.showHarnessLog(msg)
+		}
+		return nil, true
 	case harnessStageMsg:
 		a.openHelpDialog(msg.stage.Label, harnessStageLines(msg.stage))
 		return nil, true
@@ -822,4 +944,98 @@ func (a *App) harnessCommand(arguments string) tea.Cmd {
 		return a.newHarnessRun("")
 	}
 	return a.newHarnessRun(arguments)
+}
+
+const harnessLogTitle = "Harness log · "
+
+// openHarnessLog opens a run's event log: every phase, rollout, editor
+// session, retry with its validation error, selection and lesson, in order,
+// time-stamped. It follows the run while it goes (applyHarnessSnapshot).
+func (a *App) openHarnessLog(id string) tea.Cmd {
+	return func() tea.Msg {
+		events, err := a.client.HarnessLog(a.ctx, id, 0)
+		if err != nil {
+			return statusMsg{text: "could not read the log: " + err.Error()}
+		}
+		return harnessLogMsg{id: id, events: events, reset: true}
+	}
+}
+
+type harnessLogMsg struct {
+	id     string
+	events []client.HarnessLogEvent
+	reset  bool
+}
+
+func (a *App) harnessLogOpen() bool {
+	o := a.overlay
+	return o != nil && o.Kind == dialog.KindHelp && strings.HasPrefix(o.Title, harnessLogTitle)
+}
+
+// showHarnessLog (re)opens the log panel. While the reader is at the bottom
+// it follows new lines; once they scroll up it holds their place.
+func (a *App) showHarnessLog(msg harnessLogMsg) {
+	pos, follow := 0, true
+	if a.harnessLogOpen() && !msg.reset {
+		pos = a.overlay.ScrollPos()
+		follow = pos >= a.harnessLogPos
+	}
+	if msg.reset {
+		a.harnessLog, a.harnessLogRun, a.harnessLogPos = nil, msg.id, 0
+	}
+	a.harnessLog = append(a.harnessLog, msg.events...)
+	task := msg.id
+	if run, ok := a.harnessRunByID(msg.id); ok {
+		task = run.Task
+	}
+	a.openHelpDialog(harnessLogTitle+task, harnessLogLines(a.harnessLog))
+	if follow {
+		a.overlay.ScrollEnd()
+	} else {
+		a.overlay.ScrollDown(pos)
+	}
+	a.harnessLogPos = pos
+}
+
+// harnessLogLines renders one line per event.
+func harnessLogLines(events []client.HarnessLogEvent) []string {
+	if len(events) == 0 {
+		return []string{"no events yet"}
+	}
+	lines := make([]string, 0, len(events))
+	for _, ev := range events {
+		stamp := time.UnixMilli(ev.Time).Format("15:04:05")
+		mark := "·"
+		switch {
+		case strings.HasSuffix(ev.Type, ".started") || ev.Type == "session":
+			mark = "◐"
+		case ev.Type == "stage.retry":
+			mark = "↻"
+		case strings.HasSuffix(ev.Type, ".ended") || ev.Type == "selected" || ev.Type == "reflected":
+			mark = map[bool]string{true: "✓", false: "✗"}[ev.OK]
+		case ev.Type == "phase":
+			mark = "▸"
+		}
+		line := stamp + " " + mark + " "
+		switch ev.Type {
+		case "phase":
+			line += "phase " + ev.Phase
+		case "session":
+			line += ev.Label + " " + ev.Role + " session " + ev.SessionID
+		case "stage.retry":
+			line += fmt.Sprintf("%s attempt %d rejected", ev.Label, ev.Attempt)
+		default:
+			line += ev.Type + " " + ev.Label
+		}
+		if ev.CostUSD > 0 {
+			line += " · " + formatMoney(ev.CostUSD)
+		}
+		if ev.Detail != "" && ev.Type != "phase" {
+			line += " · " + strings.Join(strings.Fields(ev.Detail), " ")
+		} else if ev.Detail != "" {
+			line += " · " + ev.Detail
+		}
+		lines = append(lines, line)
+	}
+	return lines
 }

@@ -84,6 +84,7 @@ type modeRun struct {
 	mode   string
 	dir    string // <task>/k<k>/<mode>
 	ledger *Ledger
+	log    *runLog
 	extra  []ExtraEvidence
 
 	mu       sync.Mutex
@@ -96,8 +97,7 @@ type modeRun struct {
 func (m *modeRun) harnessDir(label string) string { return filepath.Join(m.dir, "harnesses", label) }
 
 func (m *modeRun) emit(ev Event) {
-	ev.Task, ev.Mode = m.task.ID, m.mode
-	m.engine.emit(ev)
+	m.log.emit(ev)
 }
 
 // acceptTree repairs then validates a proposed tree: kept reports an
@@ -151,6 +151,11 @@ func (m *modeRun) stage(ctx context.Context, label, dim, job string, fallback Tr
 	stage := &Stage{Label: label, Dim: dim, Cached: true}
 	rejection := ""
 	for attempt := 1; attempt <= stageAttempts; attempt++ {
+		if attempt > 1 {
+			// Every rejection path lands here — empty reply, off-surface
+			// files, a failed validation — so the log names each one.
+			m.emit(Event{Type: EventStageRetry, Phase: phaseOf(dim), Label: label, Attempt: attempt - 1, Detail: clip(rejection, 600)})
+		}
 		full := mission
 		if rejection != "" {
 			full += "\n\n# YOUR PREVIOUS ATTEMPT WAS REJECTED\n\n" + rejection + "\n\nFix it in `context/harness/` and reply again."
@@ -248,7 +253,13 @@ func (m *modeRun) call(ctx context.Context, role, label, mission, evidence strin
 		if err := writeFileAll(filepath.Join(workspace, "MISSION.md"), mission); err != nil {
 			return Reply{}, "", false, spent, err
 		}
-		reply, err := m.engine.session(ctx, SessionRequest{Role: role, Label: label, Workspace: workspace, Mission: mission})
+		stage := strings.SplitN(label, ".", 2)[0]
+		reply, err := m.engine.session(ctx, SessionRequest{
+			Role: role, Label: label, Workspace: workspace, Mission: mission,
+			OnSession: func(id string) {
+				m.emit(Event{Type: EventSession, Label: stage, SessionID: id, Role: role, Attempt: attempt})
+			},
+		})
 		spent += reply.CostUSD
 		if err != nil {
 			last = err.Error()
@@ -315,14 +326,14 @@ func fingerprint(mission, dir string) (string, error) {
 // roll materialises a tree and executes it once, recording the evidence on
 // disk. A dead rollout is recorded, never raised. A rollout already on disk
 // is reused, which is what makes a rerun resume.
-func (e *Engine) roll(ctx context.Context, task Task, label string, tree Tree, harnessDir, runDir string) RunRecord {
+func (e *Engine) roll(ctx context.Context, task Task, label string, tree Tree, harnessDir, runDir string, emit func(Event)) RunRecord {
 	record := RunRecord{Dir: runDir}
 	if err := readJSON(filepath.Join(runDir, runJSON), &record.Rollout); err == nil && record.Label == label {
 		return record
 	}
-	e.emit(Event{Type: EventRolloutStarted, Task: task.ID, Label: label})
+	emit(Event{Type: EventRolloutStarted, Label: label})
 	defer func() {
-		e.emit(Event{Type: EventRolloutEnded, Task: task.ID, Label: label, OK: record.OK && record.Delivered,
+		emit(Event{Type: EventRolloutEnded, Label: label, OK: record.OK && record.Delivered,
 			Detail: record.Error, CostUSD: record.CostUSD})
 	}()
 
@@ -344,7 +355,12 @@ func (e *Engine) roll(ctx context.Context, task Task, label string, tree Tree, h
 	if !e.KeepWorkspaces {
 		defer os.RemoveAll(workspace)
 	}
-	result, err := e.Exec.Rollout(ctx, RolloutRequest{Task: task, Label: label, HarnessDir: harnessDir, Workspace: workspace})
+	result, err := e.Exec.Rollout(ctx, RolloutRequest{
+		Task: task, Label: label, HarnessDir: harnessDir, Workspace: workspace,
+		OnSession: func(id string) {
+			emit(Event{Type: EventSession, Label: label, SessionID: id, Role: "rollout"})
+		},
+	})
 	if err != nil {
 		return fail(err)
 	}
@@ -384,7 +400,7 @@ func (m *modeRun) rollMany(ctx context.Context, items []rollItem) {
 	out := make([]RunRecord, len(items))
 	parallel(len(items), m.engine.rolloutWidth(), func(i int) {
 		it := items[i]
-		out[i] = m.engine.roll(ctx, m.task, it.label, it.tree, m.harnessDir(it.label), filepath.Join(m.dir, "runs", it.label))
+		out[i] = m.engine.roll(ctx, m.task, it.label, it.tree, m.harnessDir(it.label), filepath.Join(m.dir, "runs", it.label), m.log.emit)
 	})
 	m.mu.Lock()
 	defer m.mu.Unlock()

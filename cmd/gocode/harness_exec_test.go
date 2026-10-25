@@ -155,6 +155,8 @@ func TestHarnessRunEndToEnd(t *testing.T) {
 		t.Fatalf("backend = %+v, want local without library-plugin", detection)
 	}
 	task := harness.Task{ID: "notes", Domain: "docs", Prompt: "Create notes.txt.", Workspace: project}
+	relayed, unsubscribe := st.Bus.Subscribe(4096)
+	defer unsubscribe()
 	summary, err := engine.Run(ctx, task, harness.RunOptions{K: 1, Mode: harness.ModeParallel})
 	if err != nil {
 		t.Fatal(err)
@@ -197,6 +199,42 @@ func TestHarnessRunEndToEnd(t *testing.T) {
 	}
 	if !summary.Stored {
 		t.Fatalf("lesson not stored: %s", summary.StoreError)
+	}
+
+	// The rollouts ran on their own stacks; their events were relayed to the
+	// launching stack's bus, so a client of it streams them live.
+	aggSession := summary.Rollouts["agg1"].SessionID
+	sawAgg := false
+drain:
+	for {
+		select {
+		case payload := <-relayed:
+			if id, _ := payload.Data["sessionID"].(string); id == aggSession && payload.Type == "session.next.tool.called" {
+				sawAgg = true
+			}
+		default:
+			break drain
+		}
+	}
+	if aggSession == "" || !sawAgg {
+		t.Fatalf("agg1's tool call (session %q) was not relayed", aggSession)
+	}
+	// The run log names every session: four rollouts and three editors.
+	events, err := harness.ReadLog(filepath.Join(engine.Dir("notes", 1), harness.ModeParallel, harness.LogFile), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	roles := map[string]int{}
+	for _, ev := range events {
+		if ev.Type == harness.EventSession {
+			roles[ev.Role]++
+		}
+		if ev.Time == 0 {
+			t.Fatalf("an event without a time: %+v", ev)
+		}
+	}
+	if roles["rollout"] != 4 || roles[harness.RoleEditor] != 3 || roles[harness.RoleReflector] != 1 {
+		t.Fatalf("session events by role = %v", roles)
 	}
 
 	result, err := installHarness(ctx, project, summary, harness.InstallRequest{To: "project"}, nil)

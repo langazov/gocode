@@ -118,6 +118,7 @@ func newHarnessEngine(ctx context.Context, st *stack, opts harnessOptions) (*har
 		Model:         model,
 		ImproverModel: improverModel,
 		Variant:       opts.Variant,
+		Relay:         st.Bus,
 	}
 	engine := &harness.Engine{
 		Exec:           stacks,

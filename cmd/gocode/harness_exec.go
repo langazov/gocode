@@ -9,6 +9,7 @@ import (
 
 	"github.com/langazov/gocode-go/internal/agent"
 	"github.com/langazov/gocode-go/internal/db"
+	"github.com/langazov/gocode-go/internal/event"
 	"github.com/langazov/gocode-go/internal/harness"
 	"github.com/langazov/gocode-go/internal/modelsdev"
 	"github.com/langazov/gocode-go/internal/permission"
@@ -28,10 +29,14 @@ type harnessStacks struct {
 	Model         string
 	ImproverModel string
 	Variant       string
+	// Relay, when set, receives every event the rollout and improver stacks
+	// commit, so clients of the launching server can watch those sessions
+	// stream live.
+	Relay *event.Bus
 }
 
 func (h *harnessStacks) boot(ctx context.Context, dir, model, harnessDir string) (*stack, error) {
-	return bootStackWith(ctx, bootOptions{
+	st, err := bootStackWith(ctx, bootOptions{
 		Directory:  dir,
 		ModelFlag:  model,
 		Database:   h.Database,
@@ -39,6 +44,10 @@ func (h *harnessStacks) boot(ctx context.Context, dir, model, harnessDir string)
 		HarnessDir: harnessDir,
 		Ephemeral:  true,
 	})
+	if err == nil && h.Relay != nil {
+		st.Bus.Listen(h.Relay.Deliver)
+	}
+	return st, err
 }
 
 // Rollout runs the task once in req.Workspace under req.HarnessDir.
@@ -57,6 +66,9 @@ func (h *harnessStacks) Rollout(ctx context.Context, req harness.RolloutRequest)
 	sessionID, err := h.start(ctx, st, req.Workspace, "harness "+req.Task.ID+" · "+req.Label, "", h.Model)
 	if err != nil {
 		return harness.Rollout{}, err
+	}
+	if req.OnSession != nil {
+		req.OnSession(sessionID)
 	}
 	runErr := h.drive(ctx, st, sessionID, req.Task.Prompt)
 	result := collectRollout(ctx, st, sessionID)
@@ -84,6 +96,9 @@ func (h *harnessStacks) Session(ctx context.Context, req harness.SessionRequest)
 	sessionID, err := h.start(ctx, st, req.Workspace, "harness "+req.Label, req.Role, model)
 	if err != nil {
 		return harness.Reply{}, err
+	}
+	if req.OnSession != nil {
+		req.OnSession(sessionID)
 	}
 	runErr := h.drive(ctx, st, sessionID, req.Mission)
 	result := collectRollout(ctx, st, sessionID)

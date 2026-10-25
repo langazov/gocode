@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -65,6 +66,20 @@ func newHarnessServer(t *testing.T, runs []client.HarnessRun) (*harnessServer, s
 		case strings.Contains(r.URL.Path, "/stage/"):
 			json.NewEncoder(w).Encode(client.HarnessStage{Label: "agg1", Diff: "+check the answer", SessionID: "ses_rollout",
 				Files: client.HarnessFiles{Modified: []string{"systemprompt.md"}}, Deliverable: "done", Delivered: true})
+		case strings.HasSuffix(r.URL.Path, "/log"):
+			all := []client.HarnessLogEvent{
+				{Type: "phase", Time: 1000, Phase: "base"},
+				{Type: "session", Time: 2000, Label: "inv1", Role: "harness-editor", SessionID: "ses_edit"},
+				{Type: "stage.retry", Time: 3000, Label: "inv1", Attempt: 1, Detail: "skill 'x' is never named"},
+				{Type: "rollout.ended", Time: 4000, Label: "inv1", OK: true, CostUSD: 0.25},
+			}
+			after, _ := strconv.Atoi(r.URL.Query().Get("after"))
+			if after > len(all) {
+				after = len(all)
+			}
+			json.NewEncoder(w).Encode(all[after:])
+		case strings.HasPrefix(r.URL.Path, "/api/session/"):
+			json.NewEncoder(w).Encode(client.Session{ID: strings.TrimPrefix(r.URL.Path, "/api/session/"), Title: "harness rollout"})
 		case r.Method == http.MethodDelete:
 			json.NewEncoder(w).Encode(map[string]any{"sessions": 1})
 		case strings.HasSuffix(r.URL.Path, "/install"):
@@ -290,5 +305,117 @@ func TestHarnessRemoveArmsThenDeletes(t *testing.T) {
 	applyCmd(t, app, app.removeHarnessAction(finished))
 	if !state.saw("DELETE /api/harness/run/fix-login--k1-parallel") {
 		t.Fatalf("no delete sent: %v", state.requests)
+	}
+}
+
+func TestToolInputSummary(t *testing.T) {
+	if got := toolInputSummary(map[string]any{"command": "go  test\n ./..."}); got != "go test ./..." {
+		t.Fatalf("command summary = %q", got)
+	}
+	if got := toolInputSummary(map[string]any{"filePath": "/w/a.go", "content": "x"}); got != "/w/a.go" {
+		t.Fatalf("path summary = %q", got)
+	}
+	if toolInputSummary("not a map") != "" {
+		t.Fatal("non-map input summarised")
+	}
+}
+
+// A working row says what its session is doing now: the running tool and
+// its argument, from the relayed session events.
+func TestHarnessRowShowsLiveActivity(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	run := sampleHarnessRuns()[1]
+	run.Rows = []client.HarnessRow{
+		{Label: "inv1", Phase: "probe", State: "editing", EditSessionID: "ses_edit", Retries: 1},
+		{Label: "dom1", Phase: "probe", State: "rolling", SessionID: "ses_roll"},
+		{Label: "agg1", Phase: "compose", State: "pending"},
+	}
+	app.harnessRuns = []client.HarnessRun{run}
+	app.agents = Snapshot{Sessions: map[string]*SessionNode{
+		"ses_edit": {ID: "ses_edit", Busy: true, Tools: map[string]ToolState{
+			"c1": {CallID: "c1", Name: "read", Status: "completed", Input: "old.md"},
+			"c2": {CallID: "c2", Name: "read", Status: "pending", Input: "context/rollouts/base1.md"},
+		}},
+		"ses_roll": {ID: "ses_roll", Busy: true, Tools: map[string]ToolState{}},
+	}}
+	app.openHarnessRun(run.ID)
+	hints := map[string]string{}
+	for _, item := range app.overlay.Items() {
+		hints[item.Value] = item.Hint
+	}
+	if !strings.Contains(hints["inv1"], "read context/rollouts/base1.md") || !strings.Contains(hints["inv1"], "↻1") {
+		t.Errorf("editing row hint = %q", hints["inv1"])
+	}
+	if !strings.Contains(hints["dom1"], "thinking") {
+		t.Errorf("rolling row hint = %q", hints["dom1"])
+	}
+	if strings.Contains(hints["agg1"], "·") {
+		t.Errorf("a pending row shows activity: %q", hints["agg1"])
+	}
+
+	// A new tool in the editor's session rebuilds the open plan.
+	app.agents.Sessions["ses_edit"].Tools["c3"] = ToolState{CallID: "c3", Name: "grep", Status: "pending", Input: "deliverable"}
+	app.refreshHarnessActivity()
+	for _, item := range app.overlay.Items() {
+		if item.Value == "inv1" && !strings.Contains(item.Hint, "grep deliverable") {
+			t.Fatalf("plan not refreshed: %q", item.Hint)
+		}
+	}
+}
+
+// watch opens the session a row is working in now; editor opens its
+// editor's session.
+func TestHarnessWatchPicksTheLiveSession(t *testing.T) {
+	if got := harnessRowSession(client.HarnessRow{State: "editing", SessionID: "r", EditSessionID: "e"}, false); got != "e" {
+		t.Fatalf("editing row watches %q", got)
+	}
+	if got := harnessRowSession(client.HarnessRow{State: "rolling", SessionID: "r", EditSessionID: "e"}, false); got != "r" {
+		t.Fatalf("rolling row watches %q", got)
+	}
+	if got := harnessRowSession(client.HarnessRow{State: "ok", SessionID: "r", EditSessionID: "e"}, true); got != "e" {
+		t.Fatalf("editor request watches %q", got)
+	}
+	state, url := newHarnessServer(t, nil)
+	app := newTestApp(t, url)
+	run := sampleHarnessRuns()[0]
+	run.Rows = []client.HarnessRow{{Label: "base1", Phase: "base", State: "ok", SessionID: "ses_base"}}
+	app.harnessRuns = []client.HarnessRun{run}
+	if cmd := app.watchHarnessRow(run.ID, "base1", true); cmd == nil {
+		t.Fatal("no feedback for a row without an editor session")
+	}
+	msg := app.watchHarnessRow(run.ID, "base1", false)()
+	if _, ok := msg.(dialog.CloseThenMsg); !ok || !state.saw("GET /api/session/ses_base") {
+		t.Fatalf("watch = %#v, requests %v", msg, state.requests)
+	}
+}
+
+// The log lists every event and follows new ones while open.
+func TestHarnessLogFollows(t *testing.T) {
+	_, url := newHarnessServer(t, sampleHarnessRuns())
+	app := newTestApp(t, url)
+	app.harnessRuns = sampleHarnessRuns()
+	id := "add-docs--k2-sequential"
+	msg := app.openHarnessLog(id)().(harnessLogMsg)
+	msg.events = msg.events[:2] // as if only two had happened yet
+	app.handleHarnessMsg(msg)
+	if !app.harnessLogOpen() || len(app.harnessLog) != 2 {
+		t.Fatalf("log not open: %+v", app.overlay)
+	}
+	text := strings.Join(panelLines(t, app), "\n")
+	if !strings.Contains(text, "inv1 harness-editor session ses_edit") {
+		t.Fatalf("log panel:\n%s", text)
+	}
+	cmd := app.applyHarnessSnapshot(Snapshot{HarnessSeq: app.harnessSeq + 1, Harness: map[string]client.HarnessRun{}})
+	if cmd == nil {
+		t.Fatal("an open log did not ask for new events")
+	}
+	more := cmd().(harnessLogMsg)
+	app.handleHarnessMsg(more)
+	if len(app.harnessLog) != 4 {
+		t.Fatalf("log has %d events after following, want 4", len(app.harnessLog))
+	}
+	lines := harnessLogLines(app.harnessLog)
+	if !strings.Contains(lines[2], "↻ inv1 attempt 1 rejected · skill 'x' is never named") || !strings.Contains(lines[3], "✓ rollout.ended inv1 · $0.25") {
+		t.Fatalf("lines = %q", lines)
 	}
 }

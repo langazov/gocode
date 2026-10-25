@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -38,6 +39,7 @@ func (s *Server) registerHarness(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/harness/run/{runID}/cancel", s.cancelHarnessRun)
 	mux.HandleFunc("DELETE /api/harness/run/{runID}", s.deleteHarnessRun)
 	mux.HandleFunc("GET /api/harness/run/{runID}/stage/{label}", s.getHarnessStage)
+	mux.HandleFunc("GET /api/harness/run/{runID}/log", s.getHarnessLog)
 	mux.HandleFunc("POST /api/harness/run/{runID}/install", s.installHarnessRun)
 	mux.HandleFunc("GET /api/harness/library", s.listHarnessLibrary)
 	mux.HandleFunc("GET /api/harness/library/{domain}/{task}", s.getHarnessEntry)
@@ -158,6 +160,18 @@ func (s *Server) cancelHarnessRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": true})
+}
+
+// getHarnessLog serves a run's event log; ?after=N skips the first N, so a
+// follower asks only for what is new.
+func (s *Server) getHarnessLog(w http.ResponseWriter, r *http.Request) {
+	after, _ := strconv.Atoi(r.URL.Query().Get("after"))
+	events, err := s.Harness.Log(r.PathValue("runID"), after)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 func (s *Server) deleteHarnessRun(w http.ResponseWriter, r *http.Request) {

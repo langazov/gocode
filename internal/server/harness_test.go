@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,9 @@ import (
 type routeExec struct{}
 
 func (routeExec) Rollout(_ context.Context, req harness.RolloutRequest) (harness.Rollout, error) {
+	if req.OnSession != nil {
+		req.OnSession("ses_" + req.Label)
+	}
 	_ = os.WriteFile(filepath.Join(req.Workspace, "answer.txt"), []byte("42\n"), 0o644)
 	return harness.Rollout{OK: true, Final: "done", Trajectory: "[ASSISTANT] done", SessionID: "ses_" + req.Label}, nil
 }
@@ -24,6 +28,9 @@ func (routeExec) Rollout(_ context.Context, req harness.RolloutRequest) (harness
 type routeImprover struct{}
 
 func (routeImprover) Session(_ context.Context, req harness.SessionRequest) (harness.Reply, error) {
+	if req.OnSession != nil {
+		req.OnSession("ses_edit_" + req.Label)
+	}
 	if req.Role == harness.RoleEditor {
 		_ = os.WriteFile(filepath.Join(req.Workspace, "context", "harness", harness.FileSystemPrompt), []byte("check the answer\n"), 0o644)
 		return harness.Reply{Text: "<notes>edited</notes>"}, nil
@@ -90,6 +97,25 @@ func TestHarnessRoutes(t *testing.T) {
 		if row.State != harness.RowOK {
 			t.Errorf("row %s is %s", row.Label, row.State)
 		}
+		if row.Phase != "reflect" && row.SessionID != "ses_"+row.Label {
+			t.Errorf("row %s rollout session = %q", row.Label, row.SessionID)
+		}
+		if (row.Label == "inv1" || row.Label == "agg1") && !strings.HasPrefix(row.EditSessionID, "ses_edit_"+row.Label) {
+			t.Errorf("row %s editor session = %q", row.Label, row.EditSessionID)
+		}
+	}
+
+	var log []harness.Event
+	rec = doJSON(t, server, "GET", "/api/harness/run/"+started.ID+"/log", nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &log)
+	if rec.Code != 200 || len(log) < 10 || log[0].Type != harness.EventPhase {
+		t.Fatalf("log: %d, %d events", rec.Code, len(log))
+	}
+	var tail []harness.Event
+	rec = doJSON(t, server, "GET", fmt.Sprintf("/api/harness/run/%s/log?after=%d", started.ID, len(log)-2), nil)
+	_ = json.Unmarshal(rec.Body.Bytes(), &tail)
+	if len(tail) != 2 {
+		t.Fatalf("log?after: %d events, want 2", len(tail))
 	}
 
 	sawHarnessEvent := false

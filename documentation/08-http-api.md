@@ -322,9 +322,10 @@ finished run keeps its id across restarts.
 |---|---|---|
 | `GET` | `/api/harness/run` | live and finished runs, newest first |
 | `POST` | `/api/harness/run` | start one: `{prompt, id?, domain?, workspace?, k?, mode?, model?, improverModel?, library?, crossDomain?}`; `dryRun: true` returns the plan (rows, budget, backend) without spending anything. `409` while the same run is going |
-| `GET` | `/api/harness/run/{runID}` | one run: status, phase, a row per label, cost, adopted label, lesson |
+| `GET` | `/api/harness/run/{runID}` | one run: status, phase, a row per label (with its rollout `sessionID`, latest editor `editSessionID` and `retries`), cost, adopted label, lesson |
 | `POST` | `/api/harness/run/{runID}/cancel` | stop it; finished work stays cached and a rerun resumes |
 | `DELETE` | `/api/harness/run/{runID}` | delete a stopped run: its directory and every rollout and editor session under it (the shared base too, when no other mode of that task and k remains); `409` while it runs. The experience library is kept |
+| `GET` | `/api/harness/run/{runID}/log` | the run's event log (`events.jsonl` beside its summary), every event time-stamped; `?after=N` returns only events after the first N |
 | `GET` | `/api/harness/run/{runID}/stage/{label}` | a label's harness diff against the base, editor notes, and its rollout (session id, deliverable) |
 | `POST` | `/api/harness/run/{runID}/install` | `{to: project\|library\|both, force, dryRun}`; `409` with the result when an installed harness or a Library skill differs and `force` is unset |
 | `GET` | `/api/harness/library` | the experience library by domain, with the active backend |
@@ -333,9 +334,15 @@ finished run keeps its id across restarts.
 
 Progress streams on `/api/event` as **live** events — `harness.phase`,
 `harness.rollout.started`/`.ended`, `harness.stage.started`/`.ended`,
-`harness.selected`, `harness.reflected`, `harness.run.ended` — each carrying
+`harness.selected`, `harness.reflected`, `harness.session` (a stage or
+rollout's session exists: `sessionID`, `role`), `harness.stage.retry` (a
+rejected proposal and why), `harness.run.ended` — each carrying
 `{run, event}` with the run's whole state, so a client that drops one loses
 nothing. They are not durable: there is no projector and nothing is stored.
+
+The rollout and editor sessions run on their own stacks; the server relays
+their committed events onto its own stream (`event.Bus.Deliver`, subscribers
+only), so a client streams those sessions live like any other.
 
 `Mux()` with no session service returns a **health-only** route tree, for
 callers that just need a liveness probe.
