@@ -150,7 +150,10 @@ func ScanWrites(command, root string) []string {
 
 	found := map[string]bool{}
 	note := func(word *syntax.Word) {
-		if literal, ok := literalWord(word); ok && literal != "" && !strings.HasPrefix(literal, "-") {
+		// Writing to a pseudo-device edits nothing: `2>/dev/null` must not
+		// cost an agent denied `edit` (plan mode, the Harness² improvers)
+		// the command, any more than it reaches outside the project.
+		if literal, ok := literalWord(word); ok && literal != "" && !strings.HasPrefix(literal, "-") && !pseudoDevice(literal) {
 			found[filepath.ToSlash(literal)] = true
 		}
 	}
