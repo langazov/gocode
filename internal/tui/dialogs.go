@@ -746,6 +746,12 @@ func (a *App) commandsRegistry() []overlayItem {
 			Action: func() tea.Msg { return a.memoriesOverlay() },
 			// "/memory <instruction>" saves without opening the dialog.
 			ArgAction: func(arguments string) tea.Msg { return a.quickAddMemory(arguments) }},
+		// harness.list: Harness² runs. "/harness refine" starts one for the
+		// open session's task; "/harness library" opens the experience
+		// library; any other argument is taken as the task itself.
+		{Label: "Harness runs", Value: "harness.list", Slash: "harness", Category: "Agent",
+			Action:    func() tea.Msg { return a.harnessOverlay() },
+			ArgAction: func(arguments string) tea.Msg { return a.harnessCommand(arguments) }},
 		{Label: "Switch theme", Value: "theme.switch", Slash: "themes", Category: "System", Footer: "ctrl+x t", Action: func() tea.Msg {
 			a.themesOverlay()
 			return nil

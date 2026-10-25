@@ -312,6 +312,30 @@ management surface — this is what the interface's `/memory` manager talks to:
 | `PATCH` | `/api/memory/{id}` | edit, pin, silence |
 | `DELETE` | `/api/memory/{id}` | forget it |
 
+## Harness²
+
+Recursive harness adaptation (`internal/harness`, the TUI's `/harness`). A run
+id is `<task>--k<k>-<mode>`, the same triple that names its directory, so a
+finished run keeps its id across restarts.
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/api/harness/run` | live and finished runs, newest first |
+| `POST` | `/api/harness/run` | start one: `{prompt, id?, domain?, workspace?, k?, mode?, model?, improverModel?, library?, crossDomain?}`; `dryRun: true` returns the plan (rows, budget, backend) without spending anything. `409` while the same run is going |
+| `GET` | `/api/harness/run/{runID}` | one run: status, phase, a row per label, cost, adopted label, lesson |
+| `POST` | `/api/harness/run/{runID}/cancel` | stop it; finished work stays cached and a rerun resumes |
+| `GET` | `/api/harness/run/{runID}/stage/{label}` | a label's harness diff against the base, editor notes, and its rollout (session id, deliverable) |
+| `POST` | `/api/harness/run/{runID}/install` | `{to: project\|library\|both, force, dryRun}`; `409` with the result when an installed harness or a Library skill differs and `force` is unset |
+| `GET` | `/api/harness/library` | the experience library by domain, with the active backend |
+| `GET` / `DELETE` | `/api/harness/library/{domain}/{task}` | one entry (lesson, why, full tree) / forget it |
+| `POST` | `/api/harness/library/sync` | upload pending entries and pull other machines' (cloud backend) |
+
+Progress streams on `/api/event` as **live** events — `harness.phase`,
+`harness.rollout.started`/`.ended`, `harness.stage.started`/`.ended`,
+`harness.selected`, `harness.reflected`, `harness.run.ended` — each carrying
+`{run, event}` with the run's whole state, so a client that drops one loses
+nothing. They are not durable: there is no projector and nothing is stored.
+
 `Mux()` with no session service returns a **health-only** route tree, for
 callers that just need a liveness probe.
 

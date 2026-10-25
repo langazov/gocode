@@ -29,6 +29,31 @@ type Config struct {
 	Tools             map[string]bool     `json:"tools,omitempty"`
 	Commands          map[string]any      `json:"command,omitempty"`
 	Experimental      map[string]any      `json:"experimental,omitempty"`
+	Harness           *HarnessConfig      `json:"harness,omitempty"`
+}
+
+// HarnessConfig configures Harness² (internal/harness): recursive harness
+// adaptation and the harness installed at .gocode/harness.
+type HarnessConfig struct {
+	// Enabled false never overlays an installed harness on a session, the
+	// config form of GOCODE_DISABLE_HARNESS. Explicit rollouts are unaffected.
+	Enabled *bool `json:"enabled,omitempty"`
+	// Library picks the experience-library backend: "auto" (the default:
+	// the gocoder.org Library when library-plugin is loaded and signed in,
+	// else local), "local", or "cloud" (fail rather than fall back).
+	Library string `json:"library,omitempty"`
+	// CrossDomain adds lessons from other domains, found by semantic search
+	// over the Library, to the improver evidence. Off by default: Harness²
+	// retrieves same-domain entries only.
+	CrossDomain bool `json:"crossDomain,omitempty"`
+	// Model is the provider/model the improver sessions (editor, selector,
+	// reflector) run on; empty uses the executor's model.
+	Model string `json:"model,omitempty"`
+}
+
+// HarnessEnabled reports whether an installed harness may be overlaid.
+func (c *Config) HarnessEnabled() bool {
+	return c == nil || c.Harness == nil || c.Harness.Enabled == nil || *c.Harness.Enabled
 }
 
 // Provider mirrors ConfigProviderV1.Info.

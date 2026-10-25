@@ -57,6 +57,7 @@ Everything the agent does becomes a durable event in SQLite before visible state
 | `internal/mdlsp/` | Markdown language server (`cmd/mdlsp`): actor-based, goldmark-backed |
 | `internal/rag/` | Semantic search: chunking, embeddings, vector store (powers `rag-plugin`) |
 | `internal/memory/` · `internal/memoryplugin/` | Durable agent memories: store + the native plugin that injects them into every system prompt |
+| `internal/harness/` | Harness² port: harness tree + validation, Propose–Probe–Compose recursion, blind selection, reflection, experience library (local, or gocoder.org via library-plugin), the `Service` behind `/api/harness`; `cmd/gocode` supplies the stacks (`harness_exec.go`) |
 | `internal/background/` | Detached background jobs (subagents launched with `task(background: true)`) |
 | `internal/jsonrpc/` | Shared JSON-RPC connection (client + server): Content-Length framing for LSP, newline-delimited + batches + `$/cancel_request` for ACP |
 | `internal/lspprotocol/` | Shared LSP wire types |
@@ -73,7 +74,7 @@ Everything the agent does becomes a durable event in SQLite before visible state
 
 ### Runner loop
 
-`Runner.Run()` in `internal/session/runner.go` drains eligible durable work for one session. `Coordinator[string]` serializes execution per session ID while allowing different sessions to run concurrently. `Execution` routes session-ID keyed execution to a process-local runner. The runner also assembles each turn's system prompt: the agent's own prompt, then the `<available_skills>` block (`Runner.Skills` — without it the model cannot discover a skill by name), then the plugin `system.transform` hook.
+`Runner.Run()` in `internal/session/runner.go` drains eligible durable work for one session. `Coordinator[string]` serializes execution per session ID while allowing different sessions to run concurrently. `Execution` routes session-ID keyed execution to a process-local runner. The runner also assembles each turn's system prompt: the agent's own prompt, then the instruction files (`Runner.Instructions` — `AGENTS.md`/`CLAUDE.md` and config `instructions`, see `session/instruction.go`), then an installed or rollout harness's always-on text (`Runner.Harness`), then the `<available_skills>` block (`Runner.Skills` — without it the model cannot discover a skill by name), then the plugin `system.transform` hook.
 
 ### SQLite and concurrency
 

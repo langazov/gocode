@@ -1,0 +1,18 @@
+This package is a Go port of Harness², Copyright 2026 Google LLC,
+https://github.com/google-research/harness2, licensed under the Apache License,
+Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+
+Ported from harness2/core: tree.py (tree.go), context.py (evidence.go),
+recursion.py (recursion.go), selection.py (selection.go), library.py
+(library.go), ledger.py (recursion.go), schedule.py (run.go), prompts.py
+(prompts.go and prompts/*.md), and the trajectory renderer of
+harness2/substrate/opencode.py (trace.go).
+
+Modifications: the editable surface is gocode's own layout (agent/<name>.md
+for sub_agents/<name>/AGENT.md, hooks.json declarative tool rules for
+plugin/<name>.ts, scripts/*.sh alongside *.py); prompts/surface.md describes
+that surface instead of opencode's, and the Jinja-brace rule is dropped since
+gocode renders no template; the example workspace fact in prompts/generalize.md
+is a coding one; the selector criteria are worded for code changes; the
+benchmark adapters, judges and sweep scheduler are not ported. cloud.go,
+service.go, workspace.go and overlay.go are new.

@@ -18,6 +18,7 @@ import (
 	"github.com/langazov/gocode-go/internal/event"
 	"github.com/langazov/gocode-go/internal/flag"
 	"github.com/langazov/gocode-go/internal/global"
+	"github.com/langazov/gocode-go/internal/harness"
 	"github.com/langazov/gocode-go/internal/installation"
 	"github.com/langazov/gocode-go/internal/llm"
 	"github.com/langazov/gocode-go/internal/lsp"
@@ -150,6 +151,10 @@ type stack struct {
 	// borrowedDB is set when the database handle belongs to the caller
 	// (bootOptions.Database), which then owns closing it.
 	borrowedDB bool
+	// harness runs Harness² for the HTTP API; built on first use, see
+	// harnessService.
+	harness     *harness.Service
+	harnessOnce sync.Once
 }
 
 // Workdir is the directory the runtime booted in.
@@ -181,6 +186,7 @@ func (s *stack) newServer() *server.Server {
 		ProjectID:   s.ProjectID,
 		VCSWorkdir:  s.workdir,
 		Runner:      s.Runner,
+		Harness:     s.harnessService(),
 	}
 	// Lets connected interfaces notice sign-ins made in other processes. It
 	// runs for the life of the process, as the server does.
@@ -303,6 +309,16 @@ type bootOptions struct {
 	// Catalog, when set, is shared the same way, so a second stack does not
 	// start a second background refresh of the same models.dev snapshot.
 	Catalog *modelsdev.Service
+	// HarnessDir, when set, overlays that harness tree (internal/harness) on
+	// the stack with precedence over the project's own skills and agents —
+	// a Harness² rollout, where the candidate under test must be what runs.
+	// Unset, a harness installed at .gocode/harness is overlaid instead,
+	// ranking below everything the user wrote.
+	HarnessDir string
+	// Ephemeral marks a stack booted in a throwaway directory (a Harness²
+	// rollout or improver workspace): settings sync must not register it as
+	// a project, or every temp dir would be synced.
+	Ephemeral bool
 }
 
 // bootStackWith builds the runtime for opts.Directory without consulting the
@@ -344,7 +360,7 @@ func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
 	// Settings sync's project half: record that this worktree belongs to its
 	// git remote (so received bundles can find it), and apply any config
 	// staged for a project opened here for the first time. Best-effort.
-	if os.Getenv("GOCODE_DISABLE_PROJECT_CONFIG") != "true" {
+	if os.Getenv("GOCODE_DISABLE_PROJECT_CONFIG") != "true" && !opts.Ephemeral {
 		if err := gocodesync.RegisterProject(syncPaths(), cwd); err != nil {
 			global.LogBackground("sync: register project %s: %v", cwd, err)
 		}
@@ -433,18 +449,19 @@ func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
 	}
 
 	workdir := cwd
+	overlay, overlayFirst := resolveHarnessOverlay(workdir, opts.HarnessDir, cfg)
 	// Skills are discovered from the project and the user's global config,
 	// project first so a local skill overrides a global one of the same
 	// name. .agents is a cross-tool convention other agent CLIs also write
 	// skills into (see packages/opencode/src/skill/index.ts's external-dirs
 	// scan); gocode's own dir is listed first at each scope so a same-named
 	// gocode-specific skill still wins over a shared one.
-	skills := skill.Discover(
+	skills := skill.Discover(harnessRoots(overlay, overlayFirst,
 		filepath.Join(workdir, ".gocode"),
 		filepath.Join(workdir, ".agents"),
 		filepath.Join(global.Resolve().Config, "gocode"),
 		filepath.Join(global.Resolve().Home, ".agents"),
-	)
+	)...)
 	// A question parks the whole turn on the user, so clients have to hear
 	// about it now rather than on their next reconciliation tick. The settled
 	// hooks matter too: they retract a prompt this client did not answer
@@ -471,6 +488,12 @@ func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
 	// planReadOnlyRules.
 	plansDir := global.PlansDir(global.Resolve())
 
+	allowPaths := []string{plansDir}
+	if overlay != nil && overlayFirst {
+		// A rollout's harness lives outside its workspace; its skills and
+		// scripts must be readable there like any file in the project.
+		allowPaths = append(allowPaths, overlay.Dir)
+	}
 	tools := tool.NewRegistry()
 	// The agent switcher is bound after the session service exists; plan mode
 	// is registered below once it does.
@@ -479,7 +502,7 @@ func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
 		Skills:     skills,
 		Asker:      questions,
 		Diagnoser:  lspService,
-		AllowPaths: []string{plansDir},
+		AllowPaths: allowPaths,
 	})
 	// Plugin tools register after the built-ins so a plugin can replace one
 	// by name, matching the record merge on the TypeScript side.
@@ -500,10 +523,10 @@ func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
 	// Markdown-defined agents (.gocode/agent/*.md) merge into the config's
 	// agent map before the registry is built, so both definition styles flow
 	// through one code path. JSON config wins on a name collision.
-	cfg.DiscoverAgents(
+	cfg.DiscoverAgents(harnessRoots(overlay, overlayFirst,
 		filepath.Join(workdir, ".gocode"),
 		filepath.Join(global.Resolve().Config, "gocode"),
-	)
+	)...)
 
 	agents := agent.NewRegistry()
 	// defaultPermissions mirrors agent.ts's `defaults` object, merged into
@@ -593,6 +616,7 @@ func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
 		// the model never learns a skill's name, so none can be loaded on
 		// demand (the built-in configure-gocode one included).
 		Skills:               skills,
+		Instructions:         instructionsFor(workdir, cfg),
 		Model:                session.ModelRef{ProviderID: providerID, ID: modelID, Variant: lastUsed.Variant},
 		Permissions:          &session.EnginePermissionGate{Engine: permissionEngine},
 		Plugins:              plugins,
@@ -610,6 +634,14 @@ func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
 			Provider: streamClient,
 			Settings: session.DefaultCompactionSettings(),
 		},
+	}
+	// Assigned only when present: a nil *Overlay stored in the interface
+	// field would read as a harness that is there.
+	if overlay != nil {
+		runner.Harness = overlay
+		if hooks := overlay.Hooks(); hooks != nil {
+			runner.Guard = hooks
+		}
 	}
 	execution := session.NewExecution(&session.DBSessionLookup{DB: database}, runner)
 	// A drain failure is reported twice, on purpose. The background log takes

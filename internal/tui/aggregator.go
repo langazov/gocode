@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -185,6 +186,11 @@ type Snapshot struct {
 	// worth. Converting once, at sample time, keeps the error to a single
 	// rounding per second.
 	ReceivedBytes int
+	// Harness holds the latest state of every Harness² run reported on the
+	// stream, by run id; HarnessSeq counts harness events, so the UI can
+	// tell a frame that moved one from one that did not.
+	Harness    map[string]client.HarnessRun
+	HarnessSeq int
 }
 
 // tree is the aggregator's mutable state. It lives on the aggregator
@@ -197,10 +203,12 @@ type tree struct {
 	// process, and a turn that fans out to subagents is still one stream of
 	// work the user is waiting on.
 	receivedBytes int
+	harness       map[string]client.HarnessRun
+	harnessSeq    int
 }
 
 func newTree() *tree {
-	return &tree{sessions: map[string]*SessionNode{}, dirty: map[string]bool{}}
+	return &tree{sessions: map[string]*SessionNode{}, dirty: map[string]bool{}, harness: map[string]client.HarnessRun{}}
 }
 
 func (t *tree) node(sessionID string) *SessionNode {
@@ -216,6 +224,9 @@ func (t *tree) node(sessionID string) *SessionNode {
 // Every branch routes by event.Session: this is what keeps a subagent's
 // output out of its parent's view.
 func (t *tree) apply(e client.Event) bool {
+	if strings.HasPrefix(e.Type, "harness.") {
+		return t.applyHarness(e)
+	}
 	sessionID := e.Session
 	if sessionID == "" {
 		return false
@@ -383,6 +394,12 @@ func (t *tree) snapshot(dropped int) Snapshot {
 		Dirty:         make(map[string]bool, len(t.dirty)),
 		Dropped:       dropped,
 		ReceivedBytes: t.receivedBytes,
+		Harness:       make(map[string]client.HarnessRun, len(t.harness)),
+		HarnessSeq:    t.harnessSeq,
+	}
+	for id, run := range t.harness {
+		run.Rows = append([]client.HarnessRow(nil), run.Rows...)
+		out.Harness[id] = run
 	}
 	for id, node := range t.sessions {
 		out.Sessions[id] = node.clone()
@@ -392,6 +409,27 @@ func (t *tree) snapshot(dropped int) Snapshot {
 	}
 	t.dirty = map[string]bool{}
 	return out
+}
+
+// applyHarness keeps the latest state of a Harness² run. Every harness event
+// carries the whole run state (internal/server.HarnessPublisher), so the
+// newest one simply replaces what was there — a dropped event costs nothing.
+func (t *tree) applyHarness(e client.Event) bool {
+	raw, ok := e.Data["run"]
+	if !ok {
+		return false
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return false
+	}
+	var run client.HarnessRun
+	if err := json.Unmarshal(encoded, &run); err != nil || run.ID == "" {
+		return false
+	}
+	t.harness[run.ID] = run
+	t.harnessSeq++
+	return true
 }
 
 // Aggregate folds the server event stream into coalesced snapshots.

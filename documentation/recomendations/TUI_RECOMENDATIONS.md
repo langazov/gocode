@@ -610,6 +610,48 @@ picker, `?`'s help — still wins per §12's ladder):
 Preferences persist in `diffstate.json` beside `theme.json`, best-effort,
 never touching the config file.
 
+### 6.6 Harness² (`/harness`)
+
+Harness² runs are long, cost real money and happen in other sessions, so the
+interface treats them as background work the user checks on — never as a
+view that takes over the screen. Everything is built from §9's list dialog and
+read-only panel; there is no new dialog kind (`dialogs_harness.go`).
+
+| Surface | Kind | Contents |
+|---|---|---|
+| `/harness` · **Harness runs** | list | categories `RUNNING` above `FINISHED`; gutter `◐` running, `✓` ok, `·` partial/cancelled, `✗` failed; hint `mode k=N · status · phase` (running) or `· adopted <label>`; footer the cost |
+| run · **Harness run · `<task>`** | list | the run's *plan*: one row per label, grouped `BASE ROLLOUTS`, `PROPOSE AND PROBE`, `COMPOSE`, `SELECT`, `REFLECT` in the order the run moves through them; gutter `·` pending, `◐` editing/rolling, `~` edited (awaiting its rollout), `✓`/`✗` settled; `●` marks the adopted label; the filter placeholder carries the budget, backend and spend |
+| row | read-only panel | `HARNESS` (± files, always-on delta), `EDITOR NOTES`, `ERROR`, `HARNESS DIFF`, `ROLLOUT · delivered · $` — the rollout's final message and workspace diff |
+| `/harness library` · **Experience library · `<backend>`** | list | one category per domain; hint the lesson's cue (`pending upload ·` first when it has not reached the Library); footer the component census |
+| entry | read-only panel | `LESSON`, `WHY <label> WAS ADOPTED`, `WHAT EACH EDIT DID`, then every harness file |
+
+Footer actions: runs — `new ctrl+a` (standalone), `cancel ctrl+d` (two-press
+arm), `library ctrl+l`, `refresh ctrl+r`; run — `session ctrl+e` (open the
+row's rollout session), `install ctrl+s` and, when the backend is `split` or
+`cloud`, `publish ctrl+u` (finished runs only), `cancel ctrl+d` (running only),
+`back ctrl+b`; library — `forget ctrl+d` (two-press arm), `runs ctrl+b`.
+
+**Rules:**
+
+- **A run is never started without its price on screen.** `new` and
+  `/harness refine` open an input prefilled with the session's first request,
+  then a dry run (`POST /api/harness/run` with `dryRun`), then a confirm that
+  states the budget (`4k rollouts, 3k editor sessions`), the backend and that
+  the workspace is not touched. Only the confirm starts it.
+- **Install is always a dry run first.** The confirm names the target, the
+  file counts, whether it replaces an installed harness, which of the user's
+  own skills keep precedence, and any always-on cap warning. Replacing is the
+  confirm's `force`; nothing is overwritten without that dialog.
+- **Live state comes from the stream, not polling.** Every `harness.*` event
+  carries the run's whole state; the aggregator keeps the newest per run and
+  the open runs list or plan rebuilds in place, keeping filter and selection
+  (`refreshHarnessDialogs`). A run that stops raises a toast — success names
+  the adopted label and cost, failure is `toastError`.
+- **The hint row says a run is going.** While one runs, the right group gains
+  `harness <task> · <phase> <done>/<rows> · $` in `TextMuted`, ahead of the
+  `ctrl+p commands` hint and under the same `ShowActivityMeta` width gate as
+  the usage meter.
+
 ---
 
 ## 7. The timeline: message block specs
@@ -813,6 +855,7 @@ let the settlement line's `· interrupted` marker carry it.
 
 ```
 busy:      ■⬝⬝⬝⬝⬝⬝⬝ esc interrupt   ⇡42 tok/s  159.6K (16%) · $0.34  ctrl+p commands
+harness:   ~/Work/project      159.6K (16%) · $0.34  harness fix-login · probe 3/6 · $0.42  ctrl+p commands
 armed:     ■⬝⬝⬝⬝⬝⬝⬝ esc again to interrupt          (both spans recolor to Primary)
 offline:   ■⬝⬝⬝⬝⬝⬝⬝ waiting for network  esc interrupt
 notice:       interrupted
@@ -1592,6 +1635,7 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | `dialogs.go` | App-side dialog wiring: shell builders, close/cmd adapters (`wrapDialogCmd`, `CloseThenMsg`), compositing entry points, command registry |
 | `dialogs_confirm.go` | The read-only panels' content (help, status, stats body/hints/budget) |
 | `dialogs_{model,provider,plugins,memory,skill}.go` | Individual dialog content |
+| `dialogs_harness.go` | The `/harness` surfaces (§6.6): runs list, run plan, stage panel, experience library, install/plan confirms |
 | `dialogs_mcp.go` | The `/mcp` MCP server management dialog: rows from GET /api/mcp/servers, live enable/disable/delete, details drill-in |
 | `stats_overlay.go` | `/stats` aggregation (the computation half) |
 | `diffviewer.go` | The `/diff` route: state, fetch, layout, navigation, keys, mouse (see §6.5) |

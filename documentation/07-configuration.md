@@ -104,6 +104,9 @@ Keeping secrets in `{env:...}` is what lets `gocode.json` be committed.
   "agent": { /* see below */ },
   "command": { /* see below */ },
 
+  // ── Harness² ────────────────────────────────────────────
+  "harness": { "library": "auto", "crossDomain": false, "model": "", "enabled": true },
+
   "experimental": {}
 }
 ```
@@ -115,8 +118,39 @@ session titles, summaries — so those don't burn frontier-model tokens.
 
 ### `instructions`
 
-Extra files appended to the system prompt. Combine with `AGENTS.md` in the
-project root for per-repo conventions.
+Extra files appended to the system prompt, after the agent's own prompt
+(`internal/session/instruction.go`, porting opencode's `instruction.ts`). Every
+turn carries, in order:
+
+1. the first global file that exists: `$XDG_CONFIG_HOME/gocode/AGENTS.md`, else
+   `~/.claude/CLAUDE.md`;
+2. the project file found walking up from the session directory to the git
+   root — `AGENTS.md`, else `CLAUDE.md`, else the deprecated `CONTEXT.md`
+   (every ancestor match of the first name found, never two names stacked);
+3. each `instructions` entry: a path or glob relative to the project (searched
+   upward to the git root), a `~/` path, or an absolute path. URL entries are
+   skipped — gocode does not fetch over the network to build a prompt.
+
+Files are re-read every turn, so an edit lands on the next one. Opt out with
+`GOCODE_DISABLE_INSTRUCTIONS=1`; `GOCODE_DISABLE_CLAUDE_CODE_PROMPT=1` drops only
+the `CLAUDE.md` files.
+
+### `harness`
+
+Harness² (`gocode harness`, `/harness` in the TUI; see
+[HARNESS2_PLAN.md](HARNESS2_PLAN.md)):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `enabled` | `true` | `false` never overlays the harness installed at `.gocode/harness` (also `GOCODE_DISABLE_HARNESS=1`) |
+| `library` | `"auto"` | experience-library backend: `auto` uses the gocoder.org Library when library-plugin is loaded and signed in (skills in the Library, experience on disk until gocoder.org accepts `.harness/`), else local; `local`; `cloud` (fail rather than fall back) |
+| `crossDomain` | `false` | also show lessons from other domains (cloud backend) |
+| `model` | executor's | `provider/model` for the editor, selector and reflector sessions |
+
+An installed harness (`.gocode/harness/`) is overlaid on every session in the
+project, below everything you wrote yourself: its always-on files follow your
+instruction files in the system prompt, its `skills/` and `agent/` rank after
+your own, and its `hooks.json` rules guard tool calls.
 
 ### `permission`
 
@@ -296,6 +330,8 @@ Paths follow the XDG spec (`internal/global/global.go`):
 | `$XDG_CACHE_HOME/gocode/` | models.dev cache, `bin/` |
 | `$XDG_STATE_HOME/gocode/` | per-directory state (last model, …) |
 | `./.gocode/` | project agents, commands, skills |
+| `./.gocode/harness/` | the installed Harness² harness |
+| `$XDG_DATA_HOME/gocode/harness/` | Harness² run directories (`runs/`) and the local experience library (`library/`) |
 | `./AGENTS.md` | project instructions |
 
 On macOS and Linux these default to `~/.config`, `~/.local/share`,

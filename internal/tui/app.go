@@ -275,6 +275,17 @@ type App struct {
 	memoryList       []client.Memory
 	memoryListLoaded bool
 	memoryListErr    string
+	// harnessRuns is the cached Harness² run list behind /harness, merged
+	// with the live states the aggregator carries (harnessSeq is the last
+	// snapshot's harness counter); harnessOpenRun is the run whose plan is
+	// on screen. See dialogs_harness.go.
+	harnessRuns       []client.HarnessRun
+	harnessLoaded     bool
+	harnessErr        string
+	harnessSeq        int
+	harnessOpenRun    string
+	harnessLibrary    *client.HarnessLibrary
+	harnessLibraryErr string
 	// catalogModels is the last-fetched model list, the port of TS's
 	// sync.data.provider: the dialogs render from it immediately instead of
 	// waiting on a request, and a refresh lands through catalogMsg.
@@ -1295,6 +1306,9 @@ func (a *App) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (a *App) update(msg tea.Msg) tea.Cmd {
+	if cmd, ok := a.handleHarnessMsg(msg); ok {
+		return cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
@@ -1652,7 +1666,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		// aggregator is the only thing watching the event stream), so this is
 		// the path that has to keep the spinner running.
 		effect := a.applySnapshot(msg.snapshot)
-		cmds := []tea.Cmd{a.startSpinner()}
+		cmds := []tea.Cmd{a.startSpinner(), a.applyHarnessSnapshot(msg.snapshot)}
 		if a.active != nil {
 			if effect.timeline {
 				cmds = append(cmds, a.loadMessages(a.active.ID))

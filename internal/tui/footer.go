@@ -344,6 +344,11 @@ func (a *App) footerRight(policy footerPolicy) []string {
 	default:
 		segments = append(segments, a.hintPair("tab", "agents"))
 	}
+	// A harness run in the background is work the user started and is
+	// waiting on, so it sits with the usage meter, ahead of the static hint.
+	if harness := a.harnessFooterSegment(); harness != "" && policy.ShowActivityMeta {
+		segments = append(segments, harness)
+	}
 	if policy.ShowCommandHint {
 		segments = append(segments, a.hintPair("ctrl+p", "commands"))
 	}
