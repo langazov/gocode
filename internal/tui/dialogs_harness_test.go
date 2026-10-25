@@ -227,6 +227,7 @@ func TestHarnessRefinePlansThenConfirms(t *testing.T) {
 	app := newTestApp(t, url)
 	app.view = viewChat
 	app.active = &client.Session{ID: "ses_1", Title: "t", Directory: "/work/proj"}
+	app.activeModel = "anthropic/claude-test"
 	userData, _ := json.Marshal(map[string]any{"text": "Fix the login redirect"})
 	app.timeline = []client.Message{{ID: "m1", Type: "user", Data: userData}}
 
@@ -236,19 +237,30 @@ func TestHarnessRefinePlansThenConfirms(t *testing.T) {
 		t.Fatalf("input = %+v", o)
 	}
 	applyCmd(t, app, app.handleOverlayKey("enter"))
+	if app.overlay == nil || app.overlay.Title != "Harness run budget" {
+		t.Fatalf("budget picker did not open: %+v", app.overlay)
+	}
+	if len(app.overlay.Items()) != len(harnessBudgets) {
+		t.Fatalf("budgets = %d", len(app.overlay.Items()))
+	}
+	// Pick sequential k=2: down twice from the cheapest.
+	app.handleOverlayKey("down")
+	app.handleOverlayKey("down")
+	applyCmd(t, app, app.handleOverlayKey("enter"))
 	if !state.saw("POST /api/harness/run") {
 		t.Fatal("the plan was not requested")
 	}
 	if app.overlay == nil || app.overlay.Kind != dialog.KindConfirm {
 		t.Fatalf("confirm = %+v", app.overlay)
 	}
-	if panel := strings.Join(panelLines(t, app), " "); !strings.Contains(panel, "rollouts") || !strings.Contains(panel, "not touched") {
+	if panel := strings.Join(panelLines(t, app), " "); !strings.Contains(panel, "rollouts") || !strings.Contains(panel, "touched") {
 		t.Fatalf("confirm does not state the budget:\n%s", panel)
 	}
 	state.mu.Lock()
 	first := state.bodies[len(state.bodies)-1]
 	state.mu.Unlock()
-	if first["dryRun"] != true || first["workspace"] != "/work/proj" {
+	if first["dryRun"] != true || first["workspace"] != "/work/proj" || first["mode"] != "sequential" || first["k"] != float64(2) ||
+		first["model"] != "anthropic/claude-test" {
 		t.Fatalf("plan body = %v", first)
 	}
 }

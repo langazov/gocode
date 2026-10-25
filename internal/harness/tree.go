@@ -342,6 +342,9 @@ type ValidateOptions struct {
 	DisallowAgents bool
 	// Reserved adds script names a reference to which is never missing.
 	Reserved map[string]bool
+	// CheckScript, when set, parses each shipped script (top-level and skill
+	// helpers); a non-nil error rejects the tree. SyntaxCheck is the real one.
+	CheckScript func(rel, src string) error
 }
 
 // Validate checks every surface rule, returning a *ValidationError listing
@@ -391,6 +394,16 @@ func Validate(tree Tree, opts ValidateOptions) (Census, error) {
 		hooks = 1
 		if _, err := ParseHooks(src); err != nil {
 			errs = append(errs, err.Error())
+		}
+	}
+
+	if opts.CheckScript != nil {
+		for _, rel := range tree.Paths() {
+			if rxScript.MatchString(rel) || rxSkillScript.MatchString(rel) {
+				if err := opts.CheckScript(rel, tree[rel]); err != nil {
+					errs = append(errs, err.Error())
+				}
+			}
 		}
 	}
 

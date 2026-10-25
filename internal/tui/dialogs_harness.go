@@ -337,17 +337,67 @@ func (a *App) newHarnessRun(prompt string) tea.Cmd {
 		if value == "" {
 			return statusMsg{text: "no task given"}
 		}
-		start := client.HarnessStart{Prompt: value, K: 1, Mode: "parallel", DryRun: true}
-		if a.active != nil {
-			start.Workspace = a.active.Directory
-		}
+		return harnessBudgetMsg{prompt: value}
+	})
+	return nil
+}
+
+// harnessBudgetMsg asks for the run's mode and k once the task is known.
+type harnessBudgetMsg struct{ prompt string }
+
+// harnessBudgets are the offered (mode, k) pairs, cheapest first. Each row
+// names what it costs, so the choice is made against the price.
+var harnessBudgets = []struct {
+	mode string
+	k    int
+	why  string
+}{
+	{"parallel", 1, "one Propose–Probe–Compose step"},
+	{"parallel", 2, "wider: 4 candidates, 2 compositions"},
+	{"sequential", 2, "deeper: 2 rounds, each building on the last"},
+	{"parallel", 3, "widest: 6 candidates, 3 compositions"},
+	{"sequential", 3, "deepest: 3 rounds"},
+}
+
+// openHarnessBudget lists the budgets; picking one plans the run on the
+// open session's model and opens the confirm.
+func (a *App) openHarnessBudget(prompt string) {
+	model := a.currentModelLabel()
+	items := make([]overlayItem, 0, len(harnessBudgets))
+	for _, b := range harnessBudgets {
+		b := b
+		items = append(items, overlayItem{
+			Label:  fmt.Sprintf("%s k=%d", b.mode, b.k),
+			Hint:   b.why,
+			Value:  fmt.Sprintf("%s-%d", b.mode, b.k),
+			Footer: fmt.Sprintf("%d rollouts · %d edits", 4*b.k, 3*b.k),
+			Action: func() tea.Msg {
+				start := client.HarnessStart{Prompt: prompt, K: b.k, Mode: b.mode, Model: model, DryRun: true}
+				if a.active != nil {
+					start.Workspace = a.active.Directory
+				}
+				return a.planHarnessCmd(start)
+			},
+		})
+	}
+	a.openList("Harness run budget", items)
+	o := a.overlay
+	o.SetSize(dialogMedium)
+	o.SetHideFilter(true)
+	o.SetCurrent("parallel-1")
+	if model != "" {
+		o.SetPlaceholder("rollouts and edits run on " + model)
+	}
+}
+
+func (a *App) planHarnessCmd(start client.HarnessStart) tea.Cmd {
+	return func() tea.Msg {
 		plan, err := a.client.StartHarness(a.ctx, start)
 		if err != nil {
 			return statusMsg{text: "cannot plan the run: " + err.Error()}
 		}
 		return harnessPlanMsg{start: start, plan: *plan}
-	})
-	return nil
+	}
 }
 
 // harnessPlanMsg carries a dry-run plan to confirm.
@@ -360,6 +410,9 @@ func (a *App) confirmHarnessPlan(msg harnessPlanMsg) {
 	start := msg.start
 	start.DryRun = false
 	message := fmt.Sprintf("Task %s in %s.\n\n%s.\nExperience library: %s", msg.plan.Task, msg.plan.Domain, msg.plan.Budget, msg.plan.Backend)
+	if msg.start.Model != "" {
+		message = fmt.Sprintf("Task %s in %s, on %s.\n\n%s.\nExperience library: %s", msg.plan.Task, msg.plan.Domain, msg.start.Model, msg.plan.Budget, msg.plan.Backend)
+	}
 	if msg.plan.Reason != "" {
 		message += " (" + msg.plan.Reason + ")"
 	}
@@ -738,6 +791,9 @@ func (a *App) handleHarnessMsg(msg tea.Msg) (tea.Cmd, bool) {
 		if msg.status != "" {
 			return staticMsg(statusMsg{text: msg.status}), true
 		}
+		return nil, true
+	case harnessBudgetMsg:
+		a.openHarnessBudget(msg.prompt)
 		return nil, true
 	case harnessPlanMsg:
 		a.confirmHarnessPlan(msg)

@@ -324,3 +324,94 @@ func TestPromptsCarryTheirRules(t *testing.T) {
 		t.Error("output formats missing")
 	}
 }
+
+// Two stores on one root stand in for two gocode processes adapting tasks in
+// the same domain at once: the file lock keeps every entry in INDEX.md.
+func TestLocalStoreConcurrentAddsKeepTheIndex(t *testing.T) {
+	root := t.TempDir()
+	stores := []*LocalStore{{Root: root}, {Root: root}}
+	var wg sync.WaitGroup
+	for i := 0; i < 16; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			err := stores[i%2].Add(context.Background(), Entry{
+				Domain: "d", Task: fmt.Sprintf("t%02d", i), Label: "agg1",
+				Lesson: Experience{Cue: fmt.Sprintf("cue %d", i), Lesson: "l", Evidence: "e"},
+				Tree:   Tree{FileSystemPrompt: "x"},
+			})
+			if err != nil {
+				t.Error(err)
+			}
+		}(i)
+	}
+	wg.Wait()
+	index := readOr(filepath.Join(root, "d", "INDEX.md"), "")
+	for i := 0; i < 16; i++ {
+		if !strings.Contains(index, fmt.Sprintf("harnesses/t%02d/", i)) {
+			t.Fatalf("INDEX.md lost t%02d:\n%s", i, index)
+		}
+	}
+}
+
+func sweepTasks(t *testing.T, workspace string) []Task {
+	t.Helper()
+	var tasks []Task
+	for _, spec := range []struct{ id, domain string }{
+		{"a1", "alpha"}, {"a2", "alpha"}, {"a3", "alpha"}, {"b1", "beta"},
+	} {
+		tasks = append(tasks, Task{ID: spec.id, Domain: spec.domain, Prompt: "Write the answer.", Workspace: workspace})
+	}
+	return tasks
+}
+
+// Tasks in one domain run in order and each reads what the earlier ones
+// stored; domains are independent.
+func TestSweepThreadsTheLibraryThroughADomain(t *testing.T) {
+	exec, improver := &fakeExec{}, &fakeImprover{}
+	store := &LocalStore{Root: t.TempDir()}
+	engine, task := newEngineFixture(t, exec, improver, store)
+	dir := t.TempDir()
+	result, err := engine.Sweep(context.Background(), sweepTasks(t, task.Workspace), SweepOptions{K: 1, Mode: ModeParallel, Workers: 2, Dir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.Done != 4 || result.Failed != 0 || strings.Join(result.DomainOrder, ",") != "alpha,beta" {
+		t.Fatalf("result = %+v", result)
+	}
+	var alpha []SweepRow
+	for _, row := range result.Rows {
+		if row.Domain == "alpha" {
+			alpha = append(alpha, row)
+		}
+	}
+	for i, row := range alpha {
+		if row.Task != fmt.Sprintf("a%d", i+1) || row.LibraryBefore != i {
+			t.Fatalf("alpha row %d = %+v: tasks must run in order, each seeing the lessons before it", i, row)
+		}
+	}
+	if int(exec.calls.Load()) != 4*ExpectedRollouts(1) {
+		t.Fatalf("rollouts = %d", exec.calls.Load())
+	}
+	records, _ := filepath.Glob(filepath.Join(dir, "*.json"))
+	if len(records) != 1 {
+		t.Fatalf("sweep record not written: %v", records)
+	}
+}
+
+func TestStreamOrder(t *testing.T) {
+	tasks := sweepTasks(t, "")
+	domains, byDomain := Stream(tasks, nil, 2)
+	if strings.Join(domains, ",") != "alpha,beta" || len(byDomain["alpha"]) != 2 || byDomain["alpha"][0].ID != "a1" {
+		t.Fatalf("reference order: %v %v", domains, byDomain)
+	}
+	seed := int64(7)
+	_, first := Stream(sweepTasks(t, ""), &seed, 0)
+	_, again := Stream(sweepTasks(t, ""), &seed, 0)
+	if fmt.Sprint(first) != fmt.Sprint(again) {
+		t.Fatal("a seeded stream is not reproducible")
+	}
+	if err := ValidateTasks(append(sweepTasks(t, ""), Task{ID: "a1", Domain: "x", Prompt: "p"})); err == nil {
+		t.Fatal("duplicate task ids accepted")
+	}
+}

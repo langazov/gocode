@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
+
+	"github.com/langazov/gocode-go/internal/flock"
 )
 
 // The experience library, porting harness2/core/library.py: per domain, what
@@ -59,8 +62,31 @@ type ExperienceStore interface {
 }
 
 // LocalStore is the experience library on the local filesystem.
+//
+// Writes to a domain hold its lock: an exclusive advisory file lock, so two
+// gocode processes adapting tasks in the same domain cannot interleave an
+// entry write with the INDEX.md rebuild (harness2 serialises its summary
+// writes the same way), plus an in-process mutex for platforms where the file
+// lock is advisory-only or a no-op.
 type LocalStore struct {
 	Root string
+
+	mu sync.Mutex
+}
+
+// withLock runs fn holding the domain's write lock.
+func (s *LocalStore) withLock(domain string, fn func() error) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := os.MkdirAll(s.domainDir(domain), 0o755); err != nil {
+		return err
+	}
+	lock, err := flock.Lock(filepath.Join(s.domainDir(domain), ".lock"))
+	if err != nil {
+		return err
+	}
+	defer lock.Close()
+	return fn()
 }
 
 // Backend implements ExperienceStore.
@@ -114,17 +140,19 @@ func (s *LocalStore) Add(_ context.Context, entry Entry) error {
 	if err := AssertTreeHasNoGraderVerdicts(Tree{"EXPERIENCE.md": entry.Why + entry.Lesson.Cue + entry.Lesson.Lesson + entry.Lesson.Evidence}); err != nil {
 		return err
 	}
-	dir := s.entryDir(entry.Domain, entry.Task)
-	if err := os.RemoveAll(filepath.Join(dir, "harness")); err != nil {
-		return err
-	}
-	if _, err := WriteTree(entry.Tree, filepath.Join(dir, "harness"), false); err != nil {
-		return err
-	}
-	if err := writeFileAll(filepath.Join(dir, "EXPERIENCE.md"), experienceMarkdown(entry)); err != nil {
-		return err
-	}
-	return s.rebuildIndex(entry.Domain)
+	return s.withLock(entry.Domain, func() error {
+		dir := s.entryDir(entry.Domain, entry.Task)
+		if err := os.RemoveAll(filepath.Join(dir, "harness")); err != nil {
+			return err
+		}
+		if _, err := WriteTree(entry.Tree, filepath.Join(dir, "harness"), false); err != nil {
+			return err
+		}
+		if err := writeFileAll(filepath.Join(dir, "EXPERIENCE.md"), experienceMarkdown(entry)); err != nil {
+			return err
+		}
+		return s.rebuildIndex(entry.Domain)
+	})
 }
 
 func experienceMarkdown(entry Entry) string {
@@ -311,8 +339,10 @@ func (s *LocalStore) Forget(_ context.Context, domain, task string) error {
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("no experience entry %s/%s", domain, task)
 	}
-	if err := os.RemoveAll(dir); err != nil {
-		return err
-	}
-	return s.rebuildIndex(domain)
+	return s.withLock(domain, func() error {
+		if err := os.RemoveAll(dir); err != nil {
+			return err
+		}
+		return s.rebuildIndex(domain)
+	})
 }

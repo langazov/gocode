@@ -2,8 +2,11 @@ package harness
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -260,5 +263,39 @@ func TestCopyDirIsIndependent(t *testing.T) {
 		if link, err := os.Readlink(filepath.Join(dst, "link.go")); err != nil || link != "pkg/a.go" {
 			t.Fatalf("fresh=%v: symlink not kept: %q %v", fresh, link, err)
 		}
+	}
+}
+
+func TestSyntaxCheck(t *testing.T) {
+	if _, err := exec.LookPath("python3"); err == nil {
+		if err := SyntaxCheck("scripts/ok.py", "import sys\nprint(sys.argv)\n"); err != nil {
+			t.Errorf("valid python rejected: %v", err)
+		}
+		err := SyntaxCheck("scripts/bad.py", "def f(:\n  pass\n")
+		if err == nil || !strings.Contains(err.Error(), "scripts/bad.py does not parse") {
+			t.Errorf("broken python accepted: %v", err)
+		}
+		// Parsing never runs the code.
+		marker := filepath.Join(t.TempDir(), "ran")
+		_ = SyntaxCheck("scripts/side.py", "open("+strconv.Quote(marker)+", 'w').write('x')\n")
+		if _, err := os.Stat(marker); err == nil {
+			t.Fatal("SyntaxCheck executed the script")
+		}
+	}
+	if _, err := exec.LookPath("sh"); err == nil {
+		if err := SyntaxCheck("scripts/ok.sh", "echo hi\n"); err != nil {
+			t.Errorf("valid sh rejected: %v", err)
+		}
+		if err := SyntaxCheck("scripts/bad.sh", "if then fi (\n"); err == nil {
+			t.Error("broken sh accepted")
+		}
+	}
+	if err := SyntaxCheck("skills/x/SKILL.md", "anything"); err != nil {
+		t.Errorf("non-script checked: %v", err)
+	}
+	tree := Tree{FileGuardrails: "run `python3 scripts/a.py`", "scripts/a.py": "x"}
+	_, err := Validate(tree, ValidateOptions{CheckScript: func(rel, _ string) error { return fmt.Errorf("%s does not parse", rel) }})
+	if err == nil || !strings.Contains(err.Error(), "scripts/a.py does not parse") {
+		t.Fatalf("Validate ignored CheckScript: %v", err)
 	}
 }

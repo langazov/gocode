@@ -1065,6 +1065,7 @@ type HarnessStart struct {
 	Workspace string `json:"workspace,omitempty"`
 	K         int    `json:"k,omitempty"`
 	Mode      string `json:"mode,omitempty"`
+	Model     string `json:"model,omitempty"`
 	DryRun    bool   `json:"dryRun,omitempty"`
 }
 

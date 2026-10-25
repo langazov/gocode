@@ -127,6 +127,7 @@ func newHarnessEngine(ctx context.Context, st *stack, opts harnessOptions) (*har
 		RolloutWidth:   opts.Width,
 		ProposeWidth:   opts.Width,
 		KeepWorkspaces: opts.KeepWorkspace,
+		Validate:       harness.ValidateOptions{CheckScript: harness.SyntaxCheck},
 	}
 	if cloud != nil {
 		engine.Environment = cloud.SkillSnapshot

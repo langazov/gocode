@@ -58,6 +58,18 @@ func harnessCommand() *clix.Command {
 				Run:         runHarnessRun,
 			},
 			{
+				Name: "sweep",
+				Describe: "run many tasks: each domain's tasks in order, each reading the lessons earlier ones stored; " +
+					"domains in parallel",
+				Positionals: []clix.Positional{{Name: "tasks", Array: true, Required: true, Describe: "task files, or directories of *.md task files"}},
+				Flags: append(sweepFlags(runFlags),
+					clix.Flag{Name: "workers", Kind: clix.KindNumber, Default: float64(1), Describe: "domains run at once; tasks within a domain stay in order"},
+					clix.Flag{Name: "max-tasks", Kind: clix.KindNumber, Describe: "cap per domain: its first N tasks in stream order"},
+					clix.Flag{Name: "seed", Kind: clix.KindNumber, Describe: "shuffle the stream reproducibly (model sampling is not seeded)"},
+				),
+				Run: runHarnessSweep,
+			},
+			{
 				Name:     "runs",
 				Describe: "list harness runs and their outcome",
 				Flags:    []clix.Flag{{Name: "format", Kind: clix.KindString, Default: "table", Choices: []string{"table", "json"}, Describe: "output format"}},
@@ -785,4 +797,176 @@ func runHarnessPrune(a *clix.Args) error {
 	}
 	fmt.Printf("deleted %s (%d sessions)\n", strings.Join(deleted.Removed, ", "), deleted.Sessions)
 	return nil
+}
+
+// sweepFlags is the run flags minus the ones that name a single task.
+func sweepFlags(runFlags []clix.Flag) []clix.Flag {
+	var out []clix.Flag
+	for _, f := range runFlags {
+		switch f.Name {
+		case "prompt", "id":
+			continue
+		case "domain":
+			f.Describe = "domain for task files that do not set one (default: the project directory name)"
+		case "dir":
+			f.Describe = "workspace for task files that do not set one (default: the current directory)"
+		}
+		out = append(out, f)
+	}
+	return out
+}
+
+// loadSweepTasks reads task files, expanding directories to their *.md
+// files, and fills each task's domain and workspace defaults.
+func loadSweepTasks(paths []string, defaultDomain, defaultWorkspace string) ([]harness.Task, error) {
+	var files []string
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			files = append(files, path)
+			continue
+		}
+		matches, err := filepath.Glob(filepath.Join(path, "*.md"))
+		if err != nil {
+			return nil, err
+		}
+		sort.Strings(matches)
+		files = append(files, matches...)
+	}
+	tasks := make([]harness.Task, 0, len(files))
+	for _, file := range files {
+		task, err := harness.LoadTask(file)
+		if err != nil {
+			return nil, err
+		}
+		if task.Domain == "" {
+			task.Domain = defaultDomain
+		}
+		if task.Workspace == "" {
+			task.Workspace = defaultWorkspace
+		}
+		task.Prompts = task.Prompts.WithDefaults()
+		tasks = append(tasks, task)
+	}
+	return tasks, harness.ValidateTasks(tasks)
+}
+
+func runHarnessSweep(a *clix.Args) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return err
+	}
+	domain := a.String("domain")
+	if domain == "" {
+		domain = harness.Slug(filepath.Base(cwd))
+	}
+	workspace := a.String("dir")
+	if workspace == "" {
+		workspace = cwd
+	}
+	if workspace, err = filepath.Abs(workspace); err != nil {
+		return err
+	}
+	tasks, err := loadSweepTasks(a.Array("tasks"), domain, workspace)
+	if err != nil {
+		return err
+	}
+	k := a.IntOr("k", 1)
+	mode, err := harness.ParseMode(a.String("mode"))
+	if err != nil {
+		return err
+	}
+	var seed *int64
+	if a.Has("seed") {
+		v := int64(a.Number("seed"))
+		seed = &v
+	}
+	maxTasks := a.IntOr("max-tasks", 0)
+	base, baseDir, err := baseHarness(cwd, a.String("base"))
+	if err != nil {
+		return err
+	}
+	if _, err := harness.Validate(base, harness.ValidateOptions{}); err != nil && len(base) > 0 {
+		return fmt.Errorf("base harness %s is invalid: %w", baseDir, err)
+	}
+
+	domains, byDomain := harness.Stream(tasks, seed, maxTasks)
+	total := 0
+	for _, d := range domains {
+		total += len(byDomain[d])
+	}
+	fmt.Fprintf(os.Stderr, "harness² sweep · %d tasks in %d domains · %s each\n", total, len(domains), harness.CostLine(mode, k, true))
+	fmt.Fprintf(os.Stderr, "  in all: %d rollouts, %d editor sessions\n", total*harness.ExpectedRollouts(k), total*harness.ExpectedSessions(k))
+	for _, d := range domains {
+		ids := make([]string, 0, len(byDomain[d]))
+		for _, task := range byDomain[d] {
+			ids = append(ids, task.ID)
+		}
+		fmt.Fprintf(os.Stderr, "  %s: %s\n", d, strings.Join(ids, " → "))
+	}
+	if a.Bool("dry-run") {
+		return nil
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	st, err := bootStack(ctx, a.String("model"))
+	if err != nil {
+		return err
+	}
+	defer st.Close()
+	engine, detection, err := newHarnessEngine(ctx, st, harnessOptions{
+		Library: a.String("library"), Model: a.String("model"), ImproverModel: a.String("improver-model"),
+		Variant: a.String("variant"), Width: a.IntOr("width", harness.DefaultWidth),
+		CrossDomain: a.Bool("cross-domain"), KeepWorkspace: a.Bool("keep-workspaces"),
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(os.Stderr, "  library: %s (%s)\n", detection.Backend, detection.Reason)
+	jsonOut := a.String("format") == "json"
+	engine.OnEvent = func(ev harness.Event) {
+		if jsonOut {
+			data, _ := json.Marshal(map[string]any{"type": "harness." + ev.Type, "event": ev})
+			fmt.Println(string(data))
+		}
+	}
+	result, err := engine.Sweep(ctx, tasks, harness.SweepOptions{
+		K: k, Mode: mode, Workers: a.IntOr("workers", 1), MaxTasks: maxTasks, Seed: seed, Base: base,
+		Dir: filepath.Join(harnessRoot(), "sweeps"),
+		OnTask: func(row harness.SweepRow) {
+			if jsonOut {
+				data, _ := json.Marshal(map[string]any{"type": "harness.sweep.task", "row": row})
+				fmt.Println(string(data))
+				return
+			}
+			line := fmt.Sprintf("%s %s/%s · %s · $%.2f", harnessStatusMark(row.Status), row.Domain, row.Task, row.Status, row.CostUSD)
+			if row.Adopted != "" {
+				line += " · adopted " + row.Adopted
+			}
+			if row.Error != "" {
+				line += " · " + clipLine(row.Error, 100)
+			}
+			fmt.Fprintln(os.Stderr, line)
+		},
+	})
+	if result != nil {
+		if jsonOut {
+			data, _ := json.Marshal(map[string]any{"type": "harness.sweep", "result": result})
+			fmt.Println(string(data))
+		} else {
+			fmt.Printf("\nsweep: %d done, %d failed, $%.2f\n", result.Done, result.Failed, result.CostUSD)
+		}
+	}
+	return err
+}
+
+func harnessStatusMark(status string) string {
+	if status == "ok" {
+		return "✓"
+	}
+	return "✗"
 }

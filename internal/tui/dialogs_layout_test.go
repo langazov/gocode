@@ -448,6 +448,10 @@ func TestEveryDialogRowIsExactlyPanelWide(t *testing.T) {
 			a.harnessRuns = sampleHarnessRuns()
 			a.openHarnessRun("fix-login--k1-parallel")
 		},
+		"harness budget": func(a *App) {
+			a.activeModel = "anthropic/claude-sonnet-4-5"
+			a.openHarnessBudget(long)
+		},
 		"harness stage": func(a *App) {
 			a.openHelpDialog("agg1", harnessStageLines(client.HarnessStage{
 				Label: "agg1", Notes: long, Diff: "--- base/systemprompt.md\n+++ agg1/systemprompt.md\n+\tcheck " + long,

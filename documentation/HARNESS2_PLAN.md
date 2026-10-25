@@ -390,7 +390,8 @@ What was built, where, and where it departs from the plan above.
 | Prompts (Phase 3) | `internal/harness/prompts.go`, `prompts/*.md` (attribution in `internal/harness/NOTICE`) |
 | Recursion, selection, reflection, library (Phases 4–5) | `recursion.go`, `selection.go`, `library.go`, `run.go` |
 | Library integration (Phase 5b, §7) | `internal/harness/cloud.go`; detection and wiring `cmd/gocode/harness_engine.go` |
-| CLI (Phase 6) | `cmd/gocode/cmd_harness.go` — `run`, `runs`, `show`, `install`, `prune`, `validate`, `library ls\|show\|forget\|sync` |
+| CLI (Phase 6) | `cmd/gocode/cmd_harness.go` — `run`, `sweep`, `runs`, `show`, `install`, `prune`, `validate`, `library ls\|show\|forget\|sync` |
+| Sweeps over a task set | `internal/harness/sweep.go` (`run_sweep`/`run_domain`/`stream_order`): domains in parallel (`--workers`), each domain's tasks in stream order so each reads its predecessors' lessons; `--seed`, `--max-tasks`; record in `$XDG_DATA_HOME/gocode/harness/sweeps/` |
 | API + TUI (Phase 7) | `internal/harness/service.go`, `internal/server/harness.go`; `internal/tui/dialogs_harness.go`, the aggregator's `harness.*` branch |
 
 Departures from the plan:
@@ -411,6 +412,13 @@ Departures from the plan:
 - **Rollouts are fenced harder than the plan said**: every agent in a rollout
   stack gets `external_directory: deny` except the harness directory, because
   `--auto` would otherwise approve the default `ask`.
+- **Sweeps keep the library.** harness2 trims each domain's library to the
+  entries preceding the current task (`Library.retain`) because its
+  libraries are per-run; gocode's is the user's own and outlives a sweep, so a
+  task also reads entries earlier sweeps left.
+- **Script syntax** is checked through the interpreters (`python3 -I` running
+  `ast.parse` on stdin, `sh -n`), which parse without executing; a missing
+  interpreter skips the check instead of rejecting the proposal.
 - **One mode per run.** harness2 runs every mode over shared bases in one
   call; here a run is one mode, and the bases are shared through the cache
   when the other mode runs for the same task and k.

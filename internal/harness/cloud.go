@@ -389,6 +389,10 @@ func (s *CloudStore) pull(ctx context.Context, domain string) error {
 	if err != nil {
 		return err
 	}
+	return s.Cache.withLock(domain, func() error { return s.pullNodes(ctx, domain, nodes) })
+}
+
+func (s *CloudStore) pullNodes(ctx context.Context, domain string, nodes []gocoder.LibraryNode) error {
 	prefix := harnessPrefix + "/" + domain + "/harnesses/"
 	for _, node := range nodes {
 		if node.Type != gocoder.LibraryTypeFile || !strings.HasPrefix(node.Path, prefix) {

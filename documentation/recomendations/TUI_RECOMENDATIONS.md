@@ -636,9 +636,11 @@ row's rollout session), `install ctrl+s` and, when the backend is `split` or
 
 - **A run is never started without its price on screen.** `new` and
   `/harness refine` open an input prefilled with the session's first request,
-  then a dry run (`POST /api/harness/run` with `dryRun`), then a confirm that
-  states the budget (`4k rollouts, 3k editor sessions`), the backend and that
-  the workspace is not touched. Only the confirm starts it.
+  then the **Harness run budget** list — mode and k, cheapest first, each row
+  footed with its rollouts and edits, the placeholder naming the session's
+  model the run will use — then a dry run (`POST /api/harness/run` with
+  `dryRun`), then a confirm that states the task, model, budget, backend and
+  that the workspace is not touched. Only the confirm starts it.
 - **Install is always a dry run first.** The confirm names the target, the
   file counts, whether it replaces an installed harness, which of the user's
   own skills keep precedence, and any always-on cap warning. Replacing is the
