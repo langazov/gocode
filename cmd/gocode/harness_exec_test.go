@@ -414,6 +414,26 @@ func TestRolloutStopsAtItsTimeout(t *testing.T) {
 	}
 }
 
+// A rollout that goes quiet is stopped at the idle limit, long before the
+// overall cap, and the error says it stalled rather than ran long.
+func TestRolloutStopsWhenIdle(t *testing.T) {
+	sleepingRollout(setupFakeHarnessModel(t))
+	st := bootInTemp(t)
+	h := rolloutHarness(st, time.Hour)
+	h.IdleTimeout = time.Second
+	started := time.Now()
+	result, err := h.Rollout(context.Background(), rolloutRequest(t, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if took := time.Since(started); took > 15*time.Second {
+		t.Fatalf("a 1s idle limit took %s to stop the rollout", took)
+	}
+	if result.OK || !strings.Contains(result.Error, "without activity") {
+		t.Fatalf("rollout = %+v", result)
+	}
+}
+
 // Esc in the interface interrupts the launching server's session service,
 // which does not own the rollout; the interrupt must reach the stack that
 // does.

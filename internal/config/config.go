@@ -50,10 +50,12 @@ type HarnessConfig struct {
 	// reflector) run on; empty uses the executor's model.
 	Model string `json:"model,omitempty"`
 	// RolloutTimeout and SessionTimeout bound one rollout and one improver
-	// session (Go durations, e.g. "30m"); a session that runs longer is
-	// interrupted and recorded as failed. Defaults 30m and 20m.
+	// session (Go durations, e.g. "2h"); a session that runs longer is
+	// interrupted and recorded as failed. IdleTimeout does the same for one
+	// that goes that long without any activity. Defaults 2h, 1h and 15m.
 	RolloutTimeout string `json:"rolloutTimeout,omitempty"`
 	SessionTimeout string `json:"sessionTimeout,omitempty"`
+	IdleTimeout    string `json:"idleTimeout,omitempty"`
 }
 
 // HarnessEnabled reports whether an installed harness may be overlaid.

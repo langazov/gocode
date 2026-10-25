@@ -250,13 +250,18 @@ type RolloutRequest struct {
 // Rollout is what one execution produced. The engine renders its evidence
 // to disk straight away, so nothing downstream needs the executor again.
 type Rollout struct {
-	Label     string  `json:"label"`
-	SessionID string  `json:"sessionID,omitempty"`
-	Workspace string  `json:"workspace,omitempty"`
-	OK        bool    `json:"ok"`
-	Delivered bool    `json:"delivered"`
-	Error     string  `json:"error,omitempty"`
-	CostUSD   float64 `json:"costUSD"`
+	Label     string `json:"label"`
+	SessionID string `json:"sessionID,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+	OK        bool   `json:"ok"`
+	Delivered bool   `json:"delivered"`
+	Error     string `json:"error,omitempty"`
+	// Stopped marks a rollout cut short from outside — a time or idle
+	// limit, a cancel, an interrupt — rather than one that ran its course.
+	// It says nothing about the candidate, so a resumed run rolls it again
+	// instead of reusing it.
+	Stopped bool    `json:"stopped,omitempty"`
+	CostUSD float64 `json:"costUSD"`
 	// Trajectory is the full rendered session (RenderTrace).
 	Trajectory string `json:"-"`
 	// Final is the agent's last message.

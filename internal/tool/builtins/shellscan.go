@@ -259,7 +259,7 @@ func literalWord(word *syntax.Word) (string, bool) {
 // relative path resolves inside the working directory, which is what the
 // command's own permission already covers.
 func externalDirectory(path, root string, isDir bool) (string, bool) {
-	if path == "" {
+	if path == "" || pseudoDevice(path) {
 		return "", false
 	}
 	// ~ is expanded by the shell, not by us, but it always lands outside a
@@ -330,6 +330,28 @@ func canonicalPath(path string) string {
 		return path
 	}
 	return filepath.Join(canonicalPath(parent), filepath.Base(path))
+}
+
+// pseudoDevices are the device files a command names to discard output or
+// reach its own streams — `2>/dev/null` above all. None of them is a
+// directory anyone means to reach, and treating them as one reports /dev,
+// which an interactive session asks about and a Harness² rollout's fence
+// denies: the rollout then loses a turn on every `grep ... 2>/dev/null`.
+// Divergence: TypeScript's scan never looks at redirects at all (shell.ts
+// skips redirection nodes), so it never meets them. Real devices (/dev/sda)
+// are still reported.
+var pseudoDevices = map[string]bool{
+	"/dev/null": true, "/dev/zero": true, "/dev/tty": true,
+	"/dev/stdin": true, "/dev/stdout": true, "/dev/stderr": true,
+	"/dev/random": true, "/dev/urandom": true,
+}
+
+func pseudoDevice(path string) bool {
+	if pseudoDevices[path] || strings.HasPrefix(path, "/dev/fd/") {
+		return true
+	}
+	// Windows' null device, in either spelling a shell accepts.
+	return strings.EqualFold(path, "NUL") || strings.EqualFold(path, `\\.\NUL`)
 }
 
 // containsPathIn reports whether path is root or sits beneath it.

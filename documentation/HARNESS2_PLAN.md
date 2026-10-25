@@ -444,9 +444,19 @@ Operational notes:
 - Rollout and improver sessions are unattended, so none may wait on a
   person: their agents are denied `question`, `plan_enter` and `plan_exit`
   (a question parked the turn forever — nobody can answer it), the runner
-  has no asker, each session has a wall-clock limit (`rolloutTimeout`,
-  `sessionTimeout`; on expiry the session is interrupted and recorded as
-  failed, and the run carries on), and a stack's close is bounded. Their
+  has no asker, each session is stopped once it goes `idleTimeout` (15m)
+  without an event on its stack, with generous wall-clock caps behind that
+  (`rolloutTimeout` 2h, `sessionTimeout` 1h; on expiry the session is
+  interrupted and recorded as failed, and the run carries on), and a stack's
+  close is bounded. A plain 30-minute cap threw away rollouts that were
+  still working on a slow model, so stalls, not duration, are what stop a
+  session. A rollout stopped this way (or by Esc or a cancel) is marked
+  `stopped` in its `run.json` and rolled again when the run resumes; one
+  that ran its course, even to failure, is reused.
+- The rollout fence denies every directory outside the harness dir, so the
+  bash scan must not count `2>/dev/null` and the other pseudo-devices as
+  reaching `/dev` (`builtins.pseudoDevice`); before it did, every such
+  command was refused and the model spent turns rewriting it. Their
   turns run as detached drains, so a cancelled context does not stop one by
   itself; `drive` interrupts the session when the context ends.
 - An interrupt sent to the launching server (Esc in the TUI on a watched

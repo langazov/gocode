@@ -25,10 +25,11 @@ type harnessOptions struct {
 	Width         int
 	CrossDomain   bool
 	KeepWorkspace bool
-	// RolloutTimeout and SessionTimeout override config harness.rolloutTimeout
-	// and harness.sessionTimeout.
+	// RolloutTimeout, SessionTimeout and IdleTimeout override config
+	// harness.rolloutTimeout, harness.sessionTimeout and harness.idleTimeout.
 	RolloutTimeout time.Duration
 	SessionTimeout time.Duration
+	IdleTimeout    time.Duration
 }
 
 // liveHarnessStacks is st's registry of running Harness² stacks, created
@@ -44,27 +45,31 @@ func (s *stack) liveHarnessStacks() *liveStacks {
 	return s.harnessLive
 }
 
-// harnessTimeouts resolves the per-session limits: flag, then config, then
-// the defaults (zero).
-func harnessTimeouts(cfg *config.Config, opts harnessOptions) (time.Duration, time.Duration, error) {
-	rollout, session := opts.RolloutTimeout, opts.SessionTimeout
+// harnessTimeouts resolves the per-session limits — rollout, session, idle:
+// flag, then config, then the defaults (zero).
+func harnessTimeouts(cfg *config.Config, opts harnessOptions) (time.Duration, time.Duration, time.Duration, error) {
+	rollout, session, idle := opts.RolloutTimeout, opts.SessionTimeout, opts.IdleTimeout
 	if cfg != nil && cfg.Harness != nil {
 		for _, pick := range []struct {
 			raw string
 			dst *time.Duration
 			key string
-		}{{cfg.Harness.RolloutTimeout, &rollout, "rolloutTimeout"}, {cfg.Harness.SessionTimeout, &session, "sessionTimeout"}} {
+		}{
+			{cfg.Harness.RolloutTimeout, &rollout, "rolloutTimeout"},
+			{cfg.Harness.SessionTimeout, &session, "sessionTimeout"},
+			{cfg.Harness.IdleTimeout, &idle, "idleTimeout"},
+		} {
 			if *pick.dst != 0 || pick.raw == "" {
 				continue
 			}
 			d, err := time.ParseDuration(pick.raw)
 			if err != nil || d <= 0 {
-				return 0, 0, fmt.Errorf("harness.%s must be a duration like \"30m\", got %q", pick.key, pick.raw)
+				return 0, 0, 0, fmt.Errorf("harness.%s must be a duration like \"30m\", got %q", pick.key, pick.raw)
 			}
 			*pick.dst = d
 		}
 	}
-	return rollout, session, nil
+	return rollout, session, idle, nil
 }
 
 // harnessRoot is where Harness² keeps run directories and the local
@@ -154,7 +159,7 @@ func newHarnessEngine(ctx context.Context, st *stack, opts harnessOptions) (*har
 	if model == "" {
 		model = st.ProviderID + "/" + st.ModelID
 	}
-	rolloutTimeout, sessionTimeout, err := harnessTimeouts(st.Config, opts)
+	rolloutTimeout, sessionTimeout, idleTimeout, err := harnessTimeouts(st.Config, opts)
 	if err != nil {
 		return nil, detection, err
 	}
@@ -168,6 +173,7 @@ func newHarnessEngine(ctx context.Context, st *stack, opts harnessOptions) (*har
 		Live:           st.liveHarnessStacks(),
 		RolloutTimeout: rolloutTimeout,
 		SessionTimeout: sessionTimeout,
+		IdleTimeout:    idleTimeout,
 	}
 	engine := &harness.Engine{
 		Exec:           stacks,

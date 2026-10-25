@@ -328,9 +328,13 @@ func fingerprint(mission, dir string) (string, error) {
 // is reused, which is what makes a rerun resume.
 func (e *Engine) roll(ctx context.Context, task Task, label string, tree Tree, harnessDir, runDir string, emit func(Event)) RunRecord {
 	record := RunRecord{Dir: runDir}
-	if err := readJSON(filepath.Join(runDir, runJSON), &record.Rollout); err == nil && record.Label == label {
+	if err := readJSON(filepath.Join(runDir, runJSON), &record.Rollout); err == nil && record.Label == label &&
+		// Records written before Stopped existed say so only in the error
+		// the executor gave them.
+		!record.Stopped && !strings.HasPrefix(record.Error, "stopped") {
 		return record
 	}
+	record.Rollout = Rollout{}
 	emit(Event{Type: EventRolloutStarted, Label: label})
 	defer func() {
 		emit(Event{Type: EventRolloutEnded, Label: label, OK: record.OK && record.Delivered,

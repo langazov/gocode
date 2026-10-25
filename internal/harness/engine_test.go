@@ -17,12 +17,16 @@ import (
 type fakeExec struct {
 	calls atomic.Int32
 	fail  bool
+	stop  atomic.Bool
 }
 
 func (f *fakeExec) Rollout(_ context.Context, req RolloutRequest) (Rollout, error) {
 	f.calls.Add(1)
 	if f.fail {
 		return Rollout{OK: false, Error: "provider down"}, nil
+	}
+	if f.stop.Load() {
+		return Rollout{Error: "stopped after 1s without activity: the session stalled", Stopped: true}, nil
 	}
 	prompt, _ := os.ReadFile(filepath.Join(req.HarnessDir, FileSystemPrompt))
 	answer := "answer v1"
@@ -172,6 +176,29 @@ func TestEngineParallelK2(t *testing.T) {
 		if !sawPhase[phase] {
 			t.Errorf("no %s phase event", phase)
 		}
+	}
+}
+
+// A rollout cut short by a limit or an interrupt is rolled again on resume;
+// one that ran its course — even to failure — is reused.
+func TestRollRerunsStoppedRollouts(t *testing.T) {
+	exec := &fakeExec{}
+	engine, task := newEngineFixture(t, exec, &fakeImprover{}, nil)
+	dir := t.TempDir()
+	roll := func() RunRecord {
+		return engine.roll(context.Background(), task, "base1", Tree{}, filepath.Join(dir, "harness"),
+			filepath.Join(dir, "runs", "base1"), func(Event) {})
+	}
+	exec.stop.Store(true)
+	if first := roll(); first.OK || !first.Stopped {
+		t.Fatalf("first = %+v", first.Rollout)
+	}
+	exec.stop.Store(false)
+	if again := roll(); !again.OK || again.Stopped || exec.calls.Load() != 2 {
+		t.Fatalf("a stopped rollout was reused: %+v after %d calls", again.Rollout, exec.calls.Load())
+	}
+	if roll(); exec.calls.Load() != 2 {
+		t.Fatalf("a finished rollout was rolled again: %d calls", exec.calls.Load())
 	}
 }
 

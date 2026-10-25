@@ -39,8 +39,9 @@ func harnessCommand() *clix.Command {
 		{Name: "base", Kind: clix.KindString, Describe: "harness directory to start from (default: the project's installed .gocode/harness, else none)"},
 		{Name: "width", Kind: clix.KindNumber, Default: float64(harness.DefaultWidth), Describe: "rollouts and editor sessions run at once"},
 		{Name: "keep-workspaces", Kind: clix.KindBool, Describe: "keep every rollout's working copy"},
-		{Name: "rollout-timeout", Kind: clix.KindString, Describe: "longest one rollout may run before it is stopped and recorded as failed, e.g. 45m (default: config harness.rolloutTimeout, else 30m)"},
-		{Name: "session-timeout", Kind: clix.KindString, Describe: "the same for one editor, selector or reflector session (default 20m)"},
+		{Name: "rollout-timeout", Kind: clix.KindString, Describe: "longest one rollout may run before it is stopped and recorded as failed, e.g. 3h (default: config harness.rolloutTimeout, else 2h)"},
+		{Name: "session-timeout", Kind: clix.KindString, Describe: "the same for one editor, selector or reflector session (default 1h)"},
+		{Name: "idle-timeout", Kind: clix.KindString, Describe: "stop any session that goes this long without activity (default: config harness.idleTimeout, else 15m)"},
 		{Name: "dry-run", Kind: clix.KindBool, Describe: "print the task, the backend and the budget, then exit without spending anything"},
 		{Name: "format", Kind: clix.KindString, Default: "default", Choices: []string{"default", "json"}, Describe: "json prints progress events and the summary as JSON lines"},
 	}
@@ -988,7 +989,7 @@ func harnessRunOptions(a *clix.Args) (harnessOptions, error) {
 	for _, f := range []struct {
 		name string
 		dst  *time.Duration
-	}{{"rollout-timeout", &opts.RolloutTimeout}, {"session-timeout", &opts.SessionTimeout}} {
+	}{{"rollout-timeout", &opts.RolloutTimeout}, {"session-timeout", &opts.SessionTimeout}, {"idle-timeout", &opts.IdleTimeout}} {
 		if raw := a.String(f.name); raw != "" {
 			d, err := time.ParseDuration(raw)
 			if err != nil || d <= 0 {

@@ -49,6 +49,14 @@ func TestScanExternalPaths(t *testing.T) {
 		{name: "no paths at all", command: "go test ./...", want: nil},
 		{name: "flags are not paths", command: "rm -rf --preserve-root", want: nil},
 
+		// Discarding output is not reaching /dev: a rollout's fence denied
+		// every `grep ... 2>/dev/null` until these were exempted. A real
+		// device still counts.
+		{name: "stderr to /dev/null", command: `grep -rn x internal 2>/dev/null | head`, want: nil},
+		{name: "both to /dev/null", command: "ls gui >/dev/null 2>&1 || echo none", want: nil},
+		{name: "own stream", command: "echo hi > /dev/stderr; cat /dev/fd/3", want: nil},
+		{name: "a real device", command: "cat x > /dev/disk0", want: []string{canonicalPath("/dev")}},
+
 		// Escaping upward is external even when spelled relatively.
 		{name: "parent traversal", command: "cat > ../outside.txt", want: []string{filepath.Dir(canonicalRoot(root))}},
 	}

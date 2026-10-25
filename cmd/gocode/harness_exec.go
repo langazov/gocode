@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/langazov/gocode-go/internal/agent"
@@ -47,17 +48,27 @@ type harnessStacks struct {
 	// Live tracks the stacks running right now, for interrupts.
 	Live *liveStacks
 	// RolloutTimeout and SessionTimeout bound one rollout and one improver
-	// session; zero means the defaults.
+	// session; IdleTimeout stops either once it has gone that long without
+	// a single event. Zero means the defaults.
 	RolloutTimeout time.Duration
 	SessionTimeout time.Duration
+	IdleTimeout    time.Duration
 }
 
 // Default limits for one unattended session. harness2 bounds every solver and
 // improver call the same way (ChannelSpec.timeout, the benchmarks' own
 // limits); a run must not hang on one session that never ends.
+//
+// The idle limit is what catches a hung session; the overall caps are a
+// backstop and sit well above what a real rollout takes — a documentation
+// task on a slow model ran 20-odd minutes while working the whole time, and a
+// 30-minute cap threw three such rollouts away. Idle must exceed the longest
+// silent stretch a working session has: one bash call, which may run 10
+// minutes (builtins' maxTimeoutMS) between tool.called and its result.
 const (
-	defaultRolloutTimeout = 30 * time.Minute
-	defaultSessionTimeout = 20 * time.Minute
+	defaultRolloutTimeout = 2 * time.Hour
+	defaultSessionTimeout = time.Hour
+	defaultIdleTimeout    = 15 * time.Minute
 	// closeTimeout bounds tearing a stack down: a plugin or MCP server that
 	// will not exit must not hold the run.
 	closeTimeout = 20 * time.Second
@@ -173,13 +184,15 @@ func (h *harnessStacks) Rollout(ctx context.Context, req harness.RolloutRequest)
 	if req.OnSession != nil {
 		req.OnSession(sessionID)
 	}
-	runErr := h.drive(ctx, st, sessionID, req.Task.Prompt, limit(h.RolloutTimeout, defaultRolloutTimeout))
+	runErr := h.drive(ctx, st, sessionID, req.Task.Prompt, limit(h.RolloutTimeout, defaultRolloutTimeout), limit(h.IdleTimeout, defaultIdleTimeout))
 	// Read back on a context of its own: the run's may be the one that just
 	// timed out or was cancelled, and the record of what happened still
 	// has to be written.
 	result := collectRollout(context.WithoutCancel(ctx), st, sessionID)
 	if runErr != nil {
-		result.Error = runErr.Error()
+		result.Error, result.Stopped = runErr.Error(), true
+	} else if result.Stopped && result.Error == "" {
+		result.Error = "stopped: the session was interrupted"
 	}
 	result.OK = result.Error == ""
 	return result, nil
@@ -207,7 +220,7 @@ func (h *harnessStacks) Session(ctx context.Context, req harness.SessionRequest)
 	if req.OnSession != nil {
 		req.OnSession(sessionID)
 	}
-	runErr := h.drive(ctx, st, sessionID, req.Mission, limit(h.SessionTimeout, defaultSessionTimeout))
+	runErr := h.drive(ctx, st, sessionID, req.Mission, limit(h.SessionTimeout, defaultSessionTimeout), limit(h.IdleTimeout, defaultIdleTimeout))
 	result := collectRollout(context.WithoutCancel(ctx), st, sessionID)
 	reply := harness.Reply{Text: result.Final, CostUSD: result.CostUSD}
 	if runErr != nil {
@@ -241,29 +254,55 @@ func (h *harnessStacks) start(ctx context.Context, st *stack, dir, title, agentI
 // timeout. The turn runs as a detached drain (Prompt wakes it), so a
 // cancelled or expired context does not reach it by itself: it is
 // interrupted explicitly, which is also what Esc does.
-func (h *harnessStacks) drive(ctx context.Context, st *stack, sessionID, prompt string, timeout time.Duration) error {
+func (h *harnessStacks) drive(ctx context.Context, st *stack, sessionID, prompt string, timeout, idle time.Duration) error {
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
+	// Every event on the stack is progress: the stack exists for this one
+	// session, so its subagents' events land here too.
+	var last atomic.Int64
+	last.Store(time.Now().UnixNano())
+	st.Bus.Listen(func(event.Payload) { last.Store(time.Now().UnixNano()) })
 	if _, err := st.Service.Prompt(ctx, sessionID, prompt, session.DeliverySteer); err != nil {
 		return err
 	}
+	var idled atomic.Bool
 	stop := make(chan struct{})
 	defer close(stop)
 	go func() {
-		select {
-		case <-ctx.Done():
-			st.Service.Interrupt(sessionID)
-		case <-stop:
+		tick := time.NewTicker(idleTick(idle))
+		defer tick.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				st.Service.Interrupt(sessionID)
+				return
+			case <-tick.C:
+				if time.Since(time.Unix(0, last.Load())) >= idle {
+					idled.Store(true)
+					st.Service.Interrupt(sessionID)
+					return
+				}
+			case <-stop:
+				return
+			}
 		}
 	}()
 	err := st.Service.Execution.Resume(context.WithoutCancel(ctx), sessionID)
 	switch {
+	case idled.Load():
+		return fmt.Errorf("stopped after %s without activity: the session stalled", idle)
 	case errors.Is(ctx.Err(), context.DeadlineExceeded):
 		return fmt.Errorf("stopped after %s: the session did not finish in time", timeout)
 	case ctx.Err() != nil:
 		return fmt.Errorf("stopped: %w", ctx.Err())
 	}
 	return err
+}
+
+// idleTick is how often drive checks for a stall: often enough to stop
+// within a few percent of the limit.
+func idleTick(idle time.Duration) time.Duration {
+	return max(min(idle/20, 30*time.Second), 10*time.Millisecond)
 }
 
 // collectRollout renders a settled session (and the cost of every subagent
@@ -312,6 +351,7 @@ func collectRollout(ctx context.Context, st *stack, sessionID string) harness.Ro
 			if strings.TrimSpace(text) != "" {
 				result.Final = text
 			}
+			result.Stopped = assistant.Error != nil && assistant.Error.Type == session.ErrorTypeAborted
 			if assistant.Error != nil && assistant.Error.Type != session.ErrorTypeAborted {
 				events = append(events, harness.TraceEvent{Kind: "error", Text: assistant.Error.Message})
 				result.Error = assistant.Error.Type + ": " + assistant.Error.Message
