@@ -6,6 +6,7 @@ import 'package:gpt_markdown/gpt_markdown.dart';
 import '../../app/theme.dart';
 import '../../core/api/harness_models.dart';
 import '../../shared/widgets/glass.dart';
+import 'harness_activity.dart';
 import 'harness_install_dialog.dart';
 import 'harness_stage_sheet.dart';
 import 'harness_state.dart';
@@ -35,15 +36,31 @@ class HarnessRunScreen extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(run.task, style: theme.textTheme.titleSmall),
-                  Text(
-                    [
-                      '${run.mode} k=${run.k}',
-                      if (run.backend.isNotEmpty) run.backend,
-                      harnessMoney(run.costUSD),
-                    ].join(' · '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall,
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Flexible(
+                        child: Text(
+                          [
+                            '${run.mode} k=${run.k}',
+                            if (run.backend.isNotEmpty) run.backend,
+                            harnessMoney(run.costUSD),
+                          ].join(' · '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ),
+                      if (run.isRunning && run.startedAt > 0) ...[
+                        Text(' · ', style: theme.textTheme.bodySmall),
+                        HarnessElapsed(
+                          since: DateTime.fromMillisecondsSinceEpoch(
+                            run.startedAt,
+                          ),
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ],
+                    ],
                   ),
                 ],
               ),
@@ -216,7 +233,9 @@ class _RunBody extends StatelessWidget {
           const SizedBox(height: 12),
           ErrorPanel(message: run.error),
         ],
-        const SizedBox(height: 24),
+        const SizedBox(height: 18),
+        _EventLog(run: run),
+        const SizedBox(height: 18),
         Text(
           run.workspace.isEmpty
               ? 'Workspace: the server’s working directory'
@@ -276,16 +295,26 @@ class _OutcomeCard extends StatelessWidget {
   }
 }
 
-class _RowTile extends StatelessWidget {
+class _RowTile extends ConsumerWidget {
   const _RowTile({required this.run, required this.row});
 
   final HarnessRun run;
   final HarnessRow row;
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final adopted = row.label == run.adopted;
+    // The session working right now: the editor while editing, the
+    // rollout while rolling.
+    final working = switch (row.state) {
+      'editing' => (row.editSessionID, 'editor'),
+      'rolling' => (row.sessionID, null),
+      _ => ('', null),
+    };
+    final activity = working.$1.isEmpty
+        ? null
+        : ref.watch(harnessActivityProvider.select((m) => m[working.$1]));
     return Padding(
       padding: const EdgeInsets.only(left: 10, bottom: 6),
       child: InkWell(
@@ -330,12 +359,22 @@ class _RowTile extends StatelessWidget {
                       ],
                     ),
                     if (row.detail.isNotEmpty)
-                      Text(
-                        row.detail,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall,
+                      Tooltip(
+                        message: row.detail,
+                        waitDuration: const Duration(milliseconds: 600),
+                        child: Text(
+                          row.detail,
+                          maxLines: row.state == 'failed' ? 2 : 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: row.state == 'failed'
+                              ? theme.textTheme.bodySmall?.copyWith(
+                                  color: GC.downText,
+                                )
+                              : theme.textTheme.bodySmall,
+                        ),
                       ),
+                    if (activity != null)
+                      HarnessActivityLine(activity: activity, role: working.$2),
                   ],
                 ),
               ),
@@ -343,6 +382,22 @@ class _RowTile extends StatelessWidget {
                 const SizedBox(width: 12),
                 HarnessCost(row.costUSD),
               ],
+              if (row.editSessionID.isNotEmpty)
+                HarnessWatchButton(
+                  sessionID: row.editSessionID,
+                  tooltip: row.state == 'editing'
+                      ? 'Watch the editor live'
+                      : 'Open the editor session',
+                  icon: Icons.edit_note_rounded,
+                ),
+              if (row.sessionID.isNotEmpty)
+                HarnessWatchButton(
+                  sessionID: row.sessionID,
+                  tooltip: row.state == 'rolling'
+                      ? 'Watch the rollout live'
+                      : 'Open the rollout session',
+                  icon: Icons.play_circle_outline_rounded,
+                ),
             ],
           ),
         ),
@@ -374,6 +429,155 @@ class _AdoptedBadge extends StatelessWidget {
           letterSpacing: 0.8,
           color: GC.accentText,
         ),
+      ),
+    );
+  }
+}
+
+/// The run's event log (events.jsonl), collapsed by default and followed
+/// live while open — the TUI's ctrl+g log panel.
+class _EventLog extends ConsumerStatefulWidget {
+  const _EventLog({required this.run});
+
+  final HarnessRun run;
+
+  @override
+  ConsumerState<_EventLog> createState() => _EventLogState();
+}
+
+class _EventLogState extends ConsumerState<_EventLog> {
+  bool _open = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return GlassSurface(
+      blur: false,
+      shadow: false,
+      padding: const EdgeInsets.fromLTRB(14, 6, 6, 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          InkWell(
+            key: HarnessKeys.eventLog,
+            borderRadius: BorderRadius.circular(GC.rInput),
+            onTap: () => setState(() => _open = !_open),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6),
+              child: Row(
+                children: [
+                  Icon(
+                    _open
+                        ? Icons.expand_more_rounded
+                        : Icons.chevron_right_rounded,
+                    size: 18,
+                    color: GC.textDim,
+                  ),
+                  const SizedBox(width: 6),
+                  Text('Event log', style: theme.textTheme.titleSmall),
+                  const SizedBox(width: 8),
+                  if (_open && widget.run.isRunning)
+                    const StatusPill(label: 'following', color: GC.accent),
+                ],
+              ),
+            ),
+          ),
+          if (_open) _lines(context),
+        ],
+      ),
+    );
+  }
+
+  Widget _lines(BuildContext context) {
+    final log = ref.watch(harnessLogProvider(widget.run.id));
+    return log.when(
+      loading: () => const Padding(
+        padding: EdgeInsets.all(12),
+        child: Center(
+          child: SizedBox.square(
+            dimension: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          ),
+        ),
+      ),
+      error: (e, _) => Padding(
+        padding: const EdgeInsets.all(8),
+        child: ErrorPanel(message: '$e'),
+      ),
+      data: (events) {
+        if (events.isEmpty) {
+          return const Padding(
+            padding: EdgeInsets.fromLTRB(24, 4, 8, 10),
+            child: Text('Nothing logged yet'),
+          );
+        }
+        final start = events.first.time;
+        // Newest last, like a terminal tail; capped so a long run stays
+        // cheap to lay out.
+        final shown = events.length > 400
+            ? events.sublist(events.length - 400)
+            : events;
+        return ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 360),
+          child: ListView.builder(
+            shrinkWrap: true,
+            reverse: true,
+            itemCount: shown.length,
+            itemBuilder: (context, i) =>
+                _LogLine(event: shown[shown.length - 1 - i], start: start),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _LogLine extends StatelessWidget {
+  const _LogLine({required this.event, required this.start});
+
+  final HarnessEvent event;
+  final int start;
+
+  @override
+  Widget build(BuildContext context) {
+    final at = harnessDuration(Duration(milliseconds: event.time - start));
+    final failed = event.isFailure;
+    final what = switch (event.type) {
+      'phase' => 'phase ${harnessPhaseLabel(event.phase).toLowerCase()}',
+      'session' => '${event.role} session ${event.sessionID}',
+      'stage.retry' => 'retry #${event.attempt}',
+      _ => event.type,
+    };
+    final text = [
+      what,
+      if (event.label.isNotEmpty) event.label,
+      if (event.type.endsWith('.ended') && failed) 'failed',
+      if (event.detail.isNotEmpty) event.detail,
+      if (event.costUSD > 0) harnessMoney(event.costUSD),
+    ].join(' · ');
+    final style = GC.code.copyWith(fontSize: 11.5);
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(24, 2, 8, 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 62,
+            child: Text(at, style: style.copyWith(color: GC.textFaint)),
+          ),
+          Expanded(
+            child: SelectableText(
+              text,
+              style: style.copyWith(
+                color: failed
+                    ? GC.downText
+                    : event.type == 'phase'
+                    ? GC.accentText
+                    : GC.textBody,
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

@@ -27,9 +27,15 @@ Future<void> showHarnessStageSheet(
       barrierLabel: 'Close stage',
       barrierColor: const Color(0x66000000),
       transitionDuration: const Duration(milliseconds: 180),
-      pageBuilder: (context, animation, _) => Align(
-        alignment: Alignment.centerRight,
-        child: _StageSheet(runID: runID, label: label, width: 480),
+      pageBuilder: (context, animation, _) => Material(
+        // A general dialog has no Material of its own, and the sheet's
+        // InkWells, buttons and tabs need one; transparent, so the glass
+        // surface still shows.
+        type: MaterialType.transparency,
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: _StageSheet(runID: runID, label: label, width: 480),
+        ),
       ),
       transitionBuilder: (context, animation, _, child) => SlideTransition(
         position: Tween<Offset>(
@@ -122,6 +128,17 @@ class _StageBodyState extends ConsumerState<_StageBody>
     final stageAsync = ref.watch(
       harnessStageProvider((id: widget.runID, label: widget.label)),
     );
+    // The row carries the label's latest improver session, which the stage
+    // record does not.
+    final editSessionID = ref.watch(
+      harnessRunProvider(widget.runID).select(
+        (run) => [
+          for (final row in run?.rows ?? const <HarnessRow>[])
+            if (row.label == widget.label && row.editSessionID.isNotEmpty)
+              row.editSessionID,
+        ].firstOrNull,
+      ),
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -161,12 +178,22 @@ class _StageBodyState extends ConsumerState<_StageBody>
                       ],
                     ),
                   ),
+                  if (editSessionID != null)
+                    Tooltip(
+                      message: editSessionID,
+                      child: TextButton.icon(
+                        icon: const Icon(Icons.edit_note_rounded, size: 16),
+                        label: const Text('Editor'),
+                        onPressed: () =>
+                            context.push('/session/$editSessionID'),
+                      ),
+                    ),
                   if (stage.sessionID.isNotEmpty)
                     Tooltip(
                       message: stage.sessionID,
                       child: TextButton.icon(
                         icon: const Icon(Icons.forum_outlined, size: 16),
-                        label: const Text('Open session'),
+                        label: const Text('Rollout'),
                         onPressed: () =>
                             context.push('/session/${stage.sessionID}'),
                       ),
@@ -178,6 +205,10 @@ class _StageBodyState extends ConsumerState<_StageBody>
                   ),
                 ],
               ),
+              if (stage.error.isNotEmpty) ...[
+                const SizedBox(height: 10),
+                ErrorPanel(message: stage.error),
+              ],
               const SizedBox(height: 8),
               TabBar(
                 controller: _tabs,
@@ -226,19 +257,13 @@ class _StageBodyState extends ConsumerState<_StageBody>
     return ListView(
       padding: const EdgeInsets.only(bottom: 16),
       children: [
-        if (stage.notes.isEmpty && stage.error.isEmpty)
+        if (stage.notes.isEmpty)
           const Text('No editor notes')
-        else ...[
-          if (stage.notes.isNotEmpty)
-            GptMarkdown(
-              stage.notes,
-              style: GC.reading.copyWith(color: GC.textBody),
-            ),
-          if (stage.error.isNotEmpty) ...[
-            const SizedBox(height: 10),
-            ErrorPanel(message: stage.error),
-          ],
-        ],
+        else
+          GptMarkdown(
+            stage.notes,
+            style: GC.reading.copyWith(color: GC.textBody),
+          ),
       ],
     );
   }

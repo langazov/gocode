@@ -92,12 +92,17 @@ class NoticeItem extends TimelineItem {
     required this.kind,
     required this.text,
     required this.timeCreated,
+    this.data = const {},
   });
 
   final String messageID;
   final String kind;
   final String text;
   final int timeCreated;
+
+  /// The message's own fields, for a notice drawn richer than [text] (the
+  /// harness marker).
+  final Map<String, dynamic> data;
 
   @override
   String get key => messageID;
@@ -200,6 +205,7 @@ NoticeItem _noticeFor(Message m) {
     kind: m.type,
     text: text,
     timeCreated: m.timeCreated,
+    data: m.data,
   );
 }
 
@@ -241,11 +247,7 @@ abstract class SessionBackend {
 
   Future<void> interrupt();
   Future<void> setAgent(String agent);
-  Future<void> setModel(
-    String providerID,
-    String modelID, {
-    String? variant,
-  });
+  Future<void> setModel(String providerID, String modelID, {String? variant});
 }
 
 /// Drives one session's [SessionState] stream: initial reconcile, live SSE

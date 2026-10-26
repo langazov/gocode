@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 
 import '../../app/theme.dart';
 import '../../core/api/harness_models.dart';
 import '../../shared/widgets/glass.dart' show StatusPill;
+import 'harness_activity.dart';
 
 /// Keys tests reach the harness surface's controls by.
 abstract final class HarnessKeys {
@@ -19,6 +23,7 @@ abstract final class HarnessKeys {
   static const taskField = ValueKey('harness-task-field');
   static const budgetList = ValueKey('harness-budget-list');
   static const confirmInstall = ValueKey('harness-confirm-install');
+  static const eventLog = ValueKey('harness-event-log');
 }
 
 /// The display phase order, mirroring the TUI's harnessPhaseLabel.
@@ -247,6 +252,166 @@ class HarnessFileList extends StatelessWidget {
           style: GC.code.copyWith(fontSize: 11, color: GC.textFaint),
         ),
       ],
+    );
+  }
+}
+
+/// Time since [since], ticking each second while [live]; a fixed duration
+/// once it is not (a finished run shows how long it took up to [until]).
+class HarnessElapsed extends StatefulWidget {
+  const HarnessElapsed({
+    super.key,
+    required this.since,
+    this.until,
+    this.live = true,
+    this.style,
+  });
+
+  final DateTime since;
+  final DateTime? until;
+  final bool live;
+  final TextStyle? style;
+
+  @override
+  State<HarnessElapsed> createState() => _HarnessElapsedState();
+}
+
+class _HarnessElapsedState extends State<HarnessElapsed> {
+  Timer? _tick;
+
+  @override
+  void initState() {
+    super.initState();
+    _sync();
+  }
+
+  @override
+  void didUpdateWidget(HarnessElapsed old) {
+    super.didUpdateWidget(old);
+    _sync();
+  }
+
+  void _sync() {
+    if (widget.live && _tick == null) {
+      _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    } else if (!widget.live) {
+      _tick?.cancel();
+      _tick = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _tick?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final end = widget.live ? DateTime.now() : (widget.until ?? DateTime.now());
+    return Text(
+      harnessDuration(end.difference(widget.since)),
+      style:
+          widget.style ?? GC.code.copyWith(fontSize: 11.5, color: GC.textDim),
+    );
+  }
+}
+
+/// After this long without an event a working row is marked quiet; the
+/// run stops a session at its idle limit (15m by default).
+const harnessQuietAfter = Duration(minutes: 2);
+
+/// A working row's live line: the tool in flight with its input, counts,
+/// and how long since the session last did anything — amber once quiet.
+class HarnessActivityLine extends StatefulWidget {
+  const HarnessActivityLine({super.key, required this.activity, this.role});
+
+  final HarnessSessionActivity activity;
+
+  /// Which session this is when the row has two (rollout / editor).
+  final String? role;
+
+  @override
+  State<HarnessActivityLine> createState() => _HarnessActivityLineState();
+}
+
+class _HarnessActivityLineState extends State<HarnessActivityLine> {
+  late final Timer _tick = Timer.periodic(
+    const Duration(seconds: 1),
+    (_) => mounted ? setState(() {}) : null,
+  );
+
+  @override
+  void dispose() {
+    _tick.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final a = widget.activity;
+    final idle = DateTime.now().difference(a.lastEventAt);
+    final quiet = idle >= harnessQuietAfter;
+    final doing = a.tool == null
+        ? 'thinking'
+        : [a.tool!, if (a.toolInput.isNotEmpty) a.toolInput].join(' · ');
+    final counts = [
+      '${a.steps} steps',
+      '${a.tools} tools',
+      if (a.failedTools > 0) '${a.failedTools} refused or failed',
+    ].join(' · ');
+    final base = GC.code.copyWith(fontSize: 11, color: GC.textFaint);
+    return Padding(
+      padding: const EdgeInsets.only(top: 3),
+      child: Text.rich(
+        TextSpan(
+          children: [
+            if (widget.role != null)
+              TextSpan(text: '${widget.role} ', style: base),
+            TextSpan(
+              text: doing,
+              style: base.copyWith(color: GC.textDim),
+            ),
+            TextSpan(text: '  $counts  ', style: base),
+            TextSpan(
+              text: quiet
+                  ? 'quiet ${harnessDuration(idle)}'
+                  : '${harnessDuration(idle)} ago',
+              style: base.copyWith(color: quiet ? GC.warn : GC.textFaint),
+            ),
+          ],
+        ),
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+      ),
+    );
+  }
+}
+
+/// Opens a rollout or improver session to watch it live.
+class HarnessWatchButton extends StatelessWidget {
+  const HarnessWatchButton({
+    super.key,
+    required this.sessionID,
+    required this.tooltip,
+    required this.icon,
+  });
+
+  final String sessionID;
+  final String tooltip;
+  final IconData icon;
+
+  @override
+  Widget build(BuildContext context) {
+    return IconButton(
+      tooltip: tooltip,
+      visualDensity: VisualDensity.compact,
+      iconSize: 17,
+      color: GC.textDim,
+      icon: Icon(icon),
+      onPressed: () => GoRouter.of(context).push('/session/$sessionID'),
     );
   }
 }

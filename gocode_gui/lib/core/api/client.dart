@@ -565,6 +565,13 @@ class GocodeClient {
   Future<void> deleteHarness(String id) async =>
       _send('DELETE', '/api/harness/run/${Uri.encodeComponent(id)}');
 
+  /// A run's event log from line [after] on (events.jsonl), so a viewer can
+  /// follow it by passing the count it already holds.
+  Future<List<HarnessEvent>> harnessLog(String id, {int after = 0}) async =>
+      (await _getJsonList(
+        '/api/harness/run/${Uri.encodeComponent(id)}/log?after=$after',
+      )).whereType<Map<String, dynamic>>().map(HarnessEvent.fromJson).toList();
+
   Future<HarnessStage> harnessStage(String id, String label) async =>
       HarnessStage.fromJson(
         await _getJson(

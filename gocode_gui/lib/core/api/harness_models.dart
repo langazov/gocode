@@ -46,6 +46,55 @@ class HarnessRow {
   bool get isSettled => state == 'ok' || state == 'failed';
 }
 
+/// One line of a run's event log (harness.Event): a phase change, a rollout
+/// or stage starting and ending, a session appearing, a rejected proposal.
+class HarnessEvent {
+  const HarnessEvent({
+    required this.type,
+    required this.time,
+    this.phase = '',
+    this.label = '',
+    this.ok = false,
+    this.detail = '',
+    this.costUSD = 0,
+    this.sessionID = '',
+    this.role = '',
+    this.attempt = 0,
+  });
+
+  factory HarnessEvent.fromJson(Map<String, dynamic> json) => HarnessEvent(
+    type: json['type'] as String? ?? '',
+    time: (json['time'] as num?)?.toInt() ?? 0,
+    phase: json['phase'] as String? ?? '',
+    label: json['label'] as String? ?? '',
+    ok: json['ok'] as bool? ?? false,
+    detail: json['detail'] as String? ?? '',
+    costUSD: (json['costUSD'] as num?)?.toDouble() ?? 0,
+    sessionID: json['sessionID'] as String? ?? '',
+    role: json['role'] as String? ?? '',
+    attempt: (json['attempt'] as num?)?.toInt() ?? 0,
+  );
+
+  final String type;
+  final int time; // epoch millis
+  final String phase;
+  final String label;
+  final bool ok;
+  final String detail;
+  final double costUSD;
+  final String sessionID;
+  final String role;
+  final int attempt;
+
+  /// Whether the event reports something going wrong: a failed end, or a
+  /// rejected proposal.
+  bool get isFailure =>
+      type == 'stage.retry' ||
+      ((type.endsWith('.ended') || type == 'selected') &&
+          !ok &&
+          detail.isNotEmpty);
+}
+
 /// A run, live or finished (harness.RunState).
 class HarnessRun {
   const HarnessRun({

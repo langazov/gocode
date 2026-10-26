@@ -320,7 +320,27 @@ class _RunCard extends ConsumerWidget {
                   ),
                 ],
                 const SizedBox(height: 6),
-                Text(subtitle, style: theme.textTheme.labelSmall),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        subtitle,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall,
+                      ),
+                    ),
+                    if (run.isRunning && run.startedAt > 0) ...[
+                      Text(' · ', style: theme.textTheme.labelSmall),
+                      HarnessElapsed(
+                        since: DateTime.fromMillisecondsSinceEpoch(
+                          run.startedAt,
+                        ),
+                        style: theme.textTheme.labelSmall,
+                      ),
+                    ],
+                  ],
+                ),
                 if (run.isRunning && run.rows.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   ClipRRect(

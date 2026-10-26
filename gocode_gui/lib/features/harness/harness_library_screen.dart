@@ -243,9 +243,15 @@ Future<void> showHarnessEntrySheet(
       barrierLabel: 'Close entry',
       barrierColor: const Color(0x66000000),
       transitionDuration: const Duration(milliseconds: 180),
-      pageBuilder: (context, animation, _) => Align(
-        alignment: Alignment.centerRight,
-        child: _EntrySheet(domain: domain, task: task, width: 480),
+      pageBuilder: (context, animation, _) => Material(
+        // A general dialog has no Material of its own, and the sheet's
+        // InkWells, buttons and tabs need one; transparent, so the glass
+        // surface still shows.
+        type: MaterialType.transparency,
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: _EntrySheet(domain: domain, task: task, width: 480),
+        ),
       ),
       transitionBuilder: (context, animation, _, child) => SlideTransition(
         position: Tween<Offset>(
