@@ -18,6 +18,10 @@ const (
 	TypeAgentSwitched = "agent-switched"
 	TypeModelSwitched = "model-switched"
 	TypeCompaction    = "compaction"
+	// TypeHarness marks where a turn first ran under a harness overlay, or
+	// under a changed or removed one. A record for readers; never sent to the
+	// model.
+	TypeHarness = "harness"
 )
 
 type UserMessage struct {

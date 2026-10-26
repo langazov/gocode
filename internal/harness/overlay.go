@@ -1,6 +1,9 @@
 package harness
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -89,4 +92,55 @@ func (o *Overlay) Hooks() *Hooks {
 		return nil
 	}
 	return hooks
+}
+
+// Description is what a chat shows about the harness it runs under: where
+// it lives, what it brings, and a fingerprint that changes whenever any of
+// it does.
+type Description struct {
+	Dir         string
+	Fingerprint string
+	// AlwaysOn lists the always-on files with text in them.
+	AlwaysOn []string
+	Skills   []string
+	Agents   []string
+	Scripts  int
+	Hooks    int
+}
+
+// Describe reads the overlay's tree. ok is false for a nil overlay or one
+// whose directory no longer holds a harness.
+func (o *Overlay) Describe() (Description, bool) {
+	if o == nil || !IsTree(o.Dir) {
+		return Description{}, false
+	}
+	tree, err := ReadTree(o.Dir, nil)
+	if err != nil {
+		return Description{}, false
+	}
+	d := Description{
+		Dir:         o.Dir,
+		Fingerprint: treeFingerprint(tree),
+		Skills:      SkillNames(tree),
+		Agents:      AgentNames(tree),
+		Scripts:     ScriptCount(tree),
+	}
+	for _, name := range AlwaysOn {
+		if strings.TrimSpace(tree[name]) != "" {
+			d.AlwaysOn = append(d.AlwaysOn, name)
+		}
+	}
+	if hooks, err := ParseHooks(tree[FileHooks]); err == nil && hooks != nil {
+		d.Hooks = len(hooks.Rules)
+	}
+	return d, true
+}
+
+// treeFingerprint hashes every path and its content, in path order.
+func treeFingerprint(tree Tree) string {
+	h := sha256.New()
+	for _, path := range tree.Paths() {
+		fmt.Fprintf(h, "%s\x00%d\x00%s", path, len(tree[path]), tree[path])
+	}
+	return hex.EncodeToString(h.Sum(nil))[:12]
 }

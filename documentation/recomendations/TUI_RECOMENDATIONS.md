@@ -174,7 +174,7 @@ enclosing background genuinely is not a panel.
 | `BackgroundMenu` | The autocomplete popup surface (falls back to `BackgroundElement`). |
 | `Border` | Autocomplete and subagent-footer accent bars. |
 | `BorderActive` | The compaction rule. |
-| `BorderSubtle` | Reserved; currently unused — prefer it over inventing a new token. |
+| `BorderSubtle` | The harness marker rule. Otherwise reserved — prefer it over inventing a new token. |
 | `SelectedListItemText` | Foreground on a `Primary` fill. Falls back to `Background` via `Normalize()`. |
 | `ThinkingOpacity` | Alpha (default `0.6`) that reasoning headers and bodies fade to. |
 
@@ -371,6 +371,7 @@ Use these; do not introduce synonyms. All are single-cell except where noted.
 | `⇆` | Move selection | banner hints |
 | `↑ N more lines` | Scrollback indicator | timeline |
 | `─` + ` Compaction ` | Compaction rule | timeline |
+| `─` + ` Harness loaded ` / ` changed ` / ` removed ` | Harness marker rule | timeline |
 | `▸` / `▾` | Collapsed / expanded directory | diff viewer file tree |
 | `│  ` / `   `, `├─ ` / `└─ ` | Tree connectors (indent run, branch) | diff viewer file tree |
 | `✓` / `A` / `M` / `D` / `?` | Reviewed / added / modified / deleted / unknown file status | diff viewer file tree status column |
@@ -834,6 +835,21 @@ Unified diff with a line-number gutter, capped at `maxRenderedDiffLines = 40`.
 ### 7.7 Compaction separator
 
 A full-width `─` rule in `BorderActive` with a centered ` Compaction ` title.
+
+**Harness marker.** The same rule shape in `BorderSubtle`, titled
+` Harness loaded `, ` Harness changed ` or ` Harness removed `, marks where a
+session started running under a harness overlay (a `harness` message). Loaded
+and changed add one centered `TextMuted` line under the rule — place
+(`.gocode/harness`, else the path with `~` for home), always-on files, then
+counts, then the fingerprint, `·`-separated and truncated to the content width:
+
+```
+──────────────────────────── Harness loaded ────────────────────────────
+  .gocode/harness · systemprompt.md, guardrails.md · 2 skills · 1 hook rule · 3f9a01c2b7de
+```
+
+Removed has no detail line. Quieter than the compaction rule on purpose: it is
+context for reading the answers below it, not an event in the conversation.
 
 ### 7.8 Settlement line
 

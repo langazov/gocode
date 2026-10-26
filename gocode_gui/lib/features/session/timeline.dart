@@ -192,6 +192,8 @@ NoticeItem _noticeFor(Message m) {
     text = 'model → ${model is Map ? model['id'] : '?'}';
   } else if (m.type == Message.compaction) {
     text = 'context compacted';
+  } else if (m.type == Message.harness) {
+    text = _harnessNotice(m.data);
   }
   return NoticeItem(
     messageID: m.id,
@@ -199,6 +201,30 @@ NoticeItem _noticeFor(Message m) {
     text: text,
     timeCreated: m.timeCreated,
   );
+}
+
+/// The runner's harness marker (internal/session HarnessMessage) as one line:
+/// `harness loaded · .gocode/harness · 2 skills · 1 hook rule · 3f9a01c2b7de`.
+String _harnessNotice(Map<String, dynamic> data) {
+  if (data['loaded'] != true) return 'harness removed';
+  final facts = <String>[
+    data['changed'] == true ? 'harness changed' : 'harness loaded',
+  ];
+  final dir = (data['dir'] as String?) ?? '';
+  facts.add(dir.endsWith('/.gocode/harness') ? '.gocode/harness' : dir);
+  void count(Object? n, String one) {
+    final v = n is List ? n.length : (n is num ? n.toInt() : 0);
+    if (v == 1) facts.add('1 $one');
+    if (v > 1) facts.add('$v ${one}s');
+  }
+
+  count(data['skills'], 'skill');
+  count(data['agents'], 'agent');
+  count(data['scripts'], 'script');
+  count(data['hooks'], 'hook rule');
+  final fingerprint = data['fingerprint'];
+  if (fingerprint is String && fingerprint.isNotEmpty) facts.add(fingerprint);
+  return facts.join(' · ');
 }
 
 /// The imperative surface a session screen drives, whichever transport

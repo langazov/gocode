@@ -104,6 +104,15 @@ var (
 		Type:    "session.next.agent.switched",
 		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
 	}
+	// HarnessLoaded records that a turn ran under a harness overlay that the
+	// session had not run under before — the first one, a changed one, or
+	// none any more (loaded false). Durable for the same reason as
+	// AgentSwitched: reading a session back should show which guidance its
+	// answers were written under.
+	HarnessLoaded = event.Definition{
+		Type:    "session.next.harness.loaded",
+		Durable: &event.DurableDef{Aggregate: "sessionID", Version: 1},
+	}
 )
 
 // RegisterRunnerProjectors wires the assistant-message projections to the
@@ -125,6 +134,31 @@ func RegisterRunnerProjectors(bus *event.Bus) {
 	bus.Project(ReasoningEnded, projectContentEnded)
 	bus.Project(CompactionEnded, projectCompactionEnded)
 	bus.Project(AgentSwitched, projectAgentSwitched)
+	bus.Project(HarnessLoaded, projectHarnessLoaded)
+}
+
+// projectHarnessLoaded appends the harness marker to the timeline. Like the
+// agent-switched marker, ToLLMMessages skips it.
+func projectHarnessLoaded(ctx context.Context, tx *sql.Tx, payload event.Payload) error {
+	data := payload.Data
+	messageID, _ := data["messageID"].(string)
+	sessionID, _ := data["sessionID"].(string)
+	created := asInt64(data["timestamp"])
+	record := map[string]any{"time": map[string]any{"created": created}}
+	for _, key := range []string{"loaded", "changed", "dir", "fingerprint", "alwaysOn", "skills", "agents", "scripts", "hooks"} {
+		if value, ok := data[key]; ok {
+			record[key] = value
+		}
+	}
+	encoded, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO session_message (id, session_id, type, seq, data, time_created, time_updated)
+		VALUES (?, ?, 'harness', ?, ?, ?, ?)`,
+		messageID, sessionID, payload.Durable.Seq, string(encoded), created, created)
+	return err
 }
 
 // projectAgentSwitched appends the agent-switched marker to the timeline.

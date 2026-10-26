@@ -226,6 +226,38 @@ func TestOverlay(t *testing.T) {
 	}
 }
 
+// Describe says what an overlay brings, and its fingerprint follows every
+// change to the files.
+func TestOverlayDescribe(t *testing.T) {
+	if _, ok := (*Overlay)(nil).Describe(); ok {
+		t.Fatal("a nil overlay described itself")
+	}
+	dir := t.TempDir()
+	tree := Tree{
+		FileSystemPrompt:       "be precise",
+		"skills/lint/SKILL.md": "---\nname: lint\ndescription: lint\n---\nrun it",
+		"scripts/check.py":     "x",
+		FileHooks:              `{"rules":[{"when":"before","tool":"write","match":{"filePath":"\\.env$"},"action":"deny","message":"no"}]}`,
+	}
+	if _, err := WriteTree(tree, dir, true); err != nil {
+		t.Fatal(err)
+	}
+	overlay := NewOverlay(dir)
+	d, ok := overlay.Describe()
+	if !ok || d.Dir != overlay.Dir || len(d.Fingerprint) != 12 {
+		t.Fatalf("describe = %+v %v", d, ok)
+	}
+	if strings.Join(d.AlwaysOn, ",") != FileSystemPrompt || strings.Join(d.Skills, ",") != "lint" || d.Scripts != 1 {
+		t.Fatalf("describe = %+v", d)
+	}
+	if err := os.WriteFile(filepath.Join(dir, FileSystemPrompt), []byte("be careful"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := overlay.Describe(); again.Fingerprint == d.Fingerprint {
+		t.Fatal("the fingerprint did not follow a changed file")
+	}
+}
+
 // A workspace copy, cloned or not, is independent of its source: a rollout
 // writing into it must never reach the user's files.
 func TestCopyDirIsIndependent(t *testing.T) {

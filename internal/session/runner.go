@@ -78,6 +78,10 @@ type Runner struct {
 	// (internal/harness Overlay), after the instructions and before the
 	// available-skills block. Nil leaves the prompt exactly as it was.
 	Harness InstructionSource
+	// DescribeHarness, when set, reports the overlay Harness applies, so
+	// each step can mark in the session's history where a harness was
+	// loaded, changed or removed (harness_marker.go). ok false means none.
+	DescribeHarness func() (HarnessInfo, bool)
 
 	// Guard, when set, enforces a harness's declarative tool rules around
 	// every local tool call: Before can refuse a call outright, After can
@@ -537,6 +541,12 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, step i
 	r.applyToolDefinitions(ctx, tools)
 	if err := r.compactIfNeeded(ctx, runCtx, sessionID, resolved, tools); err != nil {
 		return turnResult{}, err
+	}
+	// Before the step's history is read, so the marker lands ahead of the
+	// answer it applies to. A display record: failing to write it never
+	// costs the turn.
+	if err := r.noteHarness(ctx, sessionID); err != nil {
+		global.LogBackground("session %s: recording the harness marker: %v", sessionID, err)
 	}
 	messages, err := r.Messages.ListForRunner(ctx, sessionID)
 	if err != nil {

@@ -392,6 +392,26 @@ type FileAttachment struct {
 	Name string `json:"name,omitempty"`
 }
 
+// HarnessData mirrors internal/session.HarnessMessage: the marker the runner
+// writes where a session first runs under a harness, a changed one, or none.
+type HarnessData struct {
+	Loaded      bool     `json:"loaded"`
+	Changed     bool     `json:"changed,omitempty"`
+	Dir         string   `json:"dir,omitempty"`
+	Fingerprint string   `json:"fingerprint,omitempty"`
+	AlwaysOn    []string `json:"alwaysOn,omitempty"`
+	Skills      []string `json:"skills,omitempty"`
+	Agents      []string `json:"agents,omitempty"`
+	Scripts     int      `json:"scripts,omitempty"`
+	Hooks       int      `json:"hooks,omitempty"`
+}
+
+func DecodeHarness(data json.RawMessage) (HarnessData, error) {
+	var out HarnessData
+	err := json.Unmarshal(data, &out)
+	return out, err
+}
+
 func DecodeUser(data json.RawMessage) (UserData, error) {
 	var out UserData
 	err := json.Unmarshal(data, &out)

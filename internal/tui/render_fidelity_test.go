@@ -96,6 +96,32 @@ func TestCompactionSeparatorHasTitle(t *testing.T) {
 	}
 }
 
+// The harness marker names what changed and, when loaded, where the harness
+// lives and what it brings.
+func TestHarnessMarker(t *testing.T) {
+	app := &App{width: 120, height: 30, theme: themeResolve("gocode-dark")}
+	loaded := app.harnessMarker(client.HarnessData{
+		Loaded: true, Dir: "/p/.gocode/harness", Fingerprint: "3f9a01c2b7de",
+		AlwaysOn: []string{"systemprompt.md"}, Skills: []string{"a", "b"}, Agents: []string{"x"}, Hooks: 1,
+	})
+	for _, want := range []string{"Harness loaded", ".gocode/harness", "systemprompt.md", "2 skills", "1 agent", "1 hook rule", "3f9a01c2b7de"} {
+		if !strings.Contains(loaded, want) {
+			t.Errorf("marker lacks %q:\n%s", want, loaded)
+		}
+	}
+	if got := app.harnessMarker(client.HarnessData{Loaded: true, Changed: true, Dir: "/p/.gocode/harness"}); !strings.Contains(got, "Harness changed") {
+		t.Errorf("changed marker = %q", got)
+	}
+	if got := app.harnessMarker(client.HarnessData{}); !strings.Contains(got, "Harness removed") || strings.Contains(got, "\n") {
+		t.Errorf("removed marker = %q", got)
+	}
+	for _, line := range strings.Split(loaded, "\n") {
+		if w := lipgloss.Width(line); w > app.contentWidth() {
+			t.Errorf("line is %d wide, content is %d: %q", w, app.contentWidth(), line)
+		}
+	}
+}
+
 func TestContentWidthMatchesChatWidth(t *testing.T) {
 	app := &App{width: 120, height: 30}
 	if got, want := app.contentWidth(), app.chatWidth(); got != want {

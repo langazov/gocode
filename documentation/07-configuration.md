@@ -156,6 +156,13 @@ project, below everything you wrote yourself: its always-on files follow your
 instruction files in the system prompt, its `skills/` and `agent/` rank after
 your own, and its `hooks.json` rules guard tool calls.
 
+The chat history shows when it applies: the first turn that runs under a
+harness gets a **Harness loaded** rule naming where it lives, what it brings
+(always-on files, skills, agents, scripts, hook rules) and a fingerprint of its
+files. Editing or reinstalling it shows **Harness changed** on the next turn,
+removing it **Harness removed**. The marker is a `harness` message in the
+session (`session.next.harness.loaded`); it is never sent to the model.
+
 ### `permission`
 
 See [Tools & permissions](05-tools-and-permissions.md). Two forms:

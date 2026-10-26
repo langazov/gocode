@@ -667,6 +667,13 @@ func bootStackWith(ctx context.Context, opts bootOptions) (*stack, error) {
 	// field would read as a harness that is there.
 	if overlay != nil {
 		runner.Harness = overlay
+		runner.DescribeHarness = func() (session.HarnessInfo, bool) {
+			d, ok := overlay.Describe()
+			return session.HarnessInfo{
+				Dir: d.Dir, Fingerprint: d.Fingerprint, AlwaysOn: d.AlwaysOn,
+				Skills: d.Skills, Agents: d.Agents, Scripts: d.Scripts, Hooks: d.Hooks,
+			}, ok
+		}
 		if hooks := overlay.Hooks(); hooks != nil {
 			runner.Guard = hooks
 		}

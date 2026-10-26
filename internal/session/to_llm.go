@@ -24,7 +24,7 @@ func ToLLMMessages(messages []StoredMessage, model ModelRef) ([]llm.Message, err
 
 func toLLMMessage(message StoredMessage, model ModelRef) ([]llm.Message, error) {
 	switch message.Type {
-	case TypeAgentSwitched, TypeModelSwitched:
+	case TypeAgentSwitched, TypeModelSwitched, TypeHarness:
 		return nil, nil
 	case TypeUser:
 		var user UserMessage
