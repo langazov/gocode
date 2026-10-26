@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -260,7 +261,11 @@ type Rollout struct {
 	// limit, a cancel, an interrupt — rather than one that ran its course.
 	// It says nothing about the candidate, so a resumed run rolls it again
 	// instead of reusing it.
-	Stopped bool    `json:"stopped,omitempty"`
+	Stopped bool `json:"stopped,omitempty"`
+	// Limited marks a rollout a provider usage or rate limit cut short. It
+	// is Stopped too, and it halts the run: everything after it would hit
+	// the same limit.
+	Limited bool    `json:"limited,omitempty"`
 	CostUSD float64 `json:"costUSD"`
 	// Trajectory is the full rendered session (RenderTrace).
 	Trajectory string `json:"-"`
@@ -284,9 +289,18 @@ type SessionRequest struct {
 	// session runs rooted here and may edit `context/harness/`.
 	Workspace string
 	Mission   string
+	// Resume, when set, is the session a limit or a stopped run cut short
+	// in this same workspace: the improver continues it instead of starting
+	// over, so a long session is not paid for again from the top.
+	Resume string
 	// OnSession, as on RolloutRequest.
 	OnSession func(sessionID string)
 }
+
+// ErrLimited is wrapped by an improver error when a provider usage or rate
+// limit stopped the session. The run halts on it, and the session is kept so
+// a resume continues it.
+var ErrLimited = errors.New("provider limit reached")
 
 // Reply is what an improver session returned.
 type Reply struct {

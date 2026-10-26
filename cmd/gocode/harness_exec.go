@@ -213,16 +213,29 @@ func (h *harnessStacks) Session(ctx context.Context, req harness.SessionRequest)
 	fenceAgents(st.Agents, "")
 	applyPermissionBypass(st.Runner, st.PermissionEngine, true, false)
 
-	sessionID, err := h.start(ctx, st, req.Workspace, "harness "+req.Label, req.Role, model)
-	if err != nil {
-		return harness.Reply{}, err
+	sessionID, prompt := req.Resume, continuePrompt
+	if sessionID != "" {
+		// Its history is in the shared database; only the model is the
+		// server's current one, as with any resumed run.
+		if err := h.setModel(ctx, st, sessionID, model); err != nil {
+			return harness.Reply{}, fmt.Errorf("continuing session %s: %w", sessionID, err)
+		}
+	} else {
+		sessionID, err = h.start(ctx, st, req.Workspace, "harness "+req.Label, req.Role, model)
+		if err != nil {
+			return harness.Reply{}, err
+		}
+		prompt = req.Mission
 	}
 	if req.OnSession != nil {
 		req.OnSession(sessionID)
 	}
-	runErr := h.drive(ctx, st, sessionID, req.Mission, limit(h.SessionTimeout, defaultSessionTimeout), limit(h.IdleTimeout, defaultIdleTimeout))
+	runErr := h.drive(ctx, st, sessionID, prompt, limit(h.SessionTimeout, defaultSessionTimeout), limit(h.IdleTimeout, defaultIdleTimeout))
 	result := collectRollout(context.WithoutCancel(ctx), st, sessionID)
 	reply := harness.Reply{Text: result.Final, CostUSD: result.CostUSD}
+	if result.Limited {
+		return reply, fmt.Errorf("%w: %s", harness.ErrLimited, result.Error)
+	}
 	if runErr != nil {
 		return reply, runErr
 	}
@@ -232,15 +245,27 @@ func (h *harnessStacks) Session(ctx context.Context, req harness.SessionRequest)
 	return reply, nil
 }
 
+// continuePrompt resumes an improver session a provider limit or a stopped
+// run cut short. Its workspace is exactly as the session left it.
+const continuePrompt = "Your previous turn was cut short (a provider usage limit or a stopped run) before you finished. " +
+	"Everything you did so far is still in place, in `context/` and in this conversation. " +
+	"Continue the mission in MISSION.md from where you stopped — do not start over — and reply as it asks when you are done."
+
+func (h *harnessStacks) setModel(ctx context.Context, st *stack, sessionID, model string) error {
+	providerID, modelID, ok := strings.Cut(model, "/")
+	if !ok {
+		return nil
+	}
+	return st.Service.SetModel(ctx, sessionID, session.ModelRef{ProviderID: providerID, ID: modelID, Variant: h.Variant})
+}
+
 func (h *harnessStacks) start(ctx context.Context, st *stack, dir, title, agentID, model string) (string, error) {
 	created, err := st.Service.Create(ctx, session.CreateInput{Directory: dir, Title: title, Agent: agentID})
 	if err != nil {
 		return "", err
 	}
-	if providerID, modelID, ok := strings.Cut(model, "/"); ok {
-		if err := st.Service.SetModel(ctx, created.ID, session.ModelRef{ProviderID: providerID, ID: modelID, Variant: h.Variant}); err != nil {
-			return "", err
-		}
+	if err := h.setModel(ctx, st, created.ID, model); err != nil {
+		return "", err
 	}
 	if agentID != "" {
 		if err := st.Service.SetAgent(ctx, created.ID, agentID); err != nil {
@@ -352,6 +377,7 @@ func collectRollout(ctx context.Context, st *stack, sessionID string) harness.Ro
 				result.Final = text
 			}
 			result.Stopped = assistant.Error != nil && assistant.Error.Type == session.ErrorTypeAborted
+			result.Limited = assistant.Error != nil && assistant.Error.Type == session.ErrorTypeRateLimited
 			if assistant.Error != nil && assistant.Error.Type != session.ErrorTypeAborted {
 				events = append(events, harness.TraceEvent{Kind: "error", Text: assistant.Error.Message})
 				result.Error = assistant.Error.Type + ": " + assistant.Error.Message

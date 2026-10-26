@@ -86,6 +86,9 @@ type modeRun struct {
 	ledger *Ledger
 	log    *runLog
 	extra  []ExtraEvidence
+	// halt cancels the run with a cause: a provider limit stops everything
+	// at once, rather than letting every later session hit it too.
+	halt func(error)
 
 	mu       sync.Mutex
 	stages   []*Stage
@@ -221,6 +224,13 @@ func (m *modeRun) stage(ctx context.Context, label, dim, job string, fallback Tr
 // `context/harness/`) under audit/ so a resumed run does not pay twice. It
 // returns the reply, the harvested directory, whether it was cached, and
 // the cost actually spent.
+//
+// A session a provider limit or a stopped run cut short is not thrown away:
+// its workspace stays, with a marker naming the session, and the next run
+// over the same mission and evidence continues that session where it ended.
+// Starting over instead is what kept a long aggregator from ever finishing —
+// each resume burned the reopened quota on work already done, and hit the
+// limit again at the same point.
 func (m *modeRun) call(ctx context.Context, role, label, mission, evidence string, harvest bool) (Reply, string, bool, float64, error) {
 	key, err := fingerprint(mission, evidence)
 	if err != nil {
@@ -239,36 +249,60 @@ func (m *modeRun) call(ctx context.Context, role, label, mission, evidence strin
 		}
 	}
 
+	workspaceOf := func(attempt int) string {
+		return filepath.Join(m.dir, "sessions", fmt.Sprintf("%s.t%d", safe, attempt))
+	}
+	// A kept session resumes at its own attempt: the attempts before it
+	// already failed on their own.
+	first := 1
+	for attempt := transportAttempts; attempt > 1; attempt-- {
+		if keptSession(workspaceOf(attempt), key) != "" {
+			first = attempt
+			break
+		}
+	}
 	var spent float64
 	last := ""
-	for attempt := 1; attempt <= transportAttempts; attempt++ {
-		if err := ctx.Err(); err != nil {
-			return Reply{}, "", false, spent, err
+	for attempt := first; attempt <= transportAttempts; attempt++ {
+		if ctx.Err() != nil {
+			return Reply{}, "", false, spent, context.Cause(ctx)
 		}
-		workspace := filepath.Join(m.dir, "sessions", fmt.Sprintf("%s.t%d", safe, attempt))
-		_ = os.RemoveAll(workspace)
-		if err := CopyDir(evidence, filepath.Join(workspace, "context")); err != nil {
-			return Reply{}, "", false, spent, err
-		}
-		if err := writeFileAll(filepath.Join(workspace, "MISSION.md"), mission); err != nil {
-			return Reply{}, "", false, spent, err
+		workspace := workspaceOf(attempt)
+		resume := keptSession(workspace, key)
+		if resume == "" {
+			discardSession(workspace)
+			if err := CopyDir(evidence, filepath.Join(workspace, "context")); err != nil {
+				return Reply{}, "", false, spent, err
+			}
+			if err := writeFileAll(filepath.Join(workspace, "MISSION.md"), mission); err != nil {
+				return Reply{}, "", false, spent, err
+			}
 		}
 		stage := strings.SplitN(label, ".", 2)[0]
 		reply, err := m.engine.session(ctx, SessionRequest{
-			Role: role, Label: label, Workspace: workspace, Mission: mission,
+			Role: role, Label: label, Workspace: workspace, Mission: mission, Resume: resume,
 			OnSession: func(id string) {
+				_ = writeJSON(workspace+sessionMarker, keptMarker{Key: key, SessionID: id})
 				m.emit(Event{Type: EventSession, Label: stage, SessionID: id, Role: role, Attempt: attempt})
 			},
 		})
 		spent += reply.CostUSD
 		if err != nil {
 			last = err.Error()
-			_ = os.RemoveAll(workspace)
+			if errors.Is(err, ErrLimited) || ctx.Err() != nil {
+				// Kept for the resume to continue; retrying now would only
+				// hit the same limit.
+				if errors.Is(err, ErrLimited) && m.halt != nil {
+					m.halt(err)
+				}
+				return Reply{}, "", false, spent, err
+			}
+			discardSession(workspace)
 			continue
 		}
 		if strings.TrimSpace(reply.Text) == "" {
 			last = "empty reply"
-			_ = os.RemoveAll(workspace)
+			discardSession(workspace)
 			continue
 		}
 		reply.CostUSD = spent
@@ -284,10 +318,37 @@ func (m *modeRun) call(ctx context.Context, role, label, mission, evidence strin
 				}
 			}
 		}
-		_ = os.RemoveAll(workspace)
+		discardSession(workspace)
 		return reply, harvested, false, spent, nil
 	}
 	return Reply{}, "", false, spent, fmt.Errorf("[%s] %s: %s", label, role, last)
+}
+
+// sessionMarker, beside a session workspace, names the session running in
+// it and the mission+evidence fingerprint it was started for.
+const sessionMarker = ".session.json"
+
+type keptMarker struct {
+	Key       string `json:"key"`
+	SessionID string `json:"sessionID"`
+}
+
+// keptSession returns the session kept in workspace for the fingerprint key,
+// or "" when there is none to continue.
+func keptSession(workspace, key string) string {
+	var marker keptMarker
+	if err := readJSON(workspace+sessionMarker, &marker); err != nil || marker.Key != key || marker.SessionID == "" {
+		return ""
+	}
+	if info, err := os.Stat(filepath.Join(workspace, "context")); err != nil || !info.IsDir() {
+		return ""
+	}
+	return marker.SessionID
+}
+
+func discardSession(workspace string) {
+	_ = os.RemoveAll(workspace)
+	_ = os.Remove(workspace + sessionMarker)
 }
 
 // fingerprint digests a mission and an evidence directory, so a cached reply
@@ -326,12 +387,21 @@ func fingerprint(mission, dir string) (string, error) {
 // roll materialises a tree and executes it once, recording the evidence on
 // disk. A dead rollout is recorded, never raised. A rollout already on disk
 // is reused, which is what makes a rerun resume.
-func (e *Engine) roll(ctx context.Context, task Task, label string, tree Tree, harnessDir, runDir string, emit func(Event)) RunRecord {
+//
+// A rollout a provider limit cut short calls halt: the rest of the run would
+// hit the same limit.
+func (e *Engine) roll(ctx context.Context, task Task, label string, tree Tree, harnessDir, runDir string, emit func(Event), halt func(error)) RunRecord {
 	record := RunRecord{Dir: runDir}
 	if err := readJSON(filepath.Join(runDir, runJSON), &record.Rollout); err == nil && record.Label == label &&
 		// Records written before Stopped existed say so only in the error
 		// the executor gave them.
-		!record.Stopped && !strings.HasPrefix(record.Error, "stopped") {
+		!record.Stopped && !record.Limited && !strings.HasPrefix(record.Error, "stopped") {
+		return record
+	}
+	// A halted run rolls nothing more, and records nothing a resume would
+	// mistake for a result.
+	if ctx.Err() != nil {
+		record.Rollout = Rollout{Label: label, Error: "stopped: " + context.Cause(ctx).Error(), Stopped: true}
 		return record
 	}
 	record.Rollout = Rollout{}
@@ -369,6 +439,12 @@ func (e *Engine) roll(ctx context.Context, task Task, label string, tree Tree, h
 		return fail(err)
 	}
 	result.Label = label
+	if result.Limited {
+		result.Stopped = true
+		if halt != nil {
+			halt(fmt.Errorf("%w: [%s] %s", ErrLimited, label, result.Error))
+		}
+	}
 	change, changed, err := WorkspaceDiff(task.Workspace, workspace)
 	if err != nil {
 		change = "(could not diff the workspace: " + err.Error() + ")"
@@ -408,7 +484,7 @@ func (m *modeRun) rollMany(ctx context.Context, items []rollItem) {
 	out := make([]RunRecord, len(items))
 	parallel(len(items), m.engine.rolloutWidth(), func(i int) {
 		it := items[i]
-		out[i] = m.engine.roll(ctx, m.task, it.label, it.tree, m.harnessDir(it.label), filepath.Join(m.dir, "runs", it.label), m.log.emit)
+		out[i] = m.engine.roll(ctx, m.task, it.label, it.tree, m.harnessDir(it.label), filepath.Join(m.dir, "runs", it.label), m.log.emit, m.halt)
 	})
 	m.mu.Lock()
 	defer m.mu.Unlock()

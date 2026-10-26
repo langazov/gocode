@@ -2,6 +2,7 @@ package harness
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -187,7 +188,7 @@ func TestRollRerunsStoppedRollouts(t *testing.T) {
 	dir := t.TempDir()
 	roll := func() RunRecord {
 		return engine.roll(context.Background(), task, "base1", Tree{}, filepath.Join(dir, "harness"),
-			filepath.Join(dir, "runs", "base1"), func(Event) {})
+			filepath.Join(dir, "runs", "base1"), func(Event) {}, nil)
 	}
 	exec.stop.Store(true)
 	if first := roll(); first.OK || !first.Stopped {
@@ -230,6 +231,93 @@ func TestEngineResumeReusesEverything(t *testing.T) {
 			t.Errorf("stage %s not served from cache", stage.Label)
 		}
 	}
+}
+
+// limitedImprover hits a provider limit in every aggregator session it
+// starts fresh, and finishes the ones it is asked to continue.
+type limitedImprover struct {
+	fakeImprover
+	resumed map[string]string
+}
+
+func (f *limitedImprover) Session(ctx context.Context, req SessionRequest) (Reply, error) {
+	if !strings.HasPrefix(req.Label, "agg") {
+		return f.fakeImprover.Session(ctx, req)
+	}
+	if req.Resume == "" {
+		req.OnSession("ses_" + req.Label)
+		return Reply{CostUSD: 0.5}, fmt.Errorf("%w: anthropic: 429 usage limit", ErrLimited)
+	}
+	f.mu.Lock()
+	if f.resumed == nil {
+		f.resumed = map[string]string{}
+	}
+	f.resumed[req.Label] = req.Resume
+	f.mu.Unlock()
+	return f.fakeImprover.Session(ctx, req)
+}
+
+func TestEngineLimitHaltsAndResumeContinuesTheSession(t *testing.T) {
+	exec, improver := &fakeExec{}, &limitedImprover{}
+	engine, task := newEngineFixture(t, exec, improver, nil)
+	summary, err := engine.Run(context.Background(), task, RunOptions{K: 1, Mode: ModeParallel})
+	if !errors.Is(err, ErrLimited) || summary.Status != "failed" {
+		t.Fatalf("limited run: %v, status %s", err, summary.Status)
+	}
+	// base1, inv1, dom1 — agg1's rollout must not run on a fallback tree.
+	if got := exec.calls.Load(); got != 3 {
+		t.Fatalf("rollouts after the limit = %d, want 3", got)
+	}
+	editors := improver.roles[RoleEditor]
+
+	summary, err = engine.Run(context.Background(), task, RunOptions{K: 1, Mode: ModeParallel})
+	if err != nil || summary.Status != "ok" {
+		t.Fatalf("resume: %v %+v", err, summary)
+	}
+	if got := improver.resumed["agg1.a1"]; got != "ses_agg1.a1" {
+		t.Fatalf("agg1 was not continued: resumed %v", improver.resumed)
+	}
+	if got := improver.roles[RoleEditor] - editors; got != 1 {
+		t.Fatalf("resume ran %d editor sessions, want only agg1's", got)
+	}
+	if got := exec.calls.Load(); got != 4 {
+		t.Fatalf("rollouts after resume = %d, want 4", got)
+	}
+	if matches, _ := filepath.Glob(filepath.Join(engine.Dir(task.ID, 1), ModeParallel, "sessions", "*")); len(matches) != 0 {
+		t.Fatalf("finished sessions left behind: %v", matches)
+	}
+}
+
+func TestRollRerunsLimitedRolloutsAndHalts(t *testing.T) {
+	exec := &limitedExec{}
+	engine, task := newEngineFixture(t, exec, &fakeImprover{}, nil)
+	dir := t.TempDir()
+	var halted error
+	roll := func() RunRecord {
+		return engine.roll(context.Background(), task, "base1", Tree{}, filepath.Join(dir, "harness"),
+			filepath.Join(dir, "runs", "base1"), func(Event) {}, func(err error) { halted = err })
+	}
+	exec.limited.Store(true)
+	if first := roll(); !first.Stopped || !errors.Is(halted, ErrLimited) {
+		t.Fatalf("first = %+v, halted %v", first.Rollout, halted)
+	}
+	exec.limited.Store(false)
+	if again := roll(); !again.OK || exec.calls.Load() != 2 {
+		t.Fatalf("a limited rollout was reused: %+v after %d calls", again.Rollout, exec.calls.Load())
+	}
+}
+
+type limitedExec struct {
+	fakeExec
+	limited atomic.Bool
+}
+
+func (f *limitedExec) Rollout(ctx context.Context, req RolloutRequest) (Rollout, error) {
+	if f.limited.Load() {
+		f.calls.Add(1)
+		return Rollout{Error: "rate_limited: anthropic: 429 usage limit", Limited: true}, nil
+	}
+	return f.fakeExec.Rollout(ctx, req)
 }
 
 func TestEngineSequentialK2(t *testing.T) {

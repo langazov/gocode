@@ -1384,8 +1384,12 @@ func (r *Runner) failInterruptedTools(ctx context.Context, sessionID string) err
 // that one is never done, by construction.
 func stepError(runCtx context.Context, err error) map[string]any {
 	errType := ErrorTypeUnknown
-	if runCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+	var limited *llm.RateLimitError
+	switch {
+	case runCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
 		errType = ErrorTypeAborted
+	case errors.As(err, &limited):
+		errType = ErrorTypeRateLimited
 	}
 	return map[string]any{"type": errType, "message": err.Error()}
 }

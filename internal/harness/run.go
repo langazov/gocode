@@ -226,6 +226,10 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 	}
 	task.Prompts = task.Prompts.WithDefaults()
 	k := opts.K
+	// Halting with a cause (a provider limit) ends the run "failed" with
+	// that cause, like a cancel; Resume picks it up from there.
+	ctx, halt := context.WithCancelCause(ctx)
+	defer halt(nil)
 	path := e.SummaryPath(task.ID, k, mode)
 	if prior, err := LoadSummary(path); err == nil && prior.Status == "ok" {
 		return prior, nil
@@ -261,7 +265,7 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 	log := e.openLog(filepath.Join(dir, mode, LogFile), task.ID, mode)
 	defer log.close()
 	m := &modeRun{
-		engine: e, task: task, k: k, mode: mode, dir: filepath.Join(dir, mode), ledger: ledger, log: log,
+		engine: e, task: task, k: k, mode: mode, dir: filepath.Join(dir, mode), ledger: ledger, log: log, halt: halt,
 		trees: map[string]Tree{"base": baseTree}, rollouts: map[string]RunRecord{},
 	}
 
@@ -287,7 +291,7 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 		// Rollouts materialise their own copy, without the editor stubs: the
 		// base evidence directory must stay byte-identical across a resume,
 		// or every cached improver reply would miss.
-		base[i] = e.roll(ctx, task, label, baseTree, filepath.Join(dir, "base", "harnesses", label), filepath.Join(dir, "base", "runs", label), log.emit)
+		base[i] = e.roll(ctx, task, label, baseTree, filepath.Join(dir, "base", "harnesses", label), filepath.Join(dir, "base", "runs", label), log.emit, halt)
 	})
 	anyOK := false
 	for _, run := range base {
@@ -296,8 +300,8 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 		summary.Base = append(summary.Base, run.Rollout)
 		anyOK = anyOK || run.OK
 	}
-	if err := ctx.Err(); err != nil {
-		return e.finish(path, summary, m, "failed", err)
+	if ctx.Err() != nil {
+		return e.finish(path, summary, m, "failed", context.Cause(ctx))
 	}
 	if !anyOK {
 		summary.Errors = append(summary.Errors, "no base rollout produced anything")
@@ -317,8 +321,8 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 	} else if err := m.runSequential(ctx, base, baseTree, libraryDir); err != nil {
 		return e.finish(path, summary, m, "failed", err)
 	}
-	if err := ctx.Err(); err != nil {
-		return e.finish(path, summary, m, "failed", err)
+	if ctx.Err() != nil {
+		return e.finish(path, summary, m, "failed", context.Cause(ctx))
 	}
 	if err := ledger.assertIdentity(k); err != nil {
 		summary.Errors = append(summary.Errors, err.Error())
@@ -332,6 +336,9 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 
 	log.emit(Event{Type: EventPhase, Phase: "select"})
 	sel := m.selectFinal(ctx)
+	if ctx.Err() != nil {
+		return e.finish(path, summary, m, "failed", context.Cause(ctx))
+	}
 	summary.Selection = sel
 	log.emit(Event{Type: EventSelected, Phase: "select", Label: sel.ChosenLabel, OK: sel.OK,
 		Detail: firstNonEmpty(sel.Error, sel.Why)})
@@ -344,6 +351,9 @@ func (e *Engine) Run(ctx context.Context, task Task, opts RunOptions) (*Summary,
 	if e.Store != nil {
 		log.emit(Event{Type: EventPhase, Phase: "reflect"})
 		exp := m.reflect(ctx, sel, baseDir)
+		if ctx.Err() != nil {
+			return e.finish(path, summary, m, "failed", context.Cause(ctx))
+		}
 		summary.Experience = exp
 		if exp != nil {
 			err := e.Store.Add(ctx, Entry{

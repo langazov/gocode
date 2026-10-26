@@ -255,7 +255,7 @@ func TestOversizedHintAsksBeforeWaiting(t *testing.T) {
 	}
 	assistant := lastAssistantData(t, runner)
 	recorded, _ := assistant["error"].(map[string]any)
-	if recorded == nil || recorded["type"] != ErrorTypeUnknown {
+	if recorded == nil || recorded["type"] != ErrorTypeRateLimited {
 		t.Fatalf("the settled failure must carry the provider's 429: %v", assistant["error"])
 	}
 }

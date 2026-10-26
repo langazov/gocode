@@ -92,6 +92,11 @@ const (
 	// ErrorTypeAborted is the port's MessageAbortedError: the run context was
 	// canceled, i.e. the user interrupted the turn.
 	ErrorTypeAborted = "aborted"
+	// ErrorTypeRateLimited is a provider 429 the runner did not wait out —
+	// no stated retry time, or one past rateLimitRetryCap (a usage quota). It
+	// says nothing about the turn itself, so an unattended caller (Harness²)
+	// can tell it apart from a real failure and continue the session later.
+	ErrorTypeRateLimited = "rate_limited"
 )
 
 // AssistantContent is the text | reasoning | tool tagged union.

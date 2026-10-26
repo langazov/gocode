@@ -104,6 +104,15 @@ func TestStepErrorTagsOnlyCancellationAsAborted(t *testing.T) {
 	}
 }
 
+// A 429 the runner did not wait out (a usage quota) is tagged, so an
+// unattended caller can continue the session once the quota reopens.
+func TestStepErrorTagsRateLimits(t *testing.T) {
+	limited := fmt.Errorf("stream: %w", &llm.RateLimitError{Provider: "anthropic", Message: "usage limit reached"})
+	if got := stepError(context.Background(), limited)["type"]; got != ErrorTypeRateLimited {
+		t.Fatalf("a 429 is a rate limit, got %v", got)
+	}
+}
+
 // The regression for turns that settled as a bare "· interrupted" with no
 // message: an http.Client deadline firing mid-stream returns
 // context.DeadlineExceeded while the run context is still perfectly live, and
