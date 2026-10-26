@@ -286,6 +286,12 @@ type App struct {
 	harnessOpenRun    string
 	harnessLibrary    *client.HarnessLibrary
 	harnessLibraryErr string
+	// harnessSweeps is the sweep list behind the sweeps dialog, merged with
+	// live sweep states the same way; harnessOpenSweep is the sweep whose
+	// tasks are on screen.
+	harnessSweeps    []client.HarnessSweep
+	harnessSweepsErr string
+	harnessOpenSweep string
 	// harnessLog is the open log panel's events for harnessLogRun, and
 	// harnessLogPos its scroll position at the last refresh (following while
 	// the reader stays at the bottom); harnessActivitySig is what the open

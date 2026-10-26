@@ -7,6 +7,7 @@ import '../../app/theme.dart';
 import '../../core/api/harness_models.dart';
 import '../../shared/widgets/glass.dart';
 import '../sidebar/projects.dart';
+import 'harness_resume.dart';
 import 'harness_start_dialog.dart';
 import 'harness_state.dart';
 import 'harness_widgets.dart';
@@ -380,14 +381,17 @@ class _RunMenu extends ConsumerWidget {
       tooltip: 'Run actions',
       onSelected: (action) => switch (action) {
         'cancel' => _cancel(context, ref),
+        'resume' => resumeHarnessRun(context, ref, run),
         'delete' => _delete(context, ref),
         _ => null,
       },
       itemBuilder: (_) => [
         if (run.isRunning)
           compactMenuItem('cancel', 'Cancel')
-        else
+        else ...[
+          if (harnessResumable(run)) compactMenuItem('resume', 'Resume…'),
           compactMenuItem('delete', 'Delete'),
+        ],
       ],
     );
   }

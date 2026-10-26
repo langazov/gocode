@@ -24,6 +24,8 @@ abstract final class HarnessKeys {
   static const budgetList = ValueKey('harness-budget-list');
   static const confirmInstall = ValueKey('harness-confirm-install');
   static const eventLog = ValueKey('harness-event-log');
+  static const resume = ValueKey('harness-resume');
+  static const confirmResume = ValueKey('harness-confirm-resume');
 }
 
 /// The display phase order, mirroring the TUI's harnessPhaseLabel.
@@ -53,6 +55,7 @@ class HarnessStatusChip extends StatelessWidget {
       'ok' => ('ok', GC.ok),
       'partial' => ('partial', GC.textDim),
       'cancelled' => ('cancelled', GC.textDim),
+      'interrupted' => ('interrupted', GC.textDim),
       _ => (status.isEmpty ? 'unknown' : status, GC.down),
     };
     return StatusPill(label: label, color: color);

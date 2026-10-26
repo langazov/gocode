@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"sort"
 	"sync"
@@ -36,8 +37,12 @@ type SweepOptions struct {
 	Base Tree
 	// OnTask is called as each task finishes.
 	OnTask func(SweepRow)
-	// Dir, when set, receives the sweep record as <started>.json.
-	Dir string
+	// Dir, when set, receives the sweep record as <started>.json, or as
+	// <Name>.json when Name is set (the id a server gave the sweep).
+	Dir  string
+	Name string
+	// Source says what the tasks were loaded from, for the record.
+	Source string
 }
 
 // SweepRow is one task's outcome.
@@ -56,6 +61,8 @@ type SweepRow struct {
 type SweepResult struct {
 	K           int        `json:"k"`
 	Mode        string     `json:"mode"`
+	Workers     int        `json:"workers,omitempty"`
+	Source      string     `json:"source,omitempty"`
 	Seed        *int64     `json:"seed,omitempty"`
 	DomainOrder []string   `json:"domainOrder"`
 	StartedAt   time.Time  `json:"startedAt"`
@@ -113,6 +120,45 @@ func seeded(seed int64, key string) *rand.Rand {
 	return rand.New(rand.NewSource(int64(h.Sum64() >> 1)))
 }
 
+// LoadTasks reads task files: each path is a task file, or a directory
+// whose *.md files are tasks (sorted). A task without a domain or workspace
+// takes the defaults. The set is validated (ValidateTasks).
+func LoadTasks(paths []string, defaultDomain, defaultWorkspace string) ([]Task, error) {
+	var files []string
+	for _, path := range paths {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, err
+		}
+		if !info.IsDir() {
+			files = append(files, path)
+			continue
+		}
+		matches, err := filepath.Glob(filepath.Join(path, "*.md"))
+		if err != nil {
+			return nil, err
+		}
+		sort.Strings(matches)
+		files = append(files, matches...)
+	}
+	tasks := make([]Task, 0, len(files))
+	for _, file := range files {
+		task, err := LoadTask(file)
+		if err != nil {
+			return nil, err
+		}
+		if task.Domain == "" {
+			task.Domain = defaultDomain
+		}
+		if task.Workspace == "" {
+			task.Workspace = defaultWorkspace
+		}
+		task.Prompts = task.Prompts.WithDefaults()
+		tasks = append(tasks, task)
+	}
+	return tasks, ValidateTasks(tasks)
+}
+
 // ValidateTasks checks every task and that ids are unique: a task's id names
 // its run directory, so two tasks with one id would share one.
 func ValidateTasks(tasks []Task) error {
@@ -149,7 +195,8 @@ func (e *Engine) Sweep(ctx context.Context, tasks []Task, opts SweepOptions) (*S
 		opts.K = 1
 	}
 	domains, byDomain := Stream(tasks, opts.Seed, opts.MaxTasks)
-	result := &SweepResult{K: opts.K, Mode: mode, Seed: opts.Seed, DomainOrder: domains, StartedAt: time.Now().UTC()}
+	result := &SweepResult{K: opts.K, Mode: mode, Workers: opts.Workers, Source: opts.Source, Seed: opts.Seed,
+		DomainOrder: domains, StartedAt: time.Now().UTC()}
 	rows := map[string][]SweepRow{}
 	var mu sync.Mutex
 	workers := opts.Workers
@@ -207,7 +254,11 @@ func (e *Engine) Sweep(ctx context.Context, tasks []Task, opts SweepOptions) (*S
 	}
 	result.FinishedAt = time.Now().UTC()
 	if opts.Dir != "" {
-		if err := writeJSON(filepath.Join(opts.Dir, result.StartedAt.Format("20060102T150405Z")+".json"), result); err != nil {
+		name := opts.Name
+		if name == "" {
+			name = result.StartedAt.Format("20060102T150405Z")
+		}
+		if err := writeJSON(filepath.Join(opts.Dir, name+".json"), result); err != nil {
 			return result, err
 		}
 	}

@@ -32,7 +32,22 @@ func HarnessPublisher(bus *event.Bus) func(harness.RunState, harness.Event) {
 	}
 }
 
+// HarnessSweepPublisher publishes a sweep's state as a live
+// `harness.sweep` event on every change: a task starting or ending, the
+// sweep ending. Run-shaped harness events still carry each task's run.
+func HarnessSweepPublisher(bus *event.Bus) func(harness.SweepState) {
+	return func(state harness.SweepState) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_, _ = bus.Publish(ctx, event.Definition{Type: "harness.sweep"}, map[string]any{"sweep": state}, event.PublishOptions{})
+	}
+}
+
 func (s *Server) registerHarness(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/harness/sweep", s.listHarnessSweeps)
+	mux.HandleFunc("POST /api/harness/sweep", s.startHarnessSweep)
+	mux.HandleFunc("GET /api/harness/sweep/{sweepID}", s.getHarnessSweep)
+	mux.HandleFunc("POST /api/harness/sweep/{sweepID}/cancel", s.cancelHarnessSweep)
 	mux.HandleFunc("GET /api/harness/budgets", s.listHarnessBudgets)
 	mux.HandleFunc("GET /api/harness/run", s.listHarnessRuns)
 	mux.HandleFunc("POST /api/harness/run", s.startHarnessRun)
@@ -42,7 +57,9 @@ func (s *Server) registerHarness(mux *http.ServeMux) {
 	mux.HandleFunc("DELETE /api/harness/run/{runID}", s.deleteHarnessRun)
 	mux.HandleFunc("GET /api/harness/run/{runID}/stage/{label}", s.getHarnessStage)
 	mux.HandleFunc("GET /api/harness/run/{runID}/log", s.getHarnessLog)
+	mux.HandleFunc("GET /api/harness/run/{runID}/compare", s.compareHarnessRun)
 	mux.HandleFunc("POST /api/harness/run/{runID}/install", s.installHarnessRun)
+	mux.HandleFunc("GET /api/harness/installed", s.getInstalledHarness)
 	mux.HandleFunc("GET /api/harness/library", s.listHarnessLibrary)
 	mux.HandleFunc("GET /api/harness/library/{domain}/{task}", s.getHarnessEntry)
 	mux.HandleFunc("DELETE /api/harness/library/{domain}/{task}", s.forgetHarnessEntry)
@@ -170,6 +187,153 @@ func (s *Server) cancelHarnessRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": true})
+}
+
+// startHarnessSweepRequest is the body of POST /api/harness/sweep. Paths
+// are task files or folders of *.md task files, relative to the server's
+// working directory unless absolute.
+type startHarnessSweepRequest struct {
+	Paths         []string `json:"paths"`
+	Domain        string   `json:"domain,omitempty"`
+	Workspace     string   `json:"workspace,omitempty"`
+	K             int      `json:"k,omitempty"`
+	Mode          string   `json:"mode,omitempty"`
+	Workers       int      `json:"workers,omitempty"`
+	MaxTasks      int      `json:"maxTasks,omitempty"`
+	Seed          *int64   `json:"seed,omitempty"`
+	Model         string   `json:"model,omitempty"`
+	ImproverModel string   `json:"improverModel,omitempty"`
+	Library       string   `json:"library,omitempty"`
+	DryRun        bool     `json:"dryRun,omitempty"`
+}
+
+func (s *Server) listHarnessSweeps(w http.ResponseWriter, r *http.Request) {
+	sweeps := s.Harness.Sweeps()
+	if sweeps == nil {
+		sweeps = []harness.SweepState{}
+	}
+	writeJSON(w, http.StatusOK, sweeps)
+}
+
+// startHarnessSweep loads the task files and plans (dryRun) or starts a
+// sweep: 200 with the plan, 202 with the running sweep, 409 while another
+// sweep or one of its tasks runs.
+func (s *Server) startHarnessSweep(w http.ResponseWriter, r *http.Request) {
+	var body startHarnessSweepRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if len(body.Paths) == 0 {
+		writeError(w, http.StatusBadRequest, "paths is required: task files or folders of *.md task files")
+		return
+	}
+	workspace := body.Workspace
+	if workspace == "" {
+		workspace = s.VCSWorkdir
+	}
+	if workspace == "" {
+		writeError(w, http.StatusBadRequest, "workspace is required")
+		return
+	}
+	paths := make([]string, 0, len(body.Paths))
+	for _, path := range body.Paths {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(s.VCSWorkdir, path)
+		}
+		paths = append(paths, path)
+	}
+	domain := body.Domain
+	if domain == "" {
+		domain = harness.Slug(filepath.Base(workspace))
+	}
+	tasks, err := harness.LoadTasks(paths, domain, workspace)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	launch := harness.SweepLaunch{
+		Tasks: tasks, Source: strings.Join(body.Paths, ", "), K: body.K, Mode: body.Mode, Workers: body.Workers,
+		MaxTasks: body.MaxTasks, Seed: body.Seed, Model: body.Model, ImproverModel: body.ImproverModel, Library: body.Library,
+	}
+	if body.DryRun {
+		plan, err := s.Harness.PlanSweep(launch)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, plan)
+		return
+	}
+	state, err := s.Harness.StartSweep(r.Context(), launch)
+	switch {
+	case errors.Is(err, harness.ErrSweepRunning), errors.Is(err, harness.ErrRunning):
+		writeError(w, http.StatusConflict, err.Error())
+	case err != nil:
+		writeError(w, http.StatusBadRequest, err.Error())
+	default:
+		writeJSON(w, http.StatusAccepted, state)
+	}
+}
+
+func (s *Server) getHarnessSweep(w http.ResponseWriter, r *http.Request) {
+	state, err := s.Harness.Sweep(r.PathValue("sweepID"))
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, state)
+}
+
+func (s *Server) cancelHarnessSweep(w http.ResponseWriter, r *http.Request) {
+	if !s.Harness.CancelSweep(r.PathValue("sweepID")) {
+		writeError(w, http.StatusNotFound, "no running sweep with that id")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": true})
+}
+
+// installedHarness is the harness installed in the server's project
+// (.gocode/harness): what new sessions there are overlaid with.
+type installedHarness struct {
+	Installed   bool              `json:"installed"`
+	Dir         string            `json:"dir"`
+	Fingerprint string            `json:"fingerprint,omitempty"`
+	AlwaysOn    []string          `json:"alwaysOn,omitempty"`
+	Skills      []string          `json:"skills,omitempty"`
+	Agents      []string          `json:"agents,omitempty"`
+	Scripts     int               `json:"scripts,omitempty"`
+	Hooks       int               `json:"hooks,omitempty"`
+	Tree        map[string]string `json:"tree,omitempty"`
+}
+
+// getInstalledHarness describes the project's installed harness and its
+// files; installed is false when there is none. The fingerprint is the one
+// the chat's harness marker carries, so a client can match the two.
+func (s *Server) getInstalledHarness(w http.ResponseWriter, r *http.Request) {
+	dir := filepath.Join(s.VCSWorkdir, filepath.FromSlash(harness.InstalledDir))
+	out := installedHarness{Dir: dir}
+	if s.VCSWorkdir != "" {
+		if d, ok := harness.NewOverlay(dir).Describe(); ok {
+			tree, _ := harness.ReadTree(dir, nil)
+			out = installedHarness{Installed: true, Dir: d.Dir, Fingerprint: d.Fingerprint, AlwaysOn: d.AlwaysOn,
+				Skills: d.Skills, Agents: d.Agents, Scripts: d.Scripts, Hooks: d.Hooks, Tree: tree}
+		}
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// compareHarnessRun diffs a run's adopted harness against the installed one
+// (?with=installed, the default) or another run's (?with=<runID>): what
+// installing it would change.
+func (s *Server) compareHarnessRun(w http.ResponseWriter, r *http.Request) {
+	installed := filepath.Join(s.VCSWorkdir, filepath.FromSlash(harness.InstalledDir))
+	comparison, err := s.Harness.Compare(r.PathValue("runID"), r.URL.Query().Get("with"), installed)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, comparison)
 }
 
 // resumeHarnessRun starts a stopped run again from its saved task; only what

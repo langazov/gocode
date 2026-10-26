@@ -559,6 +559,12 @@ class GocodeClient {
         await _send('POST', '/api/harness/run', req.toJson()),
       );
 
+  /// Starts a stopped run again: cached stages and finished rollouts are
+  /// reused, so only what was cut short runs (and costs) again.
+  Future<HarnessRun> resumeHarness(String id) async => HarnessRun.fromJson(
+    await _send('POST', '/api/harness/run/${Uri.encodeComponent(id)}/resume'),
+  );
+
   Future<void> cancelHarness(String id) async =>
       _send('POST', '/api/harness/run/${Uri.encodeComponent(id)}/cancel');
 

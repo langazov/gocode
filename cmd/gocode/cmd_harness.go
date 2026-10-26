@@ -824,44 +824,6 @@ func sweepFlags(runFlags []clix.Flag) []clix.Flag {
 	return out
 }
 
-// loadSweepTasks reads task files, expanding directories to their *.md
-// files, and fills each task's domain and workspace defaults.
-func loadSweepTasks(paths []string, defaultDomain, defaultWorkspace string) ([]harness.Task, error) {
-	var files []string
-	for _, path := range paths {
-		info, err := os.Stat(path)
-		if err != nil {
-			return nil, err
-		}
-		if !info.IsDir() {
-			files = append(files, path)
-			continue
-		}
-		matches, err := filepath.Glob(filepath.Join(path, "*.md"))
-		if err != nil {
-			return nil, err
-		}
-		sort.Strings(matches)
-		files = append(files, matches...)
-	}
-	tasks := make([]harness.Task, 0, len(files))
-	for _, file := range files {
-		task, err := harness.LoadTask(file)
-		if err != nil {
-			return nil, err
-		}
-		if task.Domain == "" {
-			task.Domain = defaultDomain
-		}
-		if task.Workspace == "" {
-			task.Workspace = defaultWorkspace
-		}
-		task.Prompts = task.Prompts.WithDefaults()
-		tasks = append(tasks, task)
-	}
-	return tasks, harness.ValidateTasks(tasks)
-}
-
 func runHarnessSweep(a *clix.Args) error {
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -878,7 +840,7 @@ func runHarnessSweep(a *clix.Args) error {
 	if workspace, err = filepath.Abs(workspace); err != nil {
 		return err
 	}
-	tasks, err := loadSweepTasks(a.Array("tasks"), domain, workspace)
+	tasks, err := harness.LoadTasks(a.Array("tasks"), domain, workspace)
 	if err != nil {
 		return err
 	}

@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -10,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/langazov/gocode-go/internal/harness"
 	"github.com/langazov/gocode-go/internal/tui/client"
 	"github.com/langazov/gocode-go/internal/tui/dialog"
@@ -83,6 +85,27 @@ func newHarnessServer(t *testing.T, runs []client.HarnessRun) (*harnessServer, s
 			json.NewEncoder(w).Encode(client.Session{ID: strings.TrimPrefix(r.URL.Path, "/api/session/"), Title: "harness rollout"})
 		case r.Method == http.MethodDelete:
 			json.NewEncoder(w).Encode(map[string]any{"sessions": 1})
+		case r.URL.Path == "/api/harness/installed":
+			json.NewEncoder(w).Encode(client.HarnessInstalled{Installed: true, Dir: "/p/.gocode/harness", Fingerprint: "a3bd62d2f70f",
+				Skills: []string{"lint"}, Hooks: 2, Tree: map[string]string{"systemprompt.md": "be precise"}})
+		case strings.HasSuffix(r.URL.Path, "/compare"):
+			json.NewEncoder(w).Encode(client.HarnessComparison{From: r.URL.Query().Get("with"), To: "fix-login--k1-parallel · agg1",
+				Files: client.HarnessFiles{Modified: []string{"systemprompt.md"}}, Diff: "--- installed/systemprompt.md\n+++ agg1/systemprompt.md\n-old\n+new"})
+		case r.URL.Path == "/api/harness/sweep" && r.Method == http.MethodGet:
+			json.NewEncoder(w).Encode([]client.HarnessSweep{})
+		case r.URL.Path == "/api/harness/sweep" && r.Method == http.MethodPost:
+			sweep := client.HarnessSweep{ID: "20261026T100000Z", Source: "tasks", K: 1, Mode: "parallel", Workers: 1,
+				DomainOrder: []string{"math"}, Budget: "parallel k=1 → 4 rollouts, 3 editor sessions", Rollouts: 8, Edits: 6,
+				Tasks: []client.HarnessSweepTask{
+					{Task: "one", Domain: "math", RunID: "one--k1-parallel", Status: "pending"},
+					{Task: "two", Domain: "math", RunID: "two--k1-parallel", Status: "pending"},
+				}}
+			if body["dryRun"] == true {
+				sweep.Status, sweep.ID = "planned", ""
+			} else {
+				sweep.Status, sweep.StartedAt = "running", time.Now()
+			}
+			json.NewEncoder(w).Encode(sweep)
 		case strings.HasSuffix(r.URL.Path, "/resume"):
 			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/harness/run/"), "/resume")
 			json.NewEncoder(w).Encode(client.HarnessRun{ID: id, Task: strings.Split(id, "--")[0], Status: "running",
@@ -290,7 +313,7 @@ func TestHarnessStageLines(t *testing.T) {
 		Files: client.HarnessFiles{Added: []string{"skills/x/SKILL.md"}}, Notes: "why\tthis",
 		Diff: "+a", Deliverable: "done", Delivered: true, CostUSD: 0.5,
 	})
-	text := strings.Join(lines, "\n")
+	text := strings.Join(panelText(lines), "\n")
 	for _, want := range []string{"HARNESS", "+ skills/x/SKILL.md", "EDITOR NOTES", "why    this", "HARNESS DIFF", "ROLLOUT · DELIVERED"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("stage lines lack %q:\n%s", want, text)
@@ -564,4 +587,180 @@ func hasAction(app *App, title string) bool {
 		}
 	}
 	return false
+}
+
+// The stage panel opens on what went wrong, then the harness, notes, diff
+// and the rollout — its words wrapped, its changes colored as a diff.
+func TestHarnessStagePanelOrderAndTones(t *testing.T) {
+	lines := harnessStageLines(client.HarnessStage{
+		Error: "stopped after 15m0s without activity: the session stalled",
+		Files: client.HarnessFiles{Added: []string{"skills/x/SKILL.md"}, Removed: []string{"old.md"}},
+		Notes: "tightened the guardrails", Diff: "--- base/a\n+++ inv1/a\n@@ -1 +1 @@\n-old\n+new",
+		Deliverable: "# Final message\n\nDone.\n\n# Changes to the workspace\n\n1 file(s) changed: a.go\n\n```diff\n-x\n+y\n```\n",
+		Delivered:   true,
+	})
+	if lines[0].Text != "ERROR" || lines[1].Tone != toneError {
+		t.Fatalf("the error does not come first: %+v", lines[:2])
+	}
+	tones := map[string]panelTone{}
+	for _, line := range lines {
+		tones[line.Text] = line.Tone
+	}
+	for text, want := range map[string]panelTone{
+		"+ skills/x/SKILL.md": toneAdd, "- old.md": toneDel, "+new": toneAdd, "-old": toneDel,
+		"@@ -1 +1 @@": toneHunk, "+++ inv1/a": toneMuted, "Done.": toneBody, "+y": toneAdd,
+		"CHANGES TO THE WORKSPACE": toneHeading, "tightened the guardrails": toneBody,
+	} {
+		if got, ok := tones[text]; !ok || got != want {
+			t.Errorf("%q: tone %v (present %v), want %v", text, got, ok, want)
+		}
+	}
+	if strings.Contains(strings.Join(panelText(lines), "\n"), "# Final message") {
+		t.Error("the deliverable's own heading leaked into the panel")
+	}
+}
+
+// A failed row leads with a short reason; a working row is footed with its
+// session's step and tool counts.
+func TestHarnessRowReasonsAndCounts(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	run := sampleHarnessRuns()[1]
+	run.Rows = []client.HarnessRow{
+		{Label: "base1", Phase: "base", State: "failed", Detail: "stopped after 15m0s without activity: the session stalled"},
+		{Label: "base2", Phase: "base", State: "failed", Detail: "stopped after 2h0m0s: the session did not finish in time"},
+		{Label: "dom1", Phase: "probe", State: "rolling", SessionID: "ses_roll"},
+	}
+	app.harnessRuns = []client.HarnessRun{run}
+	app.agents = Snapshot{Sessions: map[string]*SessionNode{
+		"ses_roll": {ID: "ses_roll", Busy: true, LastEvent: time.Now(), Steps: 12, ToolCalls: 30, ToolFailures: 2, Tools: map[string]ToolState{}},
+	}}
+	app.openHarnessRun(run.ID)
+	items := map[string]overlayItem{}
+	for _, item := range app.overlay.Items() {
+		items[item.Value] = item
+	}
+	if got := items["base1"].Hint; got != "failed · stalled (no activity)" {
+		t.Errorf("stalled row = %q", got)
+	}
+	if got := items["base2"].Hint; got != "failed · timed out" {
+		t.Errorf("timed-out row = %q", got)
+	}
+	if got := items["dom1"].Footer; got != "12 steps · 30 tools · 2 failed" {
+		t.Errorf("working row footer = %q", got)
+	}
+}
+
+// The installed harness opens from the runs list, and the hint row names
+// the one the open session runs under when no run is going.
+func TestHarnessInstalledPanelAndHint(t *testing.T) {
+	state, url := newHarnessServer(t, nil)
+	app := newTestApp(t, url)
+	driveCmd(t, app, app.openInstalledHarness())
+	if !state.saw("GET /api/harness/installed") || app.overlay == nil || app.overlay.Title != "Installed harness" {
+		t.Fatalf("installed panel = %+v", app.overlay)
+	}
+	if panel := strings.Join(panelLines(t, app), " "); !strings.Contains(panel, "a3bd62d2f70f") || !strings.Contains(panel, "be precise") {
+		t.Fatalf("installed panel:\n%s", panel)
+	}
+
+	marker, _ := json.Marshal(client.HarnessData{Loaded: true, Dir: "/p/.gocode/harness", Fingerprint: "a3bd62d2f70f"})
+	app.timeline = []client.Message{{ID: "m1", Type: "harness", Data: marker}}
+	if got := ansi.Strip(app.harnessFooterSegment()); got != "harness a3bd62d2f70f" {
+		t.Errorf("hint = %q", got)
+	}
+	removed, _ := json.Marshal(client.HarnessData{})
+	app.timeline = append(app.timeline, client.Message{ID: "m2", Type: "harness", Data: removed})
+	if got := app.harnessFooterSegment(); got != "" {
+		t.Errorf("hint after removal = %q", got)
+	}
+}
+
+// compare picks what to compare with, then shows the diff.
+func TestHarnessCompare(t *testing.T) {
+	state, url := newHarnessServer(t, sampleHarnessRuns())
+	app := newTestApp(t, url)
+	app.harnessRuns = sampleHarnessRuns()
+	app.openHarnessRun("fix-login--k1-parallel")
+	if !hasAction(app, "compare") {
+		t.Fatal("a finished run offers no compare")
+	}
+	app.openHarnessCompare("fix-login--k1-parallel")
+	if app.overlay == nil || !strings.HasPrefix(app.overlay.Title, "Compare fix-login") || len(app.overlay.Items()) != 1 {
+		t.Fatalf("compare picker = %+v", app.overlay)
+	}
+	driveCmd(t, app, app.handleOverlayKey("enter"))
+	if !state.saw("GET /api/harness/run/fix-login--k1-parallel/compare") {
+		t.Fatalf("no compare request: %v", state.requests)
+	}
+	if panel := strings.Join(panelLines(t, app), " "); !strings.Contains(panel, "~ systemprompt.md") {
+		t.Fatalf("compare panel:\n%s", panel)
+	}
+	lines := harnessCompareLines(client.HarnessComparison{From: "installed", Files: client.HarnessFiles{Modified: []string{"a"}}, Diff: "-old\n+new"})
+	if last := lines[len(lines)-1]; last.Text != "+new" || last.Tone != toneAdd {
+		t.Fatalf("compare diff = %+v", last)
+	}
+}
+
+// A sweep is planned before it is started: task files, budget, dry run,
+// then a confirm with the totals; its view lists tasks by domain.
+func TestHarnessSweepPlansThenStarts(t *testing.T) {
+	state, url := newHarnessServer(t, nil)
+	app := newTestApp(t, url)
+	driveCmd(t, app, app.harnessSweepsOverlay())
+	if app.overlay == nil || app.overlay.Title != harnessSweepsTitle {
+		t.Fatalf("sweeps list = %+v", app.overlay)
+	}
+	app.newHarnessSweep()
+	if o := app.overlay; o == nil || o.InputValue() != "tasks" {
+		t.Fatalf("input = %+v", o)
+	}
+	driveCmd(t, app, app.handleOverlayKey("enter"))
+	if app.overlay == nil || app.overlay.Title != "Harness sweep budget" {
+		t.Fatalf("budget picker = %+v", app.overlay)
+	}
+	driveCmd(t, app, app.handleOverlayKey("enter"))
+	if app.overlay == nil || app.overlay.Kind != dialog.KindConfirm {
+		t.Fatalf("confirm = %+v", app.overlay)
+	}
+	panel := strings.Join(panelLines(t, app), " ")
+	for _, want := range []string{"2 tasks in 1 domain", "math: one → two", "In all: 8", "not touched"} {
+		if !strings.Contains(panel, want) {
+			t.Errorf("confirm lacks %q:\n%s", want, panel)
+		}
+	}
+	state.mu.Lock()
+	planned := state.bodies[len(state.bodies)-1]
+	state.mu.Unlock()
+	if planned["dryRun"] != true || fmt.Sprint(planned["paths"]) != "[tasks]" {
+		t.Fatalf("plan body = %v", planned)
+	}
+	// applyCmd stops at the status line; driveCmd would sit out its timer.
+	applyCmd(t, app, app.handleOverlayKey("enter"))
+	if app.overlay == nil || !strings.HasPrefix(app.overlay.Title, harnessSweepTitle+" · tasks") {
+		t.Fatalf("sweep view = %+v", app.overlay)
+	}
+	if items := app.overlay.Items(); len(items) != 2 || items[0].Category != "math" || items[0].Gutter != "·" {
+		t.Fatalf("sweep tasks = %+v", items)
+	}
+}
+
+// A sweep event updates the open sweep view, like a run event updates a plan.
+func TestAggregatorCarriesSweeps(t *testing.T) {
+	tree := newTree()
+	sweep := client.HarnessSweep{ID: "s1", Status: "running", Tasks: []client.HarnessSweepTask{{Task: "one", Status: "running"}}}
+	if !tree.apply(client.Event{Type: "harness.sweep", Data: map[string]any{"sweep": sweep}}) {
+		t.Fatal("a sweep event changed nothing")
+	}
+	snap := tree.snapshot(0)
+	if got := snap.HarnessSweeps["s1"]; got.Status != "running" || len(got.Tasks) != 1 {
+		t.Fatalf("snapshot sweep = %+v", got)
+	}
+
+	app := newTestApp(t, "http://example.invalid")
+	app.harnessSweeps = []client.HarnessSweep{{ID: "s1", Status: "running", Tasks: []client.HarnessSweepTask{{Task: "one", Status: "pending"}}}}
+	app.openHarnessSweep("s1")
+	app.applyHarnessSnapshot(snap)
+	if items := app.overlay.Items(); items[0].Hint != "running" {
+		t.Fatalf("open sweep view not refreshed: %+v", items)
+	}
 }

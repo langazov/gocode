@@ -622,20 +622,28 @@ read-only panel; there is no new dialog kind (`dialogs_harness.go`).
 |---|---|---|
 | `/harness` · **Harness runs** | list | categories `RUNNING` above `FINISHED`; gutter `◐` running, `✓` ok, `·` partial/cancelled, `✗` failed; hint `mode k=N · status · phase` (running) or `· adopted <label>`; footer the cost |
 | run · **Harness run · `<task>`** | list | the run's *plan*: one row per label, grouped `BASE ROLLOUTS`, `PROPOSE AND PROBE`, `COMPOSE`, `SELECT`, `REFLECT` in the order the run moves through them; gutter `·` pending, `◐` editing/rolling, `~` edited (awaiting its rollout), `✓`/`✗` settled; `●` marks the adopted label; the filter placeholder carries the budget, backend and spend |
-| row | read-only panel | `HARNESS` (± files, always-on delta), `EDITOR NOTES`, `ERROR`, `HARNESS DIFF`, `ROLLOUT · delivered · $` — the rollout's final message and workspace diff |
+| row | read-only panel | `ERROR` first when there is one, then `HARNESS` (± files, always-on delta), `EDITOR NOTES`, `HARNESS DIFF`, `ROLLOUT · delivered · $` — the rollout's final message wrapped, then `CHANGES TO THE WORKSPACE` as a diff |
+| compare · **Compare `<task>` · `<label>` with** | list | `Installed harness` (what installing would change), then every other finished run that adopted something; picking one opens **Compare**: `from`/`to`, `FILES`, `DIFF` |
+| installed · **Installed harness** | read-only panel | place, always-on files, counts and fingerprint (the chat marker's), skills and agents by name, then every file |
+| sweeps · **Harness sweeps** | list | categories `RUNNING` above `FINISHED`; label the task files; hint `mode k=N · status · done/total tasks · N domains · age`; footer the cost |
+| sweep · **Harness sweep · `<files>`** | list | one category per domain in run order, its tasks in order; gutter `·` pending, `◐` running, then the run's status glyph; hint the status and `adopted <label> · <lesson>` or the short reason; placeholder the budget per task, the totals and spend; selecting a started task opens its run |
 | `/harness library` · **Experience library · `<backend>`** | list | one category per domain; hint the lesson's cue (`pending upload ·` first when it has not reached the Library); footer the component census |
 | entry | read-only panel | `LESSON`, `WHY <label> WAS ADOPTED`, `WHAT EACH EDIT DID`, then every harness file |
 
 Footer actions: runs — `new ctrl+a` (standalone), `remove ctrl+d` (two-press
 arm: cancels a running run, deletes a finished one with its sessions),
 `resume ctrl+y` (a run that ended short of ok), `library ctrl+l`,
-`refresh ctrl+r`; run — `watch ctrl+e` (open the session
+`installed ctrl+k`, `sweeps ctrl+t`, `refresh ctrl+r`; run — `watch ctrl+e` (open the session
 the row is working in now: its editor's while editing, its rollout's while
 rolling), `editor ctrl+o` (the row's editor session, also after it ended),
 `log ctrl+g` (the run's event log), `install ctrl+s` and, when the backend is
 `split` or `cloud`, `publish ctrl+u` (finished runs only), `cancel ctrl+d`
 (running only), `resume ctrl+y` (partial, cancelled or failed runs only),
-`back ctrl+b`; library — `forget ctrl+d` (two-press arm), `runs ctrl+b`.
+`compare ctrl+w` (finished runs that adopted something), `back ctrl+b`;
+library — `forget ctrl+d` (two-press arm), `runs ctrl+b`; sweeps — `new
+ctrl+a`, `cancel ctrl+d` (running), `refresh ctrl+r`, `runs ctrl+b`; sweep —
+`cancel ctrl+d` (running), `back ctrl+b`. `/harness installed` opens the
+installed-harness panel directly.
 
 **Rules:**
 
@@ -665,6 +673,22 @@ rolling), `editor ctrl+o` (the row's editor session, also after it ended),
   The open plan rebuilds only when that text changes
   (`refreshHarnessActivity`, also run on the 10s reconciliation tick, since
   quiet and age move with time alone), not on every frame.
+- **A failed row says why in a few words** — `stalled (no activity)`,
+  `timed out`, `interrupted`, else the error's first line — and the stage
+  panel opens on the whole error. A working row's footer counts its
+  session's progress, `12 steps · 30 tools · 2 failed`: many refused or
+  failed calls over few steps is a rollout going in circles.
+- **Harness panels are not help panels.** Stage, entry, comparison and
+  installed panels render their own rows (`harness_panel.go`): headings in
+  bold `Text`, prose wrapped in `Text`, metadata in `TextMuted`, a diff's
+  `+` lines in `Success`, `-` in `Error`, `@@` and `~` in `Primary`, errors
+  wrapped in `Error`. Diff lines are clipped, never wrapped.
+- **A sweep is priced like a run.** `new` asks for the task files (a folder
+  of `*.md` tasks by default, relative to the project), then the budget per
+  task, then dry-runs it; the confirm lists every domain's tasks in run
+  order, the budget per task and the totals. Each running task is a run in
+  the runs list too, so it is watched like any run; cancelling it stops the
+  sweep after the tasks in flight.
 - **A running run says how long it has been going**, in minutes (`<1m`,
   `12m`, `1h 05m`): in its runs-list hint, the plan's placeholder line and
   the hint row.
@@ -681,7 +705,9 @@ rolling), `editor ctrl+o` (the row's editor session, also after it ended),
   error, `✓`/`✗` ended with cost. It follows new events while the reader is
   at the bottom and holds its place once they scroll up.
 - **The hint row says a run is going.** While one runs, the right group gains
-  `harness <task> · <phase> <done>/<rows> · <age> · $` in `TextMuted`, ahead of the
+  `harness <task> · <phase> <done>/<rows> · <age> · $` in `TextMuted` — or,
+  with nothing running, `harness <fingerprint>` while the open session runs
+  under an installed harness (its newest timeline marker) — ahead of the
   `ctrl+p commands` hint and under the same `ShowActivityMeta` width gate as
   the usage meter.
 

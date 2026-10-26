@@ -92,6 +92,12 @@ type SessionNode struct {
 	// row's session that goes quiet is shown as such long before the run's
 	// idle limit stops it (harnessRowActivity).
 	LastEvent time.Time
+	// Steps, ToolCalls and ToolFailures count what the session did while the
+	// interface watched: how far a harness rollout has got, and whether it
+	// is looping on refused commands (harnessRowCounts).
+	Steps        int
+	ToolCalls    int
+	ToolFailures int
 }
 
 func newSessionNode(id string) *SessionNode {
@@ -165,6 +171,7 @@ func (n *SessionNode) clone() *SessionNode {
 		Failures:  n.Failures,
 		Waiting:   n.Waiting,
 		LastEvent: n.LastEvent,
+		Steps:     n.Steps, ToolCalls: n.ToolCalls, ToolFailures: n.ToolFailures,
 
 		Tools:     make(map[string]ToolState, len(n.Tools)),
 		Text:      make(map[string]*strings.Builder, len(n.Text)),
@@ -213,6 +220,8 @@ type Snapshot struct {
 	// tell a frame that moved one from one that did not.
 	Harness    map[string]client.HarnessRun
 	HarnessSeq int
+	// HarnessSweeps is Harness's equivalent for sweeps (`harness.sweep`).
+	HarnessSweeps map[string]client.HarnessSweep
 }
 
 // tree is the aggregator's mutable state. It lives on the aggregator
@@ -230,6 +239,8 @@ type tree struct {
 	// harnessAt is when each run was last reported, so a finished run can be
 	// dropped once every snapshot has had the chance to carry it.
 	harnessAt map[string]time.Time
+	sweeps    map[string]client.HarnessSweep
+	sweepsAt  map[string]time.Time
 }
 
 // harnessRetention is how long a finished run stays in snapshots after its
@@ -240,7 +251,7 @@ const harnessRetention = time.Minute
 
 func newTree() *tree {
 	return &tree{sessions: map[string]*SessionNode{}, dirty: map[string]bool{}, harness: map[string]client.HarnessRun{},
-		harnessAt: map[string]time.Time{}}
+		harnessAt: map[string]time.Time{}, sweeps: map[string]client.HarnessSweep{}, sweepsAt: map[string]time.Time{}}
 }
 
 func (t *tree) node(sessionID string) *SessionNode {
@@ -317,6 +328,7 @@ func (t *tree) apply(e client.Event) bool {
 		node.Busy = true
 		// The retry got through — whatever the hold was waiting for is over.
 		node.Waiting = ""
+		node.Steps++
 		return true
 	case "session.next.text.started", "session.next.text.delta":
 		messageID, _ := e.Data["assistantMessageID"].(string)
@@ -363,6 +375,7 @@ func (t *tree) apply(e client.Event) bool {
 		callID, _ := e.Data["callID"].(string)
 		name, _ := e.Data["tool"].(string)
 		node.Tools[callID] = ToolState{CallID: callID, Name: name, Status: "pending", Input: toolInputSummary(e.Data["input"])}
+		node.ToolCalls++
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.tool.success", "session.next.tool.failed":
@@ -370,6 +383,7 @@ func (t *tree) apply(e client.Event) bool {
 		status := "completed"
 		if e.Type == "session.next.tool.failed" {
 			status = "error"
+			node.ToolFailures++
 		}
 		state := node.Tools[callID]
 		state.CallID, state.Status = callID, status
@@ -429,6 +443,16 @@ func (t *tree) snapshot(dropped int) Snapshot {
 		ReceivedBytes: t.receivedBytes,
 		Harness:       make(map[string]client.HarnessRun, len(t.harness)),
 		HarnessSeq:    t.harnessSeq,
+		HarnessSweeps: make(map[string]client.HarnessSweep, len(t.sweeps)),
+	}
+	for id, sweep := range t.sweeps {
+		if sweep.Status != "running" && time.Since(t.sweepsAt[id]) > harnessRetention {
+			delete(t.sweeps, id)
+			delete(t.sweepsAt, id)
+			continue
+		}
+		sweep.Tasks = append([]client.HarnessSweepTask(nil), sweep.Tasks...)
+		out.HarnessSweeps[id] = sweep
 	}
 	for id, run := range t.harness {
 		if run.Status != "running" && time.Since(t.harnessAt[id]) > harnessRetention {
@@ -453,6 +477,20 @@ func (t *tree) snapshot(dropped int) Snapshot {
 // carries the whole run state (internal/server.HarnessPublisher), so the
 // newest one simply replaces what was there — a dropped event costs nothing.
 func (t *tree) applyHarness(e client.Event) bool {
+	if e.Type == "harness.sweep" {
+		encoded, err := json.Marshal(e.Data["sweep"])
+		if err != nil {
+			return false
+		}
+		var sweep client.HarnessSweep
+		if err := json.Unmarshal(encoded, &sweep); err != nil || sweep.ID == "" {
+			return false
+		}
+		t.sweeps[sweep.ID] = sweep
+		t.sweepsAt[sweep.ID] = time.Now()
+		t.harnessSeq++
+		return true
+	}
 	raw, ok := e.Data["run"]
 	if !ok {
 		return false

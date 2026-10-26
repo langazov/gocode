@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,8 +37,14 @@ type Service struct {
 	// directory — session.DeleteUnder over the server's database.
 	Prune func(ctx context.Context, dir string) (int64, error)
 
+	// SweepsDir holds sweep records (SweepResult), read for finished
+	// sweeps; PublishSweep fans a sweep's state out on every change.
+	SweepsDir    string
+	PublishSweep func(SweepState)
+
 	mu     sync.Mutex
 	active map[string]*RunState
+	sweeps map[string]*SweepState
 }
 
 // Launch is one run request.
@@ -369,6 +376,9 @@ func (s *Service) Get(id string) (RunState, error) {
 	}
 	summary, err := LoadSummary(s.summaryPath(task, k, mode))
 	if err != nil {
+		if state, ok := s.interrupted(task, k, mode); ok {
+			return state, nil
+		}
 		return RunState{}, fmt.Errorf("no run %s", id)
 	}
 	state := FromSummary(summary)
@@ -487,8 +497,82 @@ func (s *Service) List() []RunState {
 			out = append(out, state)
 		}
 	}
+	// A run whose process died (a crash, a kill, a closed terminal) never
+	// wrote its summary; its log is all that is left of it.
+	logs, _ := filepath.Glob(filepath.Join(s.Root, "*", "k*", "*", LogFile))
+	for _, path := range logs {
+		modeDir := filepath.Dir(path)
+		kDir := filepath.Dir(modeDir)
+		k, err := strconv.Atoi(strings.TrimPrefix(filepath.Base(kDir), "k"))
+		if err != nil {
+			continue
+		}
+		task, mode := filepath.Base(filepath.Dir(kDir)), filepath.Base(modeDir)
+		if id := RunID(task, k, mode); !seen[id] {
+			if state, ok := s.interrupted(task, k, mode); ok {
+				seen[id] = true
+				out = append(out, state)
+			}
+		}
+	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
 	return out
+}
+
+// ErrInterrupted is the error of a run whose process stopped before it
+// wrote a summary.
+const ErrInterrupted = "interrupted: the process running it stopped before it finished"
+
+// interrupted rebuilds a run that has a log but no summary from its log:
+// status "interrupted", every stage or rollout still going when the log
+// ends marked failed. Resume picks it up like any stopped run. A run this
+// server is running, or another process holds the lock on, is not one.
+func (s *Service) interrupted(task string, k int, mode string) (RunState, bool) {
+	id := RunID(task, k, mode)
+	dir := (&Engine{Root: s.Root}).Dir(task, k)
+	s.mu.Lock()
+	sharesDir := false
+	for activeID, state := range s.active {
+		if activeID == id && state.Status == "running" {
+			s.mu.Unlock()
+			return RunState{}, false
+		}
+		if state.Task == task && state.K == k && state.Status == "running" {
+			sharesDir = true
+		}
+	}
+	s.mu.Unlock()
+	// The lock is per task and k, so a run of the other mode in this
+	// server holds it too; only a lock nobody here holds means elsewhere.
+	if !sharesDir && RunLockHeld(dir) {
+		return RunState{}, false
+	}
+	if _, err := os.Stat(s.summaryPath(task, k, mode)); err == nil {
+		return RunState{}, false
+	}
+	events, err := ReadLog(s.logPath(task, k, mode), 0)
+	if err != nil || len(events) == 0 {
+		return RunState{}, false
+	}
+	state := RunState{
+		ID: id, Task: task, K: k, Mode: mode, Status: "interrupted", Error: ErrInterrupted,
+		Rows: PlannedRows(mode, k, false), Budget: CostLine(mode, k, false),
+		StartedAt: time.UnixMilli(events[0].Time).UTC(),
+	}
+	for _, ev := range events {
+		state.apply(ev)
+	}
+	for i := range state.Rows {
+		if row := &state.Rows[i]; row.State == RowRolling || row.State == RowEditing {
+			row.State, row.Detail = RowFailed, ErrInterrupted
+		}
+	}
+	s.annotate(&state)
+	var saved Task
+	if readJSON(filepath.Join(dir, "task.json"), &saved) == nil {
+		state.Domain = saved.Domain
+	}
+	return state, true
 }
 
 // FromSummary renders a finished run as a RunState.
@@ -561,12 +645,7 @@ func (s *Service) Stage(id, label string) (StageDetail, error) {
 	dir := (&Engine{Root: s.Root}).Dir(task, k)
 	detail := StageDetail{Label: label}
 	base, _ := ReadTree(filepath.Join(dir, "base", "harness"), nil)
-	harnessDir := filepath.Join(dir, mode, "harnesses", label)
-	runDir := filepath.Join(dir, mode, "runs", label)
-	if len(label) > 4 && label[:4] == "base" {
-		harnessDir = filepath.Join(dir, "base", "harness")
-		runDir = filepath.Join(dir, "base", "runs", label)
-	}
+	harnessDir, runDir := labelDirs(dir, mode, label)
 	tree, _ := ReadTree(harnessDir, nil)
 	detail.Files = DiffTrees(base, tree)
 	detail.Diff = TreeDiff(base, tree, "base", label)
@@ -587,6 +666,70 @@ func (s *Service) Stage(id, label string) (StageDetail, error) {
 		detail.Deliverable = RunRecord{Rollout: run, Dir: runDir}.Deliverable()
 	}
 	return detail, nil
+}
+
+// labelDirs is where a label's harness and rollout live in a run directory:
+// base labels share the base harness.
+func labelDirs(dir, mode, label string) (harnessDir, runDir string) {
+	if len(label) > 4 && label[:4] == "base" {
+		return filepath.Join(dir, "base", "harness"), filepath.Join(dir, "base", "runs", label)
+	}
+	return filepath.Join(dir, mode, "harnesses", label), filepath.Join(dir, mode, "runs", label)
+}
+
+// Comparison is what replacing one harness with a run's adopted one would
+// change: From is the harness there now (the installed one, or another
+// run's adopted), To the run's.
+type Comparison struct {
+	From  string `json:"from"`
+	To    string `json:"to"`
+	Files Diff   `json:"files"`
+	Diff  string `json:"diff"`
+}
+
+// Adopted reads the harness a finished run adopted, and its label.
+func (s *Service) Adopted(id string) (Tree, string, error) {
+	task, k, mode, err := ParseRunID(id)
+	if err != nil {
+		return nil, "", err
+	}
+	summary, err := LoadSummary(s.summaryPath(task, k, mode))
+	if err != nil {
+		return nil, "", fmt.Errorf("no finished run %s", id)
+	}
+	// Summary.Adopted is the adopted tree's directory; the label is the
+	// selection's.
+	if summary.Adopted == "" || summary.Selection == nil || summary.Selection.ChosenLabel == "" {
+		return nil, "", fmt.Errorf("run %s adopted nothing", id)
+	}
+	tree, err := ReadTree(summary.Adopted, nil)
+	return tree, summary.Selection.ChosenLabel, err
+}
+
+// Compare diffs run id's adopted harness against what it would replace:
+// the harness installed at installedDir when with is "installed" (or
+// empty), else run with's adopted one. A missing installed harness compares
+// as empty, so the diff is the whole run harness.
+func (s *Service) Compare(id, with, installedDir string) (Comparison, error) {
+	to, label, err := s.Adopted(id)
+	if err != nil {
+		return Comparison{}, err
+	}
+	out := Comparison{To: id + " · " + label}
+	var from Tree
+	if with == "" || with == "installed" {
+		from, _ = ReadTree(installedDir, nil)
+		out.From = "installed"
+	} else {
+		var other string
+		if from, other, err = s.Adopted(with); err != nil {
+			return Comparison{}, err
+		}
+		out.From = with + " · " + other
+	}
+	out.Files = DiffTrees(from, to)
+	out.Diff = TreeDiff(from, to, out.From, label)
+	return out, nil
 }
 
 // InstallRequest says where a run's adopted harness goes.

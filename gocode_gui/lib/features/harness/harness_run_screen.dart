@@ -8,6 +8,7 @@ import '../../core/api/harness_models.dart';
 import '../../shared/widgets/glass.dart';
 import 'harness_activity.dart';
 import 'harness_install_dialog.dart';
+import 'harness_resume.dart';
 import 'harness_stage_sheet.dart';
 import 'harness_state.dart';
 import 'harness_widgets.dart';
@@ -106,6 +107,12 @@ class HarnessRunScreen extends ConsumerWidget {
           child: const Text('Cancel'),
         )
       else ...[
+        if (harnessResumable(run))
+          FilledButton(
+            key: HarnessKeys.resume,
+            onPressed: () => resumeHarnessRun(context, ref, run),
+            child: const Text('Resume…'),
+          ),
         if (run.status == 'ok') ...[
           if (run.backend == 'split' || run.backend == 'cloud')
             OutlinedButton(

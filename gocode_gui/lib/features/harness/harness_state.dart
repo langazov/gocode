@@ -226,6 +226,11 @@ class HarnessRunsNotifier extends Notifier<HarnessRunsState> {
     );
   }
 
+  Future<void> resume(String id) async {
+    await _client?.resumeHarness(id);
+    await reconcile();
+  }
+
   Future<void> cancel(String id) async {
     await _client?.cancelHarness(id);
     await reconcile();

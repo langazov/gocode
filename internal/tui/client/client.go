@@ -1215,6 +1215,115 @@ func (c *Client) CancelHarness(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/api/harness/run/"+url.PathEscape(id)+"/cancel", nil, nil)
 }
 
+// HarnessInstalled is the project's installed harness (GET
+// /api/harness/installed).
+type HarnessInstalled struct {
+	Installed   bool              `json:"installed"`
+	Dir         string            `json:"dir"`
+	Fingerprint string            `json:"fingerprint,omitempty"`
+	AlwaysOn    []string          `json:"alwaysOn,omitempty"`
+	Skills      []string          `json:"skills,omitempty"`
+	Agents      []string          `json:"agents,omitempty"`
+	Scripts     int               `json:"scripts,omitempty"`
+	Hooks       int               `json:"hooks,omitempty"`
+	Tree        map[string]string `json:"tree,omitempty"`
+}
+
+// HarnessSweepTask is one task of a sweep (harness.SweepTask).
+type HarnessSweepTask struct {
+	Task    string  `json:"task"`
+	Domain  string  `json:"domain"`
+	RunID   string  `json:"runID"`
+	Status  string  `json:"status"`
+	Adopted string  `json:"adopted,omitempty"`
+	Lesson  string  `json:"lesson,omitempty"`
+	Error   string  `json:"error,omitempty"`
+	CostUSD float64 `json:"costUSD"`
+}
+
+// HarnessSweep is a sweep, planned, live or finished (harness.SweepState).
+type HarnessSweep struct {
+	ID          string             `json:"id"`
+	Status      string             `json:"status"`
+	Source      string             `json:"source,omitempty"`
+	K           int                `json:"k"`
+	Mode        string             `json:"mode"`
+	Workers     int                `json:"workers"`
+	DomainOrder []string           `json:"domainOrder"`
+	Tasks       []HarnessSweepTask `json:"tasks"`
+	Done        int                `json:"done"`
+	Failed      int                `json:"failed"`
+	CostUSD     float64            `json:"costUSD"`
+	Budget      string             `json:"budget"`
+	Rollouts    int                `json:"rollouts"`
+	Edits       int                `json:"edits"`
+	StartedAt   time.Time          `json:"startedAt"`
+	FinishedAt  time.Time          `json:"finishedAt"`
+	Error       string             `json:"error,omitempty"`
+}
+
+// HarnessSweepStart is the body of POST /api/harness/sweep.
+type HarnessSweepStart struct {
+	Paths   []string `json:"paths"`
+	K       int      `json:"k,omitempty"`
+	Mode    string   `json:"mode,omitempty"`
+	Workers int      `json:"workers,omitempty"`
+	Model   string   `json:"model,omitempty"`
+	DryRun  bool     `json:"dryRun,omitempty"`
+}
+
+// HarnessSweeps lists sweeps, running first.
+func (c *Client) HarnessSweeps(ctx context.Context) ([]HarnessSweep, error) {
+	var out []HarnessSweep
+	if err := c.do(ctx, http.MethodGet, "/api/harness/sweep", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// StartHarnessSweep plans (DryRun) or starts a sweep.
+func (c *Client) StartHarnessSweep(ctx context.Context, start HarnessSweepStart) (*HarnessSweep, error) {
+	var out HarnessSweep
+	if err := c.do(ctx, http.MethodPost, "/api/harness/sweep", start, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CancelHarnessSweep stops a sweep after the tasks in flight.
+func (c *Client) CancelHarnessSweep(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/api/harness/sweep/"+url.PathEscape(id)+"/cancel", nil, nil)
+}
+
+// HarnessComparison is what installing a run's adopted harness over another
+// would change (GET /api/harness/run/{id}/compare).
+type HarnessComparison struct {
+	From  string       `json:"from"`
+	To    string       `json:"to"`
+	Files HarnessFiles `json:"files"`
+	Diff  string       `json:"diff"`
+}
+
+// CompareHarness diffs run id's adopted harness against the installed one
+// (with "installed") or another run's (with a run id).
+func (c *Client) CompareHarness(ctx context.Context, id, with string) (*HarnessComparison, error) {
+	var out HarnessComparison
+	path := "/api/harness/run/" + url.PathEscape(id) + "/compare?with=" + url.QueryEscape(with)
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// InstalledHarness reads the project's installed harness.
+func (c *Client) InstalledHarness(ctx context.Context) (*HarnessInstalled, error) {
+	var out HarnessInstalled
+	if err := c.do(ctx, http.MethodGet, "/api/harness/installed", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // ResumeHarness starts a stopped run again from its saved task: finished
 // work is reused, only what was cut short runs. 409 when it is running or
 // already finished ok.

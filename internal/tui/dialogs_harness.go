@@ -45,6 +45,8 @@ func (a *App) openHarnessRuns() {
 		{Title: "remove", Keys: "ctrl+d", OnTrigger: a.removeHarnessAction},
 		{Title: "resume", Keys: "ctrl+y", OnTrigger: func(item overlayItem) tea.Cmd { return a.resumeHarnessRun(item.Value) }},
 		{Title: "library", Keys: "ctrl+l", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.harnessLibraryOverlay() }},
+		{Title: "installed", Keys: "ctrl+k", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.openInstalledHarness() }},
+		{Title: "sweeps", Keys: "ctrl+t", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.harnessSweepsOverlay() }},
 		{Title: "refresh", Keys: "ctrl+r", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.loadHarnessRunsCmd() }},
 	})
 	if len(a.harnessRuns) == 0 {
@@ -169,6 +171,10 @@ func (a *App) openHarnessRun(id string) {
 		{Title: "editor", Keys: "ctrl+o", OnTrigger: func(item overlayItem) tea.Cmd { return a.watchHarnessRow(id, item.Value, true) }},
 		{Title: "log", Keys: "ctrl+g", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.openHarnessLog(id) }},
 	}
+	if run.Status == "ok" && run.Adopted != "" {
+		actions = append(actions, dialogAction{Title: "compare", Keys: "ctrl+w", Standalone: true,
+			OnTrigger: func(overlayItem) tea.Cmd { a.openHarnessCompare(id); return nil }})
+	}
 	if run.Status == "ok" {
 		actions = append(actions, dialogAction{Title: "install", Keys: "ctrl+s", Standalone: true,
 			OnTrigger: func(overlayItem) tea.Cmd { return a.planHarnessInstall(id, "project") }})
@@ -205,13 +211,17 @@ func (a *App) harnessRowItems(run client.HarnessRun) []overlayItem {
 		hint := row.State
 		if activity := a.harnessRowActivity(row); activity != "" {
 			hint += " · " + activity
+		} else if row.State == "failed" && row.Detail != "" {
+			// The reason first and short; the stage panel opens on the
+			// whole error.
+			hint += " · " + harnessShortReason(row.Detail)
 		} else if row.Detail != "" {
 			hint += " · " + strings.Join(strings.Fields(row.Detail), " ")
 		}
 		if row.Retries > 0 {
 			hint += fmt.Sprintf(" · ↻%d", row.Retries)
 		}
-		footer := ""
+		footer := a.harnessRowCounts(row)
 		if row.CostUSD > 0 {
 			footer = formatMoney(row.CostUSD)
 		}
@@ -282,6 +292,40 @@ func (a *App) harnessRowActivity(row client.HarnessRow) string {
 	return doing
 }
 
+// harnessRowCounts is a working row's progress as its session's step and
+// tool counts — "12 steps · 30 tools · 2 failed" — or empty. Many refused or
+// failed calls with few steps is a rollout going in circles.
+func (a *App) harnessRowCounts(row client.HarnessRow) string {
+	if row.State != "editing" && row.State != "rolling" {
+		return ""
+	}
+	node := a.agents.Sessions[harnessRowSession(row, false)]
+	if node == nil || node.Steps == 0 {
+		return ""
+	}
+	parts := []string{plural(node.Steps, "step"), plural(node.ToolCalls, "tool")}
+	if node.ToolFailures > 0 {
+		parts = append(parts, fmt.Sprintf("%d failed", node.ToolFailures))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// harnessShortReason names why a row failed in a few words, for the row's
+// hint: the stop limits and an interrupt by name, anything else its first
+// line clipped. The stage panel shows the whole error.
+func harnessShortReason(detail string) string {
+	switch {
+	case strings.Contains(detail, "without activity"):
+		return "stalled (no activity)"
+	case strings.Contains(detail, "did not finish in time"):
+		return "timed out"
+	case strings.Contains(detail, "interrupted"), strings.Contains(detail, "context canceled"):
+		return "interrupted"
+	}
+	first, _, _ := strings.Cut(strings.TrimSpace(detail), "\n")
+	return truncateRunes(first, 60)
+}
+
 // harnessQuietAfter is how long a working row's session may go without an
 // event before its row says so. Well short of the run's idle limit (15m by
 // default), which stops the session: the reader sees a stall coming.
@@ -347,6 +391,10 @@ func (a *App) refreshHarnessDialogs() {
 		a.openHarnessRuns()
 	case strings.HasPrefix(o.Title, harnessRunTitle+" · ") && a.harnessOpenRun != "":
 		a.openHarnessRun(a.harnessOpenRun)
+	case o.Title == harnessSweepsTitle:
+		a.openHarnessSweeps()
+	case strings.HasPrefix(o.Title, harnessSweepTitle+" · ") && a.harnessOpenSweep != "":
+		a.openHarnessSweep(a.harnessOpenSweep)
 	default:
 		return
 	}
@@ -388,6 +436,7 @@ func (a *App) applyHarnessSnapshot(snapshot Snapshot) tea.Cmd {
 	a.harnessSeq = snapshot.HarnessSeq
 	a.harnessLoaded = true
 	ended := a.mergeHarnessRuns(snapshot.Harness)
+	a.mergeHarnessSweeps(snapshot.HarnessSweeps)
 	a.refreshHarnessDialogs()
 	var follow tea.Cmd
 	if a.harnessLogOpen() && a.harnessLogRun != "" {
@@ -434,6 +483,8 @@ func (a *App) refreshHarnessActivity() {
 	for _, row := range run.Rows {
 		b.WriteString(a.harnessRowActivity(row))
 		b.WriteByte(0)
+		b.WriteString(a.harnessRowCounts(row))
+		b.WriteByte(0)
 	}
 	if b.String() == a.harnessActivitySig {
 		return
@@ -457,6 +508,11 @@ func (a *App) activeHarnessRun() (client.HarnessRun, bool) {
 func (a *App) harnessFooterSegment() string {
 	run, ok := a.activeHarnessRun()
 	if !ok {
+		// Nothing running: say which harness the open session runs under,
+		// by the fingerprint its timeline marker carries.
+		if data, loaded := a.activeSessionHarness(); loaded && data.Fingerprint != "" {
+			return a.styles().Muted.Render("harness " + data.Fingerprint)
+		}
 		return ""
 	}
 	done := 0
@@ -515,6 +571,20 @@ type harnessBudgetMsg struct{ prompt string }
 // open session's model and opens the confirm.
 func (a *App) openHarnessBudget(prompt string) {
 	model := a.currentModelLabel()
+	a.openBudgetPicker("Harness run budget", "", func(b harness.Budget) tea.Msg {
+		start := client.HarnessStart{Prompt: prompt, K: b.K, Mode: b.Mode, Model: model, DryRun: true}
+		if a.active != nil {
+			start.Workspace = a.active.Directory
+		}
+		return a.planHarnessCmd(start)
+	})
+}
+
+// openBudgetPicker lists the budgets cheapest first, each footed with its
+// rollouts and edits (per task: per is what a sweep multiplies); picking one
+// calls onPick, which plans before anything is spent.
+func (a *App) openBudgetPicker(title, per string, onPick func(harness.Budget) tea.Msg) {
+	model := a.currentModelLabel()
 	budgets := harness.Budgets()
 	items := make([]overlayItem, 0, len(budgets))
 	for _, b := range budgets {
@@ -523,17 +593,11 @@ func (a *App) openHarnessBudget(prompt string) {
 			Label:  fmt.Sprintf("%s k=%d", b.Mode, b.K),
 			Hint:   b.Description,
 			Value:  fmt.Sprintf("%s-%d", b.Mode, b.K),
-			Footer: fmt.Sprintf("%d rollouts · %d edits", b.Rollouts, b.Edits),
-			Action: func() tea.Msg {
-				start := client.HarnessStart{Prompt: prompt, K: b.K, Mode: b.Mode, Model: model, DryRun: true}
-				if a.active != nil {
-					start.Workspace = a.active.Directory
-				}
-				return a.planHarnessCmd(start)
-			},
+			Footer: fmt.Sprintf("%d rollouts · %d edits%s", b.Rollouts, b.Edits, per),
+			Action: func() tea.Msg { return onPick(b) },
 		})
 	}
-	a.openList("Harness run budget", items)
+	a.openList(title, items)
 	o := a.overlay
 	o.SetSize(dialogMedium)
 	o.SetHideFilter(true)
@@ -701,47 +765,69 @@ type harnessStageMsg struct{ stage client.HarnessStage }
 
 // harnessStageLines renders a row's evidence for the read-only panel: what
 // changed in its harness, the editor's notes, then its rollout's product.
-func harnessStageLines(stage client.HarnessStage) []string {
-	var lines []string
-	section := func(title string, body []string) {
+func harnessStageLines(stage client.HarnessStage) []panelLine {
+	var lines []panelLine
+	section := func(title string, body []panelLine) {
 		if len(lines) > 0 {
-			lines = append(lines, "")
+			lines = append(lines, panelLine{})
 		}
-		lines = append(lines, strings.ToUpper(title))
+		lines = append(lines, panelLine{Text: strings.ToUpper(title), Tone: toneHeading})
 		lines = append(lines, body...)
+	}
+	// What went wrong first: it is why a failed row was opened.
+	if stage.Error != "" {
+		section("Error", proseLines(stage.Error, toneError))
 	}
 	files := stage.Files
 	if len(files.Added)+len(files.Modified)+len(files.Removed) == 0 {
-		section("Harness", []string{"same as base"})
+		section("Harness", []panelLine{{Text: "same as base", Tone: toneMuted}})
 	} else {
-		var body []string
+		var body []panelLine
 		for _, rel := range files.Added {
-			body = append(body, "+ "+rel)
+			body = append(body, panelLine{Text: "+ " + rel, Tone: toneAdd})
 		}
 		for _, rel := range files.Modified {
-			body = append(body, "~ "+rel)
+			body = append(body, panelLine{Text: "~ " + rel, Tone: toneHunk})
 		}
 		for _, rel := range files.Removed {
-			body = append(body, "- "+rel)
+			body = append(body, panelLine{Text: "- " + rel, Tone: toneDel})
 		}
-		body = append(body, fmt.Sprintf("%+d always-on chars", files.AlwaysOnCharsDelta))
+		body = append(body, panelLine{Text: fmt.Sprintf("%+d always-on chars", files.AlwaysOnCharsDelta), Tone: toneMuted})
 		section("Harness", body)
 	}
 	if stage.Notes != "" {
-		section("Editor notes", splitPanelLines(stage.Notes))
-	}
-	if stage.Error != "" {
-		section("Error", splitPanelLines(stage.Error))
+		section("Editor notes", proseLines(stage.Notes, toneBody))
 	}
 	if stage.Diff != "" {
-		section("Harness diff", splitPanelLines(stage.Diff))
+		section("Harness diff", diffLines(stage.Diff))
 	}
 	if stage.Deliverable != "" {
 		status := "delivered"
 		if !stage.Delivered {
 			status = "nothing delivered"
 		}
-		section("Rollout · "+status+" · "+formatMoney(stage.CostUSD), splitPanelLines(stage.Deliverable))
+		section("Rollout · "+status+" · "+formatMoney(stage.CostUSD), deliverableLines(stage.Deliverable))
+	}
+	return lines
+}
+
+// deliverableLines splits a rollout's deliverable (harness recursion.go:
+// "# Final message", then "# Changes to the workspace" with a fenced diff)
+// into the agent's words, wrapped, and its changes, colored as a diff.
+func deliverableLines(deliverable string) []panelLine {
+	final, changes, _ := strings.Cut(deliverable, "# Changes to the workspace")
+	final = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(final), "# Final message"))
+	lines := proseLines(final, toneBody)
+	changes = strings.TrimSpace(changes)
+	if changes == "" {
+		return lines
+	}
+	lines = append(lines, panelLine{}, panelLine{Text: "CHANGES TO THE WORKSPACE", Tone: toneHeading})
+	head, rest, fenced := strings.Cut(changes, "```diff")
+	lines = append(lines, proseLines(strings.TrimSpace(head), toneMuted)...)
+	if fenced {
+		diff, _, _ := strings.Cut(rest, "```")
+		lines = append(lines, diffLines(strings.TrimPrefix(diff, "\n"))...)
 	}
 	return lines
 }
@@ -899,22 +985,22 @@ func (a *App) loadHarnessEntryCmd(domain, task string) tea.Cmd {
 
 type harnessEntryMsg struct{ entry client.HarnessEntry }
 
-func harnessEntryLines(entry client.HarnessEntry) []string {
+func harnessEntryLines(entry client.HarnessEntry) []panelLine {
 	e := entry.Entry
-	lines := []string{
-		"LESSON",
-		"cue:        " + e.Lesson.Cue,
-		"lesson:     " + e.Lesson.Lesson,
-		"evidence:   " + e.Lesson.Evidence,
-		"confidence: " + e.Lesson.Confidence,
+	heading := func(text string) panelLine { return panelLine{Text: text, Tone: toneHeading} }
+	lines := []panelLine{heading("LESSON")}
+	for _, field := range []struct{ name, value string }{
+		{"cue", e.Lesson.Cue}, {"lesson", e.Lesson.Lesson}, {"evidence", e.Lesson.Evidence}, {"confidence", e.Lesson.Confidence},
+	} {
+		lines = append(lines, panelLine{Text: fmt.Sprintf("%-11s %s", field.name+":", field.value)})
 	}
 	if e.Why != "" {
-		lines = append(lines, "", "WHY "+strings.ToUpper(e.Label)+" WAS ADOPTED")
-		lines = append(lines, splitPanelLines(e.Why)...)
+		lines = append(lines, panelLine{}, heading("WHY "+strings.ToUpper(e.Label)+" WAS ADOPTED"))
+		lines = append(lines, proseLines(e.Why, toneBody)...)
 	}
 	if e.Lesson.Edits != "" {
-		lines = append(lines, "", "WHAT EACH EDIT DID")
-		lines = append(lines, splitPanelLines(e.Lesson.Edits)...)
+		lines = append(lines, panelLine{}, heading("WHAT EACH EDIT DID"))
+		lines = append(lines, proseLines(e.Lesson.Edits, toneBody)...)
 	}
 	paths := make([]string, 0, len(entry.Tree))
 	for rel, content := range entry.Tree {
@@ -923,10 +1009,10 @@ func harnessEntryLines(entry client.HarnessEntry) []string {
 		}
 	}
 	sort.Strings(paths)
-	lines = append(lines, "", "HARNESS")
+	lines = append(lines, panelLine{}, heading("HARNESS"))
 	for _, rel := range paths {
-		lines = append(lines, "", "── "+rel)
-		lines = append(lines, splitPanelLines(entry.Tree[rel])...)
+		lines = append(lines, panelLine{}, panelLine{Text: "── " + rel, Tone: toneHunk})
+		lines = append(lines, proseLines(entry.Tree[rel], toneBody)...)
 	}
 	return lines
 }
@@ -1012,10 +1098,38 @@ func (a *App) handleHarnessMsg(msg tea.Msg) (tea.Cmd, bool) {
 		}
 		return nil, true
 	case harnessStageMsg:
-		a.openHelpDialog(msg.stage.Label, harnessStageLines(msg.stage))
+		a.openHarnessPanel(msg.stage.Label, harnessStageLines(msg.stage))
+		return nil, true
+	case harnessSweepsMsg:
+		if msg.err != nil {
+			a.harnessSweepsErr = msg.err.Error()
+		} else {
+			a.harnessSweepsErr = ""
+			a.harnessSweeps = msg.sweeps
+		}
+		if msg.open != "" {
+			a.openHarnessSweep(msg.open)
+		} else {
+			a.refreshHarnessDialogs()
+		}
+		if msg.status != "" {
+			return staticMsg(statusMsg{text: msg.status}), true
+		}
+		return nil, true
+	case harnessSweepBudgetMsg:
+		a.openHarnessSweepBudget(msg.paths)
+		return nil, true
+	case harnessSweepPlanMsg:
+		a.confirmHarnessSweep(msg)
+		return nil, true
+	case harnessCompareMsg:
+		a.openHarnessPanel("Compare", harnessCompareLines(*msg.comparison))
+		return nil, true
+	case harnessInstalledMsg:
+		a.openHarnessPanel("Installed harness", harnessInstalledLines(*msg.installed))
 		return nil, true
 	case harnessEntryMsg:
-		a.openHelpDialog(msg.entry.Entry.Domain+"/"+msg.entry.Entry.Task, harnessEntryLines(msg.entry))
+		a.openHarnessPanel(msg.entry.Entry.Domain+"/"+msg.entry.Entry.Task, harnessEntryLines(msg.entry))
 		return nil, true
 	}
 	return nil, false
@@ -1031,8 +1145,138 @@ func (a *App) harnessCommand(arguments string) tea.Cmd {
 		return a.harnessLibraryOverlay()
 	case "refine":
 		return a.newHarnessRun("")
+	case "installed":
+		return a.openInstalledHarness()
 	}
 	return a.newHarnessRun(arguments)
+}
+
+// openHarnessCompare asks what to compare a finished run's adopted harness
+// with: the installed one — what installing would change — or another
+// finished run's.
+func (a *App) openHarnessCompare(id string) {
+	run, ok := a.harnessRunByID(id)
+	if !ok {
+		return
+	}
+	compare := func(with string) func() tea.Msg {
+		return func() tea.Msg { return a.loadHarnessCompare(id, with) }
+	}
+	items := []overlayItem{{Label: "Installed harness", Hint: "what installing " + run.Adopted + " would change",
+		Value: "installed", Category: "Installed", Action: compare("installed")}}
+	for _, other := range a.harnessRuns {
+		if other.ID == id || other.Status != "ok" || other.Adopted == "" {
+			continue
+		}
+		items = append(items, overlayItem{Label: other.Task, Hint: fmt.Sprintf("%s k=%d · adopted %s", other.Mode, other.K, other.Adopted),
+			Value: other.ID, Category: "Other runs", Footer: formatMoney(other.CostUSD), Action: compare(other.ID)})
+	}
+	a.openList("Compare "+run.Task+" · "+run.Adopted+" with", items)
+	a.overlay.SetSize(dialogLarge)
+	a.overlay.SetActions([]dialogAction{{Title: "back", Keys: "ctrl+b", Standalone: true, Right: true,
+		OnTrigger: func(overlayItem) tea.Cmd { a.openHarnessRun(id); return nil }}})
+}
+
+// loadHarnessCompare fetches a comparison off the update goroutine.
+func (a *App) loadHarnessCompare(id, with string) tea.Cmd {
+	return func() tea.Msg {
+		comparison, err := a.client.CompareHarness(a.ctx, id, with)
+		if err != nil {
+			return statusMsg{text: "compare failed: " + err.Error()}
+		}
+		return harnessCompareMsg{comparison: comparison}
+	}
+}
+
+type harnessCompareMsg struct{ comparison *client.HarnessComparison }
+
+func harnessCompareLines(c client.HarnessComparison) []panelLine {
+	lines := []panelLine{
+		{Text: "from " + c.From, Tone: toneNote},
+		{Text: "to   " + c.To, Tone: toneNote},
+		{},
+	}
+	files := c.Files
+	if len(files.Added)+len(files.Modified)+len(files.Removed) == 0 {
+		return append(lines, panelLine{Text: "The two harnesses are the same.", Tone: toneBody})
+	}
+	lines = append(lines, panelLine{Text: "FILES", Tone: toneHeading})
+	for _, rel := range files.Added {
+		lines = append(lines, panelLine{Text: "+ " + rel, Tone: toneAdd})
+	}
+	for _, rel := range files.Modified {
+		lines = append(lines, panelLine{Text: "~ " + rel, Tone: toneHunk})
+	}
+	for _, rel := range files.Removed {
+		lines = append(lines, panelLine{Text: "- " + rel, Tone: toneDel})
+	}
+	lines = append(lines, panelLine{Text: fmt.Sprintf("%+d always-on chars", files.AlwaysOnCharsDelta), Tone: toneMuted})
+	if c.Diff != "" {
+		lines = append(lines, panelLine{}, panelLine{Text: "DIFF", Tone: toneHeading})
+		lines = append(lines, diffLines(c.Diff)...)
+	}
+	return lines
+}
+
+// openInstalledHarness shows the project's installed harness: where it is,
+// what it brings, its fingerprint (the one the chat's harness marker
+// carries) and every file.
+func (a *App) openInstalledHarness() tea.Cmd {
+	return func() tea.Msg {
+		installed, err := a.client.InstalledHarness(a.ctx)
+		if err != nil {
+			return statusMsg{text: "could not read the installed harness: " + err.Error()}
+		}
+		return harnessInstalledMsg{installed: installed}
+	}
+}
+
+type harnessInstalledMsg struct{ installed *client.HarnessInstalled }
+
+func harnessInstalledLines(h client.HarnessInstalled) []panelLine {
+	if !h.Installed {
+		return []panelLine{
+			{Text: "No harness is installed in this project.", Tone: toneBody},
+			{},
+			{Text: "A finished run's install (ctrl+s in its plan) puts one at " + harnessPlace(h.Dir) + "; new sessions here are then overlaid with it.", Tone: toneMuted},
+		}
+	}
+	facts := harnessFacts(client.HarnessData{Loaded: true, Dir: h.Dir, Fingerprint: h.Fingerprint, AlwaysOn: h.AlwaysOn,
+		Skills: h.Skills, Agents: h.Agents, Scripts: h.Scripts, Hooks: h.Hooks})
+	lines := []panelLine{{Text: strings.Join(facts, " · "), Tone: toneNote}}
+	for _, list := range []struct {
+		title string
+		names []string
+	}{{"Skills", h.Skills}, {"Agents", h.Agents}} {
+		if len(list.names) > 0 {
+			lines = append(lines, panelLine{Text: list.title + ": " + strings.Join(list.names, ", "), Tone: toneBody})
+		}
+	}
+	paths := make([]string, 0, len(h.Tree))
+	for rel, content := range h.Tree {
+		if strings.TrimSpace(content) != "" {
+			paths = append(paths, rel)
+		}
+	}
+	sort.Strings(paths)
+	for _, rel := range paths {
+		lines = append(lines, panelLine{}, panelLine{Text: "── " + rel, Tone: toneHunk})
+		lines = append(lines, proseLines(h.Tree[rel], toneBody)...)
+	}
+	return lines
+}
+
+// activeSessionHarness is the harness the open session runs under now — its
+// newest harness marker, when that says loaded — for the hint row.
+func (a *App) activeSessionHarness() (client.HarnessData, bool) {
+	for i := len(a.timeline) - 1; i >= 0; i-- {
+		if a.timeline[i].Type != "harness" {
+			continue
+		}
+		data, err := client.DecodeHarness(a.timeline[i].Data)
+		return data, err == nil && data.Loaded
+	}
+	return client.HarnessData{}, false
 }
 
 const harnessLogTitle = "Harness log · "

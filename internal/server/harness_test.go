@@ -278,6 +278,29 @@ func TestHarnessResumeRoute(t *testing.T) {
 		before[label] = n
 	}
 
+	// A crash: the process died mid-rollout, before the summary was
+	// written. The log is all that is left, and the run is still listed —
+	// interrupted, the rollout it was in failed — so it can be resumed.
+	runDir := filepath.Join(root, "answer", "k1", "parallel")
+	if err := os.Remove(filepath.Join(runDir, "summary.json")); err != nil {
+		t.Fatal(err)
+	}
+	logFile, err := os.OpenFile(filepath.Join(runDir, harness.LogFile), os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = logFile.WriteString(`{"type":"rollout.started","time":1,"label":"base1"}` + "\n")
+	_ = logFile.Close()
+	var listed []harness.RunState
+	_ = json.Unmarshal(doJSON(t, server, "GET", "/api/harness/run", nil).Body.Bytes(), &listed)
+	if len(listed) != 1 || listed[0].ID != id || listed[0].Status != "interrupted" {
+		t.Fatalf("crashed run listed as %+v", listed)
+	}
+	if crashed := wait(id); crashed.Rows[0].Label != "base1" || crashed.Rows[0].State != harness.RowFailed ||
+		crashed.Rows[0].Detail != harness.ErrInterrupted {
+		t.Fatalf("crashed run's base1 = %+v", crashed.Rows[0])
+	}
+
 	rec = doJSON(t, server, "POST", "/api/harness/run/"+id+"/resume", nil)
 	if rec.Code != 202 {
 		t.Fatalf("resume: %d %s", rec.Code, rec.Body.String())
@@ -301,5 +324,169 @@ func TestHarnessResumeRoute(t *testing.T) {
 	rec = doJSON(t, server, "POST", "/api/harness/run/nothing--k1-parallel/resume", nil)
 	if rec.Code != 404 {
 		t.Fatalf("resuming an unknown run: %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+// gateExec holds every rollout until release closes, so a test can look at
+// a sweep while its first task runs.
+type gateExec struct{ release chan struct{} }
+
+func (g gateExec) Rollout(ctx context.Context, req harness.RolloutRequest) (harness.Rollout, error) {
+	select {
+	case <-g.release:
+	case <-ctx.Done():
+		return harness.Rollout{Error: "stopped: " + ctx.Err().Error(), Stopped: true}, nil
+	}
+	return routeExec{}.Rollout(ctx, req)
+}
+
+// A sweep plans from task files, runs each task as a live run, refuses a
+// second sweep meanwhile, and is served from its record once finished.
+func TestHarnessSweepRoutes(t *testing.T) {
+	server, _, _ := newTestServer(t)
+	root := t.TempDir()
+	server.VCSWorkdir = t.TempDir()
+	tasks := filepath.Join(server.VCSWorkdir, "tasks")
+	if err := os.MkdirAll(tasks, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for name, body := range map[string]string{
+		"one.md": "---\ndomain: math\n---\nWrite the answer.",
+		"two.md": "---\ndomain: math\n---\nWrite it again.",
+	} {
+		if err := os.WriteFile(filepath.Join(tasks, name), []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	gate := gateExec{release: make(chan struct{})}
+	server.Harness = &harness.Service{
+		Root: root, SweepsDir: t.TempDir(),
+		NewEngine: func(context.Context, harness.Launch) (*harness.Engine, harness.Detection, error) {
+			return &harness.Engine{Exec: gate, Improver: routeImprover{}, Root: root},
+				harness.Detection{Backend: harness.BackendLocal}, nil
+		},
+	}
+
+	rec := doJSON(t, server, "POST", "/api/harness/sweep", map[string]any{"paths": []string{"tasks"}, "dryRun": true})
+	var plan harness.SweepState
+	_ = json.Unmarshal(rec.Body.Bytes(), &plan)
+	if rec.Code != 200 || plan.Status != "planned" || len(plan.Tasks) != 2 || plan.Tasks[0].Task != "one" ||
+		plan.Rollouts != 2*harness.ExpectedRollouts(1) || plan.DomainOrder[0] != "math" {
+		t.Fatalf("plan: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, server, "POST", "/api/harness/sweep", map[string]any{"paths": []string{"missing"}})
+	if rec.Code != 400 {
+		t.Fatalf("a missing task folder: %d", rec.Code)
+	}
+
+	rec = doJSON(t, server, "POST", "/api/harness/sweep", map[string]any{"paths": []string{"tasks"}})
+	var started harness.SweepState
+	_ = json.Unmarshal(rec.Body.Bytes(), &started)
+	if rec.Code != 202 || started.Status != "running" || started.ID == "" {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body.String())
+	}
+	// While the first task runs it is a live run like any other.
+	deadline := time.Now().Add(5 * time.Second)
+	live := false
+	for !live && time.Now().Before(deadline) {
+		rec = doJSON(t, server, "GET", "/api/harness/run", nil)
+		live = strings.Contains(rec.Body.String(), `"id":"one--k1-parallel"`) && strings.Contains(rec.Body.String(), `"status":"running"`)
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !live {
+		t.Fatalf("the running task is not a live run: %s", rec.Body.String())
+	}
+	if rec = doJSON(t, server, "POST", "/api/harness/sweep", map[string]any{"paths": []string{"tasks"}}); rec.Code != 409 {
+		t.Fatalf("a second sweep: %d %s", rec.Code, rec.Body.String())
+	}
+	close(gate.release)
+
+	var final harness.SweepState
+	deadline = time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		rec = doJSON(t, server, "GET", "/api/harness/sweep/"+started.ID, nil)
+		_ = json.Unmarshal(rec.Body.Bytes(), &final)
+		if final.Status != "running" {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if final.Status != "ok" || final.Done != 2 || final.Tasks[1].Adopted == "" {
+		t.Fatalf("final sweep = %+v", final)
+	}
+	rec = doJSON(t, server, "GET", "/api/harness/sweep", nil)
+	var listed []harness.SweepState
+	_ = json.Unmarshal(rec.Body.Bytes(), &listed)
+	if rec.Code != 200 || len(listed) != 1 || listed[0].ID != started.ID || listed[0].Status != "ok" {
+		t.Fatalf("sweeps: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, server, "GET", "/api/harness/run", nil)
+	if !strings.Contains(rec.Body.String(), `"id":"two--k1-parallel"`) {
+		t.Fatalf("the sweep's runs are not listed: %s", rec.Body.String())
+	}
+	if rec = doJSON(t, server, "POST", "/api/harness/sweep/"+started.ID+"/cancel", nil); rec.Code != 404 {
+		t.Fatalf("cancelling a finished sweep: %d", rec.Code)
+	}
+	if rec = doJSON(t, server, "GET", "/api/harness/sweep/..%2Fx", nil); rec.Code != 404 {
+		t.Fatalf("a path-escaping sweep id: %d", rec.Code)
+	}
+}
+
+// The installed harness is described with the fingerprint the chat marker
+// carries, and a finished run's adopted harness compares against it.
+func TestHarnessInstalledAndCompare(t *testing.T) {
+	server, _, _ := newTestServer(t)
+	root := t.TempDir()
+	server.VCSWorkdir = t.TempDir()
+	server.Harness = &harness.Service{
+		Root: root,
+		NewEngine: func(context.Context, harness.Launch) (*harness.Engine, harness.Detection, error) {
+			return &harness.Engine{Exec: routeExec{}, Improver: routeImprover{}, Root: root},
+				harness.Detection{Backend: harness.BackendLocal}, nil
+		},
+	}
+	rec := doJSON(t, server, "GET", "/api/harness/installed", nil)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), `"installed":false`) {
+		t.Fatalf("nothing installed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	rec = doJSON(t, server, "POST", "/api/harness/run", map[string]any{"prompt": "Write the answer", "id": "answer"})
+	if rec.Code != 202 {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body.String())
+	}
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		rec = doJSON(t, server, "GET", "/api/harness/run/answer--k1-parallel", nil)
+		if strings.Contains(rec.Body.String(), `"status":"ok"`) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// Nothing installed yet: installing would add the whole harness.
+	rec = doJSON(t, server, "GET", "/api/harness/run/answer--k1-parallel/compare", nil)
+	var comparison harness.Comparison
+	_ = json.Unmarshal(rec.Body.Bytes(), &comparison)
+	if rec.Code != 200 || comparison.From != "installed" || !strings.Contains(comparison.Diff, "+check the answer") {
+		t.Fatalf("compare with nothing installed: %d %s", rec.Code, rec.Body.String())
+	}
+
+	installed := filepath.Join(server.VCSWorkdir, filepath.FromSlash(harness.InstalledDir))
+	if _, err := harness.WriteTree(harness.Tree{harness.FileSystemPrompt: "check the answer\n"}, installed, false); err != nil {
+		t.Fatal(err)
+	}
+	rec = doJSON(t, server, "GET", "/api/harness/installed", nil)
+	var described struct {
+		Installed   bool              `json:"installed"`
+		Fingerprint string            `json:"fingerprint"`
+		Tree        map[string]string `json:"tree"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &described)
+	want, _ := harness.NewOverlay(installed).Describe()
+	if !described.Installed || described.Fingerprint != want.Fingerprint || described.Tree[harness.FileSystemPrompt] == "" {
+		t.Fatalf("installed: %s", rec.Body.String())
+	}
+	if rec = doJSON(t, server, "GET", "/api/harness/run/missing--k1-parallel/compare", nil); rec.Code != 404 {
+		t.Fatalf("comparing an unknown run: %d", rec.Code)
 	}
 }

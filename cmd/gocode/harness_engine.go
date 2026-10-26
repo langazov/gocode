@@ -239,7 +239,8 @@ func (s *stack) harnessService() *harness.Service {
 		// request, rather than racing one when the first run starts.
 		s.liveHarnessStacks()
 		s.harness = &harness.Service{
-			Root: filepath.Join(harnessRoot(), "runs"),
+			Root:      filepath.Join(harnessRoot(), "runs"),
+			SweepsDir: filepath.Join(harnessRoot(), "sweeps"),
 			NewEngine: func(ctx context.Context, launch harness.Launch) (*harness.Engine, harness.Detection, error) {
 				return newHarnessEngine(ctx, s, harnessOptions{
 					Library: launch.Library, Model: launch.Model, ImproverModel: launch.ImproverModel,
@@ -267,6 +268,7 @@ func (s *stack) harnessService() *harness.Service {
 		}
 		if s.Bus != nil {
 			s.harness.Publish = server.HarnessPublisher(s.Bus)
+			s.harness.PublishSweep = server.HarnessSweepPublisher(s.Bus)
 		}
 	})
 	return s.harness
