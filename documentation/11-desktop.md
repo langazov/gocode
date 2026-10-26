@@ -169,6 +169,48 @@ one), with branch, remote and tag labels on each commit. You can search commit
 messages, and opening a commit shows its message, changed files and per-file
 diffs.
 
+## Harness²
+
+**Harness** in the sidebar (or the ✦ button in a session's header) runs
+Harness² — recursive harness adaptation, the same `/harness` the TUI offers:
+everything the agent does (prompts, tool guidance, scripts, skills) improved
+for one task from execution evidence alone. It works in Server and Remote
+modes, backed by the `/api/harness/*` routes described in
+[HTTP API → Harness²](08-http-api.md#harness); ACP mode has no HTTP API, so
+the entry points hide there.
+
+**Refine harness for this task** (✦ in a session header) opens the start flow
+prefilled from the session: its first request, its folder, its model. The flow
+has three steps — the task, the budget (`parallel k=1` … `sequential k=3`,
+each with its rollouts/edits price), then the plan the server returns verbatim
+with its budget line and a note that rollouts run on copies of the workspace.
+**Start** is the only button that spends money; a `409` offers to open the
+run that is already going.
+
+The **runs list** shows running runs above finished ones, each card with its
+task, prompt excerpt, status and cost, and a filter chip for the selected
+project (a run belongs to the folder its task named). The list folds live
+`harness.*` events as they stream, reconciles from the server after every
+reconnect, and polls while anything runs — the same belt-and-braces the
+session badge uses — so a dropped event never leaves a stale row. A run's
+end shows a floating notice with an **Open** action.
+
+A **run** opens as its plan: the phases it moves through (base rollouts →
+propose and probe → compose → select → reflect) filling in live, each row
+linking to its stage — the harness diff it produced, the editor's notes, and
+the rollout's deliverable with its workspace diff, plus a way into the
+rollout's own session while it streams. When it finishes: the adopted harness,
+the selector's reasoning, the lesson it stored. **Install…** puts the adopted
+harness into the run's project (always previewed; a different harness already
+installed is replaced only after the preview says so), **Publish skills…**
+puts its skills on the gocoder.org Library (split/cloud backends), and a run
+that is going can be cancelled — finished work stays cached for a resume.
+
+The **experience library** (Library in the runs header) browses the lessons
+runs stored, by domain: each entry's cue, lesson and evidence, why its
+harness was adopted, what each edit did, and the harness tree itself. Entries
+can be forgotten, and a cloud backend syncs with other machines.
+
 ## Account
 
 The avatar menu at the bottom of the sidebar signs in to

@@ -1,0 +1,16 @@
+[
+  {
+    "mode": "parallel",
+    "k": 1,
+    "rollouts": 4,
+    "edits": 3,
+    "description": "one Propose–Probe–Compose step"
+  },
+  {
+    "mode": "sequential",
+    "k": 2,
+    "rollouts": 8,
+    "edits": 6,
+    "description": "deeper: 2 rounds, each building on the last"
+  }
+]

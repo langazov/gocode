@@ -1,0 +1,21 @@
+{
+  "target": "/home/dev/project/.gocode/harness",
+  "files": {
+    "added": ["systemprompt.md"],
+    "removed": ["old.md"],
+    "modified": ["tool_guidance.md"],
+    "alwaysOnCharsDelta": 42
+  },
+  "conflict": true,
+  "collisions": ["a-skill.md"],
+  "warnings": [
+    "always-on text (instructions + harness) is 34000 chars, over the 30000 cap the harness was validated against"
+  ],
+  "library": {
+    "new": ["fix-login-a"],
+    "changed": ["auth-b"],
+    "unchanged": ["auth-c"],
+    "blocked": ["auth-b"]
+  },
+  "written": false
+}

@@ -5,14 +5,19 @@ import 'package:http/http.dart' as http;
 
 import 'account.dart';
 import 'git_models.dart';
+import 'harness_models.dart';
 import 'models.dart';
 
 /// Error shape returned by the gocode server: `{"error": "message"}`.
 class ApiException implements Exception {
-  ApiException(this.status, this.message);
+  ApiException(this.status, this.message, [this.data]);
 
   final int status;
   final String message;
+
+  /// The decoded error body when there was one; some errors carry more than
+  /// a message (install's 409 adds the conflicting `result`).
+  final Map<String, dynamic>? data;
 
   @override
   String toString() => 'ApiException($status): $message';
@@ -72,7 +77,17 @@ class GocodeClient {
     }
     final res = await _http.send(request);
     final text = await res.stream.bytesToString();
-    return _decodeObject(http.Response(text, res.statusCode), path);
+    // Rebuilding as bytes: a String body would be re-encoded with the
+    // response's charset (latin1 when unnamed), mangling — or refusing —
+    // the unicode payloads Harness² sends (→, –).
+    return _decodeObject(
+      http.Response.bytes(
+        utf8.encode(text),
+        res.statusCode,
+        headers: res.headers,
+      ),
+      path,
+    );
   }
 
   Future<Map<String, dynamic>> _decodeObject(
@@ -80,11 +95,23 @@ class GocodeClient {
     String path,
   ) async {
     if (res.statusCode < 200 || res.statusCode >= 300) {
-      throw ApiException(res.statusCode, _errorMessage(res.body, path));
+      throw ApiException(
+        res.statusCode,
+        _errorMessage(res.body, path),
+        _decodeBody(res.body),
+      );
     }
     final decoded = jsonDecode(res.body);
     if (decoded is Map<String, dynamic>) return decoded;
     throw ApiException(res.statusCode, 'unexpected response for $path');
+  }
+
+  Map<String, dynamic>? _decodeBody(String body) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map<String, dynamic>) return decoded;
+    } catch (_) {}
+    return null;
   }
 
   Future<List<dynamic>> _decodeList(http.Response res, String path) async {
@@ -509,6 +536,108 @@ class GocodeClient {
     Map<String, Object?> body, {
     String? directory,
   }) => _send('POST', _git(op, directory), body);
+
+  // ----------------------------------------------------------------- harness
+  //
+  // Harness² (internal/server/harness.go). Wire shapes follow
+  // internal/harness; the Dart mirrors live in harness_models.dart.
+
+  Future<List<HarnessRun>> harnessRuns() async =>
+      (await _getJsonList('/api/harness/run'))
+          .whereType<Map<String, dynamic>>()
+          .map(HarnessRun.fromJson)
+          .toList();
+
+  Future<HarnessRun> harnessRun(String id) async =>
+      HarnessRun.fromJson(await _getJson('/api/harness/run/$id'));
+
+  /// Starts a run, or with [HarnessStartRequest.dryRun] returns its plan
+  /// without spending anything. A 409 means the run is already going (or
+  /// another process holds it) and arrives as an [ApiException].
+  Future<HarnessRun> startHarness(HarnessStartRequest req) async =>
+      HarnessRun.fromJson(
+        await _send('POST', '/api/harness/run', req.toJson()),
+      );
+
+  Future<void> cancelHarness(String id) async =>
+      _send('POST', '/api/harness/run/${Uri.encodeComponent(id)}/cancel');
+
+  Future<void> deleteHarness(String id) async =>
+      _send('DELETE', '/api/harness/run/${Uri.encodeComponent(id)}');
+
+  Future<HarnessStage> harnessStage(String id, String label) async =>
+      HarnessStage.fromJson(
+        await _getJson(
+          '/api/harness/run/${Uri.encodeComponent(id)}/stage/'
+          '${Uri.encodeComponent(label)}',
+        ),
+      );
+
+  /// Installs a run's adopted harness. A 409 whose body carries `result`
+  /// becomes a typed [HarnessInstallConflict] holding it, so the dialog can
+  /// show what conflicted.
+  Future<HarnessInstall> installHarness(
+    String id, {
+    required String to,
+    bool force = false,
+    bool dryRun = false,
+    String? dir,
+  }) async {
+    Map<String, dynamic> reply;
+    try {
+      reply = await _send(
+        'POST',
+        '/api/harness/run/${Uri.encodeComponent(id)}/install',
+        {
+          'to': to,
+          'force': force,
+          'dryRun': dryRun,
+          if (dir != null && dir.isNotEmpty) 'dir': dir,
+        },
+      );
+    } on ApiException catch (e) {
+      if (e.status == 409) {
+        final result = e.data?['result'];
+        throw HarnessInstallConflict(
+          e.message,
+          result is Map<String, dynamic>
+              ? HarnessInstall.fromJson(result)
+              : null,
+        );
+      }
+      rethrow;
+    }
+    return HarnessInstall.fromJson(reply);
+  }
+
+  Future<HarnessLibrary> harnessLibrary() async =>
+      HarnessLibrary.fromJson(await _getJson('/api/harness/library'));
+
+  Future<HarnessEntry> harnessEntry(String domain, String task) async =>
+      HarnessEntry.fromJson(
+        await _getJson(
+          '/api/harness/library/${Uri.encodeComponent(domain)}'
+          '/${Uri.encodeComponent(task)}',
+        ),
+      );
+
+  Future<void> forgetHarnessEntry(String domain, String task) async => _send(
+    'DELETE',
+    '/api/harness/library/${Uri.encodeComponent(domain)}'
+        '/${Uri.encodeComponent(task)}',
+  );
+
+  /// Uploads pending entries; returns how many went up (cloud backend).
+  Future<int> syncHarnessLibrary() async =>
+      (await _send('POST', '/api/harness/library/sync'))['uploaded'] as int? ??
+      0;
+
+  /// The offered (mode, k) pairs with their price.
+  Future<List<HarnessBudget>> harnessBudgets() async =>
+      (await _getJsonList('/api/harness/budgets'))
+          .whereType<Map<String, dynamic>>()
+          .map(HarnessBudget.fromJson)
+          .toList();
 
   void close() => _http.close();
 }

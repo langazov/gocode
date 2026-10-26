@@ -351,3 +351,26 @@ func CostLine(mode string, k int, library bool) string {
 	}
 	return fmt.Sprintf("%s k=%d → %d rollouts, %d editor sessions%s", mode, k, ExpectedRollouts(k), ExpectedSessions(k), extra)
 }
+
+// Budget is one offered (mode, k) pair with its price, so a client lists
+// the choice against what it costs. The TUI's picker and the desktop app's
+// budget step both serve GET /api/harness/budgets from this.
+type Budget struct {
+	Mode        string `json:"mode"`
+	K           int    `json:"k"`
+	Rollouts    int    `json:"rollouts"`
+	Edits       int    `json:"edits"`
+	Description string `json:"description"`
+}
+
+// Budgets are the offered (mode, k) pairs, cheapest first. Each row names
+// what it costs, so the choice is made against the price.
+func Budgets() []Budget {
+	return []Budget{
+		{ModeParallel, 1, ExpectedRollouts(1), ExpectedSessions(1), "one Propose–Probe–Compose step"},
+		{ModeParallel, 2, ExpectedRollouts(2), ExpectedSessions(2), "wider: 4 candidates, 2 compositions"},
+		{ModeSequential, 2, ExpectedRollouts(2), ExpectedSessions(2), "deeper: 2 rounds, each building on the last"},
+		{ModeParallel, 3, ExpectedRollouts(3), ExpectedSessions(3), "widest: 6 candidates, 3 compositions"},
+		{ModeSequential, 3, ExpectedRollouts(3), ExpectedSessions(3), "deepest: 3 rounds"},
+	}
+}

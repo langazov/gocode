@@ -251,7 +251,11 @@ func (s *stack) harnessService() *harness.Service {
 				return store, detection, err
 			},
 			Install: func(ctx context.Context, summary *harness.Summary, req harness.InstallRequest) (harness.InstallResult, error) {
-				return installHarness(ctx, s.workdir, summary, req, func() (*harness.Cloud, error) { return harnessCloud(ctx, s) })
+				dir := req.Dir
+				if dir == "" {
+					dir = s.workdir
+				}
+				return installHarness(ctx, dir, summary, req, func() (*harness.Cloud, error) { return harnessCloud(ctx, s) })
 			},
 			Prune: func(ctx context.Context, dir string) (int64, error) {
 				return session.DeleteUnder(ctx, s.Database, dir)

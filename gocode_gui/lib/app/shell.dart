@@ -1,12 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 
+import '../core/api/harness_models.dart' show harnessMoney;
 import '../core/connection/controller.dart';
+import '../features/harness/harness_state.dart';
 import '../features/sidebar/sidebar.dart';
 import 'sidebar_scope.dart';
 import 'sidebar_state.dart';
-import 'window_chrome.dart' show showsAppTitleBar;
 import 'theme.dart';
+import 'window_chrome.dart' show showsAppTitleBar;
 
 /// The window layout while connected: the session-history sidebar docked on
 /// the left, the routed page beside it. Narrower than [_wideBreakpoint], the
@@ -39,6 +42,7 @@ class _AppShellState extends ConsumerState<AppShell> {
       sidebarProvider.select((s) => s.drawerRequests),
       (_, _) => _scaffold.currentState?.openDrawer(),
     );
+    _listenHarnessEnd();
 
     return LayoutBuilder(
       builder: (context, constraints) {
@@ -48,8 +52,7 @@ class _AppShellState extends ConsumerState<AppShell> {
           // With the app's title bar, its sidebar button is the way back;
           // pages don't add their own.
           visible: docked || showsAppTitleBar,
-          onOpen: () =>
-              ref.read(sidebarProvider.notifier).toggle(wide: wide),
+          onOpen: () => ref.read(sidebarProvider.notifier).toggle(wide: wide),
           child: widget.child,
         );
 
@@ -97,5 +100,36 @@ class _AppShellState extends ConsumerState<AppShell> {
         );
       },
     );
+  }
+
+  /// A run's end is announced once, never repeated on rebuild — the TUI's
+  /// toast (documentation/HARNESS2_GUI.md §5.1).
+  void _listenHarnessEnd() {
+    ref.listen(harnessRunsProvider.select((s) => s.lastEnded), (prev, next) {
+      if (next == null || next.noticeID.isEmpty) return;
+      if (prev?.noticeID == next.noticeID) return;
+      final context = this.context;
+      final run = next.run;
+      final ok = run.status == 'ok';
+      final message = switch (run.status) {
+        'ok' => 'adopted ${run.adopted} · ${harnessMoney(run.costUSD)}',
+        'cancelled' => 'cancelled · finished work is kept for a resume',
+        _ => run.error.isEmpty ? run.status : '${run.status}: ${run.error}',
+      };
+      final messenger = ScaffoldMessenger.maybeOf(context);
+      messenger?.showSnackBar(
+        SnackBar(
+          backgroundColor: ok ? GC.surface3 : GC.down.withValues(alpha: .2),
+          content: Text(
+            'Harness² · ${run.task} · $message',
+            style: TextStyle(color: ok ? GC.textHi : GC.downText),
+          ),
+          action: SnackBarAction(
+            label: 'Open',
+            onPressed: () => GoRouter.of(context).go('/harness/run/${run.id}'),
+          ),
+        ),
+      );
+    });
   }
 }

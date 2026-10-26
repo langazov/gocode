@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -116,8 +117,14 @@ type RunState struct {
 	Lesson    string    `json:"lesson,omitempty"`
 	Error     string    `json:"error,omitempty"`
 	Budget    string    `json:"budget"`
+	// Workspace is the task's workspace directory and Prompt its first
+	// 200 characters, so a listing can be filtered and annotated without
+	// reading every run's task.json. Empty on live runs until they finish.
+	Workspace string `json:"workspace,omitempty"`
+	Prompt    string `json:"prompt,omitempty"`
 
 	cancel context.CancelFunc
+	lock   io.Closer
 }
 
 // PlannedRows lists every label a run will produce, in display order, so a
@@ -244,6 +251,7 @@ func (s *Service) Start(ctx context.Context, launch Launch) (RunState, error) {
 		return RunState{}, err
 	}
 	id := RunID(launch.Task.ID, launch.K, mode)
+	dir := (&Engine{Root: s.Root}).Dir(launch.Task.ID, launch.K)
 
 	s.mu.Lock()
 	if s.active == nil {
@@ -255,8 +263,17 @@ func (s *Service) Start(ctx context.Context, launch Launch) (RunState, error) {
 	}
 	s.mu.Unlock()
 
+	// Another process (a CLI run, a second server) may be writing this run
+	// directory right now; the in-memory map cannot know. The directory's
+	// advisory lock is the cross-process word on it.
+	lock, err := TryRunLock(dir)
+	if err != nil {
+		return RunState{}, err
+	}
+
 	engine, detection, err := s.NewEngine(ctx, launch)
 	if err != nil {
+		_ = lock.Close()
 		return RunState{}, err
 	}
 	runCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -264,7 +281,9 @@ func (s *Service) Start(ctx context.Context, launch Launch) (RunState, error) {
 		ID: id, Task: launch.Task.ID, Domain: launch.Task.Domain, K: launch.K, Mode: mode,
 		Status: "running", Backend: detection.Backend, Reason: detection.Reason,
 		Rows: PlannedRows(mode, launch.K, engine.Store != nil), StartedAt: time.Now().UTC(),
-		Budget: CostLine(mode, launch.K, engine.Store != nil), cancel: cancel,
+		Budget:    CostLine(mode, launch.K, engine.Store != nil),
+		Workspace: launch.Task.Workspace, Prompt: clipPrompt(launch.Task.Prompt),
+		cancel: cancel, lock: lock,
 	}
 	s.mu.Lock()
 	s.active[id] = state
@@ -304,6 +323,7 @@ func (s *Service) Start(ctx context.Context, launch Launch) (RunState, error) {
 		if _, err := os.Stat(s.summaryPath(snap.Task, snap.K, snap.Mode)); err == nil {
 			delete(s.active, id)
 		}
+		_ = state.lock.Close()
 		s.mu.Unlock()
 		if s.Publish != nil {
 			s.Publish(snap, Event{Type: "run.ended", Task: snap.Task, Mode: snap.Mode, OK: snap.Status == "ok", Detail: snap.Error})
@@ -312,6 +332,15 @@ func (s *Service) Start(ctx context.Context, launch Launch) (RunState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return state.snapshot(), nil
+}
+
+// clipPrompt is the run state's prompt excerpt.
+func clipPrompt(prompt string) string {
+	runes := []rune(prompt)
+	if len(runes) <= 200 {
+		return prompt
+	}
+	return string(runes[:200]) + "…"
 }
 
 // Cancel stops a running run; completed work stays cached for a resume.
@@ -343,6 +372,7 @@ func (s *Service) Get(id string) (RunState, error) {
 		return RunState{}, fmt.Errorf("no run %s", id)
 	}
 	state := FromSummary(summary)
+	s.annotate(&state)
 	// The summary keeps rollout sessions; the log also has the improver
 	// sessions and retries, so a finished run opens to the same detail a
 	// live one shows.
@@ -362,6 +392,19 @@ func (s *Service) Get(id string) (RunState, error) {
 		}
 	}
 	return state, nil
+}
+
+// annotate fills the fields a summary alone does not carry (the task's
+// workspace and prompt) from the run directory's task.json.
+func (s *Service) annotate(state *RunState) {
+	var task Task
+	if err := readJSON(filepath.Join((&Engine{Root: s.Root}).Dir(state.Task, state.K), "task.json"), &task); err != nil {
+		return
+	}
+	state.Workspace = task.Workspace
+	if state.Prompt == "" {
+		state.Prompt = clipPrompt(task.Prompt)
+	}
 }
 
 func (s *Service) logPath(task string, k int, mode string) string {
@@ -414,7 +457,9 @@ func (s *Service) List() []RunState {
 		id := RunID(summary.Task, summary.K, summary.Mode)
 		if !seen[id] {
 			seen[id] = true
-			out = append(out, FromSummary(summary))
+			state := FromSummary(summary)
+			s.annotate(&state)
+			out = append(out, state)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].StartedAt.After(out[j].StartedAt) })
@@ -523,8 +568,34 @@ func (s *Service) Stage(id, label string) (StageDetail, error) {
 type InstallRequest struct {
 	To    string `json:"to"` // project, library, both
 	Force bool   `json:"force"`
+	// Dir installs into this directory instead of the server's working
+	// directory. Empty means the server's own. (S1: a desktop client has
+	// projects in many folders; the TUI only ever installs into the folder
+	// it was started in.)
+	Dir string `json:"dir,omitempty"`
 	// DryRun reports what would change without writing anything.
 	DryRun bool `json:"dryRun"`
+}
+
+// Validate normalises the request's target: `to` defaults to project, and
+// an explicit dir must exist and be a directory — the caller (the HTTP
+// route) reports it as a client error.
+func (r InstallRequest) Validate() (InstallRequest, error) {
+	if r.To == "" {
+		r.To = "project"
+	}
+	switch r.To {
+	case "project", "library", "both":
+	default:
+		return r, fmt.Errorf("to must be project, library or both, got %q", r.To)
+	}
+	if r.Dir != "" {
+		info, err := os.Stat(r.Dir)
+		if err != nil || !info.IsDir() {
+			return r, errNotDir(r.Dir)
+		}
+	}
+	return r, nil
 }
 
 // InstallResult reports what an install did, or would do.
@@ -565,6 +636,11 @@ func (s *Service) Delete(ctx context.Context, id string) (Deleted, error) {
 	s.mu.Unlock()
 	engine := &Engine{Root: s.Root}
 	kdir := engine.Dir(task, k)
+	// Another process may hold the run (a CLI run of the same task): its
+	// directory is in use, so refuse rather than delete under it.
+	if RunLockHeld(kdir) {
+		return Deleted{}, ErrLocked
+	}
 	targets := []string{filepath.Join(kdir, mode)}
 	other := ModeSequential
 	if mode == ModeSequential {

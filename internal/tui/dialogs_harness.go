@@ -7,6 +7,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/langazov/gocode-go/internal/harness"
 	"github.com/langazov/gocode-go/internal/tui/client"
 	"github.com/langazov/gocode-go/internal/tui/dialog"
 )
@@ -445,34 +446,25 @@ func (a *App) newHarnessRun(prompt string) tea.Cmd {
 // harnessBudgetMsg asks for the run's mode and k once the task is known.
 type harnessBudgetMsg struct{ prompt string }
 
-// harnessBudgets are the offered (mode, k) pairs, cheapest first. Each row
-// names what it costs, so the choice is made against the price.
-var harnessBudgets = []struct {
-	mode string
-	k    int
-	why  string
-}{
-	{"parallel", 1, "one Propose–Probe–Compose step"},
-	{"parallel", 2, "wider: 4 candidates, 2 compositions"},
-	{"sequential", 2, "deeper: 2 rounds, each building on the last"},
-	{"parallel", 3, "widest: 6 candidates, 3 compositions"},
-	{"sequential", 3, "deepest: 3 rounds"},
-}
+// The offered (mode, k) pairs live in internal/harness (harness.Budgets),
+// served as GET /api/harness/budgets, so the TUI and the desktop app offer
+// the same choice.
 
 // openHarnessBudget lists the budgets; picking one plans the run on the
 // open session's model and opens the confirm.
 func (a *App) openHarnessBudget(prompt string) {
 	model := a.currentModelLabel()
-	items := make([]overlayItem, 0, len(harnessBudgets))
-	for _, b := range harnessBudgets {
+	budgets := harness.Budgets()
+	items := make([]overlayItem, 0, len(budgets))
+	for _, b := range budgets {
 		b := b
 		items = append(items, overlayItem{
-			Label:  fmt.Sprintf("%s k=%d", b.mode, b.k),
-			Hint:   b.why,
-			Value:  fmt.Sprintf("%s-%d", b.mode, b.k),
-			Footer: fmt.Sprintf("%d rollouts · %d edits", 4*b.k, 3*b.k),
+			Label:  fmt.Sprintf("%s k=%d", b.Mode, b.K),
+			Hint:   b.Description,
+			Value:  fmt.Sprintf("%s-%d", b.Mode, b.K),
+			Footer: fmt.Sprintf("%d rollouts · %d edits", b.Rollouts, b.Edits),
 			Action: func() tea.Msg {
-				start := client.HarnessStart{Prompt: prompt, K: b.k, Mode: b.mode, Model: model, DryRun: true}
+				start := client.HarnessStart{Prompt: prompt, K: b.K, Mode: b.Mode, Model: model, DryRun: true}
 				if a.active != nil {
 					start.Workspace = a.active.Directory
 				}

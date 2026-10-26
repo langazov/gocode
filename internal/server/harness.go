@@ -33,6 +33,7 @@ func HarnessPublisher(bus *event.Bus) func(harness.RunState, harness.Event) {
 }
 
 func (s *Server) registerHarness(mux *http.ServeMux) {
+	mux.HandleFunc("GET /api/harness/budgets", s.listHarnessBudgets)
 	mux.HandleFunc("GET /api/harness/run", s.listHarnessRuns)
 	mux.HandleFunc("POST /api/harness/run", s.startHarnessRun)
 	mux.HandleFunc("GET /api/harness/run/{runID}", s.getHarnessRun)
@@ -45,6 +46,12 @@ func (s *Server) registerHarness(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/harness/library/{domain}/{task}", s.getHarnessEntry)
 	mux.HandleFunc("DELETE /api/harness/library/{domain}/{task}", s.forgetHarnessEntry)
 	mux.HandleFunc("POST /api/harness/library/sync", s.syncHarnessLibrary)
+}
+
+// listHarnessBudgets serves the offered (mode, k) pairs with their price,
+// so a client's budget picker has one source instead of its own copy.
+func (s *Server) listHarnessBudgets(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, harness.Budgets())
 }
 
 // startHarnessRequest is the body of POST /api/harness/run. Prompt is the
@@ -134,6 +141,8 @@ func (s *Server) startHarnessRun(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, harness.ErrRunning):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, harness.ErrLocked):
+		writeError(w, http.StatusConflict, err.Error())
 	case err != nil:
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
@@ -179,6 +188,8 @@ func (s *Server) deleteHarnessRun(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case errors.Is(err, harness.ErrStillRunning):
 		writeError(w, http.StatusConflict, err.Error())
+	case errors.Is(err, harness.ErrLocked):
+		writeError(w, http.StatusConflict, err.Error())
 	case err != nil && len(deleted.Removed) == 0:
 		writeError(w, http.StatusNotFound, err.Error())
 	case err != nil:
@@ -207,6 +218,11 @@ func (s *Server) installHarnessRun(w http.ResponseWriter, r *http.Request) {
 	}
 	if s.Harness.Install == nil {
 		writeError(w, http.StatusServiceUnavailable, "install is not available on this server")
+		return
+	}
+	req, err := req.Validate()
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 	summary, err := s.Harness.Summary(r.PathValue("runID"))

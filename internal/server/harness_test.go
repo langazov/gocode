@@ -70,6 +70,14 @@ func TestHarnessRoutes(t *testing.T) {
 		t.Fatalf("dry run: %d %s", rec.Code, rec.Body.String())
 	}
 
+	// S4: the budgets the GUI's picker serves.
+	rec = doJSON(t, server, "GET", "/api/harness/budgets", nil)
+	var budgets []harness.Budget
+	_ = json.Unmarshal(rec.Body.Bytes(), &budgets)
+	if rec.Code != 200 || len(budgets) != len(harness.Budgets()) || budgets[0].Mode != harness.ModeParallel || budgets[0].Rollouts != 4 {
+		t.Fatalf("budgets: %d %s", rec.Code, rec.Body.String())
+	}
+
 	rec = doJSON(t, server, "POST", "/api/harness/run", map[string]any{"prompt": "Write the answer", "id": "answer"})
 	if rec.Code != 202 {
 		t.Fatalf("start: %d %s", rec.Code, rec.Body.String())
@@ -138,6 +146,18 @@ drain:
 	if rec.Code != 200 || !strings.Contains(rec.Body.String(), started.ID) {
 		t.Fatalf("list: %d %s", rec.Code, rec.Body.String())
 	}
+	// S2: the listing carries each run's workspace and prompt excerpt.
+	var listed []harness.RunState
+	_ = json.Unmarshal(rec.Body.Bytes(), &listed)
+	var live *harness.RunState
+	for i := range listed {
+		if listed[i].ID == started.ID {
+			live = &listed[i]
+		}
+	}
+	if live == nil || live.Workspace != workspace || live.Prompt != "Write the answer" {
+		t.Fatalf("listed run workspace/prompt: %+v", live)
+	}
 	rec = doJSON(t, server, "GET", "/api/harness/run/"+started.ID+"/stage/agg1", nil)
 	var stage harness.StageDetail
 	_ = json.Unmarshal(rec.Body.Bytes(), &stage)
@@ -151,6 +171,11 @@ drain:
 	rec = doJSON(t, server, "POST", "/api/harness/run/"+started.ID+"/install", map[string]any{"to": "project"})
 	if rec.Code != 200 || installed == "" {
 		t.Fatalf("install: %d %s", rec.Code, rec.Body.String())
+	}
+	// S1: an explicit dir must be a directory on the server.
+	rec = doJSON(t, server, "POST", "/api/harness/run/"+started.ID+"/install", map[string]any{"to": "project", "dir": filepath.Join(t.TempDir(), "missing")})
+	if rec.Code != 400 {
+		t.Fatalf("install into a missing dir: %d %s", rec.Code, rec.Body.String())
 	}
 
 	rec = doJSON(t, server, "GET", "/api/harness/library", nil)

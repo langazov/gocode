@@ -14,6 +14,7 @@ import '../../shared/widgets/message_parts.dart';
 import '../../shared/widgets/model_picker.dart';
 import '../../shared/widgets/session_status.dart';
 import '../git/git_screen.dart' show sourceControlLocation;
+import '../harness/harness_start_dialog.dart';
 import '../home/providers.dart';
 import 'prompt_history.dart';
 import 'timeline.dart';
@@ -138,6 +139,26 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     await _run(() => controller.setModel(model.providerID, model.id));
   }
 
+  /// The task /harness refine adapts for: the session's first request, as
+  /// the user wrote it (the TUI's harnessTaskPrompt).
+  String _harnessTaskPrompt(SessionState state) {
+    for (final item in state.items) {
+      if (item is UserBubble && item.text.trim().isNotEmpty) {
+        return item.text;
+      }
+    }
+    return '';
+  }
+
+  Future<void> _refineHarness(SessionState state) async {
+    await showHarnessStartDialog(
+      context,
+      prompt: _harnessTaskPrompt(state),
+      workspace: state.session.directory,
+      model: state.session.model,
+    );
+  }
+
   Future<void> _setVariant(Session session, String? variant) async {
     final model = session.model;
     final controller = _controller;
@@ -181,7 +202,13 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
               icon: const Icon(Icons.account_tree_outlined, size: 18),
               onPressed: () => context.push(
                 sourceControlLocation(directory: state.session.directory),
+                  ),
               ),
+          if (state != null && ref.watch(apiClientProvider) != null)
+            IconButton(
+              tooltip: 'Refine harness for this task',
+              icon: const Icon(Icons.auto_fix_high_outlined, size: 18),
+              onPressed: () => unawaited(_refineHarness(state)),
             ),
           if (state != null)
             Padding(

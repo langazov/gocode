@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/langazov/gocode-go/internal/harness"
 	"github.com/langazov/gocode-go/internal/tui/client"
 	"github.com/langazov/gocode-go/internal/tui/dialog"
 )
@@ -255,7 +256,7 @@ func TestHarnessRefinePlansThenConfirms(t *testing.T) {
 	if app.overlay == nil || app.overlay.Title != "Harness run budget" {
 		t.Fatalf("budget picker did not open: %+v", app.overlay)
 	}
-	if len(app.overlay.Items()) != len(harnessBudgets) {
+	if len(app.overlay.Items()) != len(harness.Budgets()) {
 		t.Fatalf("budgets = %d", len(app.overlay.Items()))
 	}
 	// Pick sequential k=2: down twice from the cheapest.

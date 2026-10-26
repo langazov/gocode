@@ -1,0 +1,63 @@
+{
+  "id": "fix-login--k1-parallel",
+  "task": "fix-login",
+  "domain": "auth",
+  "k": 1,
+  "mode": "parallel",
+  "status": "ok",
+  "phase": "",
+  "backend": "local",
+  "reason": "harness.library is local",
+  "rows": [
+    {
+      "label": "base1",
+      "phase": "base",
+      "state": "ok",
+      "costUSD": 0.4,
+      "detail": "",
+      "sessionID": "ses_base1",
+      "editSessionID": "",
+      "retries": 0
+    },
+    {
+      "label": "inv1",
+      "phase": "probe",
+      "state": "ok",
+      "costUSD": 0.2,
+      "sessionID": "ses_inv1",
+      "editSessionID": "ses_edit_inv1"
+    },
+    {
+      "label": "dom1",
+      "phase": "probe",
+      "state": "ok",
+      "costUSD": 0.2,
+      "sessionID": "ses_dom1"
+    },
+    {
+      "label": "agg1",
+      "phase": "compose",
+      "state": "ok",
+      "costUSD": 0.3,
+      "sessionID": "ses_agg1",
+      "editSessionID": "ses_edit_agg1",
+      "retries": 1
+    },
+    {
+      "label": "experience",
+      "phase": "reflect",
+      "state": "ok",
+      "costUSD": 0.1,
+      "detail": "cue: a login redirect"
+    }
+  ],
+  "costUSD": 1.25,
+  "startedAt": "2025-06-01T10:00:00Z",
+  "adopted": "agg1",
+  "why": "agg1's rollout passes the redirect test the base fails.",
+  "lesson": "a login redirect",
+  "error": "",
+  "budget": "parallel k=1 → 4 rollouts, 3 editor sessions + 1 reflector",
+  "workspace": "/home/dev/project",
+  "prompt": "Fix the login redirect: after sign-in the app returns to / instead"
+}
