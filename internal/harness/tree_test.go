@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -289,8 +290,11 @@ func TestCopyDirIsIndependent(t *testing.T) {
 		if string(data) != "package pkg\n" {
 			t.Fatalf("fresh=%v: writing the copy changed the source: %q", fresh, data)
 		}
-		if info, err := os.Stat(filepath.Join(dst, "pkg", "a.go")); err != nil || info.Mode().Perm() != 0o640 {
-			t.Fatalf("fresh=%v: mode not kept: %v %v", fresh, info, err)
+		// Windows has no permission bits beyond read-only, so there is no mode to keep.
+		if runtime.GOOS != "windows" {
+			if info, err := os.Stat(filepath.Join(dst, "pkg", "a.go")); err != nil || info.Mode().Perm() != 0o640 {
+				t.Fatalf("fresh=%v: mode not kept: %v %v", fresh, info, err)
+			}
 		}
 		if link, err := os.Readlink(filepath.Join(dst, "link.go")); err != nil || link != "pkg/a.go" {
 			t.Fatalf("fresh=%v: symlink not kept: %q %v", fresh, link, err)

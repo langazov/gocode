@@ -12,6 +12,12 @@ import (
 
 func baseOf(t *testing.T, client any) string {
 	t.Helper()
+	// A catalog that lists even one model behind a different SDK (groq's TTS
+	// models, say) gets its client wrapped for routing; the endpoint under
+	// test is the provider-wide default it falls back to.
+	if routed, ok := client.(*modelRoutedClient); ok {
+		client = routed.fallback
+	}
 	c, ok := client.(*openai.Client)
 	if !ok {
 		t.Fatalf("expected an openai-protocol client, got %T", client)
