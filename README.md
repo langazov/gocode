@@ -11,37 +11,22 @@ One statically linked binary. No Node, no Bun, no runtime to install.
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-[Install](#install) · [Quick start](#quick-start) · [Desktop app](#desktop-app) · [Documentation](documentation/) · [Website](https://langazov.github.io/gocode/)
+[Install](#install) · [Quick start](#quick-start) · [Desktop app](#desktop-app) · [Harness²](#harness2) · [Documentation](documentation/) · [Website](https://langazov.github.io/gocode/)
 
 </div>
 
 ---
 
-<div align="center">
-
-<img src="docs/assets/gocode-splash.png" alt="The gocode TUI on launch: the gocode wordmark above an empty prompt reading &quot;Ask anything…&quot;, with the active agent and model shown beneath it and the working directory, MCP count and version along the footer." width="900">
-
-<sub>Launch it in any directory — agent and model live on the prompt, <code>tab</code> switches agents, <code>ctrl+p</code> opens commands.</sub>
-
-<br><br>
-
-<img src="docs/assets/gocode-session.png" alt="A gocode session mid-answer: syntax-highlighted Go code and prose explaining channels fill the main pane, while a sidebar reports context usage, spend, connected MCP servers and LSP status." width="900">
-
-<sub>A turn in flight, with context, spend, MCP servers and language servers in the sidebar.</sub>
-
-<br><br>
-
-<img src="docs/assets/gocode-markdown.png" alt="Rich markdown rendering in a gocode session: a bulleted list with bold terms and inline code, an H2 heading, a two-column comparison table with colored bullet headers, and a syntax-highlighted Go code block." width="900">
-
-<sub>Markdown rendered in full — headings, tables, bold/italic/inline code, and syntax-highlighted code blocks.</sub>
-
-<br><br>
-
-<img src="docs/assets/gocode-mcp-kubernetes.png" alt="gocode diagnosing a Kubernetes cluster through the kubernetes MCP server: a structured markdown report with a status heading, a workload table (StatefulSets, Deployments, a DaemonSet all ready), a numbered list of non-critical observations, and a verdict section, with the kubernetes and chrome-devtools MCP servers shown connected in the sidebar." width="900">
-
-<sub>MCP tools driving a real diagnosis — the kubernetes server inspects a live cluster and gocode turns the results into a structured report.</sub>
-
-</div>
+<table>
+<tr>
+<td width="50%" valign="top"><img src="docs/assets/gocode-splash.png" alt="The gocode TUI on launch: the gocode wordmark above an empty prompt reading &quot;Ask anything…&quot;, with the active agent and model shown beneath it and the working directory, MCP count and version along the footer." width="100%"><br><sub>Launch it in any directory — agent and model live on the prompt, <code>tab</code> switches agents, <code>ctrl+p</code> opens commands.</sub></td>
+<td width="50%" valign="top"><img src="docs/assets/gocode-session.png" alt="A gocode session mid-answer: syntax-highlighted Go code and prose explaining channels fill the main pane, while a sidebar reports context usage, spend, connected MCP servers and LSP status." width="100%"><br><sub>A turn in flight, with context, spend, MCP servers and language servers in the sidebar.</sub></td>
+</tr>
+<tr>
+<td width="50%" valign="top"><img src="docs/assets/gocode-markdown.png" alt="Rich markdown rendering in a gocode session: a bulleted list with bold terms and inline code, an H2 heading, a two-column comparison table with colored bullet headers, and a syntax-highlighted Go code block." width="100%"><br><sub>Markdown rendered in full — headings, tables, inline code and syntax-highlighted blocks.</sub></td>
+<td width="50%" valign="top"><img src="docs/assets/gocode-mcp-kubernetes.png" alt="gocode diagnosing a Kubernetes cluster through the kubernetes MCP server: a structured markdown report with a status heading, a workload table (StatefulSets, Deployments, a DaemonSet all ready), a numbered list of non-critical observations, and a verdict section, with the kubernetes and chrome-devtools MCP servers shown connected in the sidebar." width="100%"><br><sub>MCP tools driving a real diagnosis — a live Kubernetes cluster turned into a structured report.</sub></td>
+</tr>
+</table>
 
 ## Why
 
@@ -55,6 +40,7 @@ installed.
 | **Zero runtime deps** | `CGO_ENABLED=0` everywhere. SQLite is [modernc](https://gitlab.com/cznic/sqlite), a pure-Go translation — so cross-compiling all six targets happens on one Linux runner. |
 | **Durable by construction** | Every turn is event-sourced into SQLite. Kill the process mid-stream and the session resumes exactly where it stopped. |
 | **Agent-native** | 15 built-in tools, sub-agent spawning, MCP servers, skills, plugins, durable memories, semantic code search, and 28 language servers wired into the same permission engine. |
+| **Self-improving** | [Harness²](#harness2) tunes gocode's prompts, skills, subagents and tool rules for a task you repeat — from execution evidence alone, no model training, no reference answers. |
 | **Extensible** | Plugins hook the request, the prompt, tool calls and permissions, and can add tools of their own. A plugin is an executable in any language — the binary stays one static file. |
 | **Actually tested** | ~1,490 tests across 42 packages, ~42k lines of test code against ~56k lines of source. |
 
@@ -220,6 +206,7 @@ db           database tools
 debug        debugging and troubleshooting tools
 export       export session data as JSON
 github       manage GitHub agent
+harness      adapt the harness to a task (Harness²) and manage adopted harnesses
 import       import session data from JSON file or URL
 mcp          manage MCP (Model Context Protocol) servers
 models       list all available models
@@ -261,25 +248,13 @@ with Flutter. Pick a project folder and it starts `gocode serve` there in the
 background. It can also attach to a server that is already running, or drive
 `gocode acp` over the Agent Client Protocol.
 
-<div align="center">
-
-<img src="docs/assets/gocode-desktop-session.png" alt="A Gocode Desktop session titled &quot;check kubernetes cluster state&quot;: a markdown answer with inline code, a numbered list of outstanding issues and a bash code block with a Copy code button, followed by a token and cost footer, above a prompt box with build agent and default model pickers." width="900">
-
-<sub>Sessions grouped by project in the sidebar; markdown, code blocks and per-turn token and cost in the timeline; agent and model pickers on the prompt.</sub>
-
-<br><br>
-
-<img src="docs/assets/gocode-desktop-changes.png" alt="The Gocode Desktop Source Control view, Changes tab: a branch picker on main with Sync, Fetch and History buttons, a commit message box with an AI sparkle button, a Commit All button, and a list of nine changed files marked M or U, with Discard all and Stage all actions." width="900">
-
-<sub>Source Control built in: stage, discard, and commit, with the commit message drafted by the model if you want.</sub>
-
-<br><br>
-
-<img src="docs/assets/gocode-desktop-history.png" alt="The Gocode Desktop Source Control view, History tab: a colored commit graph down the left with merge lines, each row showing branch and tag chips such as main, v0.5.0 and origin branches, the commit subject, author, relative time and short hash, under a commit message search box and an All branches toggle." width="900">
-
-<sub>The commit graph across all branches, with tags, remotes and searchable messages.</sub>
-
-</div>
+<table>
+<tr>
+<td width="33%" valign="top"><img src="docs/assets/gocode-desktop-session.png" alt="A Gocode Desktop session titled &quot;check kubernetes cluster state&quot;: a markdown answer with inline code, a numbered list of outstanding issues and a bash code block with a Copy code button, followed by a token and cost footer, above a prompt box with build agent and default model pickers." width="100%"><br><sub>Sessions by project; markdown, code blocks and per-turn cost; agent and model pickers.</sub></td>
+<td width="33%" valign="top"><img src="docs/assets/gocode-desktop-changes.png" alt="The Gocode Desktop Source Control view, Changes tab: a branch picker on main with Sync, Fetch and History buttons, a commit message box with an AI sparkle button, a Commit All button, and a list of nine changed files marked M or U, with Discard all and Stage all actions." width="100%"><br><sub>Source Control built in: stage, discard and commit, with an AI-drafted message.</sub></td>
+<td width="33%" valign="top"><img src="docs/assets/gocode-desktop-history.png" alt="The Gocode Desktop Source Control view, History tab: a colored commit graph down the left with merge lines, each row showing branch and tag chips such as main, v0.5.0 and origin branches, the commit subject, author, relative time and short hash, under a commit message search box and an All branches toggle." width="100%"><br><sub>The commit graph across all branches, with tags, remotes and search.</sub></td>
+</tr>
+</table>
 
 It ships in every release as `gocode-desktop-*`. On macOS, install it with
 Homebrew:
@@ -310,6 +285,41 @@ runs the `gocode` binary, so install that too.
 **[→ Gocode Desktop, in full](documentation/11-desktop.md)**: connection
 modes, sessions, permission asks, Source Control, and building it from
 source.
+
+<a id="harness2"></a>
+
+## Harness²: self-improving harness
+
+Everything around the model — the system prompt, guardrails, skills,
+subagents, helper scripts and tool rules — is the *harness*. **Harness²**
+improves it for a task you do repeatedly, without retraining anything and
+without a reference answer. It's a port of
+[google-research/harness2](https://github.com/google-research/harness2).
+
+It runs your task, has editor sessions propose fixes for what went wrong,
+tries each fix in an isolated copy of your workspace, composes the best of
+them, and lets a blind judge pick the winner by its results alone. A lesson
+goes into a per-domain experience library, so the next task of the same kind
+starts ahead.
+
+```sh
+gocode harness run --prompt "Fix the failing tests and keep the API stable" --dry-run   # plan and cost
+gocode harness run --prompt "Fix the failing tests and keep the API stable"             # 4 rollouts, 3 editor sessions
+gocode harness install fix-the-failing-tests-and-keep-the-api-stable                    # -> .gocode/harness/
+```
+
+In the TUI, do the task once, then type `/harness refine`. Gocode Desktop has
+the same flow behind the ✦ button in a session's header. The result is plain
+files under `.gocode/harness/` that every later session in the project
+uses — review them, commit them, or delete them.
+
+Runs are resumable at any point. Finished work is cached, and when a provider
+usage limit stops a run, the editor sessions it cut off continue where they
+left off once you resume.
+
+**[→ Harness² user manual](documentation/12-harness.md)**: writing tasks,
+budgets, sweeps over task sets, reviewing and installing, the experience
+library, and every flag.
 
 ## How it fits together
 
@@ -455,6 +465,7 @@ internal/
   db/               SQLite schema and migrations
   server/           HTTP API
   tui/              Bubble Tea interface
+  harness/          Harness²: propose, probe, compose, select, reflect
   lsp/  mcp/        language server and MCP clients
 gocode_gui/         Gocode Desktop, the Flutter client
 examples/           worked examples (plugin-echo)

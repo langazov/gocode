@@ -22,7 +22,7 @@ import (
 
 // harnessCommand is the CLI for Harness² (internal/harness): adapt the
 // harness for a task, browse the experience library, install what was
-// adopted. See documentation/HARNESS2_PLAN.md.
+// adopted. See documentation/12-harness.md.
 func harnessCommand() *clix.Command {
 	runFlags := []clix.Flag{
 		{Name: "prompt", Aliases: []string{"p"}, Kind: clix.KindString, Describe: "the task, when no task file is given"},

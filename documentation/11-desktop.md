@@ -169,6 +169,8 @@ one), with branch, remote and tag labels on each commit. You can search commit
 messages, and opening a commit shows its message, changed files and per-file
 diffs.
 
+<a id="harness"></a>
+
 ## Harness²
 
 **Harness** in the sidebar (or the ✦ button in a session's header) runs
@@ -177,7 +179,8 @@ everything the agent does (prompts, tool guidance, scripts, skills) improved
 for one task from execution evidence alone. It works in Server and Remote
 modes, backed by the `/api/harness/*` routes described in
 [HTTP API → Harness²](08-http-api.md#harness); ACP mode has no HTTP API, so
-the entry points hide there.
+the entry points hide there. What runs, budgets, the library and installing
+mean is explained in the [Harness² user manual](12-harness.md).
 
 **Refine harness for this task** (✦ in a session header) opens the start flow
 prefilled from the session: its first request, its folder, its model. The flow

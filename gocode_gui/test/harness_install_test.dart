@@ -12,7 +12,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// The install flow (documentation/HARNESS2_GUI.md §5.6): always previewed
+/// The install flow (documentation/11-desktop.md, Harness²): always previewed
 /// first — dry-run, show, then write. Records every request so the test
 /// asserts dryRun came first and force only after the conflict was shown.
 class _FakeHarness {

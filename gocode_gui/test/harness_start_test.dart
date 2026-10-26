@@ -13,7 +13,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
-/// The start flow (documentation/HARNESS2_GUI.md §5.3): a run is never
+/// The start flow (documentation/11-desktop.md, Harness²): a run is never
 /// started without its price on screen. The fake records every request, so
 /// the test asserts the plan came first and only Start spends.
 /// http.Response encodes a String body as ascii; Harness² payloads carry

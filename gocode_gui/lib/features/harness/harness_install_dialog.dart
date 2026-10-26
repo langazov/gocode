@@ -8,7 +8,7 @@ import '../../shared/widgets/glass.dart';
 import 'harness_state.dart';
 import 'harness_widgets.dart';
 
-/// The install / publish flow (documentation/HARNESS2_GUI.md §5.6): always
+/// The install / publish flow (documentation/11-desktop.md, Harness²): always
 /// previewed first — dry-run, show what would change, confirm, then write.
 /// "Already holds this harness" short-circuits to a SnackBar with no dialog
 /// (the TUI's behaviour).

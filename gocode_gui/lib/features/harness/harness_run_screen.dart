@@ -15,7 +15,7 @@ import 'harness_widgets.dart';
 
 /// One run: its plan as a vertical phase timeline (base → propose and probe
 /// → compose → select → reflect) that fills in live, the outcome when it
-/// finishes, and the run's actions (documentation/HARNESS2_GUI.md §5.4).
+/// finishes, and the run's actions (documentation/11-desktop.md, Harness²).
 class HarnessRunScreen extends ConsumerWidget {
   const HarnessRunScreen({super.key, required this.id});
 
