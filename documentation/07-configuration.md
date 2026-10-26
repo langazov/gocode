@@ -138,8 +138,8 @@ the `CLAUDE.md` files.
 
 ### `harness`
 
-Harness² (`gocode harness`, `/harness` in the TUI; see
-[HARNESS2_PLAN.md](HARNESS2_PLAN.md)):
+Harness² (`gocode harness`, `/harness` in the TUI; see the
+[user manual](12-harness.md)):
 
 | Key | Default | Meaning |
 |---|---|---|

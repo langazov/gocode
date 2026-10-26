@@ -12,7 +12,7 @@ import (
 	"github.com/langazov/gocode-go/internal/tui/dialog"
 )
 
-// The Harness² surfaces (documentation/HARNESS2_PLAN.md §6): /harness lists
+// The Harness² surfaces (documentation/12-harness.md, "Running from the TUI"): /harness lists
 // runs, a run opens as its plan of rows (base, probe, compose, select,
 // reflect) that fill in live from the `harness.*` events, a row opens its
 // harness diff and rollout, and /harness library browses the experience

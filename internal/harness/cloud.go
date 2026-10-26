@@ -17,7 +17,7 @@ import (
 	"github.com/langazov/gocode-go/internal/gocoder"
 )
 
-// gocoder.org Library integration (documentation/HARNESS2_PLAN.md §7). When
+// gocoder.org Library integration (documentation/12-harness.md, "The experience library"). When
 // library-plugin is loaded and signed in, Harness² uses the Library tightly:
 // cloud skills are part of every rollout's environment (snapshotted so drift
 // is visible), matching ones are shown to the editor, adopted skills can be

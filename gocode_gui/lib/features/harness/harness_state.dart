@@ -8,8 +8,8 @@ import '../../core/api/models.dart' show ApiEvent;
 import '../../core/connection/controller.dart';
 
 /// Harness² state: the runs list folded from live `harness.*` events and
-/// reconciled from `GET /api/harness/run` (documentation/HARNESS2_GUI.md
-/// §4.3). The event stream is lossy by design, so every reconnect — and a
+/// reconciled from `GET /api/harness/run` (documentation/11-desktop.md,
+/// Harness²). The event stream is lossy by design, so every reconnect — and a
 /// slow poll while anything runs — re-reads the server's ground truth.
 class HarnessRunsState {
   const HarnessRunsState({

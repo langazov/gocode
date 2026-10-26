@@ -620,6 +620,31 @@ func TestHarnessStagePanelOrderAndTones(t *testing.T) {
 	}
 }
 
+// A stage's evidence is whatever the rollout wrote. Raw control bytes in it —
+// CRLF, an agent's colored output, a screen clear — moved the terminal's
+// cursor behind the renderer, and the panel's cells outlived closing it.
+func TestHarnessStagePanelStripsControlBytes(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	app.width, app.height = 200, 50
+	app.handleHarnessMsg(harnessStageMsg{stage: client.HarnessStage{Label: "agg2",
+		Diff:        "+line one\r\n+\x1b[31mred\x1b[0m\r\n+bell\a\b\tend",
+		Notes:       "notes with\r carriage",
+		Deliverable: "# Final message\n\nok \x1b[2J\x1b[H cleared\r\n"}})
+	out, _ := app.overlay.Panel()
+	for _, bad := range []string{"\r", "\a", "\b", "\t", "\x1b[2J", "\x1b[H", "\x1b[31m"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("panel leaks %q", bad)
+		}
+	}
+	if plain := ansi.Strip(out); !strings.Contains(plain, "+red") || !strings.Contains(plain, "ok cleared") {
+		t.Errorf("the text around the control bytes was lost:\n%s", plain)
+	}
+	app.handleOverlayKey("esc")
+	if app.overlay != nil {
+		t.Fatal("esc did not close the stage panel")
+	}
+}
+
 // A failed row leads with a short reason; a working row is footed with its
 // session's step and tool counts.
 func TestHarnessRowReasonsAndCounts(t *testing.T) {

@@ -13,7 +13,7 @@ import 'harness_state.dart';
 import 'harness_widgets.dart';
 
 /// Harness² runs: running above finished, newest first — the same order and
-/// grouping the TUI's `/harness` shows (documentation/HARNESS2_GUI.md §5.2).
+/// grouping the TUI's `/harness` shows (documentation/11-desktop.md, Harness²).
 class HarnessScreen extends ConsumerStatefulWidget {
   const HarnessScreen({super.key});
 

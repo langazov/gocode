@@ -1,4 +1,4 @@
-/// Harness² wire types (documentation/HARNESS2_GUI.md §4.1).
+/// Harness² wire types (documentation/11-desktop.md, Harness²).
 ///
 /// Hand-written immutable mirrors of the Go types in internal/harness
 /// (service.go, run.go, library.go, cloud.go) — the TUI's client mirror in

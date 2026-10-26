@@ -13,7 +13,7 @@ import '../home/providers.dart';
 import 'harness_state.dart';
 import 'harness_widgets.dart';
 
-/// The start flow (documentation/HARNESS2_GUI.md §5.3): one dialog with
+/// The start flow (documentation/11-desktop.md, Harness²): one dialog with
 /// three steps — task, budget, plan — that never leaves it. A run is never
 /// started without its price on screen; **Start** is the only button that
 /// spends.

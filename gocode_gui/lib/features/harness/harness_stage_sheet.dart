@@ -10,7 +10,7 @@ import '../../shared/widgets/glass.dart';
 import 'harness_state.dart';
 import 'harness_widgets.dart';
 
-/// A stage's detail (documentation/HARNESS2_GUI.md §5.5): a right-hand
+/// A stage's detail (documentation/11-desktop.md, Harness²): a right-hand
 /// sheet beside the run view on wide windows, a pushed page on narrow ones.
 /// Tabs: Harness (file list + diff), Notes (editor notes), Rollout (the
 /// deliverable and its workspace diff).

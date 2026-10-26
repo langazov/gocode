@@ -8,7 +8,7 @@ import '../../shared/widgets/glass.dart';
 import 'harness_state.dart';
 import 'harness_widgets.dart';
 
-/// The experience library (documentation/HARNESS2_GUI.md §5.7): domains as
+/// The experience library (documentation/11-desktop.md, Harness²): domains as
 /// collapsible sections, entries as rows, an entry's lesson and harness
 /// tree on tap, forget behind a confirm, sync on the cloud backend.
 class HarnessLibraryScreen extends ConsumerStatefulWidget {

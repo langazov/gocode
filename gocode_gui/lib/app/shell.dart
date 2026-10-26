@@ -103,7 +103,7 @@ class _AppShellState extends ConsumerState<AppShell> {
   }
 
   /// A run's end is announced once, never repeated on rebuild — the TUI's
-  /// toast (documentation/HARNESS2_GUI.md §5.1).
+  /// toast (documentation/11-desktop.md, Harness²).
   void _listenHarnessEnd() {
     ref.listen(harnessRunsProvider.select((s) => s.lastEnded), (prev, next) {
       if (next == null || next.noticeID.isEmpty) return;

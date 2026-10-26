@@ -13,8 +13,7 @@ import (
 // A run directory is shared by every process that touches the task: a CLI
 // run and one started over the HTTP API write the same base rollouts,
 // candidate trees and summary. The service's in-memory map cannot see
-// another process, so the directory itself carries an advisory lock
-// (HARNESS2_PLAN §10's known gap).
+// another process, so the directory itself carries an advisory lock.
 
 // ErrLocked is returned when another holder (another process, or another
 // mode of the same task and k in this one) keeps a run directory's lock.

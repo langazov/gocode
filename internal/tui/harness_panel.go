@@ -58,7 +58,7 @@ func renderPanelLines(p dialog.Palette, w int, lines []panelLine) []string {
 	}
 	var out []string
 	for _, line := range lines {
-		text := strings.ReplaceAll(line.Text, "\t", "    ")
+		text := panelSafe(line.Text)
 		rows := []string{ansi.Truncate(text, width, "…")}
 		if (line.Tone == toneBody || line.Tone == toneError || line.Tone == toneNote) && text != "" {
 			rows = dialog.WrapWords(text, width)
@@ -68,6 +68,23 @@ func renderPanelLines(p dialog.Palette, w int, lines []panelLine) []string {
 		}
 	}
 	return out
+}
+
+// panelSafe makes evidence text safe to splice into a panel row. A stage's
+// diff and deliverable are whatever the rollout wrote — CRLF files, an
+// agent's colored test output, a stray bell — and raw, a carriage return or
+// an escape sequence moves the terminal's cursor behind the renderer's back:
+// the screen stops matching what the renderer believes is on it, and the
+// panel's cells outlive closing it. Escape sequences are stripped, other
+// control characters dropped, tabs expanded.
+func panelSafe(text string) string {
+	text = ansi.Strip(text)
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			return -1
+		}
+		return r
+	}, strings.ReplaceAll(text, "\t", "    "))
 }
 
 // diffLines tags a unified diff's lines by what they are.

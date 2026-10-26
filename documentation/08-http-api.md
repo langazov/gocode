@@ -312,6 +312,8 @@ management surface — this is what the interface's `/memory` manager talks to:
 | `PATCH` | `/api/memory/{id}` | edit, pin, silence |
 | `DELETE` | `/api/memory/{id}` | forget it |
 
+<a id="harness"></a>
+
 ## Harness²
 
 Recursive harness adaptation (`internal/harness`, the TUI's `/harness`). A run
