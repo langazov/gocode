@@ -5,6 +5,7 @@
 /build/
 /dist/
 /go/
+.gocode
 
 # `make example-plugin` builds into the plugin's own directory rather than
 # dist/, because gocode-plugin.json names the command relative to it.
