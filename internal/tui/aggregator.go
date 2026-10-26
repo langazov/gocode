@@ -88,6 +88,10 @@ type SessionNode struct {
 	// Failure it is transient by design: it describes what is happening now,
 	// and a stale copy of it would claim the session is stuck when it is not.
 	Waiting string
+	// LastEvent is when any event for this session last arrived. A harness
+	// row's session that goes quiet is shown as such long before the run's
+	// idle limit stops it (harnessRowActivity).
+	LastEvent time.Time
 }
 
 func newSessionNode(id string) *SessionNode {
@@ -152,14 +156,15 @@ func waitingNotice(reason string, linkDown bool, retryIn time.Duration) string {
 // a data race.
 func (n *SessionNode) clone() *SessionNode {
 	out := &SessionNode{
-		ID:       n.ID,
-		Busy:     n.Busy,
-		Agent:    n.Agent,
-		Asks:     n.Asks,
-		Queued:   n.Queued,
-		Failure:  n.Failure,
-		Failures: n.Failures,
-		Waiting:  n.Waiting,
+		ID:        n.ID,
+		Busy:      n.Busy,
+		Agent:     n.Agent,
+		Asks:      n.Asks,
+		Queued:    n.Queued,
+		Failure:   n.Failure,
+		Failures:  n.Failures,
+		Waiting:   n.Waiting,
+		LastEvent: n.LastEvent,
 
 		Tools:     make(map[string]ToolState, len(n.Tools)),
 		Text:      make(map[string]*strings.Builder, len(n.Text)),
@@ -259,6 +264,7 @@ func (t *tree) apply(e client.Event) bool {
 		return false
 	}
 	node := t.node(sessionID)
+	node.LastEvent = time.Now()
 	switch e.Type {
 	case "session.next.run.started":
 		node.Busy = true

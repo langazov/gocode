@@ -1215,6 +1215,17 @@ func (c *Client) CancelHarness(ctx context.Context, id string) error {
 	return c.do(ctx, http.MethodPost, "/api/harness/run/"+url.PathEscape(id)+"/cancel", nil, nil)
 }
 
+// ResumeHarness starts a stopped run again from its saved task: finished
+// work is reused, only what was cut short runs. 409 when it is running or
+// already finished ok.
+func (c *Client) ResumeHarness(ctx context.Context, id string) (*HarnessRun, error) {
+	var out HarnessRun
+	if err := c.do(ctx, http.MethodPost, "/api/harness/run/"+url.PathEscape(id)+"/resume", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // HarnessStage reads one label of a run.
 func (c *Client) HarnessStage(ctx context.Context, id, label string) (*HarnessStage, error) {
 	var out HarnessStage

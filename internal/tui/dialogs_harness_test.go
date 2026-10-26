@@ -83,6 +83,10 @@ func newHarnessServer(t *testing.T, runs []client.HarnessRun) (*harnessServer, s
 			json.NewEncoder(w).Encode(client.Session{ID: strings.TrimPrefix(r.URL.Path, "/api/session/"), Title: "harness rollout"})
 		case r.Method == http.MethodDelete:
 			json.NewEncoder(w).Encode(map[string]any{"sessions": 1})
+		case strings.HasSuffix(r.URL.Path, "/resume"):
+			id := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/harness/run/"), "/resume")
+			json.NewEncoder(w).Encode(client.HarnessRun{ID: id, Task: strings.Split(id, "--")[0], Status: "running",
+				Mode: "parallel", K: 1, StartedAt: time.Now()})
 		case strings.HasSuffix(r.URL.Path, "/install"):
 			json.NewEncoder(w).Encode(client.HarnessInstall{Target: "/p/.gocode/harness",
 				Files: client.HarnessFiles{Added: []string{"systemprompt.md"}}, Written: body["dryRun"] != true})
@@ -444,4 +448,120 @@ func TestAggregatorForgetsFinishedRuns(t *testing.T) {
 	if _, ok := snap.Harness["live--k1-parallel"]; !ok {
 		t.Fatal("a running run was dropped")
 	}
+}
+
+// A working row whose session has gone quiet says so, in minutes, long
+// before the run's idle limit stops it; the tick moves it on without events.
+func TestHarnessRowSaysWhenQuiet(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	run := sampleHarnessRuns()[1]
+	run.Rows = []client.HarnessRow{
+		{Label: "dom1", Phase: "probe", State: "rolling", SessionID: "ses_roll"},
+		{Label: "dom2", Phase: "probe", State: "rolling", SessionID: "ses_busy"},
+	}
+	app.harnessRuns = []client.HarnessRun{run}
+	app.agents = Snapshot{Sessions: map[string]*SessionNode{
+		"ses_roll": {ID: "ses_roll", Busy: true, LastEvent: time.Now().Add(-3 * time.Minute), Tools: map[string]ToolState{
+			"c1": {CallID: "c1", Name: "bash", Status: "pending", Input: "go test ./..."},
+		}},
+		"ses_busy": {ID: "ses_busy", Busy: true, LastEvent: time.Now(), Tools: map[string]ToolState{}},
+	}}
+	app.openHarnessRun(run.ID)
+	hints := func() map[string]string {
+		out := map[string]string{}
+		for _, item := range app.overlay.Items() {
+			out[item.Value] = item.Hint
+		}
+		return out
+	}
+	if got := hints()["dom1"]; !strings.Contains(got, "bash go test ./... · quiet 3m") {
+		t.Errorf("quiet row hint = %q", got)
+	}
+	if got := hints()["dom2"]; strings.Contains(got, "quiet") {
+		t.Errorf("a busy row says quiet: %q", got)
+	}
+
+	// No event arrives; time passes; the tick refreshes the plan.
+	app.agents.Sessions["ses_busy"].LastEvent = time.Now().Add(-5 * time.Minute)
+	app.refreshHarnessActivity()
+	if got := hints()["dom2"]; !strings.Contains(got, "thinking · quiet 5m") {
+		t.Errorf("after the tick: %q", got)
+	}
+}
+
+// A running run says how long it has been going: in the runs list, the
+// plan's placeholder line and the hint row.
+func TestHarnessRunShowsItsAge(t *testing.T) {
+	app := newTestApp(t, "http://example.invalid")
+	runs := sampleHarnessRuns()
+	runs[1].StartedAt = time.Now().Add(-72 * time.Minute)
+	app.harnessRuns = runs
+	app.harnessLoaded = true
+	app.openHarnessRuns()
+	for _, item := range app.overlay.Items() {
+		switch item.Value {
+		case runs[1].ID:
+			if !strings.Contains(item.Hint, "1h 12m") {
+				t.Errorf("running hint = %q", item.Hint)
+			}
+		case runs[0].ID:
+			if strings.Contains(item.Hint, "m ") || strings.HasSuffix(item.Hint, "m") {
+				t.Errorf("a finished run shows an age: %q", item.Hint)
+			}
+		}
+	}
+	if footer := app.harnessFooterSegment(); !strings.Contains(footer, "1h 12m") {
+		t.Errorf("footer = %q", footer)
+	}
+	for d, want := range map[time.Duration]string{30 * time.Second: "<1m", 12 * time.Minute: "12m", 65 * time.Minute: "1h 05m"} {
+		if got := harnessElapsed(d); got != want {
+			t.Errorf("harnessElapsed(%s) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+// resume confirms with the budget first, then asks the server to resume;
+// it is offered only for runs that stopped short of ok.
+func TestHarnessResumeConfirmsThenResumes(t *testing.T) {
+	runs := sampleHarnessRuns()
+	runs[0].Status = "partial"
+	state, url := newHarnessServer(t, runs)
+	app := newTestApp(t, url)
+	app.harnessRuns = runs
+
+	app.openHarnessRun(runs[0].ID)
+	if !hasAction(app, "resume") {
+		t.Fatal("a partial run offers no resume")
+	}
+	app.openHarnessRun(runs[1].ID)
+	if hasAction(app, "resume") {
+		t.Fatal("a running run offers resume")
+	}
+
+	applyCmd(t, app, app.resumeHarnessRun(runs[0].ID))
+	if app.overlay == nil || app.overlay.Kind != dialog.KindConfirm {
+		t.Fatalf("no confirm: %+v", app.overlay)
+	}
+	if panel := strings.Join(panelLines(t, app), " "); !strings.Contains(panel, "rollouts") || !strings.Contains(panel, "reused") {
+		t.Fatalf("confirm does not state the budget and reuse:\n%s", panel)
+	}
+	if state.saw("POST /api/harness/run/" + runs[0].ID + "/resume") {
+		t.Fatal("resumed before the confirm")
+	}
+	applyCmd(t, app, app.handleOverlayKey("enter"))
+	if !state.saw("POST /api/harness/run/" + runs[0].ID + "/resume") {
+		t.Fatalf("no resume sent: %v", state.requests)
+	}
+	if run, ok := app.harnessRunByID(runs[0].ID); !ok || run.Status != "running" {
+		t.Fatalf("resumed run = %+v", run)
+	}
+}
+
+func hasAction(app *App, title string) bool {
+	for _, action := range app.overlay.Actions() {
+		if action.Title == title {
+			return true
+		}
+	}
+	return false
 }

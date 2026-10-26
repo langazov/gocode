@@ -394,6 +394,31 @@ func (s *Service) Get(id string) (RunState, error) {
 	return state, nil
 }
 
+// ErrFinished refuses to resume a run that already finished ok: there is
+// nothing left to run, and Engine.Run would only hand its summary back.
+var ErrFinished = errors.New("this run already finished ok")
+
+// Resume starts a stopped run again from its own task.json, with the same
+// budget and mode. Engine.Run replays every cached stage and reuses every
+// rollout that ran its course, so only what was cut short — rollouts a
+// limit, a cancel or an interrupt stopped, stages never reached — runs (and
+// costs) again. The models and library backend are the server's current
+// ones; task.json records the task, not how it was launched.
+func (s *Service) Resume(ctx context.Context, id string) (RunState, error) {
+	task, k, mode, err := ParseRunID(id)
+	if err != nil {
+		return RunState{}, err
+	}
+	if summary, err := LoadSummary(s.summaryPath(task, k, mode)); err == nil && summary.Status == "ok" {
+		return RunState{}, ErrFinished
+	}
+	var saved Task
+	if err := readJSON(filepath.Join((&Engine{Root: s.Root}).Dir(task, k), "task.json"), &saved); err != nil {
+		return RunState{}, fmt.Errorf("no run %s to resume", id)
+	}
+	return s.Start(ctx, Launch{Task: saved, K: k, Mode: mode})
+}
+
 // annotate fills the fields a summary alone does not carry (the task's
 // workspace and prompt) from the run directory's task.json.
 func (s *Service) annotate(state *RunState) {

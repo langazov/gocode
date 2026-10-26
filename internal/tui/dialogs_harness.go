@@ -43,6 +43,7 @@ func (a *App) openHarnessRuns() {
 		// finished one deleted (its sessions and run directory). Both arm
 		// first, like every destructive list action.
 		{Title: "remove", Keys: "ctrl+d", OnTrigger: a.removeHarnessAction},
+		{Title: "resume", Keys: "ctrl+y", OnTrigger: func(item overlayItem) tea.Cmd { return a.resumeHarnessRun(item.Value) }},
 		{Title: "library", Keys: "ctrl+l", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.harnessLibraryOverlay() }},
 		{Title: "refresh", Keys: "ctrl+r", Standalone: true, OnTrigger: func(overlayItem) tea.Cmd { return a.loadHarnessRunsCmd() }},
 	})
@@ -92,6 +93,9 @@ func harnessRunHint(run client.HarnessRun) string {
 	parts := []string{fmt.Sprintf("%s k=%d", run.Mode, run.K), run.Status}
 	if run.Status == "running" && run.Phase != "" {
 		parts = append(parts, run.Phase)
+	}
+	if age := harnessRunAge(run); age != "" {
+		parts = append(parts, age)
 	}
 	if run.Adopted != "" && run.Status != "running" {
 		parts = append(parts, "adopted "+run.Adopted)
@@ -150,7 +154,11 @@ func (a *App) openHarnessRun(id string) {
 	a.openList(title, items)
 	o := a.overlay
 	o.SetSize(dialogLarge)
-	o.SetPlaceholder(fmt.Sprintf("%s · %s · %s", run.Budget, run.Backend, formatMoney(run.CostUSD)))
+	placeholder := fmt.Sprintf("%s · %s · %s", run.Budget, run.Backend, formatMoney(run.CostUSD))
+	if age := harnessRunAge(run); age != "" {
+		placeholder += " · " + age
+	}
+	o.SetPlaceholder(placeholder)
 	if run.Adopted != "" {
 		o.SetCurrent(run.Adopted)
 	}
@@ -172,6 +180,10 @@ func (a *App) openHarnessRun(id string) {
 	if run.Status == "running" {
 		actions = append(actions, dialogAction{Title: "cancel", Keys: "ctrl+d", Standalone: true,
 			OnTrigger: func(overlayItem) tea.Cmd { return a.cancelHarnessRun(id) }})
+	}
+	if harnessResumable(run) {
+		actions = append(actions, dialogAction{Title: "resume", Keys: "ctrl+y", Standalone: true,
+			OnTrigger: func(overlayItem) tea.Cmd { return a.resumeHarnessRun(id) }})
 	}
 	actions = append(actions, dialogAction{Title: "back", Keys: "ctrl+b", Standalone: true, Right: true,
 		OnTrigger: func(overlayItem) tea.Cmd { a.harnessOpenRun = ""; return a.harnessOverlay() }})
@@ -250,18 +262,60 @@ func (a *App) harnessRowActivity(row client.HarnessRow) string {
 			running = append(running, tool)
 		}
 	}
+	doing := ""
 	if len(running) > 0 {
 		sort.Slice(running, func(i, j int) bool { return running[i].CallID > running[j].CallID })
 		tool := running[0]
+		doing = tool.Name
 		if tool.Input != "" {
-			return tool.Name + " " + truncateRunes(tool.Input, 60)
+			doing += " " + truncateRunes(tool.Input, 60)
 		}
-		return tool.Name
+	} else if node.Busy {
+		doing = "thinking"
 	}
-	if node.Busy {
-		return "thinking"
+	if quiet := harnessQuiet(node.LastEvent, time.Now()); quiet != "" {
+		if doing == "" {
+			return quiet
+		}
+		return doing + " · " + quiet
 	}
-	return ""
+	return doing
+}
+
+// harnessQuietAfter is how long a working row's session may go without an
+// event before its row says so. Well short of the run's idle limit (15m by
+// default), which stops the session: the reader sees a stall coming.
+const harnessQuietAfter = 2 * time.Minute
+
+// harnessQuiet is "quiet 3m" once a session has gone harnessQuietAfter
+// without an event, else empty. Minutes only: the plan rebuilds when the
+// text changes, and the reconciliation tick is what moves it on.
+func harnessQuiet(last, now time.Time) string {
+	if last.IsZero() || now.Sub(last) < harnessQuietAfter {
+		return ""
+	}
+	return "quiet " + harnessElapsed(now.Sub(last))
+}
+
+// harnessElapsed is a run's age at the resolution the interface refreshes
+// it: "<1m", "12m", "1h 05m".
+func harnessElapsed(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return "<1m"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh %02dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
+// harnessRunAge is how long a running run has been going, or empty.
+func harnessRunAge(run client.HarnessRun) string {
+	if run.Status != "running" || run.StartedAt.IsZero() {
+		return ""
+	}
+	return harnessElapsed(time.Since(run.StartedAt))
 }
 
 func harnessPhaseLabel(phase string) string {
@@ -374,6 +428,9 @@ func (a *App) refreshHarnessActivity() {
 		return
 	}
 	var b strings.Builder
+	// The run's age is in the placeholder and moves by the minute.
+	b.WriteString(harnessRunAge(run))
+	b.WriteByte(0)
 	for _, row := range run.Rows {
 		b.WriteString(a.harnessRowActivity(row))
 		b.WriteByte(0)
@@ -408,7 +465,11 @@ func (a *App) harnessFooterSegment() string {
 			done++
 		}
 	}
-	text := fmt.Sprintf("harness %s · %s %d/%d · %s", truncateRunes(run.Task, 24), run.Phase, done, len(run.Rows), formatMoney(run.CostUSD))
+	parts := []string{"harness " + truncateRunes(run.Task, 24), fmt.Sprintf("%s %d/%d", run.Phase, done, len(run.Rows))}
+	if age := harnessRunAge(run); age != "" {
+		parts = append(parts, age)
+	}
+	text := strings.Join(append(parts, formatMoney(run.CostUSD)), " · ")
 	return a.styles().Muted.Render(text)
 }
 
@@ -542,6 +603,42 @@ func (a *App) removeHarnessAction(item overlayItem) tea.Cmd {
 		runs, err := a.client.HarnessRuns(a.ctx)
 		return harnessRunsMsg{runs: runs, err: err, status: "deleted " + run.Task + " (" + run.Mode + ")"}
 	}
+}
+
+// harnessResumable is a run that stopped short of ok: partial, cancelled,
+// failed, base-failed. Running again only redoes what was cut short.
+func harnessResumable(run client.HarnessRun) bool {
+	return run.Status != "running" && run.Status != "ok"
+}
+
+// resumeHarnessRun confirms, then starts a stopped run again. Spending money
+// always shows its price first (§6.6): the confirm names the budget and that
+// finished work is reused.
+func (a *App) resumeHarnessRun(id string) tea.Cmd {
+	run, ok := a.harnessRunByID(id)
+	if !ok {
+		return nil
+	}
+	if !harnessResumable(run) {
+		return staticMsg(statusMsg{text: "nothing to resume: the run is " + run.Status})
+	}
+	message := fmt.Sprintf("Task %s, %s k=%d, ended %s.\n\n%s.\n\n", run.Task, run.Mode, run.K, run.Status, run.Budget) +
+		"Finished stages and rollouts are reused; only what was cut short runs, and costs, again. " +
+		"It runs on the server's current model."
+	a.openConfirm("Resume harness run?", message, "Cancel", func() tea.Msg {
+		resumed, err := a.client.ResumeHarness(a.ctx, id)
+		if err != nil {
+			return statusMsg{text: "could not resume the run: " + err.Error()}
+		}
+		runs := []client.HarnessRun{*resumed}
+		for _, r := range a.harnessRuns {
+			if r.ID != resumed.ID {
+				runs = append(runs, r)
+			}
+		}
+		return harnessRunsMsg{runs: runs, open: resumed.ID, status: "harness run resumed"}
+	}, nil)
+	return nil
 }
 
 func (a *App) cancelHarnessRun(id string) tea.Cmd {

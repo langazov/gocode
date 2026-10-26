@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -211,5 +212,94 @@ drain:
 	rec = doJSON(t, server, "DELETE", "/api/harness/run/"+started.ID, nil)
 	if rec.Code != 404 {
 		t.Fatalf("second delete: %d", rec.Code)
+	}
+}
+
+// stopOnceExec cuts its first base1 rollout short, as an idle limit or an
+// interrupt would, and counts every rollout it runs.
+type stopOnceExec struct {
+	mu      sync.Mutex
+	stopped bool
+	calls   map[string]int
+}
+
+func (e *stopOnceExec) Rollout(ctx context.Context, req harness.RolloutRequest) (harness.Rollout, error) {
+	e.mu.Lock()
+	e.calls[req.Label]++
+	stop := req.Label == "base1" && !e.stopped
+	e.stopped = e.stopped || stop
+	e.mu.Unlock()
+	if stop {
+		return harness.Rollout{Error: "stopped after 15m0s without activity: the session stalled", Stopped: true}, nil
+	}
+	return routeExec{}.Rollout(ctx, req)
+}
+
+// A run cut short resumes from its own task: what finished is reused, the
+// stopped rollout runs again, and a run that finished ok is refused.
+func TestHarnessResumeRoute(t *testing.T) {
+	server, _, _ := newTestServer(t)
+	root := t.TempDir()
+	exec := &stopOnceExec{calls: map[string]int{}}
+	server.VCSWorkdir = t.TempDir()
+	server.Harness = &harness.Service{
+		Root: root,
+		NewEngine: func(context.Context, harness.Launch) (*harness.Engine, harness.Detection, error) {
+			return &harness.Engine{Exec: exec, Improver: routeImprover{}, Root: root},
+				harness.Detection{Backend: harness.BackendLocal}, nil
+		},
+	}
+	wait := func(id string) harness.RunState {
+		t.Helper()
+		var state harness.RunState
+		deadline := time.Now().Add(10 * time.Second)
+		for time.Now().Before(deadline) {
+			rec := doJSON(t, server, "GET", "/api/harness/run/"+id, nil)
+			_ = json.Unmarshal(rec.Body.Bytes(), &state)
+			if state.Status != "running" {
+				return state
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		t.Fatalf("run %s did not settle", id)
+		return state
+	}
+
+	rec := doJSON(t, server, "POST", "/api/harness/run", map[string]any{"prompt": "Write the answer", "id": "answer"})
+	if rec.Code != 202 {
+		t.Fatalf("start: %d %s", rec.Code, rec.Body.String())
+	}
+	const id = "answer--k1-parallel"
+	if first := wait(id); first.Status == "ok" {
+		t.Fatalf("a run with a stopped base rollout finished ok: %+v", first)
+	}
+	before := map[string]int{}
+	for label, n := range exec.calls {
+		before[label] = n
+	}
+
+	rec = doJSON(t, server, "POST", "/api/harness/run/"+id+"/resume", nil)
+	if rec.Code != 202 {
+		t.Fatalf("resume: %d %s", rec.Code, rec.Body.String())
+	}
+	if final := wait(id); final.Status != "ok" {
+		t.Fatalf("resumed run = %+v", final)
+	}
+	if exec.calls["base1"] != before["base1"]+1 {
+		t.Errorf("base1 rolled %d times after resume, want once more than %d", exec.calls["base1"], before["base1"])
+	}
+	for label, n := range before {
+		if label != "base1" && exec.calls[label] != n {
+			t.Errorf("%s rolled again on resume (%d → %d)", label, n, exec.calls[label])
+		}
+	}
+
+	rec = doJSON(t, server, "POST", "/api/harness/run/"+id+"/resume", nil)
+	if rec.Code != 409 {
+		t.Fatalf("resuming a finished run: %d %s", rec.Code, rec.Body.String())
+	}
+	rec = doJSON(t, server, "POST", "/api/harness/run/nothing--k1-parallel/resume", nil)
+	if rec.Code != 404 {
+		t.Fatalf("resuming an unknown run: %d %s", rec.Code, rec.Body.String())
 	}
 }

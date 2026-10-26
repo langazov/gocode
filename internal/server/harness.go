@@ -38,6 +38,7 @@ func (s *Server) registerHarness(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/harness/run", s.startHarnessRun)
 	mux.HandleFunc("GET /api/harness/run/{runID}", s.getHarnessRun)
 	mux.HandleFunc("POST /api/harness/run/{runID}/cancel", s.cancelHarnessRun)
+	mux.HandleFunc("POST /api/harness/run/{runID}/resume", s.resumeHarnessRun)
 	mux.HandleFunc("DELETE /api/harness/run/{runID}", s.deleteHarnessRun)
 	mux.HandleFunc("GET /api/harness/run/{runID}/stage/{label}", s.getHarnessStage)
 	mux.HandleFunc("GET /api/harness/run/{runID}/log", s.getHarnessLog)
@@ -169,6 +170,20 @@ func (s *Server) cancelHarnessRun(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]bool{"cancelled": true})
+}
+
+// resumeHarnessRun starts a stopped run again from its saved task; only what
+// was cut short runs again (harness.Service.Resume).
+func (s *Server) resumeHarnessRun(w http.ResponseWriter, r *http.Request) {
+	state, err := s.Harness.Resume(r.Context(), r.PathValue("runID"))
+	switch {
+	case errors.Is(err, harness.ErrRunning), errors.Is(err, harness.ErrLocked), errors.Is(err, harness.ErrFinished):
+		writeError(w, http.StatusConflict, err.Error())
+	case err != nil:
+		writeError(w, http.StatusNotFound, err.Error())
+	default:
+		writeJSON(w, http.StatusAccepted, state)
+	}
 }
 
 // getHarnessLog serves a run's event log; ?after=N skips the first N, so a

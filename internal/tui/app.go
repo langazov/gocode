@@ -1329,6 +1329,9 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		// and height both depend on the new dimensions.
 		return nil
 	case tickMsg:
+		// A quiet row and a run's age change with time alone, no event to
+		// carry them; the tick moves them on.
+		a.refreshHarnessActivity()
 		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadCommandsCmd()}
 		if a.active != nil {
 			cmds = append(cmds, a.loadPermissions(a.active.ID), a.loadQuestions(a.active.ID))

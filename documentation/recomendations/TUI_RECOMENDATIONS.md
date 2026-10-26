@@ -628,12 +628,14 @@ read-only panel; there is no new dialog kind (`dialogs_harness.go`).
 
 Footer actions: runs — `new ctrl+a` (standalone), `remove ctrl+d` (two-press
 arm: cancels a running run, deletes a finished one with its sessions),
-`library ctrl+l`, `refresh ctrl+r`; run — `watch ctrl+e` (open the session
+`resume ctrl+y` (a run that ended short of ok), `library ctrl+l`,
+`refresh ctrl+r`; run — `watch ctrl+e` (open the session
 the row is working in now: its editor's while editing, its rollout's while
 rolling), `editor ctrl+o` (the row's editor session, also after it ended),
 `log ctrl+g` (the run's event log), `install ctrl+s` and, when the backend is
 `split` or `cloud`, `publish ctrl+u` (finished runs only), `cancel ctrl+d`
-(running only), `back ctrl+b`; library — `forget ctrl+d` (two-press arm), `runs ctrl+b`.
+(running only), `resume ctrl+y` (partial, cancelled or failed runs only),
+`back ctrl+b`; library — `forget ctrl+d` (two-press arm), `runs ctrl+b`.
 
 **Rules:**
 
@@ -657,8 +659,19 @@ rolling), `editor ctrl+o` (the row's editor session, also after it ended),
   doing now — the newest running tool and its telling argument
   (`editing · read context/rollouts/base1.md`), or `thinking` — taken from the
   session events the server relays from the rollout and editor stacks; a row
-  with rejected proposals carries `↻N`. The open plan rebuilds only when that
-  activity changes (`refreshHarnessActivity`), not on every frame.
+  with rejected proposals carries `↻N`. A working row whose session has had no
+  event for 2 minutes adds `· quiet 3m` — in minutes, well before the run's
+  idle limit (15m) stops the session — so a stall is visible while it happens.
+  The open plan rebuilds only when that text changes
+  (`refreshHarnessActivity`, also run on the 10s reconciliation tick, since
+  quiet and age move with time alone), not on every frame.
+- **A running run says how long it has been going**, in minutes (`<1m`,
+  `12m`, `1h 05m`): in its runs-list hint, the plan's placeholder line and
+  the hint row.
+- **Resume shows its price too.** `resume` opens a confirm naming the task,
+  how it ended and its budget, and that finished stages and rollouts are
+  reused — only what was cut short runs, and costs, again
+  (`POST /api/harness/run/{id}/resume`).
 - **Every step can be watched live.** Rollout and editor sessions stream in
   the session view exactly like a subagent's, because their events reach the
   interface's stream; `/harness` returns to the run.
@@ -668,7 +681,7 @@ rolling), `editor ctrl+o` (the row's editor session, also after it ended),
   error, `✓`/`✗` ended with cost. It follows new events while the reader is
   at the bottom and holds its place once they scroll up.
 - **The hint row says a run is going.** While one runs, the right group gains
-  `harness <task> · <phase> <done>/<rows> · $` in `TextMuted`, ahead of the
+  `harness <task> · <phase> <done>/<rows> · <age> · $` in `TextMuted`, ahead of the
   `ctrl+p commands` hint and under the same `ShowActivityMeta` width gate as
   the usage meter.
 
