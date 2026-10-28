@@ -506,12 +506,34 @@ tools always run locally.
 
 ### Authentication
 
-There is no protocol-driven way to type a secret, so `authenticate` /
-`auth/login` with `gocode-login` succeeds when credentials already exist and
-returns `auth_required` (`-32000`) otherwise. A client that supports terminal
-auth is also offered a `terminal` method whose args (`--login`) turn its own
-`gocode acp` invocation into the interactive `gocode auth login` flow.
-`logout` / `auth/logout` remove the default provider's stored credential.
+`initialize` advertises every way to sign in, and `authenticate` /
+`auth/login` runs the chosen one to completion. Secrets never cross the
+protocol: form elicitation must not carry a password or key
+(`protocol/v1/elicitation` "Form mode"), so anything secret is typed into a
+one-time page gocode serves on `127.0.0.1` at an unguessable path
+(`internal/loginpage`), which the client opens through **URL-mode
+elicitation**. Login elicitations are request-scoped (`requestId` is the
+`authenticate` request's id — no session exists yet), and
+`elicitation/complete` follows once the page or provider flow finishes. A
+client without URL elicitation gets the page opened in the user's browser by
+the agent itself.
+
+| Method id | Kind | What it does |
+|---|---|---|
+| `gocode-login` | agent | Succeeds when credentials already exist (stored, env var, or gocoder.org); `auth_required` (`-32000`) otherwise |
+| `gocoder-login` · `gocoder-register` | agent | Log in to / sign up for gocoder.org on the loopback page: the same exchange as `gocode login` (session → named API key → `gocoder.json`), settings-sync restore included; a replaced account's key is revoked |
+| `oauth:<provider>:<n>` | agent | A provider's OAuth flow (ChatGPT, GitHub Copilot, OpenCode, …): its consent or device page is handed to the client, the device code goes in the elicitation message. Non-secret prompts (Copilot deployment type) use form elicitation; without it, each prompt's default |
+| `provider-api-key` | agent | Pick any catalog provider and paste its API key on the loopback page (default model's provider preselected) |
+| `gocoder-terminal-login` · `gocoder-terminal-register` | terminal | `gocode acp --login --login-target=gocoder[-register]`: the interactive gocoder.org sign-in |
+| `gocode-terminal-login` | terminal | `gocode acp --login`: the interactive `gocode auth login` flow |
+
+Terminal methods are only offered to clients advertising `auth.terminal`, and
+`authenticate` refuses them by name. An interactive login answers through a
+deferred reply, so the connection keeps serving other requests meanwhile;
+cancelling the request (or 15 minutes passing) abandons it. A declined URL
+or failed login is `auth_required` with the reason as its message.
+`logout` / `auth/logout` remove the default provider's stored credential —
+for the `gocoder` provider, that signs out of gocoder.org and revokes the key.
 
 ### Beyond the stable versions
 

@@ -80,17 +80,6 @@ type Model struct {
 	Variants     []string
 }
 
-// Auth is the credential surface behind authenticate / auth/login and
-// logout / auth/logout.
-type Auth interface {
-	// Authenticated reports whether the default model's provider has usable
-	// credentials, which is what a successful login has to mean here: gocode
-	// signs in with `gocode auth login`, not over the protocol.
-	Authenticated(ctx context.Context) bool
-	// Logout removes the stored credential of the default model's provider.
-	Logout(ctx context.Context) error
-}
-
 // Host is what the agent needs from the process that runs it.
 type Host struct {
 	// Boot builds the runtime for an absolute directory. The agent calls it

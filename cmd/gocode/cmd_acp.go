@@ -2,23 +2,19 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/langazov/gocode-go/internal/acp"
-	"github.com/langazov/gocode-go/internal/auth"
 	"github.com/langazov/gocode-go/internal/clix"
 	"github.com/langazov/gocode-go/internal/config"
 	"github.com/langazov/gocode-go/internal/db"
 	"github.com/langazov/gocode-go/internal/global"
 	"github.com/langazov/gocode-go/internal/installation"
 	"github.com/langazov/gocode-go/internal/modelsdev"
-	"github.com/langazov/gocode-go/internal/modelstate"
 	"github.com/langazov/gocode-go/internal/provider"
 	"github.com/langazov/gocode-go/internal/server"
 	"github.com/langazov/gocode-go/internal/session"
@@ -37,7 +33,8 @@ func acpCommand() *clix.Command {
 		// agent command (`gocode acp`) with a method's args appended, so the
 		// login flow has to be reachable as an acp flag
 		// (agentclientprotocol.com/protocol/v1/authentication).
-		clix.Flag{Name: "login", Kind: clix.KindBool, Hidden: true, Describe: "sign in to a model provider interactively, then exit"},
+		clix.Flag{Name: "login", Kind: clix.KindBool, Hidden: true, Describe: "sign in interactively, then exit"},
+		clix.Flag{Name: "login-target", Kind: clix.KindString, Hidden: true, Describe: "what --login signs in to: provider (default), gocoder or gocoder-register"},
 	)
 	return &clix.Command{
 		Name:     "acp",
@@ -49,16 +46,7 @@ func acpCommand() *clix.Command {
 
 func runACPCommand(a *clix.Args) error {
 	if a.Bool("login") {
-		// The same interactive flow as `gocode auth login`; exit status is
-		// the client's success signal.
-		return runProvidersLogin(&clix.Args{
-			Bools:    map[string]bool{},
-			Strings:  map[string]string{},
-			Numbers:  map[string]float64{},
-			Arrays:   map[string][]string{},
-			Pos:      map[string]string{},
-			PosArray: map[string][]string{},
-		})
+		return runACPLogin(a.String("login-target"))
 	}
 	defaultDir, err := os.Getwd()
 	if err != nil {
@@ -205,54 +193,6 @@ func (l *modelLister) list(ctx context.Context) []acp.Model {
 	}
 	l.models, l.fetched = models, time.Now()
 	return models
-}
-
-// acpAuth answers ACP authentication from gocode's own credential store.
-// There is no protocol-driven way to enter a secret, so logging in means
-// `gocode auth login`; authenticate only confirms that happened.
-type acpAuth struct {
-	directory string
-	modelFlag string
-}
-
-// providerID is the default model's provider for the directory, resolved
-// with the same precedence boot uses.
-func (a *acpAuth) providerID() (string, *config.Config, error) {
-	cfg, err := config.LoadFor(a.directory)
-	if err != nil {
-		return "", nil, err
-	}
-	var lastUsed modelstate.Ref
-	if ref, ok := modelstate.Load(a.directory); ok {
-		lastUsed = ref
-	}
-	model := resolveModelFlag(a.modelFlag, lastUsed, cfg.Model)
-	providerID, _, ok := strings.Cut(model, "/")
-	if !ok {
-		return "", nil, fmt.Errorf("invalid model %q", model)
-	}
-	return providerID, cfg, nil
-}
-
-func (a *acpAuth) Authenticated(ctx context.Context) bool {
-	providerID, cfg, err := a.providerID()
-	if err != nil {
-		return false
-	}
-	if _, err := provider.FromConfig(ctx, providerID, cfg); err == nil {
-		return true
-	}
-	// Boot falls back to any provider with credentials; so does this.
-	_, _, ok := provider.Fallback(ctx, providerID, "", cfg)
-	return ok
-}
-
-func (a *acpAuth) Logout(ctx context.Context) error {
-	providerID, _, err := a.providerID()
-	if err != nil {
-		return err
-	}
-	return auth.Remove(providerID)
 }
 
 // netListen binds addr without exiting on failure: a busy --port must not
