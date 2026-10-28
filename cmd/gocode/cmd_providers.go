@@ -145,19 +145,7 @@ func runProvidersLogin(a *clix.Args) error {
 		if err != nil {
 			return err
 		}
-		info := auth.Info{
-			Type:      credential.Type,
-			Key:       credential.Key,
-			Access:    credential.Access,
-			Refresh:   credential.Refresh,
-			Expires:   credential.Expires,
-			AccountID: credential.AccountID,
-			Metadata:  credential.Metadata,
-		}
-		if domain := answers["enterpriseUrl"]; domain != "" && answers["deploymentType"] == "enterprise" {
-			info.EnterpriseURL = domain
-		}
-		if err := auth.Set(providerID, info); err != nil {
+		if err := storeOAuthCredential(providerID, credential, answers); err != nil {
 			return err
 		}
 

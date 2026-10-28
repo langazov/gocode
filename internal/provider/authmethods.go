@@ -72,6 +72,12 @@ func Methods(ctx context.Context, providerID string) ([]Method, error) {
 	return methodsFor(providerID, entry), nil
 }
 
+// MethodsIn is Methods against a catalog the caller already holds, for
+// listings that walk every provider.
+func MethodsIn(catalog modelsdev.Catalog, providerID string) []Method {
+	return methodsFor(providerID, catalog[providerID])
+}
+
 func methodsFor(providerID string, entry modelsdev.Provider) []Method {
 	var out []Method
 	for _, t := range transformsFor(providerID, entry) {

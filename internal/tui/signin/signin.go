@@ -428,32 +428,48 @@ func (m *model) submit() (tea.Model, tea.Cmd) {
 // validate checks what the server would reject anyway, so the common
 // mistakes are caught instantly and point at the field to fix.
 func (m *model) validate() (Credentials, int, error) {
-	email := strings.TrimSpace(m.fields[0].input.Value())
+	if m.screen == ScreenLogin {
+		return ValidateLogin(m.fields[0].input.Value(), m.fields[1].input.Value())
+	}
+	return ValidateRegister(m.fields[0].input.Value(), m.fields[1].input.Value(), m.fields[2].input.Value(), m.fields[3].input.Value())
+}
+
+// ValidateLogin checks a log-in form. The int is the index of the field to
+// fix (email, password), -1 when valid. Other sign-in surfaces (the ACP
+// agent's loopback page) share these rules.
+func ValidateLogin(email, password string) (Credentials, int, error) {
+	email = strings.TrimSpace(email)
 	if !plausibleEmail(email) {
 		return Credentials{}, 0, errors.New("enter a valid email address")
 	}
-	if m.screen == ScreenLogin {
-		password := m.fields[1].input.Value()
-		if password == "" {
-			return Credentials{}, 1, errors.New("enter your password")
-		}
-		return Credentials{Email: email, Password: password}, -1, nil
+	if password == "" {
+		return Credentials{}, 1, errors.New("enter your password")
 	}
-	name := strings.TrimSpace(m.fields[1].input.Value())
+	return Credentials{Email: email, Password: password}, -1, nil
+}
+
+// ValidateRegister checks a create-account form. The int is the index of the
+// field to fix (email, name, password, confirm), -1 when valid. A blank
+// display name defaults to the email's local part.
+func ValidateRegister(email, name, password, confirm string) (Credentials, int, error) {
+	email = strings.TrimSpace(email)
+	if !plausibleEmail(email) {
+		return Credentials{}, 0, errors.New("enter a valid email address")
+	}
+	name = strings.TrimSpace(name)
 	if name == "" {
 		name = localPart(email)
 	}
 	if utf8.RuneCountInString(name) > 64 {
 		return Credentials{}, 1, errors.New("display name must be at most 64 characters")
 	}
-	password := m.fields[2].input.Value()
 	if len(password) < 8 {
 		return Credentials{}, 2, errors.New("password must be at least 8 characters")
 	}
 	if len(password) > 128 {
 		return Credentials{}, 2, errors.New("password must be at most 128 characters")
 	}
-	if m.fields[3].input.Value() != password {
+	if confirm != password {
 		return Credentials{}, 3, errors.New("passwords don't match")
 	}
 	return Credentials{Email: email, DisplayName: name, Password: password}, -1, nil

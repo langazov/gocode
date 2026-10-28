@@ -83,6 +83,17 @@ type Then struct {
 	After  func()
 }
 
+type requestIDKey struct{}
+
+// RequestID returns the id of the incoming request a ContextHandlerFunc's
+// context belongs to, exactly as the peer sent it. Protocols that scope
+// follow-up interactions to a request (ACP's request-scoped elicitation)
+// echo it back.
+func RequestID(ctx context.Context) (json.RawMessage, bool) {
+	id, ok := ctx.Value(requestIDKey{}).(json.RawMessage)
+	return id, ok
+}
+
 // NotifyFunc receives an incoming notification.
 type NotifyFunc func(params json.RawMessage)
 
@@ -514,7 +525,7 @@ func (c *Conn) respond(message rpcResponse, send func([]byte) error) {
 
 	if ctxFn != nil {
 		key := string(*message.ID)
-		ctx, cancel := context.WithCancel(c.ctx)
+		ctx, cancel := context.WithCancel(context.WithValue(c.ctx, requestIDKey{}, *message.ID))
 		c.mu.Lock()
 		c.inflight[key] = cancel
 		c.mu.Unlock()

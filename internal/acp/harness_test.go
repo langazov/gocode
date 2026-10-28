@@ -89,6 +89,7 @@ type fixtureOptions struct {
 	rules permission.Ruleset
 	// clientCaps is sent in initialize under the name the version uses.
 	clientCaps map[string]any
+	auth       Auth
 }
 
 func newFixture(t *testing.T, version int, provider *scriptedProvider, opts fixtureOptions) *fixture {
@@ -112,6 +113,7 @@ func newFixture(t *testing.T, version int, provider *scriptedProvider, opts fixt
 		Store:            session.NewService(database, nil),
 		DefaultDirectory: dir,
 		Version:          "test",
+		Auth:             opts.auth,
 		Log:              t.Logf,
 	}, agentR, clientW)
 	go func() {
