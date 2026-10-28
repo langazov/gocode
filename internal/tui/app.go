@@ -1829,6 +1829,16 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 }
 
 func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
+	// A quick double escape reaches the input reader as one "\x1b\x1b" read,
+	// which the decoder takes for ESC-prefixed meta and reports as a single
+	// alt+esc. Nothing binds that, so the two-press interrupt never fired
+	// unless the presses were slow enough to land in separate reads. Replay
+	// it as the two escapes the user actually typed.
+	if msg.String() == "alt+esc" {
+		esc := tea.KeyPressMsg{Code: tea.KeyEscape}
+		first := a.handleKey(esc)
+		return tea.Batch(first, a.handleKey(esc))
+	}
 	// A pending mouse selection intercepts ctrl+c (copy instead of quit) and
 	// escape (clear instead of whatever escape would otherwise do), ahead of
 	// everything else — mirrors util/selection.ts's handleSelectionKey, which

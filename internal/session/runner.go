@@ -269,6 +269,13 @@ func (r *Runner) Run(ctx context.Context, input RunInput) error {
 			if err != nil {
 				return err
 			}
+			// An interrupted turn settles cleanly — its tools report the
+			// cancellation as results — and so still asks for a continuation.
+			// Honouring that would send the model another step on a dead
+			// context: the interrupt must end the drain, not just the turn.
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			needsContinuation = result.needsContinuation
 			step = result.step + 1
 			promotion = DeliverySteer
