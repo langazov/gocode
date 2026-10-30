@@ -14,7 +14,9 @@ import '../../shared/widgets/message_parts.dart';
 import '../../shared/widgets/model_picker.dart';
 import '../../shared/widgets/session_status.dart';
 import '../git/git_screen.dart' show sourceControlLocation;
+import '../harness/harness_start_dialog.dart';
 import '../home/providers.dart';
+import 'harness_notice.dart';
 import 'prompt_history.dart';
 import 'timeline.dart';
 
@@ -138,6 +140,26 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
     await _run(() => controller.setModel(model.providerID, model.id));
   }
 
+  /// The task /harness refine adapts for: the session's first request, as
+  /// the user wrote it (the TUI's harnessTaskPrompt).
+  String _harnessTaskPrompt(SessionState state) {
+    for (final item in state.items) {
+      if (item is UserBubble && item.text.trim().isNotEmpty) {
+        return item.text;
+      }
+    }
+    return '';
+  }
+
+  Future<void> _refineHarness(SessionState state) async {
+    await showHarnessStartDialog(
+      context,
+      prompt: _harnessTaskPrompt(state),
+      workspace: state.session.directory,
+      model: state.session.model,
+    );
+  }
+
   Future<void> _setVariant(Session session, String? variant) async {
     final model = session.model;
     final controller = _controller;
@@ -182,6 +204,11 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
               onPressed: () => context.push(
                 sourceControlLocation(directory: state.session.directory),
               ),
+            ),
+          if (state != null && ref.watch(apiClientProvider) != null)
+            _RefineHarnessButton(
+              active: activeHarness(state.items),
+              onPressed: () => unawaited(_refineHarness(state)),
             ),
           if (state != null)
             Padding(
@@ -358,15 +385,24 @@ class _SessionScreenState extends ConsumerState<SessionScreen> {
           busy: state.busy,
           onOpenSession: (id) => context.push('/session/$id'),
         );
+      case NoticeItem(kind: Message.harness):
+        return HarnessNotice(data: item.data);
       case NoticeItem():
         return Padding(
           padding: const EdgeInsets.only(bottom: 14),
           child: Row(
             children: [
               const Expanded(child: Divider()),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 10),
-                child: Text(item.text, style: GC.caption),
+              Flexible(
+                flex: 3,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  child: Text(
+                    item.text,
+                    style: GC.caption,
+                    textAlign: TextAlign.center,
+                  ),
+                ),
               ),
               const Expanded(child: Divider()),
             ],
@@ -1185,6 +1221,33 @@ class _TodoLine extends StatelessWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// The header's ✦: refine a harness for this session's task. Lit in the
+/// accent, with what is loaded in its tooltip, while the session runs under
+/// a harness.
+class _RefineHarnessButton extends StatelessWidget {
+  const _RefineHarnessButton({required this.active, required this.onPressed});
+
+  final Map<String, dynamic>? active;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final harness = active;
+    return IconButton(
+      tooltip: harness == null
+          ? 'Refine harness for this task'
+          : 'Harness active: ${harnessFacts(harness).join(' · ')}\n'
+                'Refine harness for this task',
+      icon: Icon(
+        Icons.auto_fix_high_outlined,
+        size: 18,
+        color: harness == null ? null : GC.accent,
+      ),
+      onPressed: onPressed,
     );
   }
 }

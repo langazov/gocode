@@ -1,0 +1,17 @@
+{
+  "label": "agg1",
+  "diff": "diff --git a/base/systemprompt.md b/agg1/systemprompt.md\n--- a/base/systemprompt.md\n+++ b/agg1/systemprompt.md\n@@ -1,2 +1,3 @@\n You are gocode.\n+Create the files the task names first.\n",
+  "files": {
+    "added": ["systemprompt.md"],
+    "removed": [],
+    "modified": ["tool_guidance.md"],
+    "alwaysOnCharsDelta": 42
+  },
+  "notes": "systemprompt.md: the base rollouts created notes.txt late",
+  "error": "",
+  "sessionID": "ses_agg1",
+  "ok": true,
+  "delivered": true,
+  "deliverable": "# Final message\n\nCreated notes.txt.\n\n# Changes to the workspace\n\n1 file(s) changed: notes.txt\n\n```diff\ndiff --git a/notes.txt b/notes.txt\nnew file mode 100644\n--- /dev/null\n+++ b/notes.txt\n@@ -0,0 +1 @@\n+notes\n```",
+  "costUSD": 0.35
+}

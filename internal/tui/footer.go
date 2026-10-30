@@ -344,6 +344,11 @@ func (a *App) footerRight(policy footerPolicy) []string {
 	default:
 		segments = append(segments, a.hintPair("tab", "agents"))
 	}
+	// A harness run in the background is work the user started and is
+	// waiting on, so it sits with the usage meter, ahead of the static hint.
+	if harness := a.harnessFooterSegment(); harness != "" && policy.ShowActivityMeta {
+		segments = append(segments, harness)
+	}
 	if policy.ShowCommandHint {
 		segments = append(segments, a.hintPair("ctrl+p", "commands"))
 	}
@@ -452,11 +457,24 @@ const interruptArmWindow = 5 * time.Second
 // interrupt"); a second press inside interruptArmWindow actually aborts the
 // turn. Upstream increments unconditionally and fires at `>= 2`, which is what
 // makes the *second* press the one that aborts.
+//
+// In a subagent's session the abort targets the root of the tree instead.
+// Interrupting only the child hands the parent's task call an ordinary
+// result, and the parent's loop carries on — often straight into another
+// spawn — so the gesture would never stop anything. Interrupting the root
+// cancels downward through the task tool and ends every session in the tree.
 func (a *App) armInterrupt() tea.Cmd {
 	if a.interruptIsArmed() {
 		a.interruptArmed = 0
-		c, sessionID := a.client, a.active.ID
+		c, sessionID, parentID := a.client, a.active.ID, a.active.ParentID
 		return func() tea.Msg {
+			for parentID != "" {
+				parent, err := c.Session(a.ctx, parentID)
+				if err != nil {
+					break
+				}
+				sessionID, parentID = parent.ID, parent.ParentID
+			}
 			if err := c.Interrupt(a.ctx, sessionID); err != nil {
 				return statusMsg{text: "interrupt failed: " + err.Error()}
 			}

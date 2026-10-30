@@ -1,0 +1,25 @@
+{
+  "backend": "split",
+  "reason": "library-plugin loaded and signed in",
+  "domains": [
+    {
+      "domain": "auth",
+      "entries": [
+        {
+          "domain": "auth",
+          "task": "fix-login",
+          "cue": "a login redirect",
+          "components": "systemprompt.md, tool_guidance.md",
+          "pending": false
+        },
+        {
+          "domain": "auth",
+          "task": "reset-password",
+          "cue": "a password reset flow",
+          "components": "systemprompt.md",
+          "pending": true
+        }
+      ]
+    }
+  ]
+}

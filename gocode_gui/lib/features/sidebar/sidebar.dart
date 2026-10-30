@@ -12,6 +12,7 @@ import '../../shared/widgets/session_status.dart';
 import '../account/avatar.dart';
 import '../account/providers.dart';
 import '../git/git_screen.dart' show sourceControlLocation;
+import '../harness/harness_state.dart';
 import '../home/providers.dart';
 import '../session/timeline.dart' show acpConnectionProvider;
 import 'history.dart';
@@ -29,6 +30,7 @@ abstract final class SidebarKeys {
   static const chatsTab = ValueKey('sidebar-chats-tab');
   static const newProject = ValueKey('sidebar-new-project');
   static const sourceControl = ValueKey('sidebar-source-control');
+  static const harness = ValueKey('sidebar-harness');
 }
 
 /// The left navigation: new session, a Projects/Chats tab pair, and the
@@ -208,6 +210,8 @@ class _SidebarState extends ConsumerState<Sidebar> {
       ref.watch(projectsProvider),
       ref.watch(selectedProjectProvider),
     );
+    final harnessRun = ref.watch(activeHarnessRunProvider);
+    final harnessAvailable = ref.watch(harnessAvailableProvider);
 
     // Its own Material: docked, the sidebar sits in a plain Row with no
     // Scaffold above it, and its text field, rows and menus all need one.
@@ -287,6 +291,43 @@ class _SidebarState extends ConsumerState<Sidebar> {
                       ],
                     ),
                   ),
+                  if (harnessAvailable)
+                    SidebarRow(
+                      key: SidebarKeys.harness,
+                      selected: widget.location.startsWith('/harness'),
+                      onTap: () => _go('/harness'),
+                      builder: (_) => Row(
+                        children: [
+                          const SizedBox(
+                            width: 16,
+                            child: Icon(
+                              Icons.auto_fix_high_outlined,
+                              size: 15,
+                              color: GC.textBody,
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          // Flexible so the live badge never overflows a
+                          // narrow sidebar.
+                          const Flexible(
+                            child: Text('Harness', style: _navStyle),
+                          ),
+                          if (harnessRun != null) ...[
+                            const SizedBox(width: 6),
+                            LiveDot(busy: true, size: 6),
+                            const SizedBox(width: 4),
+                            Text(
+                              'phase ${harnessRun.rowsDone + 1}/'
+                              '${harnessRun.rows.length}',
+                              style: _navStyle.copyWith(
+                                fontSize: 11,
+                                color: GC.textDim,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
                   _SearchField(
                     controller: _search,
                     onChanged: (v) =>

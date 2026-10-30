@@ -1,8 +1,13 @@
+// tray_manager 0.8 moved to nativeapi; its legacy.dart bridge keeps the
+// TrayListener/trayManager API this controller is written against, deprecated
+// until it is ported.
+// ignore_for_file: deprecated_member_use
+
 import 'dart:async';
 import 'dart:developer' as developer;
 import 'dart:io';
 
-import 'package:tray_manager/tray_manager.dart';
+import 'package:tray_manager/legacy.dart';
 import 'package:window_manager/window_manager.dart';
 
 /// Keeps the app alive with a menu bar icon after the window closes, instead

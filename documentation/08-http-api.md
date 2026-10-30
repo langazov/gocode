@@ -312,6 +312,55 @@ management surface — this is what the interface's `/memory` manager talks to:
 | `PATCH` | `/api/memory/{id}` | edit, pin, silence |
 | `DELETE` | `/api/memory/{id}` | forget it |
 
+<a id="harness"></a>
+
+## Harness²
+
+Recursive harness adaptation (`internal/harness`, the TUI's `/harness`). A run
+id is `<task>--k<k>-<mode>`, the same triple that names its directory, so a
+finished run keeps its id across restarts.
+
+| Method | Path | Does |
+|---|---|---|
+| `GET` | `/api/harness/budgets` | the offered `(mode, k)` pairs with their rollouts/edits counts and one-line descriptions (`harness.Budgets`) |
+| `GET` | `/api/harness/run` | live and finished runs, newest first |
+| `POST` | `/api/harness/run` | start one: `{prompt, id?, domain?, workspace?, k?, mode?, model?, improverModel?, library?, crossDomain?}`; `dryRun: true` returns the plan (rows, budget, backend) without spending anything. `409` while the same run is going, or while another process holds it (see below) |
+| `GET` | `/api/harness/run/{runID}` | one run: status, phase, a row per label (with its rollout `sessionID`, latest editor `editSessionID` and `retries`), cost, adopted label, lesson, and the task's `workspace` + `prompt` (first 200 chars) |
+| `POST` | `/api/harness/run/{runID}/cancel` | stop it; finished work stays cached and a rerun resumes |
+| `GET` | `/api/harness/run/{runID}/compare?with=installed\|<runID>` | the run's adopted harness against the installed one (default) or another run's adopted one: `{from, to, files, diff}` — what installing it would change |
+| `GET` | `/api/harness/installed` | the project's installed harness: `{installed, dir, fingerprint, alwaysOn, skills, agents, scripts, hooks, tree}`; the fingerprint is the chat marker's |
+| `GET` | `/api/harness/sweep` | sweeps, running first then newest: live ones from memory, finished ones from their records |
+| `POST` | `/api/harness/sweep` | `{paths, domain?, workspace?, k, mode, workers, maxTasks, seed?, model, improverModel, library, dryRun}` — `paths` are task files or folders of `*.md` tasks, relative to the server's working directory; `200` with the plan on `dryRun`, `202` with the running sweep, `409` while another sweep (or one of its tasks) runs. Each task is a live run in `/api/harness/run` while it goes; every change is a `harness.sweep` event carrying `{sweep}` |
+| `GET` | `/api/harness/sweep/{sweepID}` | one sweep with its tasks |
+| `POST` | `/api/harness/sweep/{sweepID}/cancel` | stop it after the tasks in flight; stopped tasks resume like any run |
+| `POST` | `/api/harness/run/{runID}/resume` | start a run that ended short of ok again from its saved `task.json`, same budget and mode, on the server's current models: finished stages and rollouts are reused, only what was cut short runs. `202` with the run; `409` when it is running, locked by another process or already finished ok; `404` when there is no such run |
+| `DELETE` | `/api/harness/run/{runID}` | delete a stopped run: its directory and every rollout and editor session under it (the shared base too, when no other mode of that task and k remains); `409` while it runs. The experience library is kept |
+| `GET` | `/api/harness/run/{runID}/log` | the run's event log (`events.jsonl` beside its summary), every event time-stamped; `?after=N` returns only events after the first N |
+| `GET` | `/api/harness/run/{runID}/stage/{label}` | a label's harness diff against the base, editor notes, and its rollout (session id, deliverable) |
+| `POST` | `/api/harness/run/{runID}/install` | `{to: project\|library\|both, force, dryRun, dir?}` — `dir` installs into that directory instead of the server's working directory and must exist; `409` with the result when an installed harness or a Library skill differs and `force` is unset |
+| `GET` | `/api/harness/library` | the experience library by domain, with the active backend |
+| `GET` / `DELETE` | `/api/harness/library/{domain}/{task}` | one entry (lesson, why, full tree) / forget it |
+| `POST` | `/api/harness/library/sync` | upload pending entries and pull other machines' (cloud backend) |
+
+Progress streams on `/api/event` as **live** events — `harness.phase`,
+`harness.rollout.started`/`.ended`, `harness.stage.started`/`.ended`,
+`harness.selected`, `harness.reflected`, `harness.session` (a stage or
+rollout's session exists: `sessionID`, `role`), `harness.stage.retry` (a
+rejected proposal and why), `harness.run.ended` — each carrying
+`{run, event}` with the run's whole state, so a client that drops one loses
+nothing. They are not durable: there is no projector and nothing is stored.
+
+The rollout and editor sessions run on their own stacks; the server relays
+their committed events onto its own stream (`event.Bus.Deliver`, subscribers
+only), so a client streams those sessions live like any other.
+
+A run directory carries an advisory lock (`<run dir>/.lock`, flock) held for
+the run's duration: a CLI run and an API run of one task in two processes
+share the directory, so `POST /api/harness/run` and
+`DELETE /api/harness/run/{runID}` answer `409` while another process holds
+it. The lock is advisory-only (a no-op on Windows, like every flock use in
+gocode).
+
 `Mux()` with no session service returns a **health-only** route tree, for
 callers that just need a liveness probe.
 

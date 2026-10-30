@@ -43,4 +43,7 @@ lib/features/…        Screens (session timeline, sidebar, asks, settings)
 lib/features/git/     Source Control (changes, diff viewer, branches,
                      history graph) over /api/vcs/git — Server/Remote
                      modes only; ported from goide
-```
+lib/features/harness/  Harness² (runs list, run plan, stage detail, start
+                     and install flows, experience library) over
+                     /api/harness — Server/Remote modes only
+

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"github.com/langazov/gocode-go/internal/tui/client"
 	"github.com/langazov/gocode-go/internal/tui/dialog"
 	"strings"
 	"testing"
@@ -438,12 +439,31 @@ func TestEveryDialogRowIsExactlyPanelWide(t *testing.T) {
 			a.overlay.Move(20)
 		},
 		"list empty": func(a *App) { a.openList("Memories", nil) },
-		"input":      func(a *App) { a.openInput("Rename session", long, "", nil) },
-		"alert":      func(a *App) { a.openAlert("Retry error", long, nil) },
-		"confirm":    func(a *App) { a.openConfirm("Delete session", long, "Keep", nil, nil) },
-		"help":       func(a *App) { a.openHelpDialog("Shortcuts", []string{"ctrl+x n  new session", long}) },
-		"status":     func(a *App) { a.openStatusDialog() },
-		"stats":      func(a *App) { drive(t, a, a.openStatsOverlay()) },
+		"harness runs": func(a *App) {
+			a.harnessRuns = sampleHarnessRuns()
+			a.harnessLoaded = true
+			a.openHarnessRuns()
+		},
+		"harness run": func(a *App) {
+			a.harnessRuns = sampleHarnessRuns()
+			a.openHarnessRun("fix-login--k1-parallel")
+		},
+		"harness budget": func(a *App) {
+			a.activeModel = "anthropic/claude-sonnet-4-5"
+			a.openHarnessBudget(long)
+		},
+		"harness stage": func(a *App) {
+			a.openHarnessPanel("agg1", harnessStageLines(client.HarnessStage{
+				Label: "agg1", Notes: long, Diff: "--- base/systemprompt.md\n+++ agg1/systemprompt.md\n+\tcheck " + long,
+				Deliverable: "# Final message\n\ndone " + long + "\n\n# Changes to the workspace\n\n1 file(s) changed: a.go\n\n```diff\n-old " + long + "\n+new\n```\n", Error: long, Files: client.HarnessFiles{Modified: []string{"systemprompt.md"}},
+			}))
+		},
+		"input":   func(a *App) { a.openInput("Rename session", long, "", nil) },
+		"alert":   func(a *App) { a.openAlert("Retry error", long, nil) },
+		"confirm": func(a *App) { a.openConfirm("Delete session", long, "Keep", nil, nil) },
+		"help":    func(a *App) { a.openHelpDialog("Shortcuts", []string{"ctrl+x n  new session", long}) },
+		"status":  func(a *App) { a.openStatusDialog() },
+		"stats":   func(a *App) { drive(t, a, a.openStatsOverlay()) },
 		"list narrow": func(a *App) {
 			a.width, a.height = 40, 16
 			a.openList("Commands", []overlayItem{{Label: long, Hint: long, Footer: "ctrl+x n"}})

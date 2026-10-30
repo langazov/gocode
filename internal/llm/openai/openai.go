@@ -590,3 +590,10 @@ func rateLimited(provider string, res *http.Response, message string) error {
 		RetryAfterKnown: known,
 	}
 }
+
+// CloseIdleConnections implements llm.IdleCloser.
+func (c *Client) CloseIdleConnections() {
+	if c.HTTP != nil {
+		c.HTTP.CloseIdleConnections()
+	}
+}

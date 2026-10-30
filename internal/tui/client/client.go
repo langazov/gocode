@@ -392,6 +392,26 @@ type FileAttachment struct {
 	Name string `json:"name,omitempty"`
 }
 
+// HarnessData mirrors internal/session.HarnessMessage: the marker the runner
+// writes where a session first runs under a harness, a changed one, or none.
+type HarnessData struct {
+	Loaded      bool     `json:"loaded"`
+	Changed     bool     `json:"changed,omitempty"`
+	Dir         string   `json:"dir,omitempty"`
+	Fingerprint string   `json:"fingerprint,omitempty"`
+	AlwaysOn    []string `json:"alwaysOn,omitempty"`
+	Skills      []string `json:"skills,omitempty"`
+	Agents      []string `json:"agents,omitempty"`
+	Scripts     int      `json:"scripts,omitempty"`
+	Hooks       int      `json:"hooks,omitempty"`
+}
+
+func DecodeHarness(data json.RawMessage) (HarnessData, error) {
+	var out HarnessData
+	err := json.Unmarshal(data, &out)
+	return out, err
+}
+
 func DecodeUser(data json.RawMessage) (UserData, error) {
 	var out UserData
 	err := json.Unmarshal(data, &out)
@@ -1023,4 +1043,343 @@ func (c *Client) BackgroundAvailable(ctx context.Context) bool {
 	}
 	defer res.Body.Close()
 	return res.StatusCode >= 200 && res.StatusCode < 300
+}
+
+// HarnessRow is one label's progress in a Harness² run (harness.Row).
+type HarnessRow struct {
+	Label         string  `json:"label"`
+	Phase         string  `json:"phase"`
+	State         string  `json:"state"`
+	CostUSD       float64 `json:"costUSD"`
+	Detail        string  `json:"detail,omitempty"`
+	SessionID     string  `json:"sessionID,omitempty"`
+	EditSessionID string  `json:"editSessionID,omitempty"`
+	Retries       int     `json:"retries,omitempty"`
+}
+
+// HarnessLogEvent is one line of a run's event log (harness.Event).
+type HarnessLogEvent struct {
+	Type      string  `json:"type"`
+	Time      int64   `json:"time"`
+	Phase     string  `json:"phase,omitempty"`
+	Label     string  `json:"label,omitempty"`
+	OK        bool    `json:"ok"`
+	Detail    string  `json:"detail,omitempty"`
+	CostUSD   float64 `json:"costUSD,omitempty"`
+	SessionID string  `json:"sessionID,omitempty"`
+	Role      string  `json:"role,omitempty"`
+	Attempt   int     `json:"attempt,omitempty"`
+}
+
+// HarnessLog reads a run's event log after the first `after` events.
+func (c *Client) HarnessLog(ctx context.Context, id string, after int) ([]HarnessLogEvent, error) {
+	var out []HarnessLogEvent
+	err := c.do(ctx, http.MethodGet, "/api/harness/run/"+url.PathEscape(id)+"/log?after="+strconv.Itoa(after), nil, &out)
+	return out, err
+}
+
+// HarnessRun is a Harness² run, live or finished (harness.RunState). The
+// interface mirrors the wire format instead of importing the server's
+// package — the JSON is the contract.
+type HarnessRun struct {
+	ID        string       `json:"id"`
+	Task      string       `json:"task"`
+	Domain    string       `json:"domain"`
+	K         int          `json:"k"`
+	Mode      string       `json:"mode"`
+	Status    string       `json:"status"`
+	Phase     string       `json:"phase,omitempty"`
+	Backend   string       `json:"backend,omitempty"`
+	Reason    string       `json:"reason,omitempty"`
+	Rows      []HarnessRow `json:"rows"`
+	CostUSD   float64      `json:"costUSD"`
+	StartedAt time.Time    `json:"startedAt"`
+	Adopted   string       `json:"adopted,omitempty"`
+	Why       string       `json:"why,omitempty"`
+	Lesson    string       `json:"lesson,omitempty"`
+	Error     string       `json:"error,omitempty"`
+	Budget    string       `json:"budget"`
+}
+
+// HarnessStart is the body of POST /api/harness/run.
+type HarnessStart struct {
+	Prompt    string `json:"prompt"`
+	ID        string `json:"id,omitempty"`
+	Domain    string `json:"domain,omitempty"`
+	Workspace string `json:"workspace,omitempty"`
+	K         int    `json:"k,omitempty"`
+	Mode      string `json:"mode,omitempty"`
+	Model     string `json:"model,omitempty"`
+	DryRun    bool   `json:"dryRun,omitempty"`
+}
+
+// HarnessFiles is a harness tree diff (harness.Diff).
+type HarnessFiles struct {
+	Added              []string `json:"added"`
+	Removed            []string `json:"removed"`
+	Modified           []string `json:"modified"`
+	AlwaysOnCharsDelta int      `json:"alwaysOnCharsDelta"`
+}
+
+// HarnessStage is one label's harness and rollout (harness.StageDetail).
+type HarnessStage struct {
+	Label       string       `json:"label"`
+	Diff        string       `json:"diff"`
+	Files       HarnessFiles `json:"files"`
+	Notes       string       `json:"notes,omitempty"`
+	Error       string       `json:"error,omitempty"`
+	SessionID   string       `json:"sessionID,omitempty"`
+	OK          bool         `json:"ok"`
+	Delivered   bool         `json:"delivered"`
+	Deliverable string       `json:"deliverable,omitempty"`
+	CostUSD     float64      `json:"costUSD"`
+}
+
+// HarnessPublish is what publishing skills to the Library did or would do.
+type HarnessPublish struct {
+	New       []string `json:"new"`
+	Changed   []string `json:"changed"`
+	Unchanged []string `json:"unchanged"`
+	Blocked   []string `json:"blocked"`
+}
+
+// HarnessInstall is the result of an install (harness.InstallResult).
+type HarnessInstall struct {
+	Target     string          `json:"target,omitempty"`
+	Files      HarnessFiles    `json:"files"`
+	Conflict   bool            `json:"conflict"`
+	Collisions []string        `json:"collisions,omitempty"`
+	Warnings   []string        `json:"warnings,omitempty"`
+	Library    *HarnessPublish `json:"library,omitempty"`
+	Written    bool            `json:"written"`
+}
+
+// HarnessEntryInfo is one experience-library entry in a listing.
+type HarnessEntryInfo struct {
+	Domain     string `json:"domain"`
+	Task       string `json:"task"`
+	Cue        string `json:"cue,omitempty"`
+	Components string `json:"components"`
+	Pending    bool   `json:"pending,omitempty"`
+}
+
+// HarnessLibrary is GET /api/harness/library.
+type HarnessLibrary struct {
+	Backend string `json:"backend"`
+	Reason  string `json:"reason"`
+	Domains []struct {
+		Domain  string             `json:"domain"`
+		Entries []HarnessEntryInfo `json:"entries"`
+	} `json:"domains"`
+}
+
+// HarnessLesson is an entry's lesson (harness.Experience).
+type HarnessLesson struct {
+	Cue        string `json:"cue"`
+	Lesson     string `json:"lesson"`
+	Evidence   string `json:"evidence"`
+	Confidence string `json:"confidence,omitempty"`
+	Edits      string `json:"edits,omitempty"`
+}
+
+// HarnessEntry is one library entry with its full tree.
+type HarnessEntry struct {
+	Entry struct {
+		Domain string        `json:"domain"`
+		Task   string        `json:"task"`
+		Label  string        `json:"label"`
+		Why    string        `json:"why,omitempty"`
+		Lesson HarnessLesson `json:"lesson"`
+	} `json:"entry"`
+	Tree map[string]string `json:"tree"`
+}
+
+// HarnessRuns lists live and finished Harness² runs, newest first.
+func (c *Client) HarnessRuns(ctx context.Context) ([]HarnessRun, error) {
+	var out []HarnessRun
+	err := c.do(ctx, http.MethodGet, "/api/harness/run", nil, &out)
+	return out, err
+}
+
+// StartHarness starts a run, or with DryRun returns its plan.
+func (c *Client) StartHarness(ctx context.Context, start HarnessStart) (*HarnessRun, error) {
+	var out HarnessRun
+	if err := c.do(ctx, http.MethodPost, "/api/harness/run", start, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CancelHarness stops a running run; finished work stays cached.
+func (c *Client) CancelHarness(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/api/harness/run/"+url.PathEscape(id)+"/cancel", nil, nil)
+}
+
+// HarnessInstalled is the project's installed harness (GET
+// /api/harness/installed).
+type HarnessInstalled struct {
+	Installed   bool              `json:"installed"`
+	Dir         string            `json:"dir"`
+	Fingerprint string            `json:"fingerprint,omitempty"`
+	AlwaysOn    []string          `json:"alwaysOn,omitempty"`
+	Skills      []string          `json:"skills,omitempty"`
+	Agents      []string          `json:"agents,omitempty"`
+	Scripts     int               `json:"scripts,omitempty"`
+	Hooks       int               `json:"hooks,omitempty"`
+	Tree        map[string]string `json:"tree,omitempty"`
+}
+
+// HarnessSweepTask is one task of a sweep (harness.SweepTask).
+type HarnessSweepTask struct {
+	Task    string  `json:"task"`
+	Domain  string  `json:"domain"`
+	RunID   string  `json:"runID"`
+	Status  string  `json:"status"`
+	Adopted string  `json:"adopted,omitempty"`
+	Lesson  string  `json:"lesson,omitempty"`
+	Error   string  `json:"error,omitempty"`
+	CostUSD float64 `json:"costUSD"`
+}
+
+// HarnessSweep is a sweep, planned, live or finished (harness.SweepState).
+type HarnessSweep struct {
+	ID          string             `json:"id"`
+	Status      string             `json:"status"`
+	Source      string             `json:"source,omitempty"`
+	K           int                `json:"k"`
+	Mode        string             `json:"mode"`
+	Workers     int                `json:"workers"`
+	DomainOrder []string           `json:"domainOrder"`
+	Tasks       []HarnessSweepTask `json:"tasks"`
+	Done        int                `json:"done"`
+	Failed      int                `json:"failed"`
+	CostUSD     float64            `json:"costUSD"`
+	Budget      string             `json:"budget"`
+	Rollouts    int                `json:"rollouts"`
+	Edits       int                `json:"edits"`
+	StartedAt   time.Time          `json:"startedAt"`
+	FinishedAt  time.Time          `json:"finishedAt"`
+	Error       string             `json:"error,omitempty"`
+}
+
+// HarnessSweepStart is the body of POST /api/harness/sweep.
+type HarnessSweepStart struct {
+	Paths   []string `json:"paths"`
+	K       int      `json:"k,omitempty"`
+	Mode    string   `json:"mode,omitempty"`
+	Workers int      `json:"workers,omitempty"`
+	Model   string   `json:"model,omitempty"`
+	DryRun  bool     `json:"dryRun,omitempty"`
+}
+
+// HarnessSweeps lists sweeps, running first.
+func (c *Client) HarnessSweeps(ctx context.Context) ([]HarnessSweep, error) {
+	var out []HarnessSweep
+	if err := c.do(ctx, http.MethodGet, "/api/harness/sweep", nil, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// StartHarnessSweep plans (DryRun) or starts a sweep.
+func (c *Client) StartHarnessSweep(ctx context.Context, start HarnessSweepStart) (*HarnessSweep, error) {
+	var out HarnessSweep
+	if err := c.do(ctx, http.MethodPost, "/api/harness/sweep", start, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CancelHarnessSweep stops a sweep after the tasks in flight.
+func (c *Client) CancelHarnessSweep(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodPost, "/api/harness/sweep/"+url.PathEscape(id)+"/cancel", nil, nil)
+}
+
+// HarnessComparison is what installing a run's adopted harness over another
+// would change (GET /api/harness/run/{id}/compare).
+type HarnessComparison struct {
+	From  string       `json:"from"`
+	To    string       `json:"to"`
+	Files HarnessFiles `json:"files"`
+	Diff  string       `json:"diff"`
+}
+
+// CompareHarness diffs run id's adopted harness against the installed one
+// (with "installed") or another run's (with a run id).
+func (c *Client) CompareHarness(ctx context.Context, id, with string) (*HarnessComparison, error) {
+	var out HarnessComparison
+	path := "/api/harness/run/" + url.PathEscape(id) + "/compare?with=" + url.QueryEscape(with)
+	if err := c.do(ctx, http.MethodGet, path, nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// InstalledHarness reads the project's installed harness.
+func (c *Client) InstalledHarness(ctx context.Context) (*HarnessInstalled, error) {
+	var out HarnessInstalled
+	if err := c.do(ctx, http.MethodGet, "/api/harness/installed", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ResumeHarness starts a stopped run again from its saved task: finished
+// work is reused, only what was cut short runs. 409 when it is running or
+// already finished ok.
+func (c *Client) ResumeHarness(ctx context.Context, id string) (*HarnessRun, error) {
+	var out HarnessRun
+	if err := c.do(ctx, http.MethodPost, "/api/harness/run/"+url.PathEscape(id)+"/resume", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// HarnessStage reads one label of a run.
+func (c *Client) HarnessStage(ctx context.Context, id, label string) (*HarnessStage, error) {
+	var out HarnessStage
+	err := c.do(ctx, http.MethodGet, "/api/harness/run/"+url.PathEscape(id)+"/stage/"+url.PathEscape(label), nil, &out)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// InstallHarness installs a run's adopted harness: to is project, library
+// or both; dryRun reports without writing.
+func (c *Client) InstallHarness(ctx context.Context, id, to string, force, dryRun bool) (*HarnessInstall, error) {
+	var out HarnessInstall
+	body := map[string]any{"to": to, "force": force, "dryRun": dryRun}
+	if err := c.do(ctx, http.MethodPost, "/api/harness/run/"+url.PathEscape(id)+"/install", body, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// HarnessLibrary lists the experience library.
+func (c *Client) HarnessLibrary(ctx context.Context) (*HarnessLibrary, error) {
+	var out HarnessLibrary
+	if err := c.do(ctx, http.MethodGet, "/api/harness/library", nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// HarnessEntry reads one library entry.
+func (c *Client) HarnessEntry(ctx context.Context, domain, task string) (*HarnessEntry, error) {
+	var out HarnessEntry
+	if err := c.do(ctx, http.MethodGet, "/api/harness/library/"+url.PathEscape(domain)+"/"+url.PathEscape(task), nil, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ForgetHarnessEntry deletes one library entry.
+func (c *Client) ForgetHarnessEntry(ctx context.Context, domain, task string) error {
+	return c.do(ctx, http.MethodDelete, "/api/harness/library/"+url.PathEscape(domain)+"/"+url.PathEscape(task), nil, nil)
+}
+
+// DeleteHarness deletes a finished run: its sessions and run directory.
+func (c *Client) DeleteHarness(ctx context.Context, id string) error {
+	return c.do(ctx, http.MethodDelete, "/api/harness/run/"+url.PathEscape(id), nil, nil)
 }

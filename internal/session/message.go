@@ -18,6 +18,10 @@ const (
 	TypeAgentSwitched = "agent-switched"
 	TypeModelSwitched = "model-switched"
 	TypeCompaction    = "compaction"
+	// TypeHarness marks where a turn first ran under a harness overlay, or
+	// under a changed or removed one. A record for readers; never sent to the
+	// model.
+	TypeHarness = "harness"
 )
 
 type UserMessage struct {
@@ -88,6 +92,11 @@ const (
 	// ErrorTypeAborted is the port's MessageAbortedError: the run context was
 	// canceled, i.e. the user interrupted the turn.
 	ErrorTypeAborted = "aborted"
+	// ErrorTypeRateLimited is a provider 429 the runner did not wait out —
+	// no stated retry time, or one past rateLimitRetryCap (a usage quota). It
+	// says nothing about the turn itself, so an unattended caller (Harness²)
+	// can tell it apart from a real failure and continue the session later.
+	ErrorTypeRateLimited = "rate_limited"
 )
 
 // AssistantContent is the text | reasoning | tool tagged union.

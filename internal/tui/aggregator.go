@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -22,6 +23,23 @@ type ToolState struct {
 	CallID string
 	Name   string
 	Status string // pending | completed | error
+	// Input is the call's one telling argument (a command, a path, a
+	// pattern), for surfaces that show what a session is doing right now.
+	Input string
+}
+
+// toolInputSummary picks the argument that says what a call does.
+func toolInputSummary(input any) string {
+	args, ok := input.(map[string]any)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"command", "filePath", "path", "pattern", "url", "query", "name", "description", "subagent_type"} {
+		if v, ok := args[key].(string); ok && strings.TrimSpace(v) != "" {
+			return strings.Join(strings.Fields(v), " ")
+		}
+	}
+	return ""
 }
 
 // SessionNode is the aggregator's live model of one session. Subagent sessions
@@ -70,6 +88,16 @@ type SessionNode struct {
 	// Failure it is transient by design: it describes what is happening now,
 	// and a stale copy of it would claim the session is stuck when it is not.
 	Waiting string
+	// LastEvent is when any event for this session last arrived. A harness
+	// row's session that goes quiet is shown as such long before the run's
+	// idle limit stops it (harnessRowActivity).
+	LastEvent time.Time
+	// Steps, ToolCalls and ToolFailures count what the session did while the
+	// interface watched: how far a harness rollout has got, and whether it
+	// is looping on refused commands (harnessRowCounts).
+	Steps        int
+	ToolCalls    int
+	ToolFailures int
 }
 
 func newSessionNode(id string) *SessionNode {
@@ -134,14 +162,16 @@ func waitingNotice(reason string, linkDown bool, retryIn time.Duration) string {
 // a data race.
 func (n *SessionNode) clone() *SessionNode {
 	out := &SessionNode{
-		ID:       n.ID,
-		Busy:     n.Busy,
-		Agent:    n.Agent,
-		Asks:     n.Asks,
-		Queued:   n.Queued,
-		Failure:  n.Failure,
-		Failures: n.Failures,
-		Waiting:  n.Waiting,
+		ID:        n.ID,
+		Busy:      n.Busy,
+		Agent:     n.Agent,
+		Asks:      n.Asks,
+		Queued:    n.Queued,
+		Failure:   n.Failure,
+		Failures:  n.Failures,
+		Waiting:   n.Waiting,
+		LastEvent: n.LastEvent,
+		Steps:     n.Steps, ToolCalls: n.ToolCalls, ToolFailures: n.ToolFailures,
 
 		Tools:     make(map[string]ToolState, len(n.Tools)),
 		Text:      make(map[string]*strings.Builder, len(n.Text)),
@@ -185,6 +215,13 @@ type Snapshot struct {
 	// worth. Converting once, at sample time, keeps the error to a single
 	// rounding per second.
 	ReceivedBytes int
+	// Harness holds the latest state of every Harness² run reported on the
+	// stream, by run id; HarnessSeq counts harness events, so the UI can
+	// tell a frame that moved one from one that did not.
+	Harness    map[string]client.HarnessRun
+	HarnessSeq int
+	// HarnessSweeps is Harness's equivalent for sweeps (`harness.sweep`).
+	HarnessSweeps map[string]client.HarnessSweep
 }
 
 // tree is the aggregator's mutable state. It lives on the aggregator
@@ -197,10 +234,24 @@ type tree struct {
 	// process, and a turn that fans out to subagents is still one stream of
 	// work the user is waiting on.
 	receivedBytes int
+	harness       map[string]client.HarnessRun
+	harnessSeq    int
+	// harnessAt is when each run was last reported, so a finished run can be
+	// dropped once every snapshot has had the chance to carry it.
+	harnessAt map[string]time.Time
+	sweeps    map[string]client.HarnessSweep
+	sweepsAt  map[string]time.Time
 }
 
+// harnessRetention is how long a finished run stays in snapshots after its
+// last event. Snapshots can be dropped while the program is busy, so the
+// final state rides along for a while; after that the app's own run list
+// (mergeHarnessRuns) holds it, and the snapshot stops paying to copy it.
+const harnessRetention = time.Minute
+
 func newTree() *tree {
-	return &tree{sessions: map[string]*SessionNode{}, dirty: map[string]bool{}}
+	return &tree{sessions: map[string]*SessionNode{}, dirty: map[string]bool{}, harness: map[string]client.HarnessRun{},
+		harnessAt: map[string]time.Time{}, sweeps: map[string]client.HarnessSweep{}, sweepsAt: map[string]time.Time{}}
 }
 
 func (t *tree) node(sessionID string) *SessionNode {
@@ -216,11 +267,15 @@ func (t *tree) node(sessionID string) *SessionNode {
 // Every branch routes by event.Session: this is what keeps a subagent's
 // output out of its parent's view.
 func (t *tree) apply(e client.Event) bool {
+	if strings.HasPrefix(e.Type, "harness.") {
+		return t.applyHarness(e)
+	}
 	sessionID := e.Session
 	if sessionID == "" {
 		return false
 	}
 	node := t.node(sessionID)
+	node.LastEvent = time.Now()
 	switch e.Type {
 	case "session.next.run.started":
 		node.Busy = true
@@ -273,6 +328,7 @@ func (t *tree) apply(e client.Event) bool {
 		node.Busy = true
 		// The retry got through — whatever the hold was waiting for is over.
 		node.Waiting = ""
+		node.Steps++
 		return true
 	case "session.next.text.started", "session.next.text.delta":
 		messageID, _ := e.Data["assistantMessageID"].(string)
@@ -318,7 +374,8 @@ func (t *tree) apply(e client.Event) bool {
 	case "session.next.tool.called":
 		callID, _ := e.Data["callID"].(string)
 		name, _ := e.Data["tool"].(string)
-		node.Tools[callID] = ToolState{CallID: callID, Name: name, Status: "pending"}
+		node.Tools[callID] = ToolState{CallID: callID, Name: name, Status: "pending", Input: toolInputSummary(e.Data["input"])}
+		node.ToolCalls++
 		t.dirty[sessionID] = true
 		return true
 	case "session.next.tool.success", "session.next.tool.failed":
@@ -326,6 +383,7 @@ func (t *tree) apply(e client.Event) bool {
 		status := "completed"
 		if e.Type == "session.next.tool.failed" {
 			status = "error"
+			node.ToolFailures++
 		}
 		state := node.Tools[callID]
 		state.CallID, state.Status = callID, status
@@ -383,6 +441,27 @@ func (t *tree) snapshot(dropped int) Snapshot {
 		Dirty:         make(map[string]bool, len(t.dirty)),
 		Dropped:       dropped,
 		ReceivedBytes: t.receivedBytes,
+		Harness:       make(map[string]client.HarnessRun, len(t.harness)),
+		HarnessSeq:    t.harnessSeq,
+		HarnessSweeps: make(map[string]client.HarnessSweep, len(t.sweeps)),
+	}
+	for id, sweep := range t.sweeps {
+		if sweep.Status != "running" && time.Since(t.sweepsAt[id]) > harnessRetention {
+			delete(t.sweeps, id)
+			delete(t.sweepsAt, id)
+			continue
+		}
+		sweep.Tasks = append([]client.HarnessSweepTask(nil), sweep.Tasks...)
+		out.HarnessSweeps[id] = sweep
+	}
+	for id, run := range t.harness {
+		if run.Status != "running" && time.Since(t.harnessAt[id]) > harnessRetention {
+			delete(t.harness, id)
+			delete(t.harnessAt, id)
+			continue
+		}
+		run.Rows = append([]client.HarnessRow(nil), run.Rows...)
+		out.Harness[id] = run
 	}
 	for id, node := range t.sessions {
 		out.Sessions[id] = node.clone()
@@ -392,6 +471,42 @@ func (t *tree) snapshot(dropped int) Snapshot {
 	}
 	t.dirty = map[string]bool{}
 	return out
+}
+
+// applyHarness keeps the latest state of a Harness² run. Every harness event
+// carries the whole run state (internal/server.HarnessPublisher), so the
+// newest one simply replaces what was there — a dropped event costs nothing.
+func (t *tree) applyHarness(e client.Event) bool {
+	if e.Type == "harness.sweep" {
+		encoded, err := json.Marshal(e.Data["sweep"])
+		if err != nil {
+			return false
+		}
+		var sweep client.HarnessSweep
+		if err := json.Unmarshal(encoded, &sweep); err != nil || sweep.ID == "" {
+			return false
+		}
+		t.sweeps[sweep.ID] = sweep
+		t.sweepsAt[sweep.ID] = time.Now()
+		t.harnessSeq++
+		return true
+	}
+	raw, ok := e.Data["run"]
+	if !ok {
+		return false
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return false
+	}
+	var run client.HarnessRun
+	if err := json.Unmarshal(encoded, &run); err != nil || run.ID == "" {
+		return false
+	}
+	t.harness[run.ID] = run
+	t.harnessAt[run.ID] = time.Now()
+	t.harnessSeq++
+	return true
 }
 
 // Aggregate folds the server event stream into coalesced snapshots.

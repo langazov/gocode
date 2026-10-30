@@ -167,6 +167,16 @@ Height is capped at `max(6, height/3)`.
 Dialogs used to open with a visible delay on Ctrl-key combinations — the cause
 was work happening inside `Update` rather than in a `tea.Cmd`.
 
+## Harness²
+
+`/harness` opens the Harness² runs list, `/harness refine` starts a run for the
+open session's task, and `/harness library` / `/harness installed` browse the
+experience library and the installed harness (`dialogs_harness.go`,
+`dialogs_harness_sweep.go`). A running run shows in the footer and toasts when
+it ends; its rows, stage panels (`harness_panel.go`) and log follow the live
+`harness.*` events the aggregator folds. Keys and flows are in the
+[Harness² user manual](12-harness.md#running-from-the-tui).
+
 ## Subagent surfaces
 
 A `task` call spawns a child session that runs on its own goroutine through

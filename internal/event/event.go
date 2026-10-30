@@ -101,6 +101,30 @@ func (b *Bus) Listen(listener func(Payload)) {
 	b.listeners = append(b.listeners, listener)
 }
 
+// Deliver hands an event that was committed on another bus to this bus's
+// subscribers, without committing or projecting it again. A Harness² rollout
+// runs on its own stack and bus over the shared database; relaying its
+// events here is what lets the interface stream that session live, the way
+// it streams a subagent's. Listeners are skipped on purpose: they are this
+// process's own reactions to its own commits (the plugin event hook), and a
+// rollout's events are not this stack's.
+func (b *Bus) Deliver(payload Payload) {
+	b.mu.Lock()
+	subscribers := make([]*subscriber, 0, len(b.subscribers))
+	for _, sub := range b.subscribers {
+		if sub.active {
+			subscribers = append(subscribers, sub)
+		}
+	}
+	b.mu.Unlock()
+	for _, sub := range subscribers {
+		select {
+		case sub.ch <- payload:
+		default:
+		}
+	}
+}
+
 // Subscribe returns a buffered channel of committed events plus an
 // unsubscribe function. Delivery is best-effort: events are dropped when the
 // subscriber's buffer is full, matching the bounded-subscription behavior.

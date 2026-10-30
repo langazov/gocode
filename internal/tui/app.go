@@ -275,6 +275,31 @@ type App struct {
 	memoryList       []client.Memory
 	memoryListLoaded bool
 	memoryListErr    string
+	// harnessRuns is the cached Harness² run list behind /harness, merged
+	// with the live states the aggregator carries (harnessSeq is the last
+	// snapshot's harness counter); harnessOpenRun is the run whose plan is
+	// on screen. See dialogs_harness.go.
+	harnessRuns       []client.HarnessRun
+	harnessLoaded     bool
+	harnessErr        string
+	harnessSeq        int
+	harnessOpenRun    string
+	harnessLibrary    *client.HarnessLibrary
+	harnessLibraryErr string
+	// harnessSweeps is the sweep list behind the sweeps dialog, merged with
+	// live sweep states the same way; harnessOpenSweep is the sweep whose
+	// tasks are on screen.
+	harnessSweeps    []client.HarnessSweep
+	harnessSweepsErr string
+	harnessOpenSweep string
+	// harnessLog is the open log panel's events for harnessLogRun, and
+	// harnessLogPos its scroll position at the last refresh (following while
+	// the reader stays at the bottom); harnessActivitySig is what the open
+	// run plan last showed of its rows' live activity.
+	harnessLog         []client.HarnessLogEvent
+	harnessLogRun      string
+	harnessLogPos      int
+	harnessActivitySig string
 	// catalogModels is the last-fetched model list, the port of TS's
 	// sync.data.provider: the dialogs render from it immediately instead of
 	// waiting on a request, and a refresh lands through catalogMsg.
@@ -1295,6 +1320,9 @@ func (a *App) Update(msg tea.Msg) tea.Cmd {
 }
 
 func (a *App) update(msg tea.Msg) tea.Cmd {
+	if cmd, ok := a.handleHarnessMsg(msg); ok {
+		return cmd
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		a.width, a.height = msg.Width, msg.Height
@@ -1307,6 +1335,9 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		// and height both depend on the new dimensions.
 		return nil
 	case tickMsg:
+		// A quiet row and a run's age change with time alone, no event to
+		// carry them; the tick moves them on.
+		a.refreshHarnessActivity()
 		cmds := []tea.Cmd{a.tick(), a.loadMCPCmd(), a.loadLSPCmd(), a.loadCommandsCmd()}
 		if a.active != nil {
 			cmds = append(cmds, a.loadPermissions(a.active.ID), a.loadQuestions(a.active.ID))
@@ -1652,7 +1683,7 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 		// aggregator is the only thing watching the event stream), so this is
 		// the path that has to keep the spinner running.
 		effect := a.applySnapshot(msg.snapshot)
-		cmds := []tea.Cmd{a.startSpinner()}
+		cmds := []tea.Cmd{a.startSpinner(), a.applyHarnessSnapshot(msg.snapshot)}
 		if a.active != nil {
 			if effect.timeline {
 				cmds = append(cmds, a.loadMessages(a.active.ID))
@@ -1798,6 +1829,16 @@ func (a *App) update(msg tea.Msg) tea.Cmd {
 }
 
 func (a *App) handleKey(msg tea.KeyMsg) tea.Cmd {
+	// A quick double escape reaches the input reader as one "\x1b\x1b" read,
+	// which the decoder takes for ESC-prefixed meta and reports as a single
+	// alt+esc. Nothing binds that, so the two-press interrupt never fired
+	// unless the presses were slow enough to land in separate reads. Replay
+	// it as the two escapes the user actually typed.
+	if msg.String() == "alt+esc" {
+		esc := tea.KeyPressMsg{Code: tea.KeyEscape}
+		first := a.handleKey(esc)
+		return tea.Batch(first, a.handleKey(esc))
+	}
 	// A pending mouse selection intercepts ctrl+c (copy instead of quit) and
 	// escape (clear instead of whatever escape would otherwise do), ahead of
 	// everything else — mirrors util/selection.ts's handleSelectionKey, which

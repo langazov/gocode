@@ -69,6 +69,25 @@ type Runner struct {
 	// unreachable.
 	Skills *skill.Registry
 
+	// Instructions, when set, contributes the project and global instruction
+	// files (AGENTS.md, CLAUDE.md, config "instructions") to every turn's
+	// system prompt, after the agent's own prompt. See instruction.go.
+	Instructions InstructionSource
+
+	// Harness, when set, contributes an adapted harness's always-on text
+	// (internal/harness Overlay), after the instructions and before the
+	// available-skills block. Nil leaves the prompt exactly as it was.
+	Harness InstructionSource
+	// DescribeHarness, when set, reports the overlay Harness applies, so
+	// each step can mark in the session's history where a harness was
+	// loaded, changed or removed (harness_marker.go). ok false means none.
+	DescribeHarness func() (HarnessInfo, bool)
+
+	// Guard, when set, enforces a harness's declarative tool rules around
+	// every local tool call: Before can refuse a call outright, After can
+	// append to what the model sees. Nil disables both.
+	Guard ToolGuard
+
 	// Permissions, when set, gates every local tool execution.
 	Permissions PermissionGate
 
@@ -129,6 +148,20 @@ type Runner struct {
 	// network outage (see netretry.go). nil leaves the runner
 	// non-interactive, which is what a headless or embedded run wants.
 	Asker Asker
+}
+
+// InstructionSource renders always-on system blocks. It is read every turn,
+// so an edited file reaches the next turn without a restart.
+type InstructionSource interface {
+	System() []string
+}
+
+// ToolGuard enforces rules around a tool call. Before runs after argument
+// rewriting and before permissions; a non-nil error fails the call with that
+// message as its result. After may rewrite the output the model sees.
+type ToolGuard interface {
+	Before(tool string, args map[string]any) error
+	After(tool string, args map[string]any, output string) string
 }
 
 // OutputLimitResolver returns a model's maximum output tokens per step,
@@ -234,6 +267,13 @@ func (r *Runner) Run(ctx context.Context, input RunInput) error {
 		for needsContinuation {
 			result, err := r.runTurn(ctx, input.SessionID, promotion, step)
 			if err != nil {
+				return err
+			}
+			// An interrupted turn settles cleanly — its tools report the
+			// cancellation as results — and so still asks for a continuation.
+			// Honouring that would send the model another step on a dead
+			// context: the interrupt must end the drain, not just the turn.
+			if err := ctx.Err(); err != nil {
 				return err
 			}
 			needsContinuation = result.needsContinuation
@@ -509,6 +549,12 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, step i
 	if err := r.compactIfNeeded(ctx, runCtx, sessionID, resolved, tools); err != nil {
 		return turnResult{}, err
 	}
+	// Before the step's history is read, so the marker lands ahead of the
+	// answer it applies to. A display record: failing to write it never
+	// costs the turn.
+	if err := r.noteHarness(ctx, sessionID); err != nil {
+		global.LogBackground("session %s: recording the harness marker: %v", sessionID, err)
+	}
 	messages, err := r.Messages.ListForRunner(ctx, sessionID)
 	if err != nil {
 		return turnResult{}, err
@@ -529,6 +575,15 @@ func (r *Runner) runTurnAttempt(runCtx context.Context, sessionID string, step i
 	system := []string{}
 	if resolved.System != "" {
 		system = append(system, resolved.System)
+	}
+	// Instruction files follow the charter, as upstream's system.ts orders
+	// them; a harness overlay's always-on text follows those, so a project's
+	// own AGENTS.md is read before any adapted guidance layered on top.
+	if r.Instructions != nil {
+		system = append(system, r.Instructions.System()...)
+	}
+	if r.Harness != nil {
+		system = append(system, r.Harness.System()...)
 	}
 	// The available-skills block rides last in the base prompt, before the
 	// plugin transform: skills are per-boot facts about the environment, not
@@ -989,6 +1044,13 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 	// what a call is allowed to touch is read off its arguments, so a plugin
 	// that rewrites a path must have that path be the one asked about.
 	call.Input = r.applyToolArgs(ctx, sessionID, call.ID, call.Name, call.Input)
+	// A guard refusal is a rule, not a question, so it precedes the asks: a
+	// call the harness forbids must not interrupt the user first.
+	if r.Guard != nil {
+		if err := r.Guard.Before(call.Name, call.Input); err != nil {
+			return "", err
+		}
+	}
 	if r.Permissions != nil {
 		// A tool may imply approvals beyond its own action. The shell does:
 		// its command can reach outside the working directory, which every
@@ -1066,6 +1128,9 @@ func (r *Runner) executeTool(ctx context.Context, sessionID, assistantMessageID,
 	})
 	if err != nil {
 		return "", err
+	}
+	if r.Guard != nil {
+		output = r.Guard.After(call.Name, call.Input, output)
 	}
 	return r.applyToolOutput(ctx, sessionID, call.ID, call.Name, call.Input, output), nil
 }
@@ -1326,8 +1391,12 @@ func (r *Runner) failInterruptedTools(ctx context.Context, sessionID string) err
 // that one is never done, by construction.
 func stepError(runCtx context.Context, err error) map[string]any {
 	errType := ErrorTypeUnknown
-	if runCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+	var limited *llm.RateLimitError
+	switch {
+	case runCtx.Err() != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)):
 		errType = ErrorTypeAborted
+	case errors.As(err, &limited):
+		errType = ErrorTypeRateLimited
 	}
 	return map[string]any{"type": errType, "message": err.Error()}
 }
@@ -1395,6 +1464,14 @@ func (r *Runner) compactIfNeeded(ctx, runCtx context.Context, sessionID string, 
 	// The turn's own system prompt, not the runner default: an agent's
 	// prompt replaces it. Tool schemas ride on every request too.
 	requestTokens += estimateTokens(resolved.System)
+	for _, source := range []InstructionSource{r.Instructions, r.Harness} {
+		if source == nil {
+			continue
+		}
+		for _, block := range source.System() {
+			requestTokens += estimateTokens(block)
+		}
+	}
 	if len(tools) > 0 {
 		if encoded, err := json.Marshal(tools); err == nil {
 			requestTokens += estimateTokens(string(encoded))

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"image/color"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -279,6 +281,12 @@ func (a *App) renderMessage(message client.Message, isLast bool) (string, []reas
 		return a.renderAssistant(message, data, isLast)
 	case "compaction":
 		return a.compactionSeparator(), nil, nil, nil
+	case "harness":
+		data, err := client.DecodeHarness(message.Data)
+		if err != nil {
+			return "", nil, nil, nil
+		}
+		return a.harnessMarker(data), nil, nil, nil
 	}
 	return "", nil, nil, nil
 }
@@ -420,14 +428,80 @@ func wrapPills(pills []string, width int) []string {
 // compactionSeparator mirrors the compaction marker: a full-width horizontal
 // rule with the centered " Compaction " title in borderActive.
 func (a *App) compactionSeparator() string {
-	title := " Compaction "
-	w := a.contentWidth()
+	return lipgloss.NewStyle().Foreground(a.theme.BorderActive).Render(titledRule(" Compaction ", a.contentWidth()))
+}
+
+// titledRule is a full-width ─ rule with title centered in it.
+func titledRule(title string, w int) string {
 	side := (w - len(title)) / 2
 	if side < 0 {
 		side = 0
 	}
-	rule := strings.Repeat("─", side) + title + strings.Repeat("─", w-side-len(title))
-	return lipgloss.NewStyle().Foreground(a.theme.BorderActive).Render(rule)
+	return strings.Repeat("─", side) + title + strings.Repeat("─", max(w-side-len(title), 0))
+}
+
+// harnessMarker renders where a session started running under a harness
+// overlay (a changed one, or none any more): a ─ rule in BorderSubtle titled
+// like the compaction rule, over one muted, centered line saying where the
+// harness lives and what it brings. See TUI_RECOMENDATIONS §7.7.
+func (a *App) harnessMarker(data client.HarnessData) string {
+	title := " Harness loaded "
+	switch {
+	case !data.Loaded:
+		title = " Harness removed "
+	case data.Changed:
+		title = " Harness changed "
+	}
+	w := a.contentWidth()
+	rule := lipgloss.NewStyle().Foreground(a.theme.BorderSubtle).Render(titledRule(title, w))
+	if !data.Loaded {
+		return rule
+	}
+	detail := truncateRunes(strings.Join(harnessFacts(data), " · "), w)
+	pad := max((w-lipgloss.Width(detail))/2, 0)
+	return rule + "\n" + strings.Repeat(" ", pad) + a.styles().Muted.Render(detail)
+}
+
+// harnessFacts lists what a harness brings, place first and fingerprint
+// last: `.gocode/harness · systemprompt.md, guardrails.md · 2 skills ·
+// 1 agent · 3 scripts · 1 hook rule · 3f9a01c2b7de`.
+func harnessFacts(data client.HarnessData) []string {
+	facts := []string{harnessPlace(data.Dir)}
+	if len(data.AlwaysOn) > 0 {
+		facts = append(facts, strings.Join(data.AlwaysOn, ", "))
+	}
+	count := func(n int, one string) {
+		switch {
+		case n == 1:
+			facts = append(facts, "1 "+one)
+		case n > 1:
+			facts = append(facts, fmt.Sprintf("%d %ss", n, one))
+		}
+	}
+	count(len(data.Skills), "skill")
+	count(len(data.Agents), "agent")
+	count(data.Scripts, "script")
+	count(data.Hooks, "hook rule")
+	if data.Fingerprint != "" {
+		facts = append(facts, data.Fingerprint)
+	}
+	return facts
+}
+
+// harnessPlace shortens a harness directory for display: an installed one
+// is named by its project-relative path, anything else by its path with the
+// home directory folded to ~.
+func harnessPlace(dir string) string {
+	dir = filepath.ToSlash(dir)
+	if strings.HasSuffix(dir, "/.gocode/harness") {
+		return ".gocode/harness"
+	}
+	if home, err := os.UserHomeDir(); err == nil {
+		if home = filepath.ToSlash(home); strings.HasPrefix(dir, home+"/") {
+			return "~" + strings.TrimPrefix(dir, home)
+		}
+	}
+	return dir
 }
 
 // messageAborted approximates TS's `error?.name === "MessageAbortedError"`:

@@ -1,0 +1,20 @@
+{
+  "entry": {
+    "domain": "auth",
+    "task": "fix-login",
+    "label": "agg1",
+    "why": "agg1's rollout passes the redirect test the base fails.",
+    "lesson": {
+      "cue": "a login redirect",
+      "lesson": "systemprompt.md should say to create named files first",
+      "evidence": "inv1 created it",
+      "confidence": "low",
+      "edits": "systemprompt.md: added the create-files-first line"
+    }
+  },
+  "tree": {
+    "systemprompt.md": "Create the files the task names first.\n",
+    "scripts/check.sh": "#!/bin/sh\nls notes.txt\n",
+    "": "  "
+  }
+}

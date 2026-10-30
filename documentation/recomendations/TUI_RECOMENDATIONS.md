@@ -174,7 +174,7 @@ enclosing background genuinely is not a panel.
 | `BackgroundMenu` | The autocomplete popup surface (falls back to `BackgroundElement`). |
 | `Border` | Autocomplete and subagent-footer accent bars. |
 | `BorderActive` | The compaction rule. |
-| `BorderSubtle` | Reserved; currently unused — prefer it over inventing a new token. |
+| `BorderSubtle` | The harness marker rule. Otherwise reserved — prefer it over inventing a new token. |
 | `SelectedListItemText` | Foreground on a `Primary` fill. Falls back to `Background` via `Normalize()`. |
 | `ThinkingOpacity` | Alpha (default `0.6`) that reasoning headers and bodies fade to. |
 
@@ -371,6 +371,7 @@ Use these; do not introduce synonyms. All are single-cell except where noted.
 | `⇆` | Move selection | banner hints |
 | `↑ N more lines` | Scrollback indicator | timeline |
 | `─` + ` Compaction ` | Compaction rule | timeline |
+| `─` + ` Harness loaded ` / ` changed ` / ` removed ` | Harness marker rule | timeline |
 | `▸` / `▾` | Collapsed / expanded directory | diff viewer file tree |
 | `│  ` / `   `, `├─ ` / `└─ ` | Tree connectors (indent run, branch) | diff viewer file tree |
 | `✓` / `A` / `M` / `D` / `?` | Reviewed / added / modified / deleted / unknown file status | diff viewer file tree status column |
@@ -610,6 +611,106 @@ picker, `?`'s help — still wins per §12's ladder):
 Preferences persist in `diffstate.json` beside `theme.json`, best-effort,
 never touching the config file.
 
+### 6.6 Harness² (`/harness`)
+
+Harness² runs are long, cost real money and happen in other sessions, so the
+interface treats them as background work the user checks on — never as a
+view that takes over the screen. Everything is built from §9's list dialog and
+read-only panel; there is no new dialog kind (`dialogs_harness.go`).
+
+| Surface | Kind | Contents |
+|---|---|---|
+| `/harness` · **Harness runs** | list | categories `RUNNING` above `FINISHED`; gutter `◐` running, `✓` ok, `·` partial/cancelled, `✗` failed; hint `mode k=N · status · phase` (running) or `· adopted <label>`; footer the cost |
+| run · **Harness run · `<task>`** | list | the run's *plan*: one row per label, grouped `BASE ROLLOUTS`, `PROPOSE AND PROBE`, `COMPOSE`, `SELECT`, `REFLECT` in the order the run moves through them; gutter `·` pending, `◐` editing/rolling, `~` edited (awaiting its rollout), `✓`/`✗` settled; `●` marks the adopted label; the filter placeholder carries the budget, backend and spend |
+| row | read-only panel | `ERROR` first when there is one, then `HARNESS` (± files, always-on delta), `EDITOR NOTES`, `HARNESS DIFF`, `ROLLOUT · delivered · $` — the rollout's final message wrapped, then `CHANGES TO THE WORKSPACE` as a diff |
+| compare · **Compare `<task>` · `<label>` with** | list | `Installed harness` (what installing would change), then every other finished run that adopted something; picking one opens **Compare**: `from`/`to`, `FILES`, `DIFF` |
+| installed · **Installed harness** | read-only panel | place, always-on files, counts and fingerprint (the chat marker's), skills and agents by name, then every file |
+| sweeps · **Harness sweeps** | list | categories `RUNNING` above `FINISHED`; label the task files; hint `mode k=N · status · done/total tasks · N domains · age`; footer the cost |
+| sweep · **Harness sweep · `<files>`** | list | one category per domain in run order, its tasks in order; gutter `·` pending, `◐` running, then the run's status glyph; hint the status and `adopted <label> · <lesson>` or the short reason; placeholder the budget per task, the totals and spend; selecting a started task opens its run |
+| `/harness library` · **Experience library · `<backend>`** | list | one category per domain; hint the lesson's cue (`pending upload ·` first when it has not reached the Library); footer the component census |
+| entry | read-only panel | `LESSON`, `WHY <label> WAS ADOPTED`, `WHAT EACH EDIT DID`, then every harness file |
+
+Footer actions: runs — `new ctrl+a` (standalone), `remove ctrl+d` (two-press
+arm: cancels a running run, deletes a finished one with its sessions),
+`resume ctrl+y` (a run that ended short of ok), `library ctrl+l`,
+`installed ctrl+k`, `sweeps ctrl+t`, `refresh ctrl+r`; run — `watch ctrl+e` (open the session
+the row is working in now: its editor's while editing, its rollout's while
+rolling), `editor ctrl+o` (the row's editor session, also after it ended),
+`log ctrl+g` (the run's event log), `install ctrl+s` and, when the backend is
+`split` or `cloud`, `publish ctrl+u` (finished runs only), `cancel ctrl+d`
+(running only), `resume ctrl+y` (partial, cancelled or failed runs only),
+`compare ctrl+w` (finished runs that adopted something), `back ctrl+b`;
+library — `forget ctrl+d` (two-press arm), `runs ctrl+b`; sweeps — `new
+ctrl+a`, `cancel ctrl+d` (running), `refresh ctrl+r`, `runs ctrl+b`; sweep —
+`cancel ctrl+d` (running), `back ctrl+b`. `/harness installed` opens the
+installed-harness panel directly.
+
+**Rules:**
+
+- **A run is never started without its price on screen.** `new` and
+  `/harness refine` open an input prefilled with the session's first request,
+  then the **Harness run budget** list — mode and k, cheapest first, each row
+  footed with its rollouts and edits, the placeholder naming the session's
+  model the run will use — then a dry run (`POST /api/harness/run` with
+  `dryRun`), then a confirm that states the task, model, budget, backend and
+  that the workspace is not touched. Only the confirm starts it.
+- **Install is always a dry run first.** The confirm names the target, the
+  file counts, whether it replaces an installed harness, which of the user's
+  own skills keep precedence, and any always-on cap warning. Replacing is the
+  confirm's `force`; nothing is overwritten without that dialog.
+- **Live state comes from the stream, not polling.** Every `harness.*` event
+  carries the run's whole state; the aggregator keeps the newest per run and
+  the open runs list or plan rebuilds in place, keeping filter and selection
+  (`refreshHarnessDialogs`). A run that stops raises a toast — success names
+  the adopted label and cost, failure is `toastError`.
+- **The plan is a monitor.** A working row's hint is what its session is
+  doing now — the newest running tool and its telling argument
+  (`editing · read context/rollouts/base1.md`), or `thinking` — taken from the
+  session events the server relays from the rollout and editor stacks; a row
+  with rejected proposals carries `↻N`. A working row whose session has had no
+  event for 2 minutes adds `· quiet 3m` — in minutes, well before the run's
+  idle limit (15m) stops the session — so a stall is visible while it happens.
+  The open plan rebuilds only when that text changes
+  (`refreshHarnessActivity`, also run on the 10s reconciliation tick, since
+  quiet and age move with time alone), not on every frame.
+- **A failed row says why in a few words** — `stalled (no activity)`,
+  `timed out`, `interrupted`, else the error's first line — and the stage
+  panel opens on the whole error. A working row's footer counts its
+  session's progress, `12 steps · 30 tools · 2 failed`: many refused or
+  failed calls over few steps is a rollout going in circles.
+- **Harness panels are not help panels.** Stage, entry, comparison and
+  installed panels render their own rows (`harness_panel.go`): headings in
+  bold `Text`, prose wrapped in `Text`, metadata in `TextMuted`, a diff's
+  `+` lines in `Success`, `-` in `Error`, `@@` and `~` in `Primary`, errors
+  wrapped in `Error`. Diff lines are clipped, never wrapped.
+- **A sweep is priced like a run.** `new` asks for the task files (a folder
+  of `*.md` tasks by default, relative to the project), then the budget per
+  task, then dry-runs it; the confirm lists every domain's tasks in run
+  order, the budget per task and the totals. Each running task is a run in
+  the runs list too, so it is watched like any run; cancelling it stops the
+  sweep after the tasks in flight.
+- **A running run says how long it has been going**, in minutes (`<1m`,
+  `12m`, `1h 05m`): in its runs-list hint, the plan's placeholder line and
+  the hint row.
+- **Resume shows its price too.** `resume` opens a confirm naming the task,
+  how it ended and its budget, and that finished stages and rollouts are
+  reused — only what was cut short runs, and costs, again
+  (`POST /api/harness/run/{id}/resume`).
+- **Every step can be watched live.** Rollout and editor sessions stream in
+  the session view exactly like a subagent's, because their events reach the
+  interface's stream; `/harness` returns to the run.
+- **The log is the lowest level.** **Harness log · `<task>`** is a read-only
+  panel (§9.7) of every event, time-stamped: `▸` phase, `◐` started or
+  session created (with its id), `↻` rejected attempt with the validation
+  error, `✓`/`✗` ended with cost. It follows new events while the reader is
+  at the bottom and holds its place once they scroll up.
+- **The hint row says a run is going.** While one runs, the right group gains
+  `harness <task> · <phase> <done>/<rows> · <age> · $` in `TextMuted` — or,
+  with nothing running, `harness <fingerprint>` while the open session runs
+  under an installed harness (its newest timeline marker) — ahead of the
+  `ctrl+p commands` hint and under the same `ShowActivityMeta` width gate as
+  the usage meter.
+
 ---
 
 ## 7. The timeline: message block specs
@@ -774,6 +875,21 @@ Unified diff with a line-number gutter, capped at `maxRenderedDiffLines = 40`.
 
 A full-width `─` rule in `BorderActive` with a centered ` Compaction ` title.
 
+**Harness marker.** The same rule shape in `BorderSubtle`, titled
+` Harness loaded `, ` Harness changed ` or ` Harness removed `, marks where a
+session started running under a harness overlay (a `harness` message). Loaded
+and changed add one centered `TextMuted` line under the rule — place
+(`.gocode/harness`, else the path with `~` for home), always-on files, then
+counts, then the fingerprint, `·`-separated and truncated to the content width:
+
+```
+──────────────────────────── Harness loaded ────────────────────────────
+  .gocode/harness · systemprompt.md, guardrails.md · 2 skills · 1 hook rule · 3f9a01c2b7de
+```
+
+Removed has no detail line. Quieter than the compaction rule on purpose: it is
+context for reading the answers below it, not an event in the conversation.
+
 ### 7.8 Settlement line
 
 ```
@@ -813,6 +929,7 @@ let the settlement line's `· interrupted` marker carry it.
 
 ```
 busy:      ■⬝⬝⬝⬝⬝⬝⬝ esc interrupt   ⇡42 tok/s  159.6K (16%) · $0.34  ctrl+p commands
+harness:   ~/Work/project      159.6K (16%) · $0.34  harness fix-login · probe 3/6 · $0.42  ctrl+p commands
 armed:     ■⬝⬝⬝⬝⬝⬝⬝ esc again to interrupt          (both spans recolor to Primary)
 offline:   ■⬝⬝⬝⬝⬝⬝⬝ waiting for network  esc interrupt
 notice:       interrupted
@@ -1592,6 +1709,7 @@ Each of these has actually shipped and been fixed. Do not reintroduce them.
 | `dialogs.go` | App-side dialog wiring: shell builders, close/cmd adapters (`wrapDialogCmd`, `CloseThenMsg`), compositing entry points, command registry |
 | `dialogs_confirm.go` | The read-only panels' content (help, status, stats body/hints/budget) |
 | `dialogs_{model,provider,plugins,memory,skill}.go` | Individual dialog content |
+| `dialogs_harness.go` | The `/harness` surfaces (§6.6): runs list, run plan, stage panel, experience library, install/plan confirms |
 | `dialogs_mcp.go` | The `/mcp` MCP server management dialog: rows from GET /api/mcp/servers, live enable/disable/delete, details drill-in |
 | `stats_overlay.go` | `/stats` aggregation (the computation half) |
 | `diffviewer.go` | The `/diff` route: state, fetch, layout, navigation, keys, mouse (see §6.5) |

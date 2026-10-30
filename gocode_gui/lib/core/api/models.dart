@@ -143,6 +143,7 @@ class Message {
   static const agentSwitched = 'agent-switched';
   static const modelSwitched = 'model-switched';
   static const compaction = 'compaction';
+  static const harness = 'harness';
 
   final String id;
   final String sessionID;

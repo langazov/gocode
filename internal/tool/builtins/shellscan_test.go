@@ -49,6 +49,14 @@ func TestScanExternalPaths(t *testing.T) {
 		{name: "no paths at all", command: "go test ./...", want: nil},
 		{name: "flags are not paths", command: "rm -rf --preserve-root", want: nil},
 
+		// Discarding output is not reaching /dev: a rollout's fence denied
+		// every `grep ... 2>/dev/null` until these were exempted. A real
+		// device still counts.
+		{name: "stderr to /dev/null", command: `grep -rn x internal 2>/dev/null | head`, want: nil},
+		{name: "both to /dev/null", command: "ls gui >/dev/null 2>&1 || echo none", want: nil},
+		{name: "own stream", command: "echo hi > /dev/stderr; cat /dev/fd/3", want: nil},
+		{name: "a real device", command: "cat x > /dev/disk0", want: []string{canonicalPath("/dev")}},
+
 		// Escaping upward is external even when spelled relatively.
 		{name: "parent traversal", command: "cat > ../outside.txt", want: []string{filepath.Dir(canonicalRoot(root))}},
 	}
@@ -194,6 +202,11 @@ func TestScanWritesSeparatesReadsFromWrites(t *testing.T) {
 		{"go test ./... &> out.log", []string{"out.log"}},
 		{"cat < notes.md", nil},
 		{"cat <<'EOF'\nhi\nEOF", nil},
+		// Discarding output edits nothing.
+		{"grep -rn x . 2>/dev/null", nil},
+		{"make >/dev/null 2>&1", nil},
+		{"go test ./... &> /dev/null", nil},
+		{"echo hi | tee /dev/stderr > out.log", []string{"out.log"}},
 		// Mutating commands.
 		{"rm -rf build", []string{"build"}},
 		{"mv a.txt b.txt", []string{"a.txt", "b.txt"}},
@@ -245,6 +258,25 @@ func TestBashToolDeclaresNoEditForReadOnlyCommands(t *testing.T) {
 		extras := scoped.ExtraPermissions(map[string]any{"command": command})
 		if edit := extraFor(extras, "edit"); edit != nil {
 			t.Errorf("%q should need no edit approval, got %+v", command, edit)
+		}
+	}
+}
+
+// Redirecting to a pseudo-device asks for nothing at all: not edit (plan
+// mode and the Harness² improvers deny it) and not external_directory (a
+// rollout's fence denies that), or every `2>/dev/null` is refused.
+func TestBashToolAllowsRedirectsToPseudoDevices(t *testing.T) {
+	bash := NewBashTool(Resolver{Root: t.TempDir()})
+	scoped := any(bash).(tool.PermissionScoped)
+	for _, command := range []string{
+		"grep -rn TODO internal 2>/dev/null | head",
+		"ls gui >/dev/null 2>&1 || echo none",
+		"go vet ./... &>/dev/null",
+		"echo warn >/dev/stderr",
+		"cat notes.md >> /dev/stdout",
+	} {
+		if extras := scoped.ExtraPermissions(map[string]any{"command": command}); len(extras) != 0 {
+			t.Errorf("%q asked for %+v", command, extras)
 		}
 	}
 }

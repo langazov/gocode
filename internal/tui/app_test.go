@@ -46,7 +46,8 @@ type mockAPI struct {
 	forkedFrom   string
 	mcpStatus    string // GET /api/mcp responds with this status for "test-server"; mutate mid-test to verify tickMsg re-fetches it
 	statsCalls   int
-	backgrounded string // the sessionID POSTed to /background, "" when never
+	backgrounded string   // the sessionID POSTed to /background, "" when never
+	interrupted  []string // the sessionIDs POSTed to /interrupt, in order
 	children     []client.Session
 
 	// mu guards models, the one slice a background goroutine can append to
@@ -96,6 +97,7 @@ func newMockAPI(t *testing.T) (*mockAPI, *httptest.Server) {
 	})
 	mux.HandleFunc("POST /api/session/{sessionID}/interrupt", func(w http.ResponseWriter, r *http.Request) {
 		api.interrupts++
+		api.interrupted = append(api.interrupted, r.PathValue("sessionID"))
 		w.Write([]byte(`{}`))
 	})
 	mux.HandleFunc("GET /api/session/{sessionID}", func(w http.ResponseWriter, r *http.Request) {
@@ -712,6 +714,37 @@ func TestEscapeInterruptsBusySession(t *testing.T) {
 	drive(t, app, tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	if !app.quitting {
 		t.Fatal("ctrl+c should exit the application")
+	}
+}
+
+// TestFastDoubleEscapeInterrupts: two escapes typed quickly arrive in one
+// read and decode as a single alt+esc. It must still interrupt.
+func TestFastDoubleEscapeInterrupts(t *testing.T) {
+	api, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+	openSession(t, app)
+	app.busy = true
+
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape, Mod: tea.ModAlt})
+	if api.interrupts != 1 {
+		t.Fatalf("a fast double escape should interrupt, got %d interrupts", api.interrupts)
+	}
+}
+
+// TestEscapeInSubagentInterruptsRoot: in a subagent's session the gesture
+// aborts the root, not the child. Interrupting only the child hands the
+// parent's task call a result and the parent's loop keeps going.
+func TestEscapeInSubagentInterruptsRoot(t *testing.T) {
+	api, server := newMockAPI(t)
+	app := newTestApp(t, server.URL)
+	openSession(t, app)
+	app.active = &client.Session{ID: "ses_child", ParentID: "ses_1"}
+	app.busy = true
+
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
+	drive(t, app, tea.KeyPressMsg{Code: tea.KeyEscape})
+	if len(api.interrupted) != 1 || api.interrupted[0] != "ses_1" {
+		t.Fatalf("expected the root ses_1 to be interrupted, got %v", api.interrupted)
 	}
 }
 

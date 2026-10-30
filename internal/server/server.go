@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"github.com/langazov/gocode-go/internal/harness"
 	"net"
 	"net/http"
 	"sort"
@@ -66,6 +67,10 @@ type Server struct {
 	// session (AI commit messages). nil disables them with a 503.
 	Runner *session.Runner
 
+	// Harness runs Harness² for the /api/harness routes. nil leaves them
+	// unregistered.
+	Harness *harness.Service
+
 	// oauth tracks in-flight provider logins started from the interface. A
 	// device flow outlives the request that begins it, so the attempt is
 	// parked here and polled.
@@ -84,6 +89,9 @@ func (s *Server) Mux() http.Handler {
 	})
 	if s.Bus != nil {
 		mux.HandleFunc("GET /api/event", s.eventStream)
+	}
+	if s.Harness != nil {
+		s.registerHarness(mux)
 	}
 	if s.Permissions != nil {
 		mux.HandleFunc("GET /api/permission/request", s.listPermissionRequests)

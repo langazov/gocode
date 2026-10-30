@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"slices"
 	"sort"
 	"strings"
@@ -266,6 +267,8 @@ func (a *App) modelRow(model client.Model, category string, favorite bool) overl
 	if favorite {
 		hint = "(Favorite)"
 	}
+	// Add provider name in brackets, greyed (muted), besides the model name
+	hint = fmt.Sprintf("%s (%s)", hint, model.ProviderID)
 	footer := ""
 	if model.ProviderID == "opencode" && model.CostInput == 0 {
 		footer = "Free"

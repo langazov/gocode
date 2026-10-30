@@ -11,6 +11,7 @@ import (
 	"github.com/langazov/gocode-go/internal/llm"
 	"github.com/langazov/gocode-go/internal/permission"
 	"github.com/langazov/gocode-go/internal/tool"
+	"github.com/langazov/gocode-go/internal/tool/builtins"
 )
 
 // gatedProvider serves a scripted turn per session, blocking each session's
@@ -629,5 +630,71 @@ func TestSpawnChildInheritsParentAgentModel(t *testing.T) {
 	}
 	if child.Model == nil || child.Model.ID != "claude-3-7-sonnet" {
 		t.Fatalf("child model = %+v, want the parent agent's claude-3-7-sonnet", child.Model)
+	}
+}
+
+// parkedChildProvider has the build agent spawn one general subagent, which
+// parks on its context; it counts every build-agent turn.
+type parkedChildProvider struct {
+	mu          sync.Mutex
+	parentTurns int
+	started     chan struct{}
+}
+
+func (p *parkedChildProvider) Stream(ctx context.Context, request llm.Request, emit func(llm.StreamEvent)) error {
+	if request.System[0] != "build" {
+		close(p.started)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	p.mu.Lock()
+	p.parentTurns++
+	first := p.parentTurns == 1
+	p.mu.Unlock()
+	if first {
+		emit(llm.StreamEvent{Type: llm.EventToolCall, ToolCall: &llm.ToolCall{ID: "call_task", Name: "task",
+			Input: map[string]any{"description": "long", "prompt": "go", "subagent_type": "general"}}})
+		emit(llm.StreamEvent{Type: llm.EventFinish, Finish: "tool_use"})
+		return nil
+	}
+	emit(llm.StreamEvent{Type: llm.EventTextDelta, Text: "carried on"})
+	emit(llm.StreamEvent{Type: llm.EventFinish, Finish: "end_turn"})
+	return nil
+}
+
+// TestInterruptDuringSubagentEndsTheParentLoop: the task call settles with
+// the cancellation as its result, which reads as a tool step wanting a
+// continuation. The interrupt must end the drain there, not send the model
+// another turn on the dead context.
+func TestInterruptDuringSubagentEndsTheParentLoop(t *testing.T) {
+	provider := &parkedChildProvider{started: make(chan struct{})}
+	spawner, service, runner := newSpawnFixture(t, provider)
+	runner.Tools.Register(builtins.NewTaskTool(spawner))
+	root := newRootSession(t, service)
+	if _, err := service.Prompt(context.Background(), root.ID, "start", DeliveryQueue); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-provider.started:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the child never started")
+	}
+
+	interrupted := make(chan struct{})
+	go func() { service.Interrupt(root.ID); close(interrupted) }()
+	select {
+	case <-interrupted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Interrupt never returned")
+	}
+
+	provider.mu.Lock()
+	turns := provider.parentTurns
+	provider.mu.Unlock()
+	if turns != 1 {
+		t.Fatalf("the parent ran %d turns; the interrupt should have stopped it after 1", turns)
+	}
+	if active := service.Execution.Active(); len(active) != 0 {
+		t.Fatalf("sessions still running after the interrupt: %v", active)
 	}
 }
