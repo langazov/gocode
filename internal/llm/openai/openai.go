@@ -444,8 +444,14 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 		}
 		for _, choice := range chunk.Choices {
 			delta := choice.Delta
-			if delta.Content != "" {
-				emit(llm.StreamEvent{Type: llm.EventTextDelta, Text: delta.Content})
+			// Thinking that arrives inside content comes before the content's
+			// text, and a backend that uses it does not also send a
+			// reasoning field, so emitting it first keeps stream order.
+			if delta.Content.Reasoning != "" {
+				emit(llm.StreamEvent{Type: llm.EventReasoningDelta, Text: delta.Content.Reasoning})
+			}
+			if delta.Content.Text != "" {
+				emit(llm.StreamEvent{Type: llm.EventTextDelta, Text: delta.Content.Text})
 			}
 			if reasoning := firstNonEmpty(delta.Reasoning, delta.ReasoningContent, delta.ReasoningText); reasoning != "" {
 				emit(llm.StreamEvent{Type: llm.EventReasoningDelta, Text: reasoning})
@@ -477,6 +483,59 @@ func readStream(reader io.Reader, emit func(llm.StreamEvent)) error {
 	return nil
 }
 
+// streamContent is a streamed delta.content, decoded from either shape a
+// backend sends:
+//
+//	"content": "plain text"
+//	"content": [{"type":"thinking","thinking":[{"type":"text","text":"..."}]},
+//	            {"type":"text","text":"..."}]
+//
+// The array form is Mistral's (its reasoning models stream thinking this way,
+// and the chunk that ends the thinking also carries the answer's first words).
+// Decoding it into a string used to fail the whole chunk, which readStream then
+// skipped: the reasoning never appeared and every reply lost its opening words.
+type streamContent struct {
+	Text      string
+	Reasoning string
+}
+
+type streamContentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	Thinking []struct {
+		Type string `json:"type"`
+		Text string `json:"text"`
+	} `json:"thinking"`
+}
+
+func (c *streamContent) UnmarshalJSON(data []byte) error {
+	*c = streamContent{}
+	switch trimmed := strings.TrimSpace(string(data)); {
+	case trimmed == "null":
+		return nil
+	case strings.HasPrefix(trimmed, "["):
+		var parts []streamContentPart
+		if err := json.Unmarshal(data, &parts); err != nil {
+			return err
+		}
+		var text, reasoning strings.Builder
+		for _, part := range parts {
+			switch part.Type {
+			case "text":
+				text.WriteString(part.Text)
+			case "thinking":
+				for _, inner := range part.Thinking {
+					reasoning.WriteString(inner.Text)
+				}
+			}
+		}
+		c.Text, c.Reasoning = text.String(), reasoning.String()
+		return nil
+	default:
+		return json.Unmarshal(data, &c.Text)
+	}
+}
+
 func firstNonEmpty(values ...string) string {
 	for _, v := range values {
 		if v != "" {
@@ -504,7 +563,11 @@ func sortedKeys(m map[int]*toolAccumulator) []int {
 type streamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Content string `json:"content"`
+			// Content is a plain string on most backends, but Mistral
+			// streams an array of typed chunks whenever thinking is
+			// involved — including the chunk that closes the thinking and
+			// opens the answer. See streamContent.
+			Content streamContent `json:"content"`
 			// Reasoning field name is not standardized across
 			// openai-compatible backends; TS's gocode reads whichever of
 			// these three is present (reasoning | reasoning_content |
