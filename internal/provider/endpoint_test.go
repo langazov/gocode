@@ -12,6 +12,14 @@ import (
 
 func baseOf(t *testing.T, client any) string {
 	t.Helper()
+	// A provider whose catalog declares per-model overrides (groq's orpheus
+	// models, Zen's Claude/Gemini/GPT families) hands out its default client
+	// wrapped in a modelRoutedClient. The wrapper never changes where the
+	// provider's key is posted by default — that stays its fallback — so the
+	// assertion this file guards is about the fallback, not the wrapper.
+	if routed, ok := client.(*modelRoutedClient); ok {
+		client = routed.fallback
+	}
 	c, ok := client.(*openai.Client)
 	if !ok {
 		t.Fatalf("expected an openai-protocol client, got %T", client)
