@@ -40,6 +40,13 @@ type entry struct {
 	pendingWake bool
 	stopping    bool
 	settled     bool
+
+	// waiters counts Run callers that parked on this entry's done channel.
+	// Single-use entry, so it is never decremented; it exists so callers
+	// (chiefly tests) can tell "joined an in-flight drain" from "arrived
+	// after the key went idle and started a fresh one" — timing that is
+	// otherwise unobservable from outside.
+	waiters int
 }
 
 func (e *entry) await() error {
@@ -72,6 +79,7 @@ func (c *Coordinator[Key]) Run(ctx context.Context, key Key) error {
 		c.mu.Lock()
 		current, ok := c.active[key]
 		if ok {
+			current.waiters++
 			stopping := current.stopping
 			c.mu.Unlock()
 			if err := current.await(); err != nil && !stopping {

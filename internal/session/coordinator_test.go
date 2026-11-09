@@ -21,6 +21,12 @@ func waitFor(t *testing.T, cond func() bool, message string) {
 	t.Fatal(message)
 }
 
+// TestRunSerializesSameKey: three concurrent Runs on one key must collapse
+// into exactly one drain. Two of the three are joiners, and the test must
+// prove they *parked on the entry* before releasing it — the coordinator's
+// contract only forbids extra drains for callers that arrive while the entry
+// is active; a caller arriving after it settles correctly starts a fresh
+// drain, which is Run's documented behavior on an idle key.
 func TestRunSerializesSameKey(t *testing.T) {
 	var inFlight atomic.Int32
 	var maxSeen atomic.Int32
@@ -53,6 +59,17 @@ func TestRunSerializesSameKey(t *testing.T) {
 		}()
 	}
 	waitFor(t, func() bool { return total.Load() == 1 }, "first drain should start")
+	// Hold the release until every Run caller is accounted for: two joiners
+	// parked on the entry (waiters==2) plus the owner. Without this, a joiner
+	// descheduled on a loaded runner reaches Run after the entry settles and
+	// correctly starts a fresh drain — not a coordinator bug, but this test
+	// would count it as one and flake exactly as CI did.
+	waitFor(t, func() bool {
+		coordinator.mu.Lock()
+		defer coordinator.mu.Unlock()
+		entry, ok := coordinator.active["ses_1"]
+		return ok && entry.waiters == 2
+	}, "joiners should park on the active entry")
 	close(release)
 	wg.Wait()
 	if maxSeen.Load() != 1 {
