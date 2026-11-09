@@ -47,10 +47,31 @@ Work on non-overlapping tasks, or briefly tell the user what you launched and en
 func (t *TaskTool) Name() string { return "task" }
 
 func (t *TaskTool) Description() string {
-	if t.jobs != nil {
-		return t.description() + "\n" + backgroundDescription
+	description := t.description()
+	if agents := t.subagents(); len(agents) > 0 {
+		lines := []string{"", "Available agent types (subagent_type values):"}
+		for _, agent := range agents {
+			line := "- " + agent.ID
+			if agent.Description != "" {
+				line += ": " + agent.Description
+			}
+			lines = append(lines, line)
+		}
+		description += "\n" + strings.Join(lines, "\n")
 	}
-	return t.description()
+	if t.jobs != nil {
+		return description + "\n" + backgroundDescription
+	}
+	return description
+}
+
+// subagents is what the spawner can launch, when it can say; a spawner that
+// can't leaves the model to the error message.
+func (t *TaskTool) subagents() []tool.SubagentInfo {
+	if lister, ok := t.spawner.(tool.SubagentLister); ok {
+		return lister.Subagents()
+	}
+	return nil
 }
 
 func (t *TaskTool) description() string {
@@ -102,6 +123,13 @@ func (t *TaskTool) InputSchema() map[string]any {
 		},
 		"required": []string{"description", "prompt", "subagent_type"},
 	}
+	if agents := t.subagents(); len(agents) > 0 {
+		ids := make([]string, len(agents))
+		for i, agent := range agents {
+			ids[i] = agent.ID
+		}
+		schema["properties"].(map[string]any)["subagent_type"].(map[string]any)["enum"] = ids
+	}
 	if t.jobs != nil {
 		schema["properties"].(map[string]any)["background"] = map[string]any{
 			"type":        "boolean",
@@ -131,6 +159,13 @@ func (t *TaskTool) ExecuteWithContext(ctx context.Context, input map[string]any,
 		return "", fmt.Errorf("task: subagent_type is required")
 	}
 	if found, isSubagent := t.spawner.Agent(subagentType); !found {
+		if agents := t.subagents(); len(agents) > 0 {
+			ids := make([]string, len(agents))
+			for i, agent := range agents {
+				ids[i] = agent.ID
+			}
+			return "", fmt.Errorf("Unknown agent type: %s is not a valid agent type. Use one of: %s", subagentType, strings.Join(ids, ", "))
+		}
 		return "", fmt.Errorf("Unknown agent type: %s is not a valid agent type", subagentType)
 	} else if !isSubagent {
 		return "", fmt.Errorf("Agent %s is a primary agent and cannot run as a subagent", subagentType)

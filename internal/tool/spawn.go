@@ -41,6 +41,20 @@ type SpawnResult struct {
 // yields exactly one result and is then closed. The child runs on its own
 // goroutine, keyed by its own session ID in the execution coordinator, so it
 // is concurrent with the parent and with its siblings.
+// SubagentInfo is one agent the task tool may launch, as its description
+// lists it.
+type SubagentInfo struct {
+	ID          string
+	Description string
+}
+
+// SubagentLister is implemented by spawners that can name their subagents,
+// so the task tool can tell the model which subagent_type values exist
+// instead of leaving it to guess (and fail with "Unknown agent type").
+type SubagentLister interface {
+	Subagents() []SubagentInfo
+}
+
 type Spawner interface {
 	Spawn(ctx context.Context, req SpawnRequest) (childID string, done <-chan SpawnResult, err error)
 	// Cancel interrupts a running child.
