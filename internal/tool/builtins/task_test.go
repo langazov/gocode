@@ -467,3 +467,47 @@ func TestTaskToolEmptyModelIsNoOverride(t *testing.T) {
 		t.Fatalf("absent model argument must stay empty, got %+v", spawns)
 	}
 }
+
+// listingSpawner is a stubSpawner that can name its subagents.
+type listingSpawner struct {
+	*stubSpawner
+	agents []tool.SubagentInfo
+}
+
+func (s *listingSpawner) Subagents() []tool.SubagentInfo { return s.agents }
+
+func TestTaskToolNamesTheSubagentsItCanLaunch(t *testing.T) {
+	stub := newStubSpawner()
+	stub.unknown["code-analyzer"] = true
+	spawner := &listingSpawner{stubSpawner: stub, agents: []tool.SubagentInfo{
+		{ID: "explore", Description: "Fast agent specialized for exploring codebases."},
+		{ID: "general"},
+	}}
+	task := NewTaskTool(spawner)
+
+	description := task.Description()
+	if !strings.Contains(description, "- explore: Fast agent specialized for exploring codebases.") || !strings.Contains(description, "- general") {
+		t.Fatalf("description doesn't list the subagents:\n%s", description)
+	}
+	subagentType := task.InputSchema()["properties"].(map[string]any)["subagent_type"].(map[string]any)
+	if enum, _ := subagentType["enum"].([]string); strings.Join(enum, ",") != "explore,general" {
+		t.Fatalf("subagent_type enum = %v", subagentType["enum"])
+	}
+
+	_, err := task.ExecuteWithContext(context.Background(), map[string]any{
+		"description": "analyze", "prompt": "look", "subagent_type": "code-analyzer",
+	}, tool.ExecContext{SessionID: "ses_parent"})
+	if err == nil || !strings.Contains(err.Error(), "Use one of: explore, general") {
+		t.Fatalf("unknown agent error = %v", err)
+	}
+}
+
+func TestTaskToolWithoutAListKeepsItsDescription(t *testing.T) {
+	task := NewTaskTool(newStubSpawner())
+	if strings.Contains(task.Description(), "Available agent types") {
+		t.Fatal("a spawner that can't list agents should not get a list")
+	}
+	if _, ok := task.InputSchema()["properties"].(map[string]any)["subagent_type"].(map[string]any)["enum"]; ok {
+		t.Fatal("no enum without a list")
+	}
+}

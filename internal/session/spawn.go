@@ -102,6 +102,19 @@ func (s *Spawner) Agent(id string) (bool, bool) {
 	return true, info.Mode == "subagent" || info.Mode == "all"
 }
 
+// Subagents lists the agents the task tool may launch: subagent or
+// all-mode agents that aren't hidden, by id.
+func (s *Spawner) Subagents() []tool.SubagentInfo {
+	var out []tool.SubagentInfo
+	for _, info := range s.Agents.All() {
+		if info.Hidden || (info.Mode != "subagent" && info.Mode != "all") {
+			continue
+		}
+		out = append(out, tool.SubagentInfo{ID: info.ID, Description: info.Description})
+	}
+	return out
+}
+
 // parseRequestedModel parses the task tool's model argument, "provider/model",
 // into a reference. Empty means no override; malformed is an error the caller
 // surfaces to the model so it can retry with a valid ID.
